@@ -1,5 +1,51 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import net from 'node:net';
+
+function loadDotenvIfExists(path = '.env') {
+  if (!existsSync(path)) {
+    return;
+  }
+
+  const lines = readFileSync(path, 'utf8').split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue;
+    }
+
+    const separator = trimmed.indexOf('=');
+    if (separator === -1) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, separator).trim();
+    const rawValue = trimmed.slice(separator + 1).trim();
+    if (!key || key in process.env) {
+      continue;
+    }
+
+    process.env[key] = rawValue.replace(/^(['"])(.*)\1$/, '$2');
+  }
+}
+
+function applyDatabaseSchema() {
+  console.log('sanchoris dev database: applying db/schema.sql');
+  const result = spawnSync('pnpm', ['db:apply'], {
+    env: process.env,
+    stdio: 'inherit',
+    shell: false,
+  });
+
+  if (result.error) {
+    console.error(`db:apply failed to start: ${result.error.message}`);
+    process.exit(1);
+  }
+
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
+}
 
 async function findAvailablePort() {
   return await new Promise((resolve, reject) => {
@@ -59,6 +105,9 @@ function stopAll() {
     }
   }
 }
+
+loadDotenvIfExists();
+applyDatabaseSchema();
 
 const children = [];
 let shuttingDown = false;

@@ -1,15 +1,14 @@
 services:
   postgres:
     image: postgres:17-alpine
-    container_name: sanchoris-postgres
     environment:
       POSTGRES_DB: sanchoris
       POSTGRES_USER: sanchoris
       POSTGRES_PASSWORD: sanchoris
     ports:
-      - "127.0.0.1:54329:5432"
+      - "${BIND_HOST:-127.0.0.1}:54329:5432"
     volumes:
-      - sanchoris-postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sanchoris -d sanchoris"]
       interval: 5s
@@ -17,4 +16,4 @@ services:
       retries: 10
 
 volumes:
-  sanchoris-postgres-data:
+  postgres-data:

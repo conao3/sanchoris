@@ -11,6 +11,7 @@ dist/
 /target/
 
 # Local database
+/.env
 /.postgres-data/
 
 # Editor / OS

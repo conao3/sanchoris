@@ -1,5 +1,11 @@
-[pre-start]
-setup = "wt step copy-ignored && direnv allow && nix develop --command pnpm install"
+[[pre-start]]
+copy_ignored = "wt step copy-ignored"
+
+[[pre-start]]
+env = "node scripts/worktrunk-env-sync.mjs"
+
+[[pre-start]]
+setup = "direnv allow && nix develop --command pnpm install"
 
 [aliases]
 dev = "pnpm dev"

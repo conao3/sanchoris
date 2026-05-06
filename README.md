@@ -28,12 +28,14 @@ Run the frontend, backend, and local PostgreSQL on one local development host:
 pnpm dev
 ```
 
-Start the local PostgreSQL container separately when you need persistent MVP data storage:
+Start the local PostgreSQL container before running dev when you need persistent MVP data storage:
 
 ```sh
-docker compose up -d postgres
-pnpm db:apply
+docker-compose up -d postgres
+pnpm dev
 ```
+
+The dev command applies `db/schema.sql` at startup, then starts the Rust backend on an internal free port, starts Vite through portless, and proxies `/api/*` through the same frontend host. By default, local development uses plain HTTP on an unprivileged port so it works without sudo or TLS setup.
 
 The default local `DATABASE_URL` is:
 
@@ -42,8 +44,6 @@ postgres://sanchoris:sanchoris@127.0.0.1:54329/sanchoris
 ```
 
 The schema source of truth is `db/schema.sql`. `pnpm db:schema:check` starts a temporary PostgreSQL server, applies the schema, and verifies the required MVP tables exist.
-
-The dev command starts the Rust backend on an internal free port, starts Vite through portless, and proxies `/api/*` through the same frontend host. By default, local development uses plain HTTP on an unprivileged port so it works without sudo or TLS setup.
 
 - Main worktree: `http://sanchoris.localhost:1355/admin/health`
 - Linked worktree, e.g. branch `fix-health`: `http://fix-health.sanchoris.localhost:1355/admin/health`
@@ -67,11 +67,21 @@ Use Worktrunk to manage parallel worktrees:
 
 ```sh
 wt switch -c fix-health
-pnpm install
+docker-compose up -d postgres
 pnpm dev
 ```
 
-portless detects linked git worktrees and prefixes the branch name into the hostname, so each worktree can run its own frontend and backend without port collisions.
+Worktrunk runs `scripts/worktrunk-env-sync.mjs` for new worktrees. The script updates only the managed block in the gitignored `.env` file:
+
+```dotenv
+# BEGIN WORKTRUNK ENV
+COMPOSE_PROJECT_NAME=sanchoris_fix_health_abc123
+BIND_HOST=127.10.20.30
+DATABASE_URL=postgres://sanchoris:sanchoris@127.10.20.30:54329/sanchoris
+# END WORKTRUNK ENV
+```
+
+Docker Compose reads `COMPOSE_PROJECT_NAME` and `BIND_HOST` from `.env`, so each worktree gets separate containers, networks, volumes, and loopback bind addresses while keeping service ports stable. portless detects linked git worktrees and prefixes the branch name into the hostname, so each worktree can run its own frontend and backend without port collisions.
 
 ## Observing Codex runs
 
