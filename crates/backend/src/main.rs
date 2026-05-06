@@ -29,7 +29,11 @@ fn handle_connection(mut stream: TcpStream) -> std::io::Result<()> {
         .unwrap_or("/");
 
     let (status, content_type, body) = match path {
-        "/health" => ("200 OK", "application/json", r#"{"status":"ok"}"#.to_string()),
+        "/health" | "/api/v1/health" => (
+            "200 OK",
+            "application/json",
+            r#"{"status":"ok","service":"sanchoris-backend"}"#.to_string(),
+        ),
         _ => (
             "200 OK",
             "text/plain; charset=utf-8",
