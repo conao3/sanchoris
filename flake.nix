@@ -24,6 +24,7 @@
             cargo-watch
             clippy
             rustfmt
+            worktrunk
           ];
 
           shellHook = ''

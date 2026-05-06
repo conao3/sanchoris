@@ -6,6 +6,7 @@ Sanchoris is a pnpm + Vite frontend and Rust backend monorepo.
 
 - `apps/frontend`: Vite frontend package managed by pnpm
 - `crates/backend`: Rust backend crate
+- `scripts/dev.mjs`: local development process supervisor
 
 ## Development
 
@@ -21,25 +22,42 @@ Install frontend dependencies:
 pnpm install
 ```
 
-Run the frontend:
+Run the frontend and backend on one local development host:
 
 ```sh
 pnpm dev
 ```
 
-Run the backend with hot reload:
+The dev command starts the Rust backend on an internal free port, starts Vite through portless, and proxies `/api/*` through the same frontend host.
+
+- Main worktree: `https://sanchoris.localhost/admin/health`
+- Linked worktree, e.g. branch `fix-health`: `https://fix-health.sanchoris.localhost/admin/health`
+
+On first use, portless may ask to trust its local development CA. If HTTPS trust is not needed, run portless with plain HTTP:
 
 ```sh
-cargo watch -x 'run -p sanchoris-backend'
+PORTLESS_HTTPS=0 pnpm dev
 ```
 
-Run the backend once:
+In non-interactive environments where sudo prompts are unavailable, use an unprivileged port:
 
 ```sh
-cargo run -p sanchoris-backend
+PORTLESS_HTTPS=0 PORTLESS_PORT=1355 pnpm dev
 ```
 
-Run checks:
+## Worktrees
+
+Use Worktrunk to manage parallel worktrees:
+
+```sh
+wt switch -c fix-health
+pnpm install
+pnpm dev
+```
+
+portless detects linked git worktrees and prefixes the branch name into the hostname, so each worktree can run its own frontend and backend without port collisions.
+
+## Checks
 
 ```sh
 pnpm check

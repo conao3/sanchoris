@@ -2,8 +2,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
 fn main() -> std::io::Result<()> {
-    let address = std::env::var("SANCHORIS_BACKEND_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:3000".to_string());
+    let address = backend_address();
     let listener = TcpListener::bind(&address)?;
 
     println!("sanchoris-backend listening on http://{address}");
@@ -16,6 +15,14 @@ fn main() -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+fn backend_address() -> String {
+    std::env::var("SANCHORIS_BACKEND_ADDR").unwrap_or_else(|_| {
+        std::env::var("PORT")
+            .map(|port| format!("127.0.0.1:{port}"))
+            .unwrap_or_else(|_| "127.0.0.1:3000".to_string())
+    })
 }
 
 fn handle_connection(mut stream: TcpStream) -> std::io::Result<()> {

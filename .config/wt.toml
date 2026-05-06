@@ -1,0 +1,8 @@
+[aliases]
+dev = "pnpm dev"
+urls = "portless list"
+
+[step.copy-ignored]
+exclude = [
+  "apps/frontend/dist/",
+]
