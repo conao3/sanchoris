@@ -5,10 +5,10 @@
 node_modules/
 dist/
 .pnpm-store/
+*.tsbuildinfo
 
 # Rust
 /target/
-Cargo.lock
 
 # Editor / OS
 .DS_Store
