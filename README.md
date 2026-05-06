@@ -27,7 +27,13 @@ Run the frontend:
 pnpm dev
 ```
 
-Run the backend:
+Run the backend with hot reload:
+
+```sh
+cargo watch -x 'run -p sanchoris-backend'
+```
+
+Run the backend once:
 
 ```sh
 cargo run -p sanchoris-backend

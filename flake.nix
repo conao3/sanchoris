@@ -21,6 +21,7 @@
             rustc
             cargo
             rust-analyzer
+            cargo-watch
             clippy
             rustfmt
           ];
