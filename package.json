@@ -1,0 +1,11 @@
+{
+  "name": "sanchoris",
+  "private": true,
+  "packageManager": "pnpm@10.11.0",
+  "scripts": {
+    "dev": "pnpm --filter @sanchoris/frontend dev",
+    "build": "pnpm --filter @sanchoris/frontend build",
+    "check": "pnpm --filter @sanchoris/frontend check"
+  },
+  "devDependencies": {}
+}

@@ -1,0 +1,16 @@
+# Nix
+.direnv/
+
+# Node / pnpm
+node_modules/
+dist/
+.pnpm-store/
+
+# Rust
+/target/
+Cargo.lock
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
