@@ -1,0 +1,8 @@
+[workspace]
+members = ["crates/backend"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/conao3/sanchoris"
