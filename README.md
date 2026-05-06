@@ -33,6 +33,13 @@ The dev command starts the Rust backend on an internal free port, starts Vite th
 - Main worktree: `http://sanchoris.localhost:1355/admin/health`
 - Linked worktree, e.g. branch `fix-health`: `http://fix-health.sanchoris.localhost:1355/admin/health`
 
+The backend keeps `/health` and `/api/v1/health` available for health checks. It also exposes dependency-free MVP JSON snapshots while the GraphQL and PostgreSQL foundation is prepared:
+
+- `/api/v1/mvp/project`: sample Sanchoris project profile.
+- `/api/v1/mvp/tasks`: built-in chat message and native task snapshot.
+- `/api/v1/mvp/workflow`: editable MVP workflow graph with `ChatInput`, `CreateTask`, `CreateWorkspace`, `RunWorker`, `RunVerification`, `Gate`, `CreatePR`, and `Merge` blocks.
+- `/api/v1/mvp/runs`: workspace, worker run, verification, gate, pull request, and merge state.
+
 If you want clean HTTPS URLs without port numbers, start portless with TLS explicitly:
 
 ```sh
