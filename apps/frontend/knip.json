@@ -1,0 +1,16 @@
+{
+  "$schema": "https://unpkg.com/knip@latest/schema.json",
+  "project": [
+    "src/**/*.{ts,tsx}",
+    "*.ts"
+  ],
+  "ignore": [
+    "src/graphql/generated/**"
+  ],
+  "ignoreBinaries": [
+    "portless"
+  ],
+  "ignoreDependencies": [
+    "tailwindcss"
+  ]
+}
