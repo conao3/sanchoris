@@ -21,7 +21,7 @@ function loadDotenvIfExists(path = '.env') {
 
     const key = trimmed.slice(0, separator).trim();
     const rawValue = trimmed.slice(separator + 1).trim();
-    if (!key || key in process.env) {
+    if (!key) {
       continue;
     }
 
