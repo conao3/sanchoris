@@ -100,7 +100,7 @@ function App() {
       <main className="grid min-h-screen place-content-center bg-slate-50 px-6 text-center text-slate-950">
         <div className="max-w-xl rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
           <p className="text-sm font-semibold uppercase tracking-[0.24em] text-blue-600">Sanchoris</p>
-          <h1 className="mt-3 text-4xl font-bold tracking-tight">Frontend is ready.</h1>
+          <h1 className="mt-3 text-4xl font-bold tracking-tight">frontend is ready.</h1>
           <p className="mt-4 text-slate-600">
             Open <a className="font-semibold text-blue-600 underline" href="/admin/health">/admin/health</a> to check backend health.
           </p>
