@@ -23,6 +23,7 @@
             rust-analyzer
             cargo-watch
             clippy
+            openssl
             rustfmt
             worktrunk
           ];

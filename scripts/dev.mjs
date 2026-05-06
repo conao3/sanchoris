@@ -26,6 +26,17 @@ function run(name, command, args, env) {
     shell: false,
   });
 
+  child.on('error', (error) => {
+    if (shuttingDown) {
+      return;
+    }
+
+    shuttingDown = true;
+    console.error(`${name} failed to start: ${error.message}`);
+    stopAll();
+    process.exit(1);
+  });
+
   child.on('exit', (code, signal) => {
     if (shuttingDown) {
       return;
@@ -56,7 +67,7 @@ const backendPort = await findAvailablePort();
 const backendUrl = `http://127.0.0.1:${backendPort}`;
 
 console.log(`sanchoris dev backend: ${backendUrl}`);
-console.log('sanchoris dev frontend: managed by portless as sanchoris.localhost');
+console.log('sanchoris dev frontend: managed by portless on http://sanchoris.localhost:1355 by default');
 
 run(
   'backend',
@@ -73,6 +84,8 @@ run(
   'pnpm',
   ['--filter', '@sanchoris/frontend', 'dev'],
   {
+    PORTLESS_HTTPS: process.env.PORTLESS_HTTPS ?? '0',
+    PORTLESS_PORT: process.env.PORTLESS_PORT ?? '1355',
     VITE_BACKEND_URL: backendUrl,
   },
 );

@@ -28,21 +28,15 @@ Run the frontend and backend on one local development host:
 pnpm dev
 ```
 
-The dev command starts the Rust backend on an internal free port, starts Vite through portless, and proxies `/api/*` through the same frontend host.
+The dev command starts the Rust backend on an internal free port, starts Vite through portless, and proxies `/api/*` through the same frontend host. By default, local development uses plain HTTP on an unprivileged port so it works without sudo or TLS setup.
 
-- Main worktree: `https://sanchoris.localhost/admin/health`
-- Linked worktree, e.g. branch `fix-health`: `https://fix-health.sanchoris.localhost/admin/health`
+- Main worktree: `http://sanchoris.localhost:1355/admin/health`
+- Linked worktree, e.g. branch `fix-health`: `http://fix-health.sanchoris.localhost:1355/admin/health`
 
-On first use, portless may ask to trust its local development CA. If HTTPS trust is not needed, run portless with plain HTTP:
-
-```sh
-PORTLESS_HTTPS=0 pnpm dev
-```
-
-In non-interactive environments where sudo prompts are unavailable, use an unprivileged port:
+If you want clean HTTPS URLs without port numbers, start portless with TLS explicitly:
 
 ```sh
-PORTLESS_HTTPS=0 PORTLESS_PORT=1355 pnpm dev
+PORTLESS_HTTPS=1 PORTLESS_PORT=443 pnpm dev
 ```
 
 ## Worktrees
