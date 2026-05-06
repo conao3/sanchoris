@@ -22,11 +22,26 @@ Install frontend dependencies:
 pnpm install
 ```
 
-Run the frontend and backend on one local development host:
+Run the frontend, backend, and local PostgreSQL on one local development host:
 
 ```sh
 pnpm dev
 ```
+
+Start the local PostgreSQL container separately when you need persistent MVP data storage:
+
+```sh
+docker compose up -d postgres
+pnpm db:apply
+```
+
+The default local `DATABASE_URL` is:
+
+```text
+postgres://sanchoris:sanchoris@127.0.0.1:54329/sanchoris
+```
+
+The schema source of truth is `db/schema.sql`. `pnpm db:schema:check` starts a temporary PostgreSQL server, applies the schema, and verifies the required MVP tables exist.
 
 The dev command starts the Rust backend on an internal free port, starts Vite through portless, and proxies `/api/*` through the same frontend host. By default, local development uses plain HTTP on an unprivileged port so it works without sudo or TLS setup.
 

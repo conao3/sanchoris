@@ -4,9 +4,11 @@
   "packageManager": "pnpm@10.11.0",
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "db:apply": "node scripts/db-apply.mjs",
+    "db:schema:check": "node scripts/db-schema-check.mjs",
     "build": "pnpm --filter @sanchoris/frontend build",
     "lint": "pnpm --filter @sanchoris/frontend lint",
-    "check": "pnpm --filter @sanchoris/frontend check"
+    "check": "pnpm --filter @sanchoris/frontend check && pnpm run db:schema:check"
   },
   "devDependencies": {
     "portless": "latest"

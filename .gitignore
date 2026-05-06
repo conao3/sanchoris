@@ -10,6 +10,9 @@ dist/
 # Rust
 /target/
 
+# Local database
+/.postgres-data/
+
 # Editor / OS
 .DS_Store
 .idea/
