@@ -1,17 +1,26 @@
+use async_graphql::{
+    Context, EmptySubscription, Enum, InputObject, Object, Request, Schema, SimpleObject,
+};
+use futures_executor::block_on;
+use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
 const JSON_CONTENT_TYPE: &str = "application/json";
+const GRAPHQL_PATH: &str = "/api/graphql";
+
+type SanchorisSchema = Schema<QueryRoot, MutationRoot, EmptySubscription>;
 
 fn main() -> std::io::Result<()> {
     let address = backend_address();
     let listener = TcpListener::bind(&address)?;
+    let schema = build_schema();
 
     println!("sanchoris-backend listening on http://{address}");
 
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => handle_connection(stream)?,
+            Ok(stream) => handle_connection(stream, &schema)?,
             Err(error) => eprintln!("failed to accept connection: {error}"),
         }
     }
@@ -27,257 +36,562 @@ fn backend_address() -> String {
     })
 }
 
-fn handle_connection(mut stream: TcpStream) -> std::io::Result<()> {
-    let mut buffer = [0; 1024];
-    let bytes_read = stream.read(&mut buffer)?;
-    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
-    let path = request
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .unwrap_or("/");
+fn build_schema() -> SanchorisSchema {
+    Schema::build(QueryRoot, MutationRoot, EmptySubscription)
+        .data(Store::sample())
+        .finish()
+}
 
-    let (status, content_type, body) = match path {
-        "/health" | "/api/v1/health" => (
+fn handle_connection(mut stream: TcpStream, schema: &SanchorisSchema) -> std::io::Result<()> {
+    let request = read_http_request(&mut stream)?;
+    let (method, path) = request_line(&request);
+
+    let (status, content_type, body) = match (method, path) {
+        ("GET", "/health") | ("GET", "/api/v1/health") => (
             "200 OK",
             JSON_CONTENT_TYPE,
             r#"{"status":"ok","service":"sanchoris-backend"}"#.to_string(),
         ),
-        "/api/v1/mvp/project" => ("200 OK", JSON_CONTENT_TYPE, sample_project().to_json()),
-        "/api/v1/mvp/tasks" => ("200 OK", JSON_CONTENT_TYPE, sample_tasks().to_json()),
-        "/api/v1/mvp/workflow" => ("200 OK", JSON_CONTENT_TYPE, sample_workflow().to_json()),
-        "/api/v1/mvp/runs" => ("200 OK", JSON_CONTENT_TYPE, sample_runs().to_json()),
+        ("GET", GRAPHQL_PATH) => ("200 OK", JSON_CONTENT_TYPE, schema_sdl_response(schema)),
+        ("POST", GRAPHQL_PATH) => execute_graphql(schema, &request),
         _ => (
-            "200 OK",
-            "text/plain; charset=utf-8",
-            "sanchoris-backend is running".to_string(),
+            "404 Not Found",
+            JSON_CONTENT_TYPE,
+            r#"{"error":"not_found","service":"sanchoris-backend"}"#.to_string(),
         ),
     };
 
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(response.as_bytes())
 }
 
-#[derive(Clone, Copy)]
-struct ProjectProfile {
-    id: &'static str,
-    name: &'static str,
-    repository_path: &'static str,
-    default_branch: &'static str,
-    worktree_policy: &'static str,
-    dev_command: &'static str,
-    check_command: &'static str,
-    worker_policy: &'static str,
-    allowed_workflow: &'static str,
+fn read_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
+    let mut buffer = vec![0; 65_536];
+    let bytes_read = stream.read(&mut buffer)?;
+    Ok(String::from_utf8_lossy(&buffer[..bytes_read]).to_string())
 }
 
-impl ProjectProfile {
-    fn to_json(self) -> String {
-        format!(
-            "{{\"project\":{{\"id\":{},\"name\":{},\"repositoryPath\":{},\"defaultBranch\":{},\"worktreePolicy\":{},\"devCommand\":{},\"checkCommand\":{},\"workerPolicy\":{},\"allowedWorkflow\":{}}}}}",
-            json_string(self.id),
-            json_string(self.name),
-            json_string(self.repository_path),
-            json_string(self.default_branch),
-            json_string(self.worktree_policy),
-            json_string(self.dev_command),
-            json_string(self.check_command),
-            json_string(self.worker_policy),
-            json_string(self.allowed_workflow),
-        )
+fn request_line(request: &str) -> (&str, &str) {
+    let mut parts = request
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let path = parts
+        .next()
+        .unwrap_or_default()
+        .split('?')
+        .next()
+        .unwrap_or_default();
+    (method, path)
+}
+
+fn request_body(request: &str) -> &str {
+    request.split("\r\n\r\n").nth(1).unwrap_or_default()
+}
+
+fn schema_sdl_response(schema: &SanchorisSchema) -> String {
+    serde_json::json!({ "schema": schema.sdl() }).to_string()
+}
+
+fn execute_graphql(
+    schema: &SanchorisSchema,
+    http_request: &str,
+) -> (&'static str, &'static str, String) {
+    let body = request_body(http_request);
+    let graphql_request = match parse_graphql_request(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return (
+                "400 Bad Request",
+                JSON_CONTENT_TYPE,
+                serde_json::json!({ "errors": [{ "message": error }] }).to_string(),
+            );
+        }
+    };
+
+    let response = block_on(schema.execute(graphql_request));
+    let body = serde_json::to_string(&response).unwrap_or_else(|error| {
+        serde_json::json!({ "errors": [{ "message": format!("failed to serialize GraphQL response: {error}") }] }).to_string()
+    });
+
+    ("200 OK", JSON_CONTENT_TYPE, body)
+}
+
+fn parse_graphql_request(body: &str) -> Result<Request, String> {
+    let value: Value =
+        serde_json::from_str(body).map_err(|error| format!("invalid JSON body: {error}"))?;
+    let query = value
+        .get("query")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "missing GraphQL query".to_string())?;
+    let mut request = Request::new(query);
+
+    if let Some(operation_name) = value.get("operationName").and_then(Value::as_str) {
+        request = request.operation_name(operation_name);
     }
-}
 
-#[derive(Clone, Copy)]
-struct NativeTask {
-    id: &'static str,
-    conversation_id: &'static str,
-    source_message_id: &'static str,
-    title: &'static str,
-    description: &'static str,
-    status: &'static str,
-    priority: &'static str,
-    project_id: &'static str,
-    assigned_workflow_id: &'static str,
-    assigned_worker: &'static str,
-    workspace_id: &'static str,
-    latest_run_id: &'static str,
-    review_state: &'static str,
-}
-
-impl NativeTask {
-    fn to_json(self) -> String {
-        format!(
-            "{{\"id\":{},\"conversationId\":{},\"sourceMessageId\":{},\"source\":{},\"title\":{},\"description\":{},\"status\":{},\"priority\":{},\"projectId\":{},\"assignedWorkflowId\":{},\"assignedWorker\":{},\"workspaceId\":{},\"latestRunId\":{},\"reviewState\":{}}}",
-            json_string(self.id),
-            json_string(self.conversation_id),
-            json_string(self.source_message_id),
-            json_string("built-in-chat"),
-            json_string(self.title),
-            json_string(self.description),
-            json_string(self.status),
-            json_string(self.priority),
-            json_string(self.project_id),
-            json_string(self.assigned_workflow_id),
-            json_string(self.assigned_worker),
-            json_string(self.workspace_id),
-            json_string(self.latest_run_id),
-            json_string(self.review_state),
-        )
+    if let Some(variables) = value.get("variables").and_then(Value::as_object) {
+        let variables = async_graphql::Variables::from_json(Value::Object(variables.clone()));
+        request = request.variables(variables);
     }
+
+    Ok(request)
 }
 
-struct TaskSnapshot {
-    conversation: Conversation,
-    messages: Vec<ChatMessage>,
+#[derive(Clone)]
+struct Store {
+    viewer: Viewer,
+    project_profiles: Vec<ProjectProfile>,
+    conversations: Vec<Conversation>,
     tasks: Vec<NativeTask>,
+    workflow_specs: Vec<WorkflowSpec>,
+    runs: Vec<WorkerRun>,
 }
 
-impl TaskSnapshot {
-    fn to_json(&self) -> String {
-        format!(
-            "{{\"conversation\":{},\"messages\":{},\"tasks\":{}}}",
-            self.conversation.to_json(),
-            json_array(self.messages.iter().map(|message| message.to_json())),
-            json_array(self.tasks.iter().map(|task| task.to_json())),
-        )
+impl Store {
+    fn sample() -> Self {
+        let workflow_yaml = r#"version: 1
+name: Sanchoris MVP delivery
+blocks:
+  - ChatInput
+  - CreateTask
+  - CreateWorkspace
+  - RunWorker
+  - RunVerification
+  - Gate
+  - CreatePR
+  - Merge
+"#;
+
+        Self {
+            viewer: Viewer {
+                id: "viewer_local".to_string(),
+                display_name: "Local operator".to_string(),
+                email: "local@sanchoris.dev".to_string(),
+            },
+            project_profiles: vec![ProjectProfile {
+                id: "project_sanchoris".to_string(),
+                name: "Sanchoris".to_string(),
+                repository_path: "/home/conao/ghq/github.com/conao3/sanchoris".to_string(),
+                default_branch: "master".to_string(),
+                worktree_policy: "1 task = 1 branch = 1 worktree".to_string(),
+                dev_command: "pnpm dev".to_string(),
+                check_command: "pnpm check && cargo check --workspace".to_string(),
+                worker_policy: "Codex CLI in an isolated Worktrunk worktree".to_string(),
+                allowed_workflow_id: "workflow_mvp_delivery".to_string(),
+            }],
+            conversations: vec![Conversation {
+                id: "conversation_builtin_chat".to_string(),
+                title: "Built-in MVP chat".to_string(),
+                channel: "built-in-chat".to_string(),
+                messages: vec![
+                    ChatMessage {
+                        id: "message_001".to_string(),
+                        author: "user".to_string(),
+                        body: "Create a native task and run it with Codex in an isolated worktree."
+                            .to_string(),
+                        created_at: "2026-05-06T00:00:00Z".to_string(),
+                        task_id: Some("task_native_001".to_string()),
+                    },
+                    ChatMessage {
+                        id: "message_002".to_string(),
+                        author: "sanchoris".to_string(),
+                        body: "Task created, workflow assigned, and worker run queued.".to_string(),
+                        created_at: "2026-05-06T00:00:05Z".to_string(),
+                        task_id: Some("task_native_001".to_string()),
+                    },
+                ],
+            }],
+            tasks: vec![NativeTask {
+                id: "task_native_001".to_string(),
+                title: "Build MVP delivery shell".to_string(),
+                description: "Track the built-in chat to native task to worktree and review flow."
+                    .to_string(),
+                status: TaskStatus::Review,
+                priority: Priority::High,
+                project_id: "project_sanchoris".to_string(),
+                conversation_id: "conversation_builtin_chat".to_string(),
+                assigned_workflow_id: "workflow_mvp_delivery".to_string(),
+                assigned_worker: "codex".to_string(),
+                workspace_id: "workspace_task_native_001".to_string(),
+                latest_run_id: "run_task_native_001".to_string(),
+                review_state: "gate_pending".to_string(),
+            }],
+            workflow_specs: vec![WorkflowSpec {
+                id: "workflow_mvp_delivery".to_string(),
+                name: "MVP delivery workflow".to_string(),
+                version: "1".to_string(),
+                yaml: workflow_yaml.to_string(),
+                blocks: vec![
+                    WorkflowBlock::new(
+                        "block_chat_input",
+                        "ChatInput",
+                        "Capture message",
+                        StepState::Passed,
+                        0,
+                        0,
+                    ),
+                    WorkflowBlock::new(
+                        "block_create_task",
+                        "CreateTask",
+                        "Create native task",
+                        StepState::Passed,
+                        220,
+                        0,
+                    ),
+                    WorkflowBlock::new(
+                        "block_create_workspace",
+                        "CreateWorkspace",
+                        "Create branch and worktree",
+                        StepState::Passed,
+                        440,
+                        0,
+                    ),
+                    WorkflowBlock::new(
+                        "block_run_worker",
+                        "RunWorker",
+                        "Run Codex worker",
+                        StepState::Passed,
+                        660,
+                        0,
+                    ),
+                    WorkflowBlock::new(
+                        "block_run_verification",
+                        "RunVerification",
+                        "Run verification",
+                        StepState::Passed,
+                        880,
+                        0,
+                    ),
+                    WorkflowBlock::new(
+                        "block_gate",
+                        "Gate",
+                        "Human review gate",
+                        StepState::Pending,
+                        1100,
+                        0,
+                    ),
+                    WorkflowBlock::new(
+                        "block_create_pr",
+                        "CreatePR",
+                        "Create pull request",
+                        StepState::Blocked,
+                        1320,
+                        0,
+                    ),
+                    WorkflowBlock::new(
+                        "block_merge",
+                        "Merge",
+                        "Merge pull request",
+                        StepState::Blocked,
+                        1540,
+                        0,
+                    ),
+                ],
+                edges: vec![
+                    WorkflowEdge::new("block_chat_input", "block_create_task"),
+                    WorkflowEdge::new("block_create_task", "block_create_workspace"),
+                    WorkflowEdge::new("block_create_workspace", "block_run_worker"),
+                    WorkflowEdge::new("block_run_worker", "block_run_verification"),
+                    WorkflowEdge::new("block_run_verification", "block_gate"),
+                    WorkflowEdge::new("block_gate", "block_create_pr"),
+                    WorkflowEdge::new("block_create_pr", "block_merge"),
+                ],
+            }],
+            runs: vec![WorkerRun {
+                id: "run_task_native_001".to_string(),
+                task_id: "task_native_001".to_string(),
+                worker_kind: "codex".to_string(),
+                status: RunStatus::GatePending,
+                started_at: "2026-05-06T00:01:00Z".to_string(),
+                finished_at: Some("2026-05-06T00:08:00Z".to_string()),
+                exit_code: Some(0),
+                commit_hash: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+                log_uri: "s3://sanchoris-mvp/runs/run_task_native_001/transcript.log".to_string(),
+                error_summary: None,
+                workspace: Workspace {
+                    id: "workspace_task_native_001".to_string(),
+                    branch: "task/task_native_001".to_string(),
+                    worktree_path: "/workspaces/sanchoris.task-native-001".to_string(),
+                    base_commit: "d098afa".to_string(),
+                    current_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+                    cleanup_state: "retained_for_review".to_string(),
+                },
+                verification: VerificationResult {
+                    command: "pnpm check && cargo check --workspace".to_string(),
+                    exit_code: Some(0),
+                    status: StepState::Passed,
+                    summary: "Workspace verification completed successfully.".to_string(),
+                    artifact_uri: "s3://sanchoris-mvp/runs/run_task_native_001/verification.txt"
+                        .to_string(),
+                },
+                pull_request: PullRequest {
+                    url: None,
+                    source_branch: "task/task_native_001".to_string(),
+                    base_branch: "master".to_string(),
+                    status: "waiting_for_gate".to_string(),
+                },
+                merge: MergeResult {
+                    method: "squash".to_string(),
+                    status: "blocked".to_string(),
+                    merge_commit: None,
+                    merged_at: None,
+                    merged_by: None,
+                    failure_reason: None,
+                },
+                gate: GateState {
+                    id: "gate_create_pr_task_native_001".to_string(),
+                    state: "pending".to_string(),
+                    review_target: "CreatePR".to_string(),
+                    approver: None,
+                    decided_at: None,
+                },
+            }],
+        }
     }
 }
 
-#[derive(Clone, Copy)]
+struct QueryRoot;
+
+#[Object]
+impl QueryRoot {
+    async fn viewer(&self, ctx: &Context<'_>) -> Viewer {
+        ctx.data_unchecked::<Store>().viewer.clone()
+    }
+
+    async fn project_profiles(&self, ctx: &Context<'_>) -> Vec<ProjectProfile> {
+        ctx.data_unchecked::<Store>().project_profiles.clone()
+    }
+
+    async fn project_profile(&self, ctx: &Context<'_>, id: String) -> Option<ProjectProfile> {
+        ctx.data_unchecked::<Store>()
+            .project_profiles
+            .iter()
+            .find(|project| project.id == id)
+            .cloned()
+    }
+
+    async fn conversations(&self, ctx: &Context<'_>) -> Vec<Conversation> {
+        ctx.data_unchecked::<Store>().conversations.clone()
+    }
+
+    async fn tasks(&self, ctx: &Context<'_>) -> Vec<NativeTask> {
+        ctx.data_unchecked::<Store>().tasks.clone()
+    }
+
+    async fn workflow_specs(&self, ctx: &Context<'_>) -> Vec<WorkflowSpec> {
+        ctx.data_unchecked::<Store>().workflow_specs.clone()
+    }
+
+    async fn runs(&self, ctx: &Context<'_>) -> Vec<WorkerRun> {
+        ctx.data_unchecked::<Store>().runs.clone()
+    }
+}
+
+struct MutationRoot;
+
+#[Object]
+impl MutationRoot {
+    async fn create_task(&self, _ctx: &Context<'_>, input: CreateTaskInput) -> NativeTask {
+        NativeTask {
+            id: "task_preview_created".to_string(),
+            title: input.title,
+            description: input.description,
+            status: TaskStatus::Queued,
+            priority: input.priority.unwrap_or(Priority::Medium),
+            project_id: input.project_id,
+            conversation_id: input.conversation_id,
+            assigned_workflow_id: input.workflow_id,
+            assigned_worker: input.worker.unwrap_or_else(|| "codex".to_string()),
+            workspace_id: "workspace_pending".to_string(),
+            latest_run_id: "run_pending".to_string(),
+            review_state: "not_started".to_string(),
+        }
+    }
+
+    async fn update_task_status(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+        status: TaskStatus,
+    ) -> Option<NativeTask> {
+        ctx.data_unchecked::<Store>()
+            .tasks
+            .iter()
+            .find(|task| task.id == id)
+            .cloned()
+            .map(|mut task| {
+                task.status = status;
+                task
+            })
+    }
+
+    async fn validate_workflow_canvas(
+        &self,
+        _ctx: &Context<'_>,
+        workflow_id: String,
+    ) -> WorkflowValidation {
+        WorkflowValidation {
+            workflow_id,
+            valid: true,
+            errors: Vec::new(),
+        }
+    }
+
+    async fn start_worker_run(&self, ctx: &Context<'_>, task_id: String) -> Option<WorkerRun> {
+        ctx.data_unchecked::<Store>()
+            .runs
+            .iter()
+            .find(|run| run.task_id == task_id)
+            .cloned()
+    }
+
+    async fn create_pull_request(&self, ctx: &Context<'_>, run_id: String) -> Option<PullRequest> {
+        ctx.data_unchecked::<Store>()
+            .runs
+            .iter()
+            .find(|run| run.id == run_id)
+            .map(|run| run.pull_request.clone())
+    }
+
+    async fn merge_pull_request(&self, ctx: &Context<'_>, run_id: String) -> Option<MergeResult> {
+        ctx.data_unchecked::<Store>()
+            .runs
+            .iter()
+            .find(|run| run.id == run_id)
+            .map(|run| run.merge.clone())
+    }
+}
+
+#[derive(InputObject)]
+struct CreateTaskInput {
+    conversation_id: String,
+    project_id: String,
+    workflow_id: String,
+    title: String,
+    description: String,
+    priority: Option<Priority>,
+    worker: Option<String>,
+}
+
+#[derive(Clone, SimpleObject)]
+struct Viewer {
+    id: String,
+    display_name: String,
+    email: String,
+}
+
+#[derive(Clone, SimpleObject)]
+struct ProjectProfile {
+    id: String,
+    name: String,
+    repository_path: String,
+    default_branch: String,
+    worktree_policy: String,
+    dev_command: String,
+    check_command: String,
+    worker_policy: String,
+    allowed_workflow_id: String,
+}
+
+#[derive(Clone, SimpleObject)]
 struct Conversation {
-    id: &'static str,
-    title: &'static str,
-    channel: &'static str,
+    id: String,
+    title: String,
+    channel: String,
+    messages: Vec<ChatMessage>,
 }
 
-impl Conversation {
-    fn to_json(self) -> String {
-        format!(
-            "{{\"id\":{},\"title\":{},\"channel\":{}}}",
-            json_string(self.id),
-            json_string(self.title),
-            json_string(self.channel),
-        )
-    }
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, SimpleObject)]
 struct ChatMessage {
-    id: &'static str,
-    conversation_id: &'static str,
-    author: &'static str,
-    body: &'static str,
-    created_at: &'static str,
-    task_id: Option<&'static str>,
+    id: String,
+    author: String,
+    body: String,
+    created_at: String,
+    task_id: Option<String>,
 }
 
-impl ChatMessage {
-    fn to_json(self) -> String {
-        format!(
-            "{{\"id\":{},\"conversationId\":{},\"author\":{},\"body\":{},\"createdAt\":{},\"taskId\":{}}}",
-            json_string(self.id),
-            json_string(self.conversation_id),
-            json_string(self.author),
-            json_string(self.body),
-            json_string(self.created_at),
-            json_optional_string(self.task_id),
-        )
-    }
+#[derive(Clone, SimpleObject)]
+struct NativeTask {
+    id: String,
+    title: String,
+    description: String,
+    status: TaskStatus,
+    priority: Priority,
+    project_id: String,
+    conversation_id: String,
+    assigned_workflow_id: String,
+    assigned_worker: String,
+    workspace_id: String,
+    latest_run_id: String,
+    review_state: String,
 }
 
+#[derive(Clone, SimpleObject)]
 struct WorkflowSpec {
-    id: &'static str,
-    name: &'static str,
-    version: &'static str,
-    format: &'static str,
-    yaml: &'static str,
+    id: String,
+    name: String,
+    version: String,
+    yaml: String,
     blocks: Vec<WorkflowBlock>,
     edges: Vec<WorkflowEdge>,
 }
 
-impl WorkflowSpec {
-    fn to_json(&self) -> String {
-        format!(
-            "{{\"workflow\":{{\"id\":{},\"name\":{},\"version\":{},\"format\":{},\"yaml\":{},\"blocks\":{},\"edges\":{}}}}}",
-            json_string(self.id),
-            json_string(self.name),
-            json_string(self.version),
-            json_string(self.format),
-            json_string(self.yaml),
-            json_array(self.blocks.iter().map(|block| block.to_json())),
-            json_array(self.edges.iter().map(|edge| edge.to_json())),
-        )
-    }
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, SimpleObject)]
 struct WorkflowBlock {
-    id: &'static str,
-    kind: &'static str,
-    label: &'static str,
-    state: &'static str,
+    id: String,
+    kind: String,
+    label: String,
+    state: StepState,
     x: i32,
     y: i32,
 }
 
 impl WorkflowBlock {
-    fn to_json(self) -> String {
-        format!(
-            "{{\"id\":{},\"kind\":{},\"label\":{},\"state\":{},\"position\":{{\"x\":{},\"y\":{}}}}}",
-            json_string(self.id),
-            json_string(self.kind),
-            json_string(self.label),
-            json_string(self.state),
-            self.x,
-            self.y,
-        )
+    fn new(id: &str, kind: &str, label: &str, state: StepState, x: i32, y: i32) -> Self {
+        Self {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            label: label.to_string(),
+            state,
+            x,
+            y,
+        }
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, SimpleObject)]
 struct WorkflowEdge {
-    from: &'static str,
-    to: &'static str,
+    from: String,
+    to: String,
 }
 
 impl WorkflowEdge {
-    fn to_json(self) -> String {
-        format!(
-            "{{\"from\":{},\"to\":{}}}",
-            json_string(self.from),
-            json_string(self.to),
-        )
+    fn new(from: &str, to: &str) -> Self {
+        Self {
+            from: from.to_string(),
+            to: to.to_string(),
+        }
     }
 }
 
-struct RunSnapshot {
-    runs: Vec<WorkerRun>,
-}
-
-impl RunSnapshot {
-    fn to_json(&self) -> String {
-        format!(
-            "{{\"runs\":{}}}",
-            json_array(self.runs.iter().map(|run| run.to_json()))
-        )
-    }
-}
-
+#[derive(Clone, SimpleObject)]
 struct WorkerRun {
-    id: &'static str,
-    task_id: &'static str,
-    worker_kind: &'static str,
-    status: &'static str,
-    started_at: &'static str,
-    finished_at: Option<&'static str>,
+    id: String,
+    task_id: String,
+    worker_kind: String,
+    status: RunStatus,
+    started_at: String,
+    finished_at: Option<String>,
     exit_code: Option<i32>,
-    commit_hash: Option<&'static str>,
-    log_path: &'static str,
-    error_summary: Option<&'static str>,
+    commit_hash: Option<String>,
+    log_uri: String,
+    error_summary: Option<String>,
     workspace: Workspace,
     verification: VerificationResult,
     pull_request: PullRequest,
@@ -285,392 +599,89 @@ struct WorkerRun {
     gate: GateState,
 }
 
-impl WorkerRun {
-    fn to_json(&self) -> String {
-        format!(
-            "{{\"id\":{},\"taskId\":{},\"workerKind\":{},\"status\":{},\"promptSummary\":{},\"startedAt\":{},\"finishedAt\":{},\"exitCode\":{},\"commitHash\":{},\"logPath\":{},\"errorSummary\":{},\"workspace\":{},\"verification\":{},\"pullRequest\":{},\"merge\":{},\"gate\":{}}}",
-            json_string(self.id),
-            json_string(self.task_id),
-            json_string(self.worker_kind),
-            json_string(self.status),
-            json_string(
-                "Implement the native task in an isolated worktree and return a committed change."
-            ),
-            json_string(self.started_at),
-            json_optional_string(self.finished_at),
-            json_optional_i32(self.exit_code),
-            json_optional_string(self.commit_hash),
-            json_string(self.log_path),
-            json_optional_string(self.error_summary),
-            self.workspace.to_json(),
-            self.verification.to_json(),
-            self.pull_request.to_json(),
-            self.merge.to_json(),
-            self.gate.to_json(),
-        )
-    }
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, SimpleObject)]
 struct Workspace {
-    id: &'static str,
-    branch: &'static str,
-    worktree_path: &'static str,
-    base_commit: &'static str,
-    current_commit: Option<&'static str>,
-    cleanup_state: &'static str,
-    changed_files: &'static [&'static str],
-    verification_commands: &'static [&'static str],
+    id: String,
+    branch: String,
+    worktree_path: String,
+    base_commit: String,
+    current_commit: Option<String>,
+    cleanup_state: String,
 }
 
-impl Workspace {
-    fn to_json(self) -> String {
-        format!(
-            "{{\"id\":{},\"branch\":{},\"worktreePath\":{},\"baseCommit\":{},\"currentCommit\":{},\"changedFiles\":{},\"verificationCommands\":{},\"cleanupState\":{}}}",
-            json_string(self.id),
-            json_string(self.branch),
-            json_string(self.worktree_path),
-            json_string(self.base_commit),
-            json_optional_string(self.current_commit),
-            json_array(self.changed_files.iter().map(|value| json_string(value))),
-            json_array(
-                self.verification_commands
-                    .iter()
-                    .map(|value| json_string(value))
-            ),
-            json_string(self.cleanup_state),
-        )
-    }
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, SimpleObject)]
 struct VerificationResult {
-    status: &'static str,
-    command: &'static str,
+    command: String,
     exit_code: Option<i32>,
-    summary: &'static str,
-    artifact_uri: &'static str,
+    status: StepState,
+    summary: String,
+    artifact_uri: String,
 }
 
-impl VerificationResult {
-    fn to_json(self) -> String {
-        format!(
-            "{{\"status\":{},\"command\":{},\"exitCode\":{},\"summary\":{},\"artifactUri\":{}}}",
-            json_string(self.status),
-            json_string(self.command),
-            json_optional_i32(self.exit_code),
-            json_string(self.summary),
-            json_string(self.artifact_uri),
-        )
-    }
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, SimpleObject)]
 struct PullRequest {
-    url: Option<&'static str>,
-    source_branch: &'static str,
-    base_branch: &'static str,
-    status: &'static str,
+    url: Option<String>,
+    source_branch: String,
+    base_branch: String,
+    status: String,
 }
 
-impl PullRequest {
-    fn to_json(self) -> String {
-        format!(
-            "{{\"url\":{},\"sourceBranch\":{},\"baseBranch\":{},\"status\":{}}}",
-            json_optional_string(self.url),
-            json_string(self.source_branch),
-            json_string(self.base_branch),
-            json_string(self.status),
-        )
-    }
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, SimpleObject)]
 struct MergeResult {
-    method: &'static str,
-    status: &'static str,
-    merge_commit: Option<&'static str>,
-    merged_at: Option<&'static str>,
-    merged_by: Option<&'static str>,
-    failure_reason: Option<&'static str>,
+    method: String,
+    status: String,
+    merge_commit: Option<String>,
+    merged_at: Option<String>,
+    merged_by: Option<String>,
+    failure_reason: Option<String>,
 }
 
-impl MergeResult {
-    fn to_json(self) -> String {
-        format!(
-            "{{\"method\":{},\"status\":{},\"mergeCommit\":{},\"mergedAt\":{},\"mergedBy\":{},\"failureReason\":{}}}",
-            json_string(self.method),
-            json_string(self.status),
-            json_optional_string(self.merge_commit),
-            json_optional_string(self.merged_at),
-            json_optional_string(self.merged_by),
-            json_optional_string(self.failure_reason),
-        )
-    }
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, SimpleObject)]
 struct GateState {
-    id: &'static str,
-    state: &'static str,
-    review_target: &'static str,
-    approver: Option<&'static str>,
-    decided_at: Option<&'static str>,
+    id: String,
+    state: String,
+    review_target: String,
+    approver: Option<String>,
+    decided_at: Option<String>,
 }
 
-impl GateState {
-    fn to_json(self) -> String {
-        format!(
-            "{{\"id\":{},\"state\":{},\"reviewTarget\":{},\"approver\":{},\"decidedAt\":{}}}",
-            json_string(self.id),
-            json_string(self.state),
-            json_string(self.review_target),
-            json_optional_string(self.approver),
-            json_optional_string(self.decided_at),
-        )
-    }
+#[derive(Clone, SimpleObject)]
+struct WorkflowValidation {
+    workflow_id: String,
+    valid: bool,
+    errors: Vec<String>,
 }
 
-fn sample_project() -> ProjectProfile {
-    ProjectProfile {
-        id: "project_sanchoris",
-        name: "Sanchoris",
-        repository_path: "/home/conao/ghq/github.com/conao3/sanchoris",
-        default_branch: "main",
-        worktree_policy: "1 task = 1 branch = 1 worktree",
-        dev_command: "pnpm dev",
-        check_command: "cargo check --workspace",
-        worker_policy: "Codex worker in task-scoped worktree",
-        allowed_workflow: "workflow_mvp_delivery_v1",
-    }
+#[derive(Clone, Copy, Enum, Eq, PartialEq)]
+enum Priority {
+    Low,
+    Medium,
+    High,
 }
 
-fn sample_tasks() -> TaskSnapshot {
-    TaskSnapshot {
-        conversation: Conversation {
-            id: "conversation_builtin_chat",
-            title: "Built-in chat intake",
-            channel: "web",
-        },
-        messages: vec![ChatMessage {
-            id: "message_001",
-            conversation_id: "conversation_builtin_chat",
-            author: "human",
-            body: "Create a native Sanchoris task and run the MVP delivery workflow.",
-            created_at: "2026-05-06T00:00:00Z",
-            task_id: Some("task_native_001"),
-        }],
-        tasks: vec![NativeTask {
-            id: "task_native_001",
-            conversation_id: "conversation_builtin_chat",
-            source_message_id: "message_001",
-            title: "Implement a small Sanchoris change",
-            description: "Native task created from the built-in chat and assigned to the MVP workflow.",
-            status: "in_review",
-            priority: "normal",
-            project_id: "project_sanchoris",
-            assigned_workflow_id: "workflow_mvp_delivery_v1",
-            assigned_worker: "codex",
-            workspace_id: "workspace_task_native_001",
-            latest_run_id: "run_task_native_001",
-            review_state: "gate_pending",
-        }],
-    }
+#[derive(Clone, Copy, Enum, Eq, PartialEq)]
+enum TaskStatus {
+    Queued,
+    Running,
+    Review,
+    Done,
+    Failed,
 }
 
-fn sample_workflow() -> WorkflowSpec {
-    WorkflowSpec {
-        id: "workflow_mvp_delivery_v1",
-        name: "MVP delivery workflow",
-        version: "1",
-        format: "yaml",
-        yaml: "id: workflow_mvp_delivery_v1\nversion: 1\nblocks:\n  - ChatInput\n  - CreateTask\n  - CreateWorkspace\n  - RunWorker\n  - RunVerification\n  - Gate\n  - CreatePR\n  - Merge\n",
-        blocks: vec![
-            WorkflowBlock {
-                id: "block_chat_input",
-                kind: "ChatInput",
-                label: "Built-in chat input",
-                state: "completed",
-                x: 0,
-                y: 0,
-            },
-            WorkflowBlock {
-                id: "block_create_task",
-                kind: "CreateTask",
-                label: "Create native task",
-                state: "completed",
-                x: 220,
-                y: 0,
-            },
-            WorkflowBlock {
-                id: "block_create_workspace",
-                kind: "CreateWorkspace",
-                label: "Create isolated workspace",
-                state: "completed",
-                x: 440,
-                y: 0,
-            },
-            WorkflowBlock {
-                id: "block_run_worker",
-                kind: "RunWorker",
-                label: "Run Codex worker",
-                state: "completed",
-                x: 660,
-                y: 0,
-            },
-            WorkflowBlock {
-                id: "block_run_verification",
-                kind: "RunVerification",
-                label: "Run verification",
-                state: "completed",
-                x: 880,
-                y: 0,
-            },
-            WorkflowBlock {
-                id: "block_gate",
-                kind: "Gate",
-                label: "Human review gate",
-                state: "pending",
-                x: 1100,
-                y: 0,
-            },
-            WorkflowBlock {
-                id: "block_create_pr",
-                kind: "CreatePR",
-                label: "Create pull request",
-                state: "blocked",
-                x: 1320,
-                y: 0,
-            },
-            WorkflowBlock {
-                id: "block_merge",
-                kind: "Merge",
-                label: "Merge pull request",
-                state: "blocked",
-                x: 1540,
-                y: 0,
-            },
-        ],
-        edges: vec![
-            WorkflowEdge {
-                from: "block_chat_input",
-                to: "block_create_task",
-            },
-            WorkflowEdge {
-                from: "block_create_task",
-                to: "block_create_workspace",
-            },
-            WorkflowEdge {
-                from: "block_create_workspace",
-                to: "block_run_worker",
-            },
-            WorkflowEdge {
-                from: "block_run_worker",
-                to: "block_run_verification",
-            },
-            WorkflowEdge {
-                from: "block_run_verification",
-                to: "block_gate",
-            },
-            WorkflowEdge {
-                from: "block_gate",
-                to: "block_create_pr",
-            },
-            WorkflowEdge {
-                from: "block_create_pr",
-                to: "block_merge",
-            },
-        ],
-    }
+#[derive(Clone, Copy, Enum, Eq, PartialEq)]
+enum RunStatus {
+    Queued,
+    Running,
+    GatePending,
+    Passed,
+    Failed,
 }
 
-fn sample_runs() -> RunSnapshot {
-    RunSnapshot {
-        runs: vec![WorkerRun {
-            id: "run_task_native_001",
-            task_id: "task_native_001",
-            worker_kind: "codex",
-            status: "gate_pending",
-            started_at: "2026-05-06T00:01:00Z",
-            finished_at: Some("2026-05-06T00:08:00Z"),
-            exit_code: Some(0),
-            commit_hash: Some("0123456789abcdef0123456789abcdef01234567"),
-            log_path: "s3://sanchoris-mvp/runs/run_task_native_001/transcript.log",
-            error_summary: None,
-            workspace: Workspace {
-                id: "workspace_task_native_001",
-                branch: "task/task_native_001",
-                worktree_path: "/workspaces/sanchoris/task/task_native_001",
-                base_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                current_commit: Some("0123456789abcdef0123456789abcdef01234567"),
-                cleanup_state: "retained_for_review",
-                changed_files: &["apps/frontend/src/App.tsx"],
-                verification_commands: &["cargo check --workspace"],
-            },
-            verification: VerificationResult {
-                status: "passed",
-                command: "cargo check --workspace",
-                exit_code: Some(0),
-                summary: "Workspace verification completed successfully.",
-                artifact_uri: "s3://sanchoris-mvp/runs/run_task_native_001/verification.txt",
-            },
-            pull_request: PullRequest {
-                url: None,
-                source_branch: "task/task_native_001",
-                base_branch: "main",
-                status: "waiting_for_gate",
-            },
-            merge: MergeResult {
-                method: "squash",
-                status: "blocked",
-                merge_commit: None,
-                merged_at: None,
-                merged_by: None,
-                failure_reason: None,
-            },
-            gate: GateState {
-                id: "gate_create_pr_task_native_001",
-                state: "pending",
-                review_target: "CreatePR",
-                approver: None,
-                decided_at: None,
-            },
-        }],
-    }
-}
-
-fn json_array(values: impl Iterator<Item = String>) -> String {
-    format!("[{}]", values.collect::<Vec<_>>().join(","))
-}
-
-fn json_optional_i32(value: Option<i32>) -> String {
-    value.map_or_else(|| "null".to_string(), |number| number.to_string())
-}
-
-fn json_optional_string(value: Option<&str>) -> String {
-    value.map_or_else(|| "null".to_string(), json_string)
-}
-
-fn json_string(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len() + 2);
-    escaped.push('"');
-
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            '\u{08}' => escaped.push_str("\\b"),
-            '\u{0C}' => escaped.push_str("\\f"),
-            character if character.is_control() => {
-                escaped.push_str(&format!("\\u{:04x}", character as u32));
-            }
-            character => escaped.push(character),
-        }
-    }
-
-    escaped.push('"');
-    escaped
+#[derive(Clone, Copy, Enum, Eq, PartialEq)]
+enum StepState {
+    Pending,
+    Running,
+    Passed,
+    Failed,
+    Blocked,
 }

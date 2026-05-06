@@ -1,0 +1,126 @@
+query MvpShell {
+  viewer {
+    id
+    displayName
+  }
+  projectProfiles {
+    id
+    name
+    repositoryPath
+    defaultBranch
+    worktreePolicy
+    devCommand
+    checkCommand
+    workerPolicy
+    allowedWorkflowId
+  }
+  conversations {
+    id
+    title
+    channel
+    messages {
+      id
+      author
+      body
+      createdAt
+      taskId
+    }
+  }
+  tasks {
+    id
+    title
+    description
+    status
+    priority
+    conversationId
+    assignedWorkflowId
+    assignedWorker
+    workspaceId
+    latestRunId
+    reviewState
+  }
+  workflowSpecs {
+    id
+    name
+    version
+    yaml
+    blocks {
+      id
+      kind
+      label
+      state
+      x
+      y
+    }
+    edges {
+      from
+      to
+    }
+  }
+  runs {
+    id
+    taskId
+    workerKind
+    status
+    startedAt
+    finishedAt
+    exitCode
+    commitHash
+    logUri
+    errorSummary
+    workspace {
+      id
+      branch
+      worktreePath
+      baseCommit
+      currentCommit
+      cleanupState
+    }
+    verification {
+      command
+      exitCode
+      status
+      summary
+      artifactUri
+    }
+    pullRequest {
+      url
+      sourceBranch
+      baseBranch
+      status
+    }
+    merge {
+      method
+      status
+      mergeCommit
+      mergedAt
+      mergedBy
+      failureReason
+    }
+    gate {
+      id
+      state
+      reviewTarget
+      approver
+      decidedAt
+    }
+  }
+}
+
+mutation CreateTask($input: CreateTaskInput!) {
+  createTask(input: $input) {
+    id
+    title
+    status
+    priority
+    assignedWorker
+  }
+}
+
+mutation ValidateWorkflowCanvas($workflowId: String!) {
+  validateWorkflowCanvas(workflowId: $workflowId) {
+    workflowId
+    valid
+    errors
+  }
+}

@@ -33,12 +33,12 @@ The dev command starts the Rust backend on an internal free port, starts Vite th
 - Main worktree: `http://sanchoris.localhost:1355/admin/health`
 - Linked worktree, e.g. branch `fix-health`: `http://fix-health.sanchoris.localhost:1355/admin/health`
 
-The backend keeps `/health` and `/api/v1/health` available for health checks. It also exposes dependency-free MVP JSON snapshots while the GraphQL and PostgreSQL foundation is prepared:
+The backend keeps `/health` and `/api/v1/health` available for process health checks. Product data is exposed through the single GraphQL endpoint used by the frontend:
 
-- `/api/v1/mvp/project`: sample Sanchoris project profile.
-- `/api/v1/mvp/tasks`: built-in chat message and native task snapshot.
-- `/api/v1/mvp/workflow`: editable MVP workflow graph with `ChatInput`, `CreateTask`, `CreateWorkspace`, `RunWorker`, `RunVerification`, `Gate`, `CreatePR`, and `Merge` blocks.
-- `/api/v1/mvp/runs`: workspace, worker run, verification, gate, pull request, and merge state.
+- `/api/graphql`: async-graphql endpoint for `viewer`, project profiles, conversations, native tasks, workflow specs, runs, workspace state, verification result, pull request, merge, and gate state.
+- `apps/frontend/src/graphql/schema.graphql`: checked-in SDL snapshot generated from the backend.
+- `apps/frontend/src/graphql/mvp-shell.graphql`: MVP query and mutation documents.
+- `apps/frontend/src/graphql/generated/`: GraphQL Code Generator client preset output used by Apollo Client.
 
 If you want clean HTTPS URLs without port numbers, start portless with TLS explicitly:
 

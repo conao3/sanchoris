@@ -1,0 +1,208 @@
+type ChatMessage {
+	id: String!
+	author: String!
+	body: String!
+	createdAt: String!
+	taskId: String
+}
+
+type Conversation {
+	id: String!
+	title: String!
+	channel: String!
+	messages: [ChatMessage!]!
+}
+
+input CreateTaskInput {
+	conversationId: String!
+	projectId: String!
+	workflowId: String!
+	title: String!
+	description: String!
+	priority: Priority
+	worker: String
+}
+
+type GateState {
+	id: String!
+	state: String!
+	reviewTarget: String!
+	approver: String
+	decidedAt: String
+}
+
+type MergeResult {
+	method: String!
+	status: String!
+	mergeCommit: String
+	mergedAt: String
+	mergedBy: String
+	failureReason: String
+}
+
+type MutationRoot {
+	createTask(input: CreateTaskInput!): NativeTask!
+	updateTaskStatus(id: String!, status: TaskStatus!): NativeTask
+	validateWorkflowCanvas(workflowId: String!): WorkflowValidation!
+	startWorkerRun(taskId: String!): WorkerRun
+	createPullRequest(runId: String!): PullRequest
+	mergePullRequest(runId: String!): MergeResult
+}
+
+type NativeTask {
+	id: String!
+	title: String!
+	description: String!
+	status: TaskStatus!
+	priority: Priority!
+	projectId: String!
+	conversationId: String!
+	assignedWorkflowId: String!
+	assignedWorker: String!
+	workspaceId: String!
+	latestRunId: String!
+	reviewState: String!
+}
+
+enum Priority {
+	LOW
+	MEDIUM
+	HIGH
+}
+
+type ProjectProfile {
+	id: String!
+	name: String!
+	repositoryPath: String!
+	defaultBranch: String!
+	worktreePolicy: String!
+	devCommand: String!
+	checkCommand: String!
+	workerPolicy: String!
+	allowedWorkflowId: String!
+}
+
+type PullRequest {
+	url: String
+	sourceBranch: String!
+	baseBranch: String!
+	status: String!
+}
+
+type QueryRoot {
+	viewer: Viewer!
+	projectProfiles: [ProjectProfile!]!
+	projectProfile(id: String!): ProjectProfile
+	conversations: [Conversation!]!
+	tasks: [NativeTask!]!
+	workflowSpecs: [WorkflowSpec!]!
+	runs: [WorkerRun!]!
+}
+
+enum RunStatus {
+	QUEUED
+	RUNNING
+	GATE_PENDING
+	PASSED
+	FAILED
+}
+
+enum StepState {
+	PENDING
+	RUNNING
+	PASSED
+	FAILED
+	BLOCKED
+}
+
+enum TaskStatus {
+	QUEUED
+	RUNNING
+	REVIEW
+	DONE
+	FAILED
+}
+
+type VerificationResult {
+	command: String!
+	exitCode: Int
+	status: StepState!
+	summary: String!
+	artifactUri: String!
+}
+
+type Viewer {
+	id: String!
+	displayName: String!
+	email: String!
+}
+
+type WorkerRun {
+	id: String!
+	taskId: String!
+	workerKind: String!
+	status: RunStatus!
+	startedAt: String!
+	finishedAt: String
+	exitCode: Int
+	commitHash: String
+	logUri: String!
+	errorSummary: String
+	workspace: Workspace!
+	verification: VerificationResult!
+	pullRequest: PullRequest!
+	merge: MergeResult!
+	gate: GateState!
+}
+
+type WorkflowBlock {
+	id: String!
+	kind: String!
+	label: String!
+	state: StepState!
+	x: Int!
+	y: Int!
+}
+
+type WorkflowEdge {
+	from: String!
+	to: String!
+}
+
+type WorkflowSpec {
+	id: String!
+	name: String!
+	version: String!
+	yaml: String!
+	blocks: [WorkflowBlock!]!
+	edges: [WorkflowEdge!]!
+}
+
+type WorkflowValidation {
+	workflowId: String!
+	valid: Boolean!
+	errors: [String!]!
+}
+
+type Workspace {
+	id: String!
+	branch: String!
+	worktreePath: String!
+	baseCommit: String!
+	currentCommit: String
+	cleanupState: String!
+}
+
+"""
+Directs the executor to include this field or fragment only when the `if` argument is true.
+"""
+directive @include(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+"""
+Directs the executor to skip this field or fragment when the `if` argument is true.
+"""
+directive @skip(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+schema {
+	query: QueryRoot
+	mutation: MutationRoot
+}
+
