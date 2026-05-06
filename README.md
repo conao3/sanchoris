@@ -51,6 +51,31 @@ pnpm dev
 
 portless detects linked git worktrees and prefixes the branch name into the hostname, so each worktree can run its own frontend and backend without port collisions.
 
+## Observing Codex runs
+
+Use the local runner when starting a Codex task that should leave inspectable logs:
+
+```sh
+node scripts/codex-run.mjs --prompt tasks/example.md --verify "pnpm check" -- \
+  codex exec --ask-for-approval never < tasks/example.md
+```
+
+Each run creates a timestamped directory under `.sanchoris/codex-runs/` by default. The directory contains `prompt.md`, `stdout.log`, `stderr.log`, `combined.log`, `metadata.json`, `summary.json`, and per-verification logs such as `verify-01-stdout.log`.
+
+Tail a running task:
+
+```sh
+tail -f .sanchoris/codex-runs/<run-id>/combined.log
+```
+
+Check the machine-readable result:
+
+```sh
+cat .sanchoris/codex-runs/<run-id>/summary.json
+```
+
+The runner only creates log directories and runs the explicit command after `--`; it does not clean worktrees, reset branches, or remove files.
+
 ## Checks
 
 ```sh
