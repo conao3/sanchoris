@@ -12,6 +12,7 @@ dist/
 
 # Local database
 /.env
+/.envrc.local
 /.postgres-data/
 
 # Editor / OS

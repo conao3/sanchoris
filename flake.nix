@@ -24,6 +24,8 @@
             cargo-watch
             clippy
             docker-compose
+            gh
+            jq
             openssl
             postgresql_17
             rustfmt
