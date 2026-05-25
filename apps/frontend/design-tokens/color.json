@@ -1,0 +1,127 @@
+{
+  "$schema": "https://schemas.tokens.studio/latest/tokens-schema.json",
+  "color": {
+    "canvas": {
+      "$type": "color",
+      "$value": "#FAF9F5"
+    },
+    "surface": {
+      "soft": {
+        "$type": "color",
+        "$value": "#F5F0E8"
+      },
+      "card": {
+        "$type": "color",
+        "$value": "#EFE9DE"
+      },
+      "cream-strong": {
+        "$type": "color",
+        "$value": "#E8E0D2"
+      },
+      "dark": {
+        "base": {
+          "$type": "color",
+          "$value": "#181715"
+        },
+        "elevated": {
+          "$type": "color",
+          "$value": "#252320"
+        },
+        "soft": {
+          "$type": "color",
+          "$value": "#1F1E1B"
+        }
+      }
+    },
+    "hairline": {
+      "base": {
+        "$type": "color",
+        "$value": "#E6DFD8"
+      },
+      "soft": {
+        "$type": "color",
+        "$value": "#EBE6DF"
+      }
+    },
+    "text": {
+      "ink": {
+        "$type": "color",
+        "$value": "#141413"
+      },
+      "body": {
+        "base": {
+          "$type": "color",
+          "$value": "#3D3D3A"
+        },
+        "strong": {
+          "$type": "color",
+          "$value": "#252523"
+        }
+      },
+      "muted": {
+        "base": {
+          "$type": "color",
+          "$value": "#6C6A64"
+        },
+        "soft": {
+          "$type": "color",
+          "$value": "#8E8B82"
+        }
+      },
+      "on-dark": {
+        "base": {
+          "$type": "color",
+          "$value": "#FAF9F5"
+        },
+        "soft": {
+          "$type": "color",
+          "$value": "#A09D96"
+        }
+      },
+      "on-primary": {
+        "$type": "color",
+        "$value": "#FFFFFF"
+      }
+    },
+    "brand": {
+      "primary": {
+        "base": {
+          "$type": "color",
+          "$value": "#9C5A2C"
+        },
+        "active": {
+          "$type": "color",
+          "$value": "#7A4520"
+        },
+        "disabled": {
+          "$type": "color",
+          "$value": "{color.hairline.base}"
+        }
+      }
+    },
+    "accent": {
+      "teal": {
+        "$type": "color",
+        "$value": "#5DB8A6"
+      },
+      "amber": {
+        "$type": "color",
+        "$value": "#E8A55A"
+      }
+    },
+    "semantic": {
+      "success": {
+        "$type": "color",
+        "$value": "#5DB872"
+      },
+      "warning": {
+        "$type": "color",
+        "$value": "#D4A017"
+      },
+      "error": {
+        "$type": "color",
+        "$value": "#C64545"
+      }
+    }
+  }
+}
