@@ -9,6 +9,7 @@ import {
   MvpShellDocument,
   ValidateWorkflowCanvasDocument,
 } from './graphql/generated/graphql';
+import { LoginPage } from './pages/LoginPage';
 import './style.css';
 
 type PanelMetric = {
@@ -420,6 +421,9 @@ function formatEnum(value: string) {
 function App() {
   const path = window.location.pathname;
 
+  if (path === '/login') {
+    return <LoginPage />;
+  }
   if (path === '/admin/health') {
     return <AdminHealthPage />;
   }
