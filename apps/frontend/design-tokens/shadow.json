@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schemas.tokens.studio/latest/tokens-schema.json",
+  "shadow": {
+    "card-soft": {
+      "$type": "shadow",
+      "$value": "0 1px 0 rgba(28, 25, 23, 0.04)"
+    },
+    "card-elevated": {
+      "$type": "shadow",
+      "$value": "0 8px 18px rgba(28, 25, 23, 0.06)"
+    },
+    "card-dark": {
+      "$type": "shadow",
+      "$value": "0 16px 40px -20px rgba(0, 0, 0, 0.45)"
+    },
+    "focus-primary": {
+      "$type": "shadow",
+      "$value": "0 0 0 3px rgba(156, 90, 44, 0.18)"
+    }
+  }
+}
