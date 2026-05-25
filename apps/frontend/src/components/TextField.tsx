@@ -13,6 +13,7 @@ type TextFieldProps = Omit<RACTextFieldProps, 'className' | 'children'> & {
   placeholder?: string;
   autoComplete?: string;
   rightSlot?: ReactNode;
+  hint?: ReactNode;
   className?: string;
 };
 
@@ -22,6 +23,7 @@ export function TextField({
   placeholder,
   autoComplete,
   rightSlot,
+  hint,
   className,
   type = 'text',
   ...props
@@ -34,7 +36,11 @@ export function TextField({
     >
       <div className="flex items-baseline justify-between gap-2">
         <Label className="text-sm font-medium text-body">{label}</Label>
-        {rightSlot ? <span className="text-sm font-medium text-primary">{rightSlot}</span> : null}
+        {rightSlot ? (
+          <span className="text-sm font-medium text-primary">{rightSlot}</span>
+        ) : hint ? (
+          <span className="text-sm text-muted-soft">{hint}</span>
+        ) : null}
       </div>
       <Input
         placeholder={placeholder}
