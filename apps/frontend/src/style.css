@@ -3,17 +3,19 @@
 /*
  * Design tokens.
  * Source of truth:
- *   ../design-tokens/color.json   (Tier 1, DTCG)
- *   ../design-tokens/radius.json  (Tier 2, DTCG)
- *   ../design-tokens/shadow.json  (Tier 2, DTCG)
+ *   ../design-tokens/color.json      (Tier 1, DTCG)
+ *   ../design-tokens/radius.json     (Tier 2, DTCG)
+ *   ../design-tokens/shadow.json     (Tier 2, DTCG)
+ *   ../design-tokens/typography.json (Tier 2, DTCG)
  * Naming map (JSON → CSS var): the `.base` leaf is dropped, dot path is joined with `-`.
  *   color.text.body.base        → --color-body
- *   color.text.body.strong      → --color-body-strong
  *   color.brand.primary.base    → --color-primary
- *   color.surface.dark.base     → --color-surface-dark
  *   color.surface.dark.elevated → --color-surface-dark-elevated
- *   radius.input                → --radius-input  (→ utility: rounded-input)
- *   shadow.card-dark            → --shadow-card-dark (→ utility: shadow-card-dark)
+ *   radius.input                → --radius-input         (→ utility: rounded-input)
+ *   shadow.card-dark            → --shadow-card-dark     (→ utility: shadow-card-dark)
+ *   text.size.h1                → --text-h1              (→ utility: text-h1)
+ *   font.weight.medium          → --font-weight-medium   (→ utility: font-medium)
+ *   tracking.wider              → --tracking-wider       (→ utility: tracking-wider)
  */
 @theme {
   /* surface (cream) */
@@ -64,10 +66,50 @@
   --shadow-card-dark: 0 16px 40px -20px rgba(0, 0, 0, 0.45);
   --shadow-focus-primary: 0 0 0 3px rgba(156, 90, 44, 0.18);
 
-  /* typography (font-family のみ。size scale は別サイクル) */
+  /* font-family */
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-serif: "Cormorant Garamond", "Tiempos Headline", Garamond, "Times New Roman", serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* font-weight */
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* font-size (paired with line-height where it makes sense) */
+  --text-xs: 0.6875rem;          /* 11px */
+  --text-xs--line-height: 1.4;
+  --text-sm: 0.75rem;            /* 12px */
+  --text-sm--line-height: 1.45;
+  --text-base: 0.875rem;         /* 14px */
+  --text-base--line-height: 1.55;
+  --text-md: 0.90625rem;         /* 14.5px */
+  --text-md--line-height: 1.55;
+  --text-lg: 1rem;               /* 16px */
+  --text-lg--line-height: 1.55;
+  --text-h3: 1.625rem;           /* 26px */
+  --text-h3--line-height: 1.1;
+  --text-h2: 2.375rem;           /* 38px */
+  --text-h2--line-height: 1.05;
+  --text-h1: 3rem;               /* 48px */
+  --text-h1--line-height: 1.05;
+  --text-hero: 3.625rem;         /* 58px (clamp upper bound) */
+  --text-hero--line-height: 1.05;
+
+  /* tracking */
+  --tracking-tighter: -1px;
+  --tracking-tight: -0.5px;
+  --tracking-normal: 0;
+  --tracking-wide: 0.16em;
+  --tracking-wider: 0.24em;
+
+  /* leading (standalone, for headings that need explicit override) */
+  --leading-tight: 1;
+  --leading-heading: 1.05;
+  --leading-snug: 1.4;
+  --leading-body: 1.55;
+  --leading-relaxed: 1.65;
 }
 
 :root {
