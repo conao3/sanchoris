@@ -9,6 +9,7 @@ import {
   MvpShellDocument,
   ValidateWorkflowCanvasDocument,
 } from './graphql/generated/graphql';
+import { InboxPage } from './pages/InboxPage';
 import { LoginPage } from './pages/LoginPage';
 import './style.css';
 
@@ -423,6 +424,9 @@ function App() {
 
   if (path === '/login') {
     return <LoginPage />;
+  }
+  if (path === '/inbox') {
+    return <InboxPage />;
   }
   if (path === '/admin/health') {
     return <AdminHealthPage />;
