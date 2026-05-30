@@ -15,6 +15,9 @@ dist/
 /.envrc.local
 /.postgres-data/
 
+# Symphony orchestrator runtime
+/log/
+
 # Editor / OS
 .DS_Store
 .idea/
