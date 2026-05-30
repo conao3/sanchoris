@@ -40,9 +40,9 @@
   --color-on-dark: #faf9f5;
   --color-on-dark-soft: #a09d96;
   --color-on-primary: #ffffff;
-  /* brand (Sanchoris Deep Bronze) */
-  --color-primary: #9c5a2c;
-  --color-primary-active: #7a4520;
+  /* brand (Sanchoris Coral) */
+  --color-primary: #cc785c;
+  --color-primary-active: #a9583e;
   --color-primary-disabled: #e6dfd8;
   /* accent */
   --color-accent-teal: #5db8a6;
@@ -64,7 +64,7 @@
   --shadow-card-soft: 0 1px 0 rgba(28, 25, 23, 0.04);
   --shadow-card-elevated: 0 8px 18px rgba(28, 25, 23, 0.06);
   --shadow-card-dark: 0 16px 40px -20px rgba(0, 0, 0, 0.45);
-  --shadow-focus-primary: 0 0 0 3px rgba(156, 90, 44, 0.18);
+  --shadow-focus-primary: 0 0 0 3px rgba(204, 120, 92, 0.22);
 
   /* font-family */
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;

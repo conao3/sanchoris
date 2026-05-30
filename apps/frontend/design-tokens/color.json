@@ -87,11 +87,11 @@
       "primary": {
         "base": {
           "$type": "color",
-          "$value": "#9C5A2C"
+          "$value": "#CC785C"
         },
         "active": {
           "$type": "color",
-          "$value": "#7A4520"
+          "$value": "#A9583E"
         },
         "disabled": {
           "$type": "color",
