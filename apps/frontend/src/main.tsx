@@ -11,6 +11,7 @@ import {
 } from './graphql/generated/graphql';
 import { InboxPage } from './pages/InboxPage';
 import { LoginPage } from './pages/LoginPage';
+import { PullRequestsPage } from './pages/PullRequestsPage';
 import './style.css';
 
 type PanelMetric = {
@@ -422,6 +423,9 @@ function formatEnum(value: string) {
 function App() {
   const path = window.location.pathname;
 
+  if (path === '/pull-requests') {
+    return <PullRequestsPage />;
+  }
   if (path === '/inbox') {
     return <InboxPage />;
   }
