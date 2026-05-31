@@ -17,6 +17,7 @@ import { PullRequestsPage } from './pages/PullRequestsPage';
 import { QueuePage } from './pages/QueuePage';
 import { RunDetailPage } from './pages/RunDetailPage';
 import { WorkersPage } from './pages/WorkersPage';
+import { IncidentsPage } from './pages/IncidentsPage';
 import './style.css';
 
 type PanelMetric = {
@@ -448,6 +449,9 @@ function App() {
   }
   if (path === '/tools/direct-command') {
     return <DirectCommandPage />;
+  }
+  if (path === '/incidents') {
+    return <IncidentsPage />;
   }
   if (path === '/login') {
     return <LoginPage />;
