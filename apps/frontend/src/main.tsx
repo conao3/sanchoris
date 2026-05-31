@@ -16,6 +16,7 @@ import { PullRequestsPage } from './pages/PullRequestsPage';
 import { QueuePage } from './pages/QueuePage';
 import { RunDetailPage } from './pages/RunDetailPage';
 import { WorkersPage } from './pages/WorkersPage';
+import { WorkflowsPage } from './pages/WorkflowsPage';
 import './style.css';
 
 type PanelMetric = {
@@ -441,6 +442,9 @@ function App() {
   }
   if (path === '/inbox') {
     return <InboxPage />;
+  }
+  if (path === '/workflows') {
+    return <WorkflowsPage />;
   }
   if (path === '/runs/r-9143') {
     return <RunDetailPage />;
