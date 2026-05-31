@@ -22,6 +22,7 @@ import { SpacePage } from './pages/SpacePage';
 import { WorkersPage } from './pages/WorkersPage';
 import { IncidentsPage } from './pages/IncidentsPage';
 import { MemoryPage } from './pages/MemoryPage';
+import { NotificationsPage } from './pages/NotificationsPage';
 import { WorkflowHistoryPage } from './pages/WorkflowHistoryPage';
 import { WorkflowsPage } from './pages/WorkflowsPage';
 import './style.css';
@@ -458,6 +459,9 @@ function App() {
   }
   if (path === '/inbox') {
     return <InboxPage />;
+  }
+  if (path === '/notifications') {
+    return <NotificationsPage />;
   }
   if (path === '/workflows/delivery-default/history') {
     return <WorkflowHistoryPage />;
