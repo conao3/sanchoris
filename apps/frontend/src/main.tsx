@@ -10,6 +10,7 @@ import {
   ValidateWorkflowCanvasDocument,
 } from './graphql/generated/graphql';
 import { ChannelsPage } from './pages/ChannelsPage';
+import { DeploysPage } from './pages/DeploysPage';
 import { DirectCommandPage } from './pages/DirectCommandPage';
 import { GatesPage } from './pages/GatesPage';
 import { InboxPage } from './pages/InboxPage';
@@ -434,6 +435,9 @@ function App() {
 
   if (path === '/channels') {
     return <ChannelsPage />;
+  }
+  if (path === '/deploys') {
+    return <DeploysPage />;
   }
   if (path === '/gates') {
     return <GatesPage />;
