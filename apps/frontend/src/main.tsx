@@ -14,6 +14,7 @@ import { DeploysPage } from './pages/DeploysPage';
 import { DirectCommandPage } from './pages/DirectCommandPage';
 import { GatesPage } from './pages/GatesPage';
 import { InboxPage } from './pages/InboxPage';
+import { ProjectPage } from './pages/ProjectPage';
 import { LoginPage } from './pages/LoginPage';
 import { PublishWorkflowPage } from './pages/PublishWorkflowPage';
 import { PullRequestsPage } from './pages/PullRequestsPage';
@@ -439,6 +440,9 @@ function formatEnum(value: string) {
 function App() {
   const path = window.location.pathname;
 
+  if (path === '/projects/acme-platform') {
+    return <ProjectPage />;
+  }
   if (path === '/space') {
     return <SpacePage />;
   }
