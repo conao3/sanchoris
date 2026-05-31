@@ -9,6 +9,7 @@ import {
   MvpShellDocument,
   ValidateWorkflowCanvasDocument,
 } from './graphql/generated/graphql';
+import { DirectCommandPage } from './pages/DirectCommandPage';
 import { GatesPage } from './pages/GatesPage';
 import { InboxPage } from './pages/InboxPage';
 import { LoginPage } from './pages/LoginPage';
@@ -444,6 +445,9 @@ function App() {
   }
   if (path === '/runs/r-9143') {
     return <RunDetailPage />;
+  }
+  if (path === '/tools/direct-command') {
+    return <DirectCommandPage />;
   }
   if (path === '/login') {
     return <LoginPage />;
