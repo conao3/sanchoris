@@ -15,6 +15,7 @@ import { LoginPage } from './pages/LoginPage';
 import { PullRequestsPage } from './pages/PullRequestsPage';
 import { QueuePage } from './pages/QueuePage';
 import { RunDetailPage } from './pages/RunDetailPage';
+import { SpacePage } from './pages/SpacePage';
 import { WorkersPage } from './pages/WorkersPage';
 import './style.css';
 
@@ -427,6 +428,9 @@ function formatEnum(value: string) {
 function App() {
   const path = window.location.pathname;
 
+  if (path === '/space') {
+    return <SpacePage />;
+  }
   if (path === '/gates') {
     return <GatesPage />;
   }
