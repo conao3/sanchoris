@@ -14,6 +14,7 @@ import { InboxPage } from './pages/InboxPage';
 import { LoginPage } from './pages/LoginPage';
 import { PullRequestsPage } from './pages/PullRequestsPage';
 import { QueuePage } from './pages/QueuePage';
+import { RunDetailPage } from './pages/RunDetailPage';
 import { WorkersPage } from './pages/WorkersPage';
 import './style.css';
 
@@ -440,6 +441,9 @@ function App() {
   }
   if (path === '/inbox') {
     return <InboxPage />;
+  }
+  if (path === '/runs/r-9143') {
+    return <RunDetailPage />;
   }
   if (path === '/login') {
     return <LoginPage />;
