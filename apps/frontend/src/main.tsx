@@ -10,6 +10,7 @@ import {
   ValidateWorkflowCanvasDocument,
 } from './graphql/generated/graphql';
 import { ChannelsPage } from './pages/ChannelsPage';
+import { DeploysPage } from './pages/DeploysPage';
 import { DirectCommandPage } from './pages/DirectCommandPage';
 import { GatesPage } from './pages/GatesPage';
 import { InboxPage } from './pages/InboxPage';
@@ -17,11 +18,13 @@ import { LoginPage } from './pages/LoginPage';
 import { PullRequestsPage } from './pages/PullRequestsPage';
 import { QueuePage } from './pages/QueuePage';
 import { RunDetailPage } from './pages/RunDetailPage';
+import { SpacePage } from './pages/SpacePage';
 import { WorkersPage } from './pages/WorkersPage';
 import { IncidentsPage } from './pages/IncidentsPage';
 import { MemoryPage } from './pages/MemoryPage';
 import { WorkflowHistoryPage } from './pages/WorkflowHistoryPage';
 import { WorkflowEditorPage } from './pages/WorkflowEditorPage';
+import { WorkflowsPage } from './pages/WorkflowsPage';
 import './style.css';
 
 type PanelMetric = {
@@ -433,11 +436,17 @@ function formatEnum(value: string) {
 function App() {
   const path = window.location.pathname;
 
+  if (path === '/space') {
+    return <SpacePage />;
+  }
   if (path === '/channels') {
     return <ChannelsPage />;
   }
   if (path === '/workflows/delivery-default') {
     return <WorkflowEditorPage />;
+  }
+  if (path === '/deploys') {
+    return <DeploysPage />;
   }
   if (path === '/gates') {
     return <GatesPage />;
@@ -456,6 +465,9 @@ function App() {
   }
   if (path === '/workflows/delivery-default/history') {
     return <WorkflowHistoryPage />;
+  }
+  if (path === '/workflows') {
+    return <WorkflowsPage />;
   }
   if (path === '/runs/r-9143') {
     return <RunDetailPage />;
