@@ -23,6 +23,7 @@ import { WorkersPage } from './pages/WorkersPage';
 import { IncidentsPage } from './pages/IncidentsPage';
 import { MemoryPage } from './pages/MemoryPage';
 import { WorkflowHistoryPage } from './pages/WorkflowHistoryPage';
+import { WorkflowsPage } from './pages/WorkflowsPage';
 import './style.css';
 
 type PanelMetric = {
@@ -460,6 +461,9 @@ function App() {
   }
   if (path === '/workflows/delivery-default/history') {
     return <WorkflowHistoryPage />;
+  }
+  if (path === '/workflows') {
+    return <WorkflowsPage />;
   }
   if (path === '/runs/r-9143') {
     return <RunDetailPage />;
