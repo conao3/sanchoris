@@ -9,6 +9,7 @@ import {
   MvpShellDocument,
   ValidateWorkflowCanvasDocument,
 } from './graphql/generated/graphql';
+import { ChannelsPage } from './pages/ChannelsPage';
 import { DeploysPage } from './pages/DeploysPage';
 import { DirectCommandPage } from './pages/DirectCommandPage';
 import { GatesPage } from './pages/GatesPage';
@@ -18,7 +19,9 @@ import { PullRequestsPage } from './pages/PullRequestsPage';
 import { QueuePage } from './pages/QueuePage';
 import { RunDetailPage } from './pages/RunDetailPage';
 import { WorkersPage } from './pages/WorkersPage';
+import { IncidentsPage } from './pages/IncidentsPage';
 import { MemoryPage } from './pages/MemoryPage';
+import { WorkflowHistoryPage } from './pages/WorkflowHistoryPage';
 import './style.css';
 
 type PanelMetric = {
@@ -430,6 +433,9 @@ function formatEnum(value: string) {
 function App() {
   const path = window.location.pathname;
 
+  if (path === '/channels') {
+    return <ChannelsPage />;
+  }
   if (path === '/deploys') {
     return <DeploysPage />;
   }
@@ -448,11 +454,17 @@ function App() {
   if (path === '/inbox') {
     return <InboxPage />;
   }
+  if (path === '/workflows/delivery-default/history') {
+    return <WorkflowHistoryPage />;
+  }
   if (path === '/runs/r-9143') {
     return <RunDetailPage />;
   }
   if (path === '/tools/direct-command') {
     return <DirectCommandPage />;
+  }
+  if (path === '/incidents') {
+    return <IncidentsPage />;
   }
   if (path === '/login') {
     return <LoginPage />;
