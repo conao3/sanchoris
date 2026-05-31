@@ -24,6 +24,7 @@ import { IncidentsPage } from './pages/IncidentsPage';
 import { MemoryPage } from './pages/MemoryPage';
 import { RunGatePage } from './pages/RunGatePage';
 import { WorkflowHistoryPage } from './pages/WorkflowHistoryPage';
+import { WorkflowEditorPage } from './pages/WorkflowEditorPage';
 import { WorkflowsPage } from './pages/WorkflowsPage';
 import './style.css';
 
@@ -441,6 +442,9 @@ function App() {
   }
   if (path === '/channels') {
     return <ChannelsPage />;
+  }
+  if (path === '/workflows/delivery-default') {
+    return <WorkflowEditorPage />;
   }
   if (path === '/deploys') {
     return <DeploysPage />;
