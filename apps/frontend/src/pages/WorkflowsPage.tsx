@@ -140,13 +140,9 @@ function W1Rail() {
           <strong className="font-semibold text-ink">Policy-driven gates.</strong> Approvals are
           part of the graph, not afterthoughts grafted onto a CI job.
         </li>
-        <li className="border-b border-dashed border-hairline-soft py-[9px]">
+        <li className="py-[9px]">
           <strong className="font-semibold text-ink">Visible end-to-end.</strong> Operators can see
           what the agent will do before it does it &mdash; and after.
-        </li>
-        <li className="py-[9px]">
-          <strong className="font-semibold text-ink">Human-on-the-loop.</strong> Gate nodes pause
-          dispatch for explicit approval; agents never cross a gate unsupervised.
         </li>
       </ul>
       <div className="mt-[14px] cursor-pointer text-[12px] text-primary">
