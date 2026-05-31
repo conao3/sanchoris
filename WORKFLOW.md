@@ -21,8 +21,8 @@ hooks:
   after_create: |
     gh repo clone conao3/sanchoris . -- --depth 1
 agent:
-  max_concurrent_agents: 10
-  max_turns: 10
+  max_concurrent_agents: 6
+  max_turns: 24
 codex:
   command: ANTHROPIC_MODEL=claude-sonnet-4-6 claude-app-server
   approval_policy: never
