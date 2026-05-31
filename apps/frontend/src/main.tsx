@@ -23,6 +23,7 @@ import { SpacePage } from './pages/SpacePage';
 import { WorkersPage } from './pages/WorkersPage';
 import { IncidentsPage } from './pages/IncidentsPage';
 import { MemoryPage } from './pages/MemoryPage';
+import { NotificationsPage } from './pages/NotificationsPage';
 import { RunGatePage } from './pages/RunGatePage';
 import { WorkflowHistoryPage } from './pages/WorkflowHistoryPage';
 import { WorkflowEditorPage } from './pages/WorkflowEditorPage';
@@ -464,6 +465,9 @@ function App() {
   }
   if (path === '/inbox') {
     return <InboxPage />;
+  }
+  if (path === '/notifications') {
+    return <NotificationsPage />;
   }
   if (path === '/runs/r-9143/gate') {
     return <RunGatePage />;
