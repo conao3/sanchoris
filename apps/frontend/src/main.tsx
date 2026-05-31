@@ -16,6 +16,7 @@ import { PullRequestsPage } from './pages/PullRequestsPage';
 import { QueuePage } from './pages/QueuePage';
 import { RunDetailPage } from './pages/RunDetailPage';
 import { WorkersPage } from './pages/WorkersPage';
+import { MemoryPage } from './pages/MemoryPage';
 import './style.css';
 
 type PanelMetric = {
@@ -447,6 +448,9 @@ function App() {
   }
   if (path === '/login') {
     return <LoginPage />;
+  }
+  if (path === '/memory') {
+    return <MemoryPage />;
   }
   if (path === '/admin/health') {
     return <AdminHealthPage />;
