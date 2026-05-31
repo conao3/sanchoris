@@ -1,538 +1,344 @@
-import type { ReactNode } from 'react';
+import { AppShell } from '../components/shell/AppShell';
+import { Rail, type RailItemDef } from '../components/shell/Rail';
+import { Screen, ScreenHead, ScreenBody, Crumbs } from '../components/shell/Screen';
+import { Btn, Pill, Tag, type PillKind, type TagTone } from '../components/shell/primitives';
 
-export function InboxPage() {
+// ─── Rail items ───────────────────────────────────────────────────────────────
+
+function SpaceIcon() {
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-canvas font-sans text-ink">
-      <Topbar />
-      <div className="flex min-h-0 flex-1">
-        <Rail />
-        <Screen />
-      </div>
-    </div>
+    <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="1" y="1" width="5" height="5" rx="1" />
+      <rect x="8" y="1" width="5" height="5" rx="1" />
+      <rect x="1" y="8" width="5" height="5" rx="1" />
+      <rect x="8" y="8" width="5" height="5" rx="1" />
+    </svg>
   );
 }
 
-function Topbar() {
+function ProjectsIcon() {
   return (
-    <header className="flex h-14 flex-none items-center gap-4 border-b border-hairline bg-canvas px-5">
-      <Wordmark />
-      <span className="h-[22px] w-px bg-hairline" aria-hidden="true" />
-      <WorkspaceSwitcher />
-      <div className="flex flex-1 justify-center">
-        <SearchBar />
-      </div>
-      <ModelBadge />
-      <TopbarIcon symbol="🔔" badge={3} ariaLabel="Notifications" />
-      <TopbarIcon symbol="⚙" ariaLabel="Settings" />
-      <Avatar variant="me" initials="AT" />
-    </header>
+    <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M1 3.5C1 2.7 1.7 2 2.5 2H5l1.5 1.5h5C12.3 3.5 13 4.2 13 5v6c0 0.8-0.7 1.5-1.5 1.5h-9C1.7 12.5 1 11.8 1 11V3.5z" />
+    </svg>
   );
 }
 
-function Wordmark() {
+function QueueIcon() {
   return (
-    <div className="flex items-center gap-2 font-serif text-[22px] font-medium leading-none tracking-[-0.4px] text-ink">
-      <span className="relative inline-block size-4" aria-hidden="true">
-        <span className="absolute inset-0 rounded-[2px] border-[1.4px] border-ink" />
-        <span className="absolute left-0 top-0 size-[7px] bg-primary" />
-      </span>
-      sanchoris<span className="text-primary">.</span>
-    </div>
+    <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+      <path d="M2 4h10M2 7h10M2 10h10" />
+    </svg>
   );
 }
 
-function WorkspaceSwitcher() {
+function PRsIcon() {
   return (
-    <button
-      type="button"
-      className="inline-flex items-center gap-1.5 rounded-sm px-2 py-1.5 text-sm text-body hover:bg-surface-soft"
-    >
-      <span className="inline-flex size-[18px] items-center justify-center rounded-xs bg-surface-dark text-[10px] font-bold text-on-dark">
-        A
-      </span>
-      <span className="font-medium text-ink">acme-org</span>
-      <span className="font-light text-muted-soft">/</span>
-      <span className="inline-flex size-[18px] items-center justify-center rounded-xs bg-primary text-[10px] font-bold text-on-primary">
-        P
-      </span>
-      <span className="font-semibold text-ink">acme-platform</span>
-    </button>
+    <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="3.5" cy="3" r="1.5" />
+      <circle cx="3.5" cy="11" r="1.5" />
+      <circle cx="10.5" cy="11" r="1.5" />
+      <path d="M3.5 4.5v5M10.5 9.5V5.5C10.5 4.4 9.6 3.5 8.5 3.5H6.5" />
+      <path d="M7.5 1.7L6 3.5L7.5 5.3" />
+    </svg>
   );
 }
 
-function SearchBar() {
+function WorkflowsIcon() {
   return (
-    <div className="flex h-[34px] w-[440px] items-center gap-2.5 rounded-sm border border-hairline bg-surface-soft px-3 text-sm text-muted">
-      <span aria-hidden="true">⌕</span>
-      <span className="flex-1">Search projects, runs, gates…</span>
-      <Kbd>⌘K</Kbd>
-    </div>
+    <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="3" cy="3.5" r="1.8" />
+      <circle cx="11" cy="3.5" r="1.8" />
+      <circle cx="7" cy="10.5" r="1.8" />
+      <path d="M3.5 5l3 4M10.5 5l-3 4" />
+    </svg>
   );
 }
 
-function ModelBadge() {
+function WorkersIcon() {
   return (
-    <span className="inline-flex h-7 items-center gap-1.5 rounded-sm border border-hairline bg-surface-soft px-2.5 font-mono text-sm text-body-strong">
-      <span className="size-1.5 rounded-full bg-accent-teal" aria-hidden="true" />
-      sonnet-4.5
-    </span>
+    <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="2" y="3" width="10" height="6" rx="1" />
+      <path d="M4 11h6M5 9v2M9 9v2" />
+    </svg>
   );
 }
 
-function TopbarIcon({ symbol, badge, ariaLabel }: { symbol: string; badge?: number; ariaLabel: string }) {
+function MemoryIcon() {
   return (
-    <button
-      type="button"
-      aria-label={ariaLabel}
-      className="relative inline-flex size-8 items-center justify-center rounded-sm text-sm text-muted hover:bg-surface-soft"
-    >
-      <span aria-hidden="true">{symbol}</span>
-      {badge !== undefined ? (
-        <span className="absolute right-1 top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full bg-primary px-[3px] text-[9px] font-bold leading-none text-on-primary">
-          {badge}
-        </span>
-      ) : null}
-    </button>
+    <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M2 2h7l3 3v7H2V2zM9 2v3h3M4.5 7.5h5M4.5 9.5h5" />
+    </svg>
   );
 }
 
-type AvatarVariant = 'me' | 'coral' | 'teal' | 'navy' | 'amber' | 'default';
-
-function Avatar({ variant, initials }: { variant: AvatarVariant; initials: string }) {
-  const styleMap: Record<AvatarVariant, string> = {
-    me: 'bg-ink text-canvas',
-    coral: 'bg-primary text-on-primary',
-    teal: 'bg-accent-teal text-on-primary',
-    navy: 'bg-surface-dark text-on-dark',
-    amber: 'bg-accent-amber text-[#4a3306]',
-    default: 'bg-surface-card text-ink',
-  };
+function ChannelsIcon() {
   return (
-    <span
-      className={`inline-flex size-7 flex-none items-center justify-center rounded-full text-[11px] font-semibold ${styleMap[variant]}`}
-    >
-      {initials}
-    </span>
+    <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="7" cy="7" r="5.5" />
+      <path d="M1.5 7h11M7 1.5c2 1.8 2 9.2 0 11M7 1.5c-2 1.8-2 9.2 0 11" />
+    </svg>
   );
 }
 
-function Rail() {
+function SettingsIcon() {
   return (
-    <aside className="flex w-56 flex-none flex-col gap-0.5 border-r border-hairline bg-surface-soft px-3 pb-3.5 pt-4">
-      <RailSection label="Workspace" />
-      <RailItem icon="📥" label="Inbox" badge="9" tone="coral" active />
-      <RailItem icon="📦" label="Projects" badge="5" />
-      <RailItem icon="🚦" label="Gates" badge="3" />
-      <RailItem icon="🏃" label="Runs" badge="2" />
-      <RailSection label="Account" />
-      <RailItem icon="⚙" label="Settings" />
-      <div className="flex-1" />
-      <RailHelp />
-    </aside>
+    <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="7" cy="7" r="2" />
+      <path d="M7 1v2M7 11v2M1 7h2M11 7h2M2.7 2.7L4.1 4.1M9.9 9.9l1.4 1.4M2.7 11.3l1.4-1.4M9.9 4.1l1.4-1.4" />
+    </svg>
   );
 }
 
-function RailSection({ label }: { label: string }) {
-  return (
-    <div className="px-3 pb-1.5 pt-3.5 text-[10.5px] font-semibold uppercase tracking-[1.5px] text-muted-soft">
-      {label}
-    </div>
-  );
-}
+const WORKSPACE_ITEMS: RailItemDef[] = [
+  { key: 'space', icon: <SpaceIcon />, label: 'Space' },
+  { key: 'projects', icon: <ProjectsIcon />, label: 'Projects', badge: '7' },
+  { key: 'queue', icon: <QueueIcon />, label: 'Queue', badge: '28', badgeTone: 'coral' },
+  { key: 'prs', icon: <PRsIcon />, label: 'PRs', badge: '12' },
+  { key: 'workflows', icon: <WorkflowsIcon />, label: 'Workflows' },
+  { key: 'workers', icon: <WorkersIcon />, label: 'Workers' },
+  { key: 'memory', icon: <MemoryIcon />, label: 'Memory' },
+  { key: 'channels', icon: <ChannelsIcon />, label: 'Channels' },
+];
 
-function RailItem({
-  icon,
-  label,
-  badge,
-  tone = 'default',
-  active = false,
-}: {
-  icon: string;
-  label: string;
-  badge?: string;
-  tone?: 'default' | 'coral';
-  active?: boolean;
-}) {
-  return (
-    <a
-      href="#"
-      className={`flex items-center gap-2.5 rounded-sm px-2.5 py-2 text-sm no-underline ${
-        active ? 'bg-surface-cream-strong font-semibold text-ink' : 'text-body hover:bg-surface-cream-strong/60'
-      }`}
-    >
-      <span
-        aria-hidden="true"
-        className={`flex size-4 flex-none items-center justify-center text-sm ${active ? 'text-primary' : 'text-muted'}`}
-      >
-        {icon}
-      </span>
-      <span className="flex-1">{label}</span>
-      {badge !== undefined ? (
-        <span
-          className={`rounded-pill border px-1.5 font-mono text-[10.5px] font-medium leading-snug ${
-            tone === 'coral' ? 'border-primary bg-primary text-on-primary' : 'border-hairline bg-canvas text-muted'
-          }`}
-        >
-          {badge}
-        </span>
-      ) : null}
-    </a>
-  );
-}
+const ACCOUNT_ITEMS: RailItemDef[] = [
+  { key: 'settings', icon: <SettingsIcon />, label: 'Settings' },
+];
 
-function RailHelp() {
-  return (
-    <div className="mt-2 flex flex-col gap-1 border-t border-hairline px-2.5 pb-2 pt-2 text-xs text-muted">
-      <div className="flex items-center justify-between gap-1.5">
-        <span>command palette</span>
-        <Kbd>⌘K</Kbd>
-      </div>
-      <div className="flex items-center justify-between gap-1.5">
-        <span>quick switch</span>
-        <Kbd>⌘P</Kbd>
-      </div>
-    </div>
-  );
-}
+// ─── HR card types ─────────────────────────────────────────────────────────────
 
-function Kbd({ children }: { children: ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-0.5 rounded-xs border border-b-2 border-hairline bg-canvas px-1.5 py-[1.5px] font-mono text-[11px] leading-none text-muted">
-      {children}
-    </span>
-  );
-}
-
-function KbdInverse({ children }: { children: ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-0.5 rounded-xs border border-b-2 border-white/30 bg-white/20 px-1.5 py-[1.5px] font-mono text-[11px] leading-none text-on-primary">
-      {children}
-    </span>
-  );
-}
-
-function Screen() {
-  return (
-    <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
-      <ScreenHead />
-      <ScreenBody />
-    </main>
-  );
-}
-
-function ScreenHead() {
-  return (
-    <header className="flex-none border-b border-hairline px-7 pb-3.5 pt-5">
-      <Crumbs items={['acme-org', 'Queue', 'Human review']} />
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="m-0 font-serif text-[30px] font-medium leading-[1.15] tracking-[-0.6px] text-ink">
-            Human review inbox
-            <span className="ml-3 inline-flex gap-2 align-middle">
-              <Pill kind="gate">7 awaiting</Pill>
-              <Pill kind="failed">2 blocked &gt; 4h</Pill>
-            </span>
-          </h1>
-          <p className="mt-1.5 text-sm leading-[1.5] text-muted">
-            Tasks paused on questions only a human can answer · assigned to you ·{' '}
-            <b className="font-semibold text-body-strong">you owe 4</b>
-          </p>
-        </div>
-        <div className="flex flex-none items-center gap-2 pt-1">
-          <button
-            type="button"
-            className="inline-flex h-[34px] items-center rounded-sm border border-hairline bg-canvas px-3.5 text-base font-medium text-ink hover:border-primary/40"
-          >
-            Snooze all
-          </button>
-          <button
-            type="button"
-            className="inline-flex h-[34px] items-center gap-1.5 rounded-sm border border-primary bg-primary px-3.5 text-base font-medium text-on-primary hover:bg-primary-active"
-          >
-            Open command palette ·<KbdInverse>⌘K</KbdInverse>
-          </button>
-        </div>
-      </div>
-    </header>
-  );
-}
-
-function Crumbs({ items }: { items: string[] }) {
-  return (
-    <div className="mb-2 flex items-center gap-[7px] text-sm text-muted">
-      {items.map((c, i) => (
-        <span key={c} className="flex items-center gap-[7px]">
-          {i > 0 ? <span className="text-[10px] text-muted-soft">/</span> : null}
-          <span className={i === items.length - 1 ? 'font-medium text-ink' : ''}>{c}</span>
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function ScreenBody() {
-  return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-7 pb-6 pt-4">
-      <div className="flex min-h-0 flex-1 flex-col gap-3.5 overflow-hidden">
-        <HRGroup label="Now" count="2 · blocking active runs">
-          {nowCards}
-        </HRGroup>
-        <HRGroup label="Today" count="3 · loose acceptance">
-          {todayCards}
-        </HRGroup>
-        <HRGroup label="This week" count="2 · non-blocking">
-          {thisWeekCards}
-        </HRGroup>
-      </div>
-    </div>
-  );
-}
-
-function HRGroup({ label, count, children }: { label: string; count: string; children: ReactNode }) {
-  return (
-    <section>
-      <header className="mb-2 flex items-baseline gap-2.5">
-        <span className="text-xs font-semibold uppercase tracking-[1.4px] text-muted">{label}</span>
-        <span className="font-mono text-sm text-muted-soft">{count}</span>
-      </header>
-      <div className="grid grid-cols-2 gap-3">{children}</div>
-    </section>
-  );
-}
-
-type HRCardAction = { label: ReactNode; kind: 'primary' | 'secondary' | 'ghost' };
-
-type HRCardProps = {
+type HRCard = {
   id: string;
-  pill: { label: string; kind: 'failed' | 'warn' | 'done' };
-  tag?: { label: string; kind: 'coral-soft' | 'amber' };
-  title: ReactNode;
-  desc: ReactNode;
-  prop?: ReactNode;
-  actions: HRCardAction[];
+  runId: string;
+  pill: { kind: PillKind; label: string };
+  tag?: { tone: TagTone; label: string };
+  title: string;
+  desc: string;
+  prop?: string;
+  actions: Array<{ variant: 'primary' | 'secondary' | 'ghost'; label: string }>;
   urgent?: boolean;
+  hidden?: boolean;
 };
 
-function HRCard({ id, pill, tag, title, desc, prop, actions, urgent = false }: HRCardProps) {
+type HRGroup = {
+  label: string;
+  count: string;
+  cards: HRCard[];
+};
+
+// ─── Data ──────────────────────────────────────────────────────────────────────
+
+const nowCards: HRCard[] = [
+  {
+    id: 'CON-1241',
+    runId: 'R-9077',
+    pill: { kind: 'failed', label: 'blocked 4h 12m' },
+    tag: { tone: 'coral-soft', label: 'claude-code paused' },
+    title: 'Choose canonical schema for orders_v2 migration',
+    desc: 'Two conflicting field shapes detected during normalize. Agent surfaces them as {customer_id:int} (legacy) vs {customerId:uuid} (new). Pick canonical before retry.',
+    prop: 'Proposed: adopt new shape · codemod 142 callsites · one-shot migration window 12 m',
+    actions: [
+      { variant: 'primary', label: 'Resolve · pick new shape' },
+      { variant: 'secondary', label: 'Reassign' },
+      { variant: 'ghost', label: 'Open task ↗' },
+    ],
+    urgent: true,
+  },
+  {
+    id: 'CON-1255',
+    runId: 'R-9136',
+    pill: { kind: 'failed', label: 'blocked 1h 04m' },
+    tag: { tone: 'amber', label: 'secret rotation' },
+    title: 'Confirm new Stripe API key issued by owner',
+    desc: 'Worker found expired secret in stripe-bridge/.env · owner kanagawa-ops rotated 13:08 JST. Acknowledge so run can re-fetch from vault.',
+    prop: 'Proposed: re-pull stripe.live from vault · redeploy stripe-bridge to staging first',
+    actions: [
+      { variant: 'primary', label: 'Acknowledge' },
+      { variant: 'secondary', label: 'Re-rotate' },
+      { variant: 'ghost', label: 'Open task ↗' },
+    ],
+    urgent: true,
+  },
+];
+
+const todayCards: HRCard[] = [
+  {
+    id: 'CON-1252',
+    runId: 'R-9120',
+    pill: { kind: 'warn', label: 'awaiting 38m' },
+    title: 'Acceptance unclear for "make checkout faster"',
+    desc: 'Pick a baseline metric and target. Current p95 = 1.18s across desktop + mobile.',
+    prop: 'Proposed: target p95 ≤ 800 ms desktop · budget 2 weeks',
+    actions: [
+      { variant: 'primary', label: 'Accept proposal' },
+      { variant: 'secondary', label: 'Edit criteria' },
+    ],
+  },
+  {
+    id: 'CON-1250',
+    runId: 'R-9145',
+    pill: { kind: 'warn', label: 'awaiting 22m' },
+    title: 'Confirm Linear rollup — 3 tickets are duplicates of ENG-1182',
+    desc: 'CON-1250, ENG-1184, ENG-1185 all describe bulk CSV import. Agent wants to deduplicate and continue under one parent.',
+    prop: 'Proposed: rollup under CON-1250 · close ENG-1184/1185 as dup',
+    actions: [
+      { variant: 'primary', label: 'Confirm rollup' },
+      { variant: 'secondary', label: 'Keep separate' },
+    ],
+  },
+  {
+    id: 'CON-1253',
+    runId: 'R-9128',
+    pill: { kind: 'warn', label: 'awaiting 17m' },
+    title: 'Approve copy change to triage-worker refusal path',
+    desc: '+3 lines · tone shift from formal to plain. No behaviour change expected.',
+    prop: 'Proposed: apply as-is · rollout via percentile 10% → 100%',
+    actions: [
+      { variant: 'primary', label: 'Approve' },
+      { variant: 'secondary', label: 'View diff' },
+    ],
+  },
+  { id: '', runId: '', pill: { kind: 'default', label: '' }, title: '', desc: '', actions: [], hidden: true },
+];
+
+const thisWeekCards: HRCard[] = [
+  {
+    id: 'CON-1230',
+    runId: 'R-9012',
+    pill: { kind: 'done', label: 'queued 2d' },
+    title: 'Review proposed workflow change for delivery/default',
+    desc: 'Adds a policy-review step before Gate. Tagged for owner approval.',
+    actions: [
+      { variant: 'secondary', label: 'Open diff' },
+      { variant: 'ghost', label: 'Reassign' },
+    ],
+  },
+  {
+    id: 'CON-1225',
+    runId: 'R-8998',
+    pill: { kind: 'done', label: 'queued 3d' },
+    title: 'Confirm dependency upgrade plan for Q3',
+    desc: 'Agent drafted 9-step bump (TypeScript, undici, vitest). Awaiting owner direction.',
+    actions: [
+      { variant: 'secondary', label: 'Read plan' },
+      { variant: 'ghost', label: 'Reassign' },
+    ],
+  },
+];
+
+const HR_GROUPS: HRGroup[] = [
+  { label: 'Now', count: '2 · blocking active runs', cards: nowCards },
+  { label: 'Today', count: '3 · loose acceptance', cards: todayCards },
+  { label: 'This week', count: '2 · non-blocking', cards: thisWeekCards },
+];
+
+// ─── HR card component ─────────────────────────────────────────────────────────
+
+function HRCardView({ card }: { card: HRCard }) {
+  if (card.hidden) {
+    return <div className="invisible" aria-hidden="true" />;
+  }
   return (
     <article
-      className={`rounded-input border px-4 py-3.5 ${
-        urgent ? 'border-primary/40 bg-primary/[0.03]' : 'border-hairline bg-canvas'
+      className={`rounded-[10px] border p-[14px_16px] ${
+        card.urgent
+          ? 'border-[rgba(204,120,92,0.4)] bg-[rgba(204,120,92,0.03)]'
+          : 'border-hairline bg-canvas'
       }`}
     >
-      <header className="mb-1.5 flex flex-wrap items-center gap-2">
-        <span className="font-mono text-xs text-muted">{id}</span>
-        <Pill kind={pill.kind}>{pill.label}</Pill>
-        {tag ? <Tag kind={tag.kind}>{tag.label}</Tag> : null}
-      </header>
-      <h3 className="mb-1.5 text-base font-medium leading-[1.35] text-ink">{title}</h3>
-      <p className="mb-2.5 text-sm leading-[1.5] text-muted">{desc}</p>
-      {prop ? (
-        <div className="mb-2.5 rounded-sm border border-hairline-soft bg-surface-soft px-2.5 py-[7px] font-mono text-[11.5px] text-body">
-          {prop}
+      <div className="mb-[6px] flex flex-wrap items-center gap-2">
+        <span className="font-mono text-[11px] text-muted">
+          {card.id} · {card.runId}
+        </span>
+        <Pill kind={card.pill.kind}>{card.pill.label}</Pill>
+        {card.tag && (
+          <Tag tone={card.tag.tone} className="ml-auto">
+            {card.tag.label}
+          </Tag>
+        )}
+      </div>
+      <h3 className="mb-[6px] text-[14px] font-medium leading-[1.35] text-ink">{card.title}</h3>
+      <p className="mb-[10px] text-[12px] leading-[1.5] text-muted">{card.desc}</p>
+      {card.prop && (
+        <div className="mb-[10px] rounded-[6px] border border-hairline-soft bg-surface-soft px-[10px] py-[7px] font-mono text-[11.5px] text-body">
+          <strong className="font-semibold text-ink">Proposed:</strong>{' '}
+          {card.prop.replace(/^Proposed: /, '')}
         </div>
-      ) : null}
-      <footer className="flex items-center gap-1.5">
-        {actions.map((a, i) => (
-          <Btn key={i} kind={a.kind}>
-            {a.label}
+      )}
+      <div className="flex items-center gap-[6px]">
+        {card.actions.map((action, i) => (
+          <Btn key={i} variant={action.variant} size="sm">
+            {action.label}
           </Btn>
         ))}
-      </footer>
+      </div>
     </article>
   );
 }
 
-type PillKind = 'gate' | 'failed' | 'warn' | 'done' | 'running';
-
-function Pill({ kind, children }: { kind: PillKind; children: ReactNode }) {
-  const bgMap: Record<PillKind, string> = {
-    gate: 'bg-accent-amber text-[#4a3306]',
-    failed: 'bg-error text-on-primary',
-    warn: 'bg-[rgba(212,160,23,0.16)] text-[#856200]',
-    done: 'bg-surface-card text-muted',
-    running: 'bg-primary text-on-primary',
-  };
+function HRGroupView({ group }: { group: HRGroup }) {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-pill px-2.5 py-[3px] text-[11.5px] font-medium leading-[1.4] ${bgMap[kind]}`}
+    <div>
+      <div className="mb-2 flex items-baseline gap-[10px]">
+        <span className="text-[11px] font-semibold uppercase tracking-[1.4px] text-muted">
+          {group.label}
+        </span>
+        <span className="font-mono text-[12px] text-muted-soft">{group.count}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {group.cards.map((card, i) => (
+          <HRCardView key={card.id || i} card={card} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Page ──────────────────────────────────────────────────────────────────────
+
+const inboxRailItems: RailItemDef[] = WORKSPACE_ITEMS.map((item) => ({
+  ...item,
+  active: item.key === 'queue',
+}));
+
+export function InboxPage() {
+  return (
+    <AppShell
+      rail={
+        <Rail items={inboxRailItems} bottomItems={ACCOUNT_ITEMS} />
+      }
     >
-      {kind === 'done' ? <span aria-hidden="true" className="size-1.5 rounded-full bg-muted-soft" /> : null}
-      {children}
-    </span>
+      <Screen>
+        <ScreenHead>
+          <Crumbs items={['acme-org', 'Queue', 'Human review']} />
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h1 className="m-0 font-serif text-[30px] font-medium leading-[1.15] tracking-[-0.6px] text-ink">
+                Human review inbox{' '}
+                <span className="ml-3 inline-flex gap-2 align-middle">
+                  <Pill kind="gate">7 awaiting</Pill>
+                  <Pill kind="failed">2 blocked &gt; 4h</Pill>
+                </span>
+              </h1>
+              <p className="mt-[6px] text-[13px] leading-[1.5] text-muted">
+                Tasks paused on questions only a human can answer · assigned to you ·{' '}
+                <strong className="font-semibold text-body-strong">you owe 4</strong>
+              </p>
+            </div>
+            <div className="flex flex-shrink-0 items-center gap-2 pt-1">
+              <Btn variant="secondary">Snooze all</Btn>
+              <Btn variant="primary">Open command palette · ⌘K</Btn>
+            </div>
+          </div>
+        </ScreenHead>
+        <ScreenBody>
+          <div className="flex flex-1 flex-col gap-[14px] overflow-hidden">
+            {HR_GROUPS.map((group) => (
+              <HRGroupView key={group.label} group={group} />
+            ))}
+          </div>
+        </ScreenBody>
+      </Screen>
+    </AppShell>
   );
 }
-
-function Tag({ kind, children }: { kind: 'coral-soft' | 'amber'; children: ReactNode }) {
-  const bgMap = {
-    'coral-soft': 'bg-[rgba(204,120,92,0.16)] text-primary-active',
-    amber: 'bg-[rgba(232,165,90,0.22)] text-[#7a4d10]',
-  };
-  return (
-    <span className={`ml-auto inline-flex rounded-xs px-1.5 py-0.5 font-mono text-[11px] leading-[1.4] ${bgMap[kind]}`}>
-      {children}
-    </span>
-  );
-}
-
-function Btn({ kind, children }: { kind: 'primary' | 'secondary' | 'ghost'; children: ReactNode }) {
-  const cls = {
-    primary: 'border-primary bg-primary text-on-primary hover:bg-primary-active',
-    secondary: 'border-hairline bg-canvas text-ink hover:border-primary/40',
-    ghost: 'border-transparent bg-transparent text-body hover:bg-surface-soft',
-  }[kind];
-  return (
-    <button
-      type="button"
-      className={`inline-flex h-7 items-center gap-1.5 rounded-sm border px-2.5 text-sm font-medium leading-none ${cls}`}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Mono({ children }: { children: ReactNode }) {
-  return <span className="font-mono">{children}</span>;
-}
-
-const nowCards = (
-  <>
-    <HRCard
-      urgent
-      id="CON-1241 · R-9077"
-      pill={{ label: 'blocked 4h 12m', kind: 'failed' }}
-      tag={{ label: 'claude-code paused', kind: 'coral-soft' }}
-      title={
-        <>
-          Choose canonical schema for <Mono>orders_v2</Mono> migration
-        </>
-      }
-      desc={
-        <>
-          Two conflicting field shapes detected during <b className="font-semibold text-body-strong">normalize</b>.
-          Agent surfaces them as <Mono>{'{customer_id:int}'}</Mono> (legacy) vs <Mono>{'{customerId:uuid}'}</Mono>{' '}
-          (new). Pick canonical before retry.
-        </>
-      }
-      prop={
-        <>
-          <b className="font-semibold text-ink">Proposed:</b> adopt new shape · codemod 142 callsites · one-shot
-          migration window 12 m
-        </>
-      }
-      actions={[
-        { label: 'Resolve · pick new shape', kind: 'primary' },
-        { label: 'Reassign', kind: 'secondary' },
-        { label: 'Open task ↗', kind: 'ghost' },
-      ]}
-    />
-    <HRCard
-      urgent
-      id="CON-1255 · R-9136"
-      pill={{ label: 'blocked 1h 04m', kind: 'failed' }}
-      tag={{ label: 'secret rotation', kind: 'amber' }}
-      title="Confirm new Stripe API key issued by owner"
-      desc={
-        <>
-          Worker found expired secret in <Mono>stripe-bridge/.env</Mono> · owner{' '}
-          <b className="font-semibold text-body-strong">kanagawa-ops</b> rotated 13:08 JST. Acknowledge so run can
-          re-fetch from vault.
-        </>
-      }
-      prop={
-        <>
-          <b className="font-semibold text-ink">Proposed:</b> re-pull <Mono>stripe.live</Mono> from vault · redeploy
-          stripe-bridge to staging first
-        </>
-      }
-      actions={[
-        { label: 'Acknowledge', kind: 'primary' },
-        { label: 'Re-rotate', kind: 'secondary' },
-        { label: 'Open task ↗', kind: 'ghost' },
-      ]}
-    />
-  </>
-);
-
-const todayCards = (
-  <>
-    <HRCard
-      id="CON-1252 · R-9120"
-      pill={{ label: 'awaiting 38m', kind: 'warn' }}
-      title={<>Acceptance unclear for &ldquo;make checkout faster&rdquo;</>}
-      desc={
-        <>
-          Pick a baseline metric and target. Current p95 = <Mono>1.18s</Mono> across desktop + mobile.
-        </>
-      }
-      prop={
-        <>
-          <b className="font-semibold text-ink">Proposed:</b> target p95 ≤ 800 ms desktop · budget 2 weeks
-        </>
-      }
-      actions={[
-        { label: 'Accept proposal', kind: 'primary' },
-        { label: 'Edit criteria', kind: 'secondary' },
-      ]}
-    />
-    <HRCard
-      id="CON-1250 · R-9145"
-      pill={{ label: 'awaiting 22m', kind: 'warn' }}
-      title="Confirm Linear rollup — 3 tickets are duplicates of ENG-1182"
-      desc="CON-1250, ENG-1184, ENG-1185 all describe bulk CSV import. Agent wants to deduplicate and continue under one parent."
-      prop={
-        <>
-          <b className="font-semibold text-ink">Proposed:</b> rollup under CON-1250 · close ENG-1184/1185 as dup
-        </>
-      }
-      actions={[
-        { label: 'Confirm rollup', kind: 'primary' },
-        { label: 'Keep separate', kind: 'secondary' },
-      ]}
-    />
-    <HRCard
-      id="CON-1253 · R-9128"
-      pill={{ label: 'awaiting 17m', kind: 'warn' }}
-      title="Approve copy change to triage-worker refusal path"
-      desc="+3 lines · tone shift from formal to plain. No behaviour change expected."
-      prop={
-        <>
-          <b className="font-semibold text-ink">Proposed:</b> apply as-is · rollout via percentile 10% → 100%
-        </>
-      }
-      actions={[
-        { label: 'Approve', kind: 'primary' },
-        { label: 'View diff', kind: 'secondary' },
-      ]}
-    />
-  </>
-);
-
-const thisWeekCards = (
-  <>
-    <HRCard
-      id="CON-1230 · R-9012"
-      pill={{ label: 'queued 2d', kind: 'done' }}
-      title="Review proposed workflow change for delivery/default"
-      desc={
-        <>
-          Adds a <Mono>policy-review</Mono> step before Gate. Tagged for owner approval.
-        </>
-      }
-      actions={[
-        { label: 'Open diff', kind: 'secondary' },
-        { label: 'Reassign', kind: 'ghost' },
-      ]}
-    />
-    <HRCard
-      id="CON-1225 · R-8998"
-      pill={{ label: 'queued 3d', kind: 'done' }}
-      title="Confirm dependency upgrade plan for Q3"
-      desc="Agent drafted 9-step bump (TypeScript, undici, vitest). Awaiting owner direction."
-      actions={[
-        { label: 'Read plan', kind: 'secondary' },
-        { label: 'Reassign', kind: 'ghost' },
-      ]}
-    />
-  </>
-);

@@ -422,11 +422,11 @@ function formatEnum(value: string) {
 function App() {
   const path = window.location.pathname;
 
-  if (path === '/login') {
-    return <LoginPage />;
-  }
   if (path === '/inbox') {
     return <InboxPage />;
+  }
+  if (path === '/login') {
+    return <LoginPage />;
   }
   if (path === '/admin/health') {
     return <AdminHealthPage />;
