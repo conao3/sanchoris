@@ -1,7 +1,7 @@
 ---
-linear:
-  project_slug: "sanchoris-ae42d9b2fc39"
 tracker:
+  kind: linear
+  project_slug: "sanchoris-ae42d9b2fc39"
   active_states:
     - Todo
     - In Progress
