@@ -12,5 +12,8 @@
   ],
   "ignoreDependencies": [
     "tailwindcss"
+  ],
+  "entry": [
+    "src/components/shell/**/*.tsx"
   ]
 }
