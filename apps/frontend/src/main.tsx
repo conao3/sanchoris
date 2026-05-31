@@ -16,6 +16,7 @@ import { PullRequestsPage } from './pages/PullRequestsPage';
 import { QueuePage } from './pages/QueuePage';
 import { RunDetailPage } from './pages/RunDetailPage';
 import { WorkersPage } from './pages/WorkersPage';
+import { WorkflowEditorPage } from './pages/WorkflowEditorPage';
 import './style.css';
 
 type PanelMetric = {
@@ -427,6 +428,9 @@ function formatEnum(value: string) {
 function App() {
   const path = window.location.pathname;
 
+  if (path === '/workflows/delivery-default') {
+    return <WorkflowEditorPage />;
+  }
   if (path === '/gates') {
     return <GatesPage />;
   }
