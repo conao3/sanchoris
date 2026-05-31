@@ -10,17 +10,24 @@ import {
   ValidateWorkflowCanvasDocument,
 } from './graphql/generated/graphql';
 import { ChannelsPage } from './pages/ChannelsPage';
+import { DeploysPage } from './pages/DeploysPage';
 import { DirectCommandPage } from './pages/DirectCommandPage';
 import { GatesPage } from './pages/GatesPage';
 import { InboxPage } from './pages/InboxPage';
 import { ProjectPage } from './pages/ProjectPage';
 import { LoginPage } from './pages/LoginPage';
+import { PublishWorkflowPage } from './pages/PublishWorkflowPage';
 import { PullRequestsPage } from './pages/PullRequestsPage';
 import { QueuePage } from './pages/QueuePage';
 import { RunDetailPage } from './pages/RunDetailPage';
+import { SpacePage } from './pages/SpacePage';
 import { WorkersPage } from './pages/WorkersPage';
 import { IncidentsPage } from './pages/IncidentsPage';
 import { MemoryPage } from './pages/MemoryPage';
+import { RunGatePage } from './pages/RunGatePage';
+import { WorkflowHistoryPage } from './pages/WorkflowHistoryPage';
+import { WorkflowEditorPage } from './pages/WorkflowEditorPage';
+import { WorkflowsPage } from './pages/WorkflowsPage';
 import './style.css';
 
 type PanelMetric = {
@@ -435,8 +442,17 @@ function App() {
   if (path === '/projects/acme-platform') {
     return <ProjectPage />;
   }
+  if (path === '/space') {
+    return <SpacePage />;
+  }
   if (path === '/channels') {
     return <ChannelsPage />;
+  }
+  if (path === '/workflows/delivery-default') {
+    return <WorkflowEditorPage />;
+  }
+  if (path === '/deploys') {
+    return <DeploysPage />;
   }
   if (path === '/gates') {
     return <GatesPage />;
@@ -453,8 +469,20 @@ function App() {
   if (path === '/inbox') {
     return <InboxPage />;
   }
+  if (path === '/runs/r-9143/gate') {
+    return <RunGatePage />;
+  }
+  if (path === '/workflows/delivery-default/history') {
+    return <WorkflowHistoryPage />;
+  }
+  if (path === '/workflows') {
+    return <WorkflowsPage />;
+  }
   if (path === '/runs/r-9143') {
     return <RunDetailPage />;
+  }
+  if (path === '/workflows/delivery-default/publish') {
+    return <PublishWorkflowPage />;
   }
   if (path === '/tools/direct-command') {
     return <DirectCommandPage />;
