@@ -18,6 +18,7 @@ import { QueuePage } from './pages/QueuePage';
 import { RunDetailPage } from './pages/RunDetailPage';
 import { WorkersPage } from './pages/WorkersPage';
 import { MemoryPage } from './pages/MemoryPage';
+import { RunGatePage } from './pages/RunGatePage';
 import './style.css';
 
 type PanelMetric = {
@@ -443,6 +444,9 @@ function App() {
   }
   if (path === '/inbox') {
     return <InboxPage />;
+  }
+  if (path === '/runs/r-9143/gate') {
+    return <RunGatePage />;
   }
   if (path === '/runs/r-9143') {
     return <RunDetailPage />;
