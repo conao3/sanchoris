@@ -9,6 +9,8 @@ import {
   MvpShellDocument,
   ValidateWorkflowCanvasDocument,
 } from './graphql/generated/graphql';
+import { ChannelsPage } from './pages/ChannelsPage';
+import { DirectCommandPage } from './pages/DirectCommandPage';
 import { GatesPage } from './pages/GatesPage';
 import { InboxPage } from './pages/InboxPage';
 import { LoginPage } from './pages/LoginPage';
@@ -16,6 +18,9 @@ import { PullRequestsPage } from './pages/PullRequestsPage';
 import { QueuePage } from './pages/QueuePage';
 import { RunDetailPage } from './pages/RunDetailPage';
 import { WorkersPage } from './pages/WorkersPage';
+import { IncidentsPage } from './pages/IncidentsPage';
+import { MemoryPage } from './pages/MemoryPage';
+import { WorkflowHistoryPage } from './pages/WorkflowHistoryPage';
 import { WorkflowEditorPage } from './pages/WorkflowEditorPage';
 import './style.css';
 
@@ -428,6 +433,9 @@ function formatEnum(value: string) {
 function App() {
   const path = window.location.pathname;
 
+  if (path === '/channels') {
+    return <ChannelsPage />;
+  }
   if (path === '/workflows/delivery-default') {
     return <WorkflowEditorPage />;
   }
@@ -446,11 +454,23 @@ function App() {
   if (path === '/inbox') {
     return <InboxPage />;
   }
+  if (path === '/workflows/delivery-default/history') {
+    return <WorkflowHistoryPage />;
+  }
   if (path === '/runs/r-9143') {
     return <RunDetailPage />;
   }
+  if (path === '/tools/direct-command') {
+    return <DirectCommandPage />;
+  }
+  if (path === '/incidents') {
+    return <IncidentsPage />;
+  }
   if (path === '/login') {
     return <LoginPage />;
+  }
+  if (path === '/memory') {
+    return <MemoryPage />;
   }
   if (path === '/admin/health') {
     return <AdminHealthPage />;
