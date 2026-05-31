@@ -12,6 +12,7 @@ import {
 import { InboxPage } from './pages/InboxPage';
 import { LoginPage } from './pages/LoginPage';
 import { PullRequestsPage } from './pages/PullRequestsPage';
+import { QueuePage } from './pages/QueuePage';
 import { WorkersPage } from './pages/WorkersPage';
 import './style.css';
 
@@ -429,6 +430,9 @@ function App() {
   }
   if (path === '/pull-requests') {
     return <PullRequestsPage />;
+  }
+  if (path === '/queue') {
+    return <QueuePage />;
   }
   if (path === '/inbox') {
     return <InboxPage />;
