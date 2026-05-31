@@ -9,6 +9,7 @@ import {
   MvpShellDocument,
   ValidateWorkflowCanvasDocument,
 } from './graphql/generated/graphql';
+import { InboxPage } from './pages/InboxPage';
 import { LoginPage } from './pages/LoginPage';
 import './style.css';
 
@@ -421,6 +422,9 @@ function formatEnum(value: string) {
 function App() {
   const path = window.location.pathname;
 
+  if (path === '/inbox') {
+    return <InboxPage />;
+  }
   if (path === '/login') {
     return <LoginPage />;
   }
