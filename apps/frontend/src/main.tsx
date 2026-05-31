@@ -15,6 +15,7 @@ import { DirectCommandPage } from './pages/DirectCommandPage';
 import { GatesPage } from './pages/GatesPage';
 import { InboxPage } from './pages/InboxPage';
 import { LoginPage } from './pages/LoginPage';
+import { PublishWorkflowPage } from './pages/PublishWorkflowPage';
 import { PullRequestsPage } from './pages/PullRequestsPage';
 import { QueuePage } from './pages/QueuePage';
 import { RunDetailPage } from './pages/RunDetailPage';
@@ -475,6 +476,9 @@ function App() {
   }
   if (path === '/runs/r-9143') {
     return <RunDetailPage />;
+  }
+  if (path === '/workflows/delivery-default/publish') {
+    return <PublishWorkflowPage />;
   }
   if (path === '/tools/direct-command') {
     return <DirectCommandPage />;
