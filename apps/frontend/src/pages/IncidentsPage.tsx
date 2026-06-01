@@ -5,6 +5,7 @@ import { Screen, ScreenHead, ScreenBody, Crumbs } from '../components/shell/Scre
 import { Btn, Mono, Pill, Tag } from '../components/shell/primitives';
 import { Avatar } from '../components/shell/Topbar';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Severity badge ───────────────────────────────────────────────────────────
 
@@ -56,6 +57,7 @@ type IncidentCardProps = {
   services: string[];
   oncall: AvatarDef[];
   agents: AvatarDef[] | null;
+  navigateTo: string;
 };
 
 function IncidentCard({
@@ -68,6 +70,7 @@ function IncidentCard({
   services,
   oncall,
   agents,
+  navigateTo,
 }: IncidentCardProps) {
   const baseClass =
     'rounded-[10px] border cursor-pointer p-[14px_16px]';
@@ -76,7 +79,7 @@ function IncidentCard({
     : 'border-hairline bg-canvas';
 
   return (
-    <div className={`${baseClass} ${selClass}`}>
+    <div className={`${baseClass} ${selClass}`} onClick={() => navigate(navigateTo)}>
       <div className="mb-[6px] flex items-center gap-2">
         <SevBadge level={sev} />
         <span className="font-mono text-[11px] text-muted">
@@ -327,6 +330,7 @@ export function IncidentsPage() {
                 services={['acme-platform', 'edge / eu-west', 'checkout']}
                 oncall={[{ initials: 'OC' }, { initials: 'EM' }]}
                 agents={[{ initials: 'cx', tone: 'coral' }, { initials: 'oh', tone: 'teal' }]}
+                navigateTo="/runs/r-9143"
               />
               <IncidentCard
                 sev={2}
@@ -337,6 +341,7 @@ export function IncidentsPage() {
                 services={['stripe-bridge', 'webhooks']}
                 oncall={[{ initials: 'HK' }]}
                 agents={[{ initials: 'cx', tone: 'coral' }]}
+                navigateTo="/runs/r-9143"
               />
               <IncidentCard
                 sev={3}
@@ -347,6 +352,7 @@ export function IncidentsPage() {
                 services={['cron', 'growth-api']}
                 oncall={[{ initials: 'SH' }]}
                 agents={null}
+                navigateTo="/deploys"
               />
             </div>
 

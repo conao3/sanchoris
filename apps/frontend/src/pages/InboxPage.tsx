@@ -3,6 +3,7 @@ import { Rail, type RailItemDef } from '../components/shell/Rail';
 import { Screen, ScreenHead, ScreenBody, Crumbs } from '../components/shell/Screen';
 import { Btn, Pill, Tag, type PillKind, type TagTone } from '../components/shell/primitives';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── HR card types ─────────────────────────────────────────────────────────────
 
@@ -17,6 +18,7 @@ type HRCard = {
   actions: Array<{ variant: 'primary' | 'secondary' | 'ghost'; label: string }>;
   urgent?: boolean;
   hidden?: boolean;
+  navigateTo: string;
 };
 
 type HRGroup = {
@@ -42,6 +44,7 @@ const nowCards: HRCard[] = [
       { variant: 'ghost', label: 'Open task ↗' },
     ],
     urgent: true,
+    navigateTo: '/runs/r-9143',
   },
   {
     id: 'CON-1255',
@@ -57,6 +60,7 @@ const nowCards: HRCard[] = [
       { variant: 'ghost', label: 'Open task ↗' },
     ],
     urgent: true,
+    navigateTo: '/runs/r-9143',
   },
 ];
 
@@ -72,6 +76,7 @@ const todayCards: HRCard[] = [
       { variant: 'primary', label: 'Accept proposal' },
       { variant: 'secondary', label: 'Edit criteria' },
     ],
+    navigateTo: '/runs/r-9143',
   },
   {
     id: 'CON-1250',
@@ -84,6 +89,7 @@ const todayCards: HRCard[] = [
       { variant: 'primary', label: 'Confirm rollup' },
       { variant: 'secondary', label: 'Keep separate' },
     ],
+    navigateTo: '/runs/r-9143',
   },
   {
     id: 'CON-1253',
@@ -96,8 +102,9 @@ const todayCards: HRCard[] = [
       { variant: 'primary', label: 'Approve' },
       { variant: 'secondary', label: 'View diff' },
     ],
+    navigateTo: '/pull-requests',
   },
-  { id: '', runId: '', pill: { kind: 'default', label: '' }, title: '', desc: '', actions: [], hidden: true },
+  { id: '', runId: '', pill: { kind: 'default', label: '' }, title: '', desc: '', actions: [], hidden: true, navigateTo: '' },
 ];
 
 const thisWeekCards: HRCard[] = [
@@ -111,6 +118,7 @@ const thisWeekCards: HRCard[] = [
       { variant: 'secondary', label: 'Open diff' },
       { variant: 'ghost', label: 'Reassign' },
     ],
+    navigateTo: '/gates',
   },
   {
     id: 'CON-1225',
@@ -122,6 +130,7 @@ const thisWeekCards: HRCard[] = [
       { variant: 'secondary', label: 'Read plan' },
       { variant: 'ghost', label: 'Reassign' },
     ],
+    navigateTo: '/runs/r-9143',
   },
 ];
 
@@ -139,11 +148,12 @@ function HRCardView({ card }: { card: HRCard }) {
   }
   return (
     <article
-      className={`rounded-[10px] border p-[14px_16px] ${
+      className={`rounded-[10px] border p-[14px_16px] cursor-pointer ${
         card.urgent
           ? 'border-[rgba(204,120,92,0.4)] bg-[rgba(204,120,92,0.03)]'
           : 'border-hairline bg-canvas'
       }`}
+      onClick={() => navigate(card.navigateTo)}
     >
       <div className="mb-[6px] flex flex-wrap items-center gap-2">
         <span className="font-mono text-[11px] text-muted">
