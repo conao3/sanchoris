@@ -3,6 +3,7 @@ import { Rail, type RailItemDef } from '../components/shell/Rail';
 import { Screen, ScreenHead, ScreenBody, Crumbs } from '../components/shell/Screen';
 import { Btn, Pill, type PillKind } from '../components/shell/primitives';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Rail items ─────────────────────────────────────────────────────────────
 
@@ -220,8 +221,12 @@ const WORKER_ROWS: WorkerRow[] = [
 // ─── Worker table row ─────────────────────────────────────────────────────────
 
 function WorkerTableRow({ row }: { row: WorkerRow }) {
+  const clickable = row.taskId !== null;
   return (
-    <tr className="border-b border-hairline-soft last:border-b-0">
+    <tr
+      className={`border-b border-hairline-soft last:border-b-0 ${clickable ? 'cursor-pointer hover:bg-surface-soft/60' : ''}`}
+      onClick={clickable ? () => navigate('/runs/r-9143') : undefined}
+    >
       <td className="px-4 py-[13px] align-middle">
         <div className="flex flex-col gap-[2px]">
           <span className="text-[13px] font-semibold text-ink">
