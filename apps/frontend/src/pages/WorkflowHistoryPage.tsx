@@ -5,6 +5,7 @@ import { Rail } from '../components/shell/Rail';
 import { Screen, ScreenHead, ScreenBody, Crumbs } from '../components/shell/Screen';
 import { Btn, Pill } from '../components/shell/primitives';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Page-local primitives ─────────────────────────────────────────────────────
 
@@ -381,8 +382,8 @@ function RunTable() {
             <>
               <tr
                 key={row.run}
-                className={row.expandable ? 'cursor-pointer' : ''}
-                onClick={row.expandable ? () => setExpanded((v) => !v) : undefined}
+                className="cursor-pointer"
+                onClick={row.expandable ? () => setExpanded((v) => !v) : () => navigate('/runs/' + row.run.toLowerCase())}
               >
                 <td className="border-b border-hairline-soft px-4 py-[13px] align-middle font-mono text-[13px]">
                   {row.run}
@@ -429,7 +430,7 @@ export function WorkflowHistoryPage() {
     >
       <Screen>
         <ScreenHead>
-          <Crumbs items={['acme-org', 'Workflows', 'delivery/default', 'History']} />
+          <Crumbs items={['acme-org', 'Workflows', { label: 'delivery/default', href: '/workflows/delivery-default' }, 'History']} />
           <div className="flex items-start justify-between gap-4">
             <div>
               <h1 className="m-0 font-serif text-[30px] font-medium leading-[1.15] tracking-[-0.6px] text-ink">
