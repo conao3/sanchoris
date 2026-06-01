@@ -4,6 +4,7 @@ import { Rail, type RailItemDef } from '../components/shell/Rail';
 import { Screen, ScreenHead, ScreenBody, Crumbs } from '../components/shell/Screen';
 import { Btn, Kbd, Pill } from '../components/shell/primitives';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Rail items ─────────────────────────────────────────────────────────────────
 
@@ -253,7 +254,14 @@ const QUEUE_ROWS_DIRECT: QueueRow[] = [
 
 function QueueTableRow({ row }: { row: QueueRow }) {
   return (
-    <tr className="border-b border-hairline-soft">
+    <tr
+      className="cursor-pointer border-b border-hairline-soft"
+      onClick={(e) => {
+        if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+          navigate('/runs/r-9143');
+        }
+      }}
+    >
       <td className="px-[16px] py-[13px] align-middle" style={{ width: '36px' }}>
         <DragHandle />
       </td>
