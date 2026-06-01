@@ -4,6 +4,7 @@ import { Rail } from '../components/shell/Rail';
 import { Screen, ScreenHead, ScreenBody, Crumbs } from '../components/shell/Screen';
 import { Btn, Kbd, Pill, type PillKind } from '../components/shell/primitives';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Window-tab dot color map ──────────────────────────────────────────────────
 
@@ -23,14 +24,17 @@ function WindowTab({
   dot,
   active,
   kbd,
+  onClick,
 }: {
   label: string;
   dot: WDot;
   active?: boolean;
   kbd: string;
+  onClick?: () => void;
 }) {
   return (
     <div
+      onClick={onClick}
       className={`flex h-[36px] cursor-pointer select-none items-center gap-2 rounded-t-[7px] border border-b-0 px-[14px] pb-0 pt-[7px] text-[12.5px] -mb-px ${
         active
           ? 'border-hairline bg-canvas font-medium text-ink'
@@ -52,18 +56,21 @@ function MiniWin({
   subtitle,
   tall,
   children,
+  onClick,
 }: {
   dot: WDot;
   title: string;
   subtitle?: string;
   tall?: boolean;
   children: ReactNode;
+  onClick?: () => void;
 }) {
   return (
     <div
+      onClick={onClick}
       className={`flex min-h-0 flex-col overflow-hidden rounded-[10px] border border-hairline bg-canvas shadow-[0_2px_8px_rgba(20,20,19,0.04)] ${
         tall ? 'row-span-2' : ''
-      }`}
+      }${onClick ? ' cursor-pointer' : ''}`}
     >
       {/* mwh */}
       <div className="flex h-8 flex-shrink-0 items-center gap-2 border-b border-hairline-soft bg-surface-soft px-3 text-[12px] font-medium text-body-strong">
@@ -409,10 +416,10 @@ const PRS: PRRow[] = [
 function Winbar() {
   return (
     <div className="flex h-[42px] flex-shrink-0 items-stretch border-b border-hairline bg-surface-soft px-4 pb-0 pt-[6px]">
-      <WindowTab label="acme-platform · runs" dot="coral" active kbd="⌘1" />
-      <WindowTab label="queue · global" dot="teal" kbd="⌘2" />
-      <WindowTab label="PRs · all repos" dot="navy" kbd="⌘3" />
-      <WindowTab label="incidents · prod" dot="amber" kbd="⌘4" />
+      <WindowTab label="acme-platform · runs" dot="coral" active kbd="⌘1" onClick={() => navigate('/runs/r-9143')} />
+      <WindowTab label="queue · global" dot="teal" kbd="⌘2" onClick={() => navigate('/queue')} />
+      <WindowTab label="PRs · all repos" dot="navy" kbd="⌘3" onClick={() => navigate('/pull-requests')} />
+      <WindowTab label="incidents · prod" dot="amber" kbd="⌘4" onClick={() => navigate('/gates')} />
       <button
         type="button"
         className="ml-[6px] flex h-[30px] cursor-pointer items-center gap-[6px] self-center rounded-[6px] border border-dashed border-hairline bg-canvas px-3 font-sans text-[12px] text-muted"
@@ -435,6 +442,7 @@ function RunsMiniWin() {
       title="acme-platform · Runs"
       subtitle="github.com/acme/acme-platform · main · wf v0.3.2"
       tall
+      onClick={() => navigate('/runs/r-9143')}
     >
       {/* mini-toolbar */}
       <div className="flex flex-shrink-0 items-center gap-[6px] border-b border-hairline-soft px-3 py-[7px]">
@@ -503,7 +511,7 @@ function RunsMiniWin() {
 
 function QueueMiniWin() {
   return (
-    <MiniWin dot="teal" title="queue · global" subtitle="14 incoming · ranked">
+    <MiniWin dot="teal" title="queue · global" subtitle="14 incoming · ranked" onClick={() => navigate('/queue')}>
       <table className="w-full table-fixed border-separate border-spacing-0">
         <thead>
           <tr>
@@ -546,7 +554,7 @@ function QueueMiniWin() {
 
 function PRsMiniWin() {
   return (
-    <MiniWin dot="amber" title="PRs · all repos" subtitle="11 open · 1 failing">
+    <MiniWin dot="amber" title="PRs · all repos" subtitle="11 open · 1 failing" onClick={() => navigate('/pull-requests')}>
       <table className="w-full table-fixed border-separate border-spacing-0">
         <thead>
           <tr>

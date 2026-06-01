@@ -4,6 +4,7 @@ import { Rail } from '../components/shell/Rail';
 import { Screen, ScreenHead, Crumbs } from '../components/shell/Screen';
 import { Btn, Pill, Tag, type PillKind, type TagTone } from '../components/shell/primitives';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Rail ──────────────────────────────────────────────────────────────────────
 
@@ -109,6 +110,8 @@ type GateCardDef = {
   primaryLabel: string;
   secondaryLabel: string;
   age: string;
+  primaryHref?: string;
+  secondaryHref?: string;
 };
 
 function GateCard({ card }: { card: GateCardDef }) {
@@ -121,8 +124,8 @@ function GateCard({ card }: { card: GateCardDef }) {
       <div className="mb-1 text-[13px] font-medium leading-[1.35] text-ink">{card.title}</div>
       <div className="mb-2 text-[11.5px] leading-[1.45] text-muted">{card.desc}</div>
       <div className="flex items-center gap-[6px]">
-        <Btn variant="primary" size="sm">{card.primaryLabel}</Btn>
-        <Btn variant="secondary" size="sm">{card.secondaryLabel}</Btn>
+        <Btn variant="primary" size="sm" onClick={card.primaryHref ? () => navigate(card.primaryHref!) : undefined}>{card.primaryLabel}</Btn>
+        <Btn variant="secondary" size="sm" onClick={card.secondaryHref ? () => navigate(card.secondaryHref!) : undefined}>{card.secondaryLabel}</Btn>
         <span className="ml-auto font-mono text-[10.5px] text-muted-soft">{card.age}</span>
       </div>
     </div>
@@ -229,6 +232,8 @@ const GATE_CARDS: GateCardDef[] = [
     primaryLabel: 'Approve',
     secondaryLabel: 'View diff',
     age: '22 m',
+    primaryHref: '/runs/r-9143/gate',
+    secondaryHref: '/pull-requests',
   },
   {
     tagTone: 'amber',
@@ -239,6 +244,8 @@ const GATE_CARDS: GateCardDef[] = [
     primaryLabel: 'Override',
     secondaryLabel: 'Defer',
     age: '1 h',
+    primaryHref: '/gates',
+    secondaryHref: '/gates',
   },
   {
     tagTone: 'err',
@@ -249,6 +256,8 @@ const GATE_CARDS: GateCardDef[] = [
     primaryLabel: 'Confirm',
     secondaryLabel: 'Reject',
     age: '3 h',
+    primaryHref: '/gates',
+    secondaryHref: '/gates',
   },
 ];
 
@@ -275,7 +284,7 @@ function RunPill({ kind, label }: { kind: PillKind; label: string }) {
 
 function RunTableRow({ row }: { row: RunRow }) {
   return (
-    <tr className="border-b border-hairline-soft last:border-b-0">
+    <tr className="cursor-pointer border-b border-hairline-soft last:border-b-0" onClick={() => navigate('/runs/r-9143')}>
       <td className="px-[14px] py-[11px] align-middle">
         <div>
           <span className="font-mono text-[11px] text-muted">{row.id}</span>
