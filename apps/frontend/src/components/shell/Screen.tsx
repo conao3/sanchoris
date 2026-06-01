@@ -1,16 +1,30 @@
+import { Link } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
 
-export function Crumbs({ items }: { items: string[] }) {
+export type CrumbItem = { label: string; href?: string };
+
+export function Crumbs({ items }: { items: (string | CrumbItem)[] }) {
+  const normalized: CrumbItem[] = items.map((item) =>
+    typeof item === 'string' ? { label: item } : item,
+  );
   return (
     <div className="mb-2 flex items-center gap-[7px] font-sans text-[12px] text-muted">
-      {items.map((item, i) => (
+      {normalized.map((item, i) => (
         <span key={i} className="flex items-center gap-[7px]">
           {i > 0 && (
             <span className="text-[10px] text-muted-soft" aria-hidden="true">
               /
             </span>
           )}
-          <span className={i === items.length - 1 ? 'font-medium text-ink' : ''}>{item}</span>
+          {item.href && i < normalized.length - 1 ? (
+            <Link to={item.href} className="no-underline hover:underline">
+              {item.label}
+            </Link>
+          ) : (
+            <span className={i === normalized.length - 1 ? 'font-medium text-ink' : ''}>
+              {item.label}
+            </span>
+          )}
         </span>
       ))}
     </div>

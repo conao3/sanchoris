@@ -1,5 +1,13 @@
 import { ApolloClient, ApolloLink, HttpLink, InMemoryCache } from '@apollo/client';
 import { ApolloProvider, useMutation, useQuery } from '@apollo/client/react';
+import {
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  redirect,
+  RouterProvider,
+} from '@tanstack/react-router';
 import React from 'react';
 import { Button } from 'react-aria-components';
 import { createRoot } from 'react-dom/client';
@@ -31,6 +39,7 @@ import { WorkflowHistoryPage } from './pages/WorkflowHistoryPage';
 import { WorkflowEditorPage } from './pages/WorkflowEditorPage';
 import { WorkflowsPage } from './pages/WorkflowsPage';
 import { getIdToken, isLoggedIn } from './lib/cognito';
+import { setRouter } from './lib/navigate';
 import './style.css';
 
 type PanelMetric = {
@@ -452,84 +461,202 @@ function formatEnum(value: string) {
     .join(' ');
 }
 
-function App() {
-  const path = window.location.pathname;
+// ─── Route tree ────────────────────────────────────────────────────────────────
 
-  if (path === '/auth/callback') {
-    return <AuthCallbackPage />;
+function authGuard() {
+  if (!isLoggedIn()) {
+    throw redirect({ to: '/login' });
   }
+}
 
-  // Single early gate: everything except the login flow requires a token.
-  if (!isLoggedIn() && path !== '/login' && path !== '/auth/callback') {
-    return <LoginPage />;
-  }
+const rootRoute = createRootRoute({
+  component: Outlet,
+});
 
-  if (path === '/login') {
-    return <LoginPage />;
-  }
+// Public routes (no auth guard)
+const loginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/login',
+  component: LoginPage,
+});
 
-  if (path === '/projects/acme-platform') {
-    return <ProjectPage />;
-  }
-  if (path === '/space') {
-    return <SpacePage />;
-  }
-  if (path === '/channels') {
-    return <ChannelsPage />;
-  }
-  if (path === '/workflows/delivery-default') {
-    return <WorkflowEditorPage />;
-  }
-  if (path === '/deploys') {
-    return <DeploysPage />;
-  }
-  if (path === '/gates') {
-    return <GatesPage />;
-  }
-  if (path === '/workers') {
-    return <WorkersPage />;
-  }
-  if (path === '/pull-requests') {
-    return <PullRequestsPage />;
-  }
-  if (path === '/queue') {
-    return <QueuePage />;
-  }
-  if (path === '/inbox') {
-    return <InboxPage />;
-  }
-  if (path === '/notifications') {
-    return <NotificationsPage />;
-  }
-  if (path === '/runs/r-9143/gate') {
-    return <RunGatePage />;
-  }
-  if (path === '/workflows/delivery-default/history') {
-    return <WorkflowHistoryPage />;
-  }
-  if (path === '/workflows') {
-    return <WorkflowsPage />;
-  }
-  if (path === '/runs/r-9143') {
-    return <RunDetailPage />;
-  }
-  if (path === '/workflows/delivery-default/publish') {
-    return <PublishWorkflowPage />;
-  }
-  if (path === '/tools/direct-command') {
-    return <DirectCommandPage />;
-  }
-  if (path === '/incidents') {
-    return <IncidentsPage />;
-  }
-  if (path === '/memory') {
-    return <MemoryPage />;
-  }
-  if (path === '/admin/health') {
-    return <AdminHealthPage />;
-  }
+const authCallbackRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/auth/callback',
+  component: AuthCallbackPage,
+});
 
-  return <MvpShell />;
+// Protected route parent — all children inherit the auth guard
+const protectedRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  id: 'protected',
+  beforeLoad: authGuard,
+  component: Outlet,
+});
+
+const spaceRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/space',
+  component: SpacePage,
+});
+
+const projectRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/projects/acme-platform',
+  component: ProjectPage,
+});
+
+const queueRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/queue',
+  component: QueuePage,
+});
+
+const pullRequestsRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/pull-requests',
+  component: PullRequestsPage,
+});
+
+const runDetailRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/runs/r-9143',
+  component: RunDetailPage,
+});
+
+const runGateRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/runs/r-9143/gate',
+  component: RunGatePage,
+});
+
+const workflowsRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/workflows',
+  component: WorkflowsPage,
+});
+
+const workflowEditorRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/workflows/delivery-default',
+  component: WorkflowEditorPage,
+});
+
+const workflowHistoryRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/workflows/delivery-default/history',
+  component: WorkflowHistoryPage,
+});
+
+const workflowPublishRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/workflows/delivery-default/publish',
+  component: PublishWorkflowPage,
+});
+
+const gatesRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/gates',
+  component: GatesPage,
+});
+
+const workersRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/workers',
+  component: WorkersPage,
+});
+
+const memoryRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/memory',
+  component: MemoryPage,
+});
+
+const channelsRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/channels',
+  component: ChannelsPage,
+});
+
+const inboxRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/inbox',
+  component: InboxPage,
+});
+
+const deploysRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/deploys',
+  component: DeploysPage,
+});
+
+const incidentsRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/incidents',
+  component: IncidentsPage,
+});
+
+const directCommandRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/tools/direct-command',
+  component: DirectCommandPage,
+});
+
+const notificationsRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/notifications',
+  component: NotificationsPage,
+});
+
+const adminHealthRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/admin/health',
+  component: AdminHealthPage,
+});
+
+const indexRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/',
+  component: MvpShell,
+});
+
+const routeTree = rootRoute.addChildren([
+  loginRoute,
+  authCallbackRoute,
+  protectedRoute.addChildren([
+    indexRoute,
+    spaceRoute,
+    projectRoute,
+    queueRoute,
+    pullRequestsRoute,
+    runDetailRoute,
+    runGateRoute,
+    workflowsRoute,
+    workflowEditorRoute,
+    workflowHistoryRoute,
+    workflowPublishRoute,
+    gatesRoute,
+    workersRoute,
+    memoryRoute,
+    channelsRoute,
+    inboxRoute,
+    deploysRoute,
+    incidentsRoute,
+    directCommandRoute,
+    notificationsRoute,
+    adminHealthRoute,
+  ]),
+]);
+
+const router = createRouter({ routeTree });
+
+// Register the router for navigate() and Link usage outside React components.
+setRouter(router);
+
+declare module '@tanstack/react-router' {
+  interface Register {
+    router: typeof router;
+  }
 }
 
 const root = document.getElementById('root');
@@ -541,7 +668,7 @@ if (!root) {
 createRoot(root).render(
   <React.StrictMode>
     <ApolloProvider client={apolloClient}>
-      <App />
+      <RouterProvider router={router} />
     </ApolloProvider>
   </React.StrictMode>,
 );

@@ -1,3 +1,4 @@
+import { Link } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
 import { Kbd } from './primitives';
 import { clearTokens, getLogoutUrl } from '../../lib/cognito';
@@ -130,7 +131,9 @@ export function Topbar() {
   return (
     <header className="flex h-14 flex-shrink-0 items-center gap-4 border-b border-hairline bg-canvas px-5">
       <div className="flex items-center gap-3">
-        <Wordmark />
+        <Link to="/space" className="no-underline">
+          <Wordmark />
+        </Link>
         <span className="h-[22px] w-px bg-hairline" aria-hidden="true" />
         <WorkspaceSwitcher tag="A" tone="org" name="acme-org" />
         <span className="font-light text-muted-soft">/</span>
