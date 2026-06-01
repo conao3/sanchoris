@@ -4,6 +4,7 @@ import { Rail } from '../components/shell/Rail';
 import { Screen, ScreenHead, ScreenBody, Crumbs } from '../components/shell/Screen';
 import { Btn, Pill, type PillKind } from '../components/shell/primitives';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -170,8 +171,12 @@ function Stage({ stage, isLast }: { stage: StageData; isLast: boolean }) {
 }
 
 function RecentRow({ row }: { row: DeployRow }) {
+  const dest = row.pillKind === 'gate' ? '/runs/r-9143/gate' : '/runs/r-9143';
   return (
-    <div className="grid grid-cols-[60px_1fr_70px_60px] items-center gap-2 border-b border-dashed border-hairline-soft py-[5px] text-[11.5px] last:border-b-0">
+    <div
+      className="grid cursor-pointer grid-cols-[60px_1fr_70px_60px] items-center gap-2 border-b border-dashed border-hairline-soft py-[5px] text-[11.5px] last:border-b-0 hover:bg-surface-soft/60"
+      onClick={() => navigate(dest)}
+    >
       <span className="font-mono text-[10px] uppercase tracking-[1px] text-muted">{row.env}</span>
       <span className="text-body">{row.message}</span>
       <Pill kind={row.pillKind}>
