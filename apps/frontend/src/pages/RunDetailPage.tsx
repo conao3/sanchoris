@@ -4,6 +4,7 @@ import { Rail } from '../components/shell/Rail';
 import { Crumbs, Screen, ScreenHead } from '../components/shell/Screen';
 import { Btn, Pill } from '../components/shell/primitives';
 import { ACCOUNT_ITEMS, WORKSPACE_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Page-local avatar helpers ────────────────────────────────────────────────
 // Avatar from Topbar doesn't support sm+color combinations needed here.
@@ -260,7 +261,14 @@ const TURNS: TurnData[] = [
         Committed{' '}
         <span className="font-mono">3f2a · feat(auth): OAuth vendor callback + ITP fallback</span>.
         Opened PR <span className="font-mono">#482</span>. Workflow will hold at{' '}
-        <strong className="font-semibold">gate</strong> while merge policy resolves.
+        <strong
+          className="cursor-pointer font-semibold hover:underline"
+          onClick={(e) => {
+            if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+              navigate('/runs/r-9143/gate');
+            }
+          }}
+        >gate</strong> while merge policy resolves.
       </>
     ),
     tools: [
@@ -473,7 +481,7 @@ export function RunDetailPage() {
     <AppShell rail={<Rail items={railItems} bottomItems={ACCOUNT_ITEMS} />}>
       <Screen>
         <ScreenHead>
-          <Crumbs items={['acme-org', 'acme-platform', 'Runs', 'R-9143 · CON-1247']} />
+          <Crumbs items={['acme-org', 'acme-platform', { label: 'Runs', href: '/queue' }, 'R-9143 · CON-1247']} />
           <div className="flex items-start justify-between gap-4">
             <div>
               <h1 className="m-0 font-serif text-[30px] font-medium leading-[1.15] tracking-[-0.6px] text-ink">
@@ -514,7 +522,7 @@ export function RunDetailPage() {
             <div className="flex flex-shrink-0 items-center gap-2 pt-1">
               <Btn variant="secondary">Pause</Btn>
               <Btn variant="secondary">Take over</Btn>
-              <Btn variant="primary">Open PR #482 ↗</Btn>
+              <Btn variant="primary" onClick={() => navigate('/pull-requests')}>Open PR #482 ↗</Btn>
             </div>
           </div>
         </ScreenHead>
