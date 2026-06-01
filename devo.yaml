@@ -1,0 +1,15 @@
+session: sanchoris${SLUG:+-$SLUG}
+hook_session_closed: echo "sanchoris dev session closed; run 'docker compose down' to stop postgres"
+inherit_env:
+  - SLUG
+
+tasks:
+  - id: db
+    pane: root
+    cmd: direnv exec . docker compose up
+
+  - id: dev
+    pane: right_of:db
+    cmd: "direnv exec . bash -c 'until pg_isready -d \"${DATABASE_URL:-postgres://sanchoris:sanchoris@127.0.0.1:54329/sanchoris}\" >/dev/null 2>&1; do echo \"waiting for postgres...\"; sleep 1; done; PORTLESS_HTTPS=1 exec pnpm dev'"
+
+focus: dev
