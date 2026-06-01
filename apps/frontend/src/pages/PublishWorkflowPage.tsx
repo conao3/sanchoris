@@ -5,6 +5,7 @@ import { Rail } from '../components/shell/Rail';
 import { Screen, ScreenHead, ScreenBody, Crumbs } from '../components/shell/Screen';
 import { Btn, Pill, type PillKind } from '../components/shell/primitives';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Bar chart ────────────────────────────────────────────────────────────────
 
@@ -198,8 +199,8 @@ function HistoryTable() {
             <>
               <tr
                 key={row.id}
-                className={row.expandable ? 'cursor-pointer hover:bg-surface-soft/60' : ''}
-                onClick={row.expandable ? () => setExpanded((v) => !v) : undefined}
+                className={row.expandable ? 'cursor-pointer hover:bg-surface-soft/60' : 'cursor-pointer'}
+                onClick={row.expandable ? () => setExpanded((v) => !v) : () => navigate('/runs/' + row.id.toLowerCase())}
               >
                 <td className="border-b border-hairline-soft px-3 py-2 font-mono align-middle">{row.id}</td>
                 <td className="border-b border-hairline-soft px-3 py-2 font-mono align-middle">{row.task}</td>
@@ -274,7 +275,7 @@ export function PublishWorkflowPage() {
     >
       <Screen>
         <ScreenHead>
-          <Crumbs items={['acme-org', 'acme-platform', 'Workflows', 'delivery/default', 'Publish']} />
+          <Crumbs items={['acme-org', 'acme-platform', 'Workflows', { label: 'delivery/default', href: '/workflows/delivery-default' }, 'Publish']} />
           <div className="flex items-start justify-between gap-4">
             <div>
               <h1 className="m-0 font-serif text-[30px] font-medium leading-[1.15] tracking-[-0.6px] text-ink">

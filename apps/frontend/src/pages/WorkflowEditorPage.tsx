@@ -3,6 +3,7 @@ import { Rail } from '../components/shell/Rail';
 import { Screen, ScreenHead, Crumbs } from '../components/shell/Screen';
 import { Btn, Pill } from '../components/shell/primitives';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Local graph components ───────────────────────────────────────────────────
 
@@ -116,7 +117,7 @@ export function WorkflowEditorPage() {
     >
       <Screen>
         <ScreenHead>
-          <Crumbs items={['acme-org', 'Workflows', 'delivery/default']} />
+          <Crumbs items={['acme-org', { label: 'Workflows', href: '/workflows' }, 'delivery/default']} />
           <div className="flex items-start justify-between gap-4">
             <div>
               <h1 className="m-0 font-serif text-[30px] font-medium leading-[1.15] tracking-[-0.6px] text-ink">
@@ -137,9 +138,10 @@ export function WorkflowEditorPage() {
               </p>
             </div>
             <div className="flex flex-shrink-0 items-center gap-2 pt-1">
+              <Btn variant="secondary" onClick={() => navigate('/workflows/delivery-default/history')}>History</Btn>
               <Btn variant="secondary">Diff vs v0.3.2</Btn>
               <Btn variant="secondary">Save draft</Btn>
-              <Btn variant="primary">Publish v0.3.3</Btn>
+              <Btn variant="primary" onClick={() => navigate('/workflows/delivery-default/publish')}>Publish v0.3.3</Btn>
             </div>
           </div>
         </ScreenHead>

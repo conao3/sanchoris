@@ -3,6 +3,7 @@ import { Rail } from '../components/shell/Rail';
 import { Screen, ScreenHead, ScreenBody, Crumbs } from '../components/shell/Screen';
 import { Btn } from '../components/shell/primitives';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Empty-state heading section ─────────────────────────────────────────────
 
@@ -113,7 +114,7 @@ function W1Card({ card }: { card: CardDef }) {
         {card.meta}
       </div>
       <div>
-        <Btn variant={card.btnVariant} size="sm">
+        <Btn variant={card.btnVariant} size="sm" onClick={() => navigate('/workflows/delivery-default')}>
           {card.btnLabel}
         </Btn>
       </div>
@@ -201,7 +202,7 @@ export function WorkflowsPage() {
                 ))}
               </div>
 
-              <a className="cursor-pointer py-1 text-[13px] text-primary">
+              <a className="cursor-pointer py-1 text-[13px] text-primary" onClick={() => navigate('/workflows/delivery-default')}>
                 or start from blank canvas →
               </a>
 
