@@ -21,7 +21,7 @@ function loadDotenvIfExists(path = '.env') {
 
     const key = trimmed.slice(0, separator).trim();
     const rawValue = trimmed.slice(separator + 1).trim();
-    if (!key) {
+    if (!key || process.env[key] !== undefined) {
       continue;
     }
 
@@ -106,12 +106,13 @@ function stopAll() {
   }
 }
 
-loadDotenvIfExists();
+// Ambient env (direnv) wins; .env.local overrides .env for a direct `pnpm dev`.
+loadDotenvIfExists('.env.local');
+loadDotenvIfExists('.env');
 
-// Backend and frontend require Cognito config to start. direnv exports these
-// from the gitignored .envrc.local into the ambient env; loadDotenvIfExists also
-// picks up anything in .env. Fail loudly here so a missing var is obvious rather
-// than surfacing as a deep panic in the backend or a blank Hosted UI redirect.
+// Backend and frontend require Cognito config to start. Fail loudly here so a
+// missing var is obvious rather than surfacing as a deep panic in the backend or
+// a blank Hosted UI redirect.
 const requiredEnv = [
   'DATABASE_URL',
   'COGNITO_USER_POOL_ID',
@@ -123,7 +124,7 @@ const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 if (missingEnv.length > 0) {
   console.error(
     `sanchoris dev: missing required env: ${missingEnv.join(', ')}.\n` +
-      'Set them in the gitignored repo-root .envrc.local (see .env.example).',
+      'Set them in the gitignored repo-root .env.local (see .env.example).',
   );
   process.exit(1);
 }

@@ -3,11 +3,10 @@ hook_session_closed: echo "sanchoris dev session closed; local docker postgres (
 inherit_env:
   - SLUG
 
-# Dev now targets neon (DATABASE_URL set in the gitignored .envrc.local; see
-# .env.example). neon is the source of truth, so the local docker postgres is no
-# longer started by default. The `db` pane is kept for OFFLINE dev only: if you
-# leave DATABASE_URL unset, it falls back to local docker postgres — start that
-# pane manually with `docker compose up`. docker-compose.yml is retained.
+# Dev targets neon (DATABASE_URL set in the gitignored .env.local; see
+# .env.example). neon is the source of truth. The `db` pane covers OFFLINE dev:
+# leave DATABASE_URL unset to fall back to local docker postgres — start that
+# pane with `docker compose up`. docker-compose.yml is retained.
 tasks:
   - id: db
     # Local Postgres for OFFLINE dev only. With neon (DATABASE_URL set) this pane

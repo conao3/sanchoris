@@ -46,9 +46,16 @@ it (RS256 + issuer + exp + client_id/aud) against the pool JWKS and upserts the 
 
 ### Required environment
 
-Copy the placeholders from [`.env.example`](.env.example) into the gitignored
-repo-root `.envrc.local` (sourced by `.envrc` after `.env`, so it wins over the
-worktrunk-managed `.env` block and the flake default). **Never commit real values.**
+Every `.env*` file is treated as secret and gitignored; only `*.example` is
+committed. Copy the template into the gitignored repo-root `.env.local`:
+
+```sh
+cp .env.example .env.local
+```
+
+`.envrc` loads `.env.local` after `use flake`, so its values win over the
+worktrunk-managed `.env` block and the flake default; `scripts/dev.mjs` reads it
+too. **Only `.env.example` is committed; never commit real values.**
 
 | Variable | Consumer | Source |
 | --- | --- | --- |
@@ -66,14 +73,14 @@ aws cloudformation list-exports \
   --output text
 ```
 
-Example `.envrc.local` additions (placeholders — fill from the sources above):
+Example `.env.local` contents (placeholders — fill from the sources above):
 
 ```sh
-export DATABASE_URL="postgres://USER:PASS@HOST/DB?sslmode=require"   # neon
-export COGNITO_USER_POOL_ID="ap-northeast-1_xxxxxxxxx"
-export COGNITO_CLIENT_ID="xxxxxxxxxxxxxxxxxxxxxxxxxx"
-export VITE_COGNITO_DOMAIN="dev-auth-k8s.sancode.dev"
-export VITE_COGNITO_CLIENT_ID="$COGNITO_CLIENT_ID"
+DATABASE_URL=postgres://USER:PASS@HOST/DB?sslmode=require
+COGNITO_USER_POOL_ID=ap-northeast-1_xxxxxxxxx
+COGNITO_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxx
+VITE_COGNITO_DOMAIN=dev-auth-k8s.sancode.dev
+VITE_COGNITO_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 > **Prerequisite (separate repo).** The shared Cognito app client
@@ -86,7 +93,7 @@ export VITE_COGNITO_CLIENT_ID="$COGNITO_CLIENT_ID"
 ### Offline dev with local docker Postgres
 
 neon is the source of truth for dev. To work offline instead, leave `DATABASE_URL`
-**unset** in `.envrc.local`; the flake then defaults it to the local docker Postgres,
+**unset** in `.env.local`; the flake then defaults it to the local docker Postgres,
 which you start with:
 
 ```sh
