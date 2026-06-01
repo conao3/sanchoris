@@ -95,14 +95,14 @@ function SettingsIcon() {
 // (e.g. `WORKSPACE_ITEMS.map((i) => ({ ...i, active: i.key === 'prs' }))`).
 
 export const WORKSPACE_ITEMS: RailItemDef[] = [
-  { key: 'space', icon: <SpaceIcon />, label: 'Space' },
-  { key: 'projects', icon: <ProjectsIcon />, label: 'Projects', badge: '7' },
-  { key: 'queue', icon: <QueueIcon />, label: 'Queue', badge: '28', badgeTone: 'coral' },
-  { key: 'prs', icon: <PRsIcon />, label: 'PRs', badge: '12' },
-  { key: 'workflows', icon: <WorkflowsIcon />, label: 'Workflows' },
-  { key: 'workers', icon: <WorkersIcon />, label: 'Workers' },
-  { key: 'memory', icon: <MemoryIcon />, label: 'Memory' },
-  { key: 'channels', icon: <ChannelsIcon />, label: 'Channels' },
+  { key: 'space', icon: <SpaceIcon />, label: 'Space', href: '/space' },
+  { key: 'projects', icon: <ProjectsIcon />, label: 'Projects', badge: '7', href: '/projects/acme-platform' },
+  { key: 'queue', icon: <QueueIcon />, label: 'Queue', badge: '28', badgeTone: 'coral', href: '/queue' },
+  { key: 'prs', icon: <PRsIcon />, label: 'PRs', badge: '12', href: '/pull-requests' },
+  { key: 'workflows', icon: <WorkflowsIcon />, label: 'Workflows', href: '/workflows' },
+  { key: 'workers', icon: <WorkersIcon />, label: 'Workers', href: '/workers' },
+  { key: 'memory', icon: <MemoryIcon />, label: 'Memory', href: '/memory' },
+  { key: 'channels', icon: <ChannelsIcon />, label: 'Channels', href: '/channels' },
 ];
 
 export const ACCOUNT_ITEMS: RailItemDef[] = [

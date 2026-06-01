@@ -1,3 +1,4 @@
+import { Link, useRouterState } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
 import { Kbd } from './primitives';
 
@@ -7,6 +8,7 @@ export type RailItemDef = {
   label: string;
   badge?: string;
   badgeTone?: 'default' | 'coral';
+  href?: string;
   active?: boolean;
 };
 
@@ -24,28 +26,22 @@ function RailItem({
   badge,
   badgeTone = 'default',
   active,
-  onClick,
+  href,
 }: {
   icon: ReactNode;
   label: string;
   badge?: string;
   badgeTone?: 'default' | 'coral';
   active?: boolean;
-  onClick?: () => void;
+  href?: string;
 }) {
   const badgeClass =
     badgeTone === 'coral'
       ? 'bg-primary text-white border-primary'
       : 'border border-hairline bg-canvas text-muted';
-  return (
-    <a
-      role="button"
-      tabIndex={0}
-      onClick={onClick}
-      className={`flex cursor-pointer items-center gap-[11px] rounded-[6px] px-[10px] py-2 text-[13px] no-underline ${
-        active ? 'bg-surface-cream-strong font-semibold text-ink' : 'text-body'
-      }`}
-    >
+
+  const inner = (
+    <>
       <span
         className={`inline-flex h-4 w-4 flex-shrink-0 items-center justify-center ${
           active ? 'text-primary' : 'text-muted'
@@ -61,7 +57,25 @@ function RailItem({
           {badge}
         </span>
       )}
-    </a>
+    </>
+  );
+
+  const baseClass = `flex cursor-pointer items-center gap-[11px] rounded-[6px] px-[10px] py-2 text-[13px] no-underline ${
+    active ? 'bg-surface-cream-strong font-semibold text-ink' : 'text-body'
+  }`;
+
+  if (href) {
+    return (
+      <Link to={href} className={baseClass}>
+        {inner}
+      </Link>
+    );
+  }
+
+  return (
+    <span role="button" tabIndex={0} className={baseClass}>
+      {inner}
+    </span>
   );
 }
 
@@ -90,6 +104,8 @@ export function Rail({
   items: RailItemDef[];
   bottomItems?: RailItemDef[];
 }) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+
   return (
     <aside className="flex w-56 flex-shrink-0 flex-col gap-[2px] border-r border-hairline bg-surface-soft px-3 pb-[14px] pt-[18px]">
       {items.map((item) => (
@@ -99,7 +115,8 @@ export function Rail({
           label={item.label}
           badge={item.badge}
           badgeTone={item.badgeTone}
-          active={item.active}
+          href={item.href}
+          active={item.href ? pathname === item.href : item.active}
         />
       ))}
       <div className="flex-1" />
@@ -110,7 +127,8 @@ export function Rail({
           label={item.label}
           badge={item.badge}
           badgeTone={item.badgeTone}
-          active={item.active}
+          href={item.href}
+          active={item.href ? pathname === item.href : item.active}
         />
       ))}
       <RailHelp />

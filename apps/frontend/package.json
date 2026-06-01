@@ -15,6 +15,7 @@
   "dependencies": {
     "@apollo/client": "^4.1.9",
     "@graphql-typed-document-node/core": "^3.2.0",
+    "@tanstack/react-router": "^1.170.10",
     "graphql": "^16.14.0",
     "react": "latest",
     "react-aria-components": "latest",
