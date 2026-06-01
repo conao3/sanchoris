@@ -9,3 +9,9 @@ repository.workspace = true
 async-graphql = "7.2.1"
 futures-executor = "0.3.32"
 serde_json = "1.0.149"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+jsonwebtoken = "9"
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "macros", "uuid", "chrono", "tls-rustls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+serde = { version = "1", features = ["derive"] }

@@ -1,26 +1,61 @@
+mod auth;
+mod env;
+
 use async_graphql::{
     Context, EmptySubscription, Enum, InputObject, Object, Request, Schema, SimpleObject,
 };
+use auth::provision::{self, AuthContext};
+use auth::verify::{self, AuthError};
+use env::BackendEnv;
 use futures_executor::block_on;
 use serde_json::Value;
+use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Arc;
+use tokio::runtime::Runtime;
 
 const JSON_CONTENT_TYPE: &str = "application/json";
 const GRAPHQL_PATH: &str = "/api/graphql";
+const ME_PATH: &str = "/api/me";
 
 type SanchorisSchema = Schema<QueryRoot, MutationRoot, EmptySubscription>;
 
+struct ServerState {
+    schema: SanchorisSchema,
+    env: Arc<BackendEnv>,
+    pool: PgPool,
+    runtime: Runtime,
+}
+
 fn main() -> std::io::Result<()> {
     let address = backend_address();
-    let listener = TcpListener::bind(&address)?;
-    let schema = build_schema();
+    let backend_env = Arc::new(env::load());
 
+    let runtime = Runtime::new()?;
+    let pool = runtime.block_on(async {
+        PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&backend_env.database_url)
+            .await
+            .expect("failed to connect to database")
+    });
+
+    let schema = build_schema(pool.clone(), backend_env.clone());
+    let state = ServerState {
+        schema,
+        env: backend_env,
+        pool,
+        runtime,
+    };
+
+    let listener = TcpListener::bind(&address)?;
     println!("sanchoris-backend listening on http://{address}");
 
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => handle_connection(stream, &schema)?,
+            Ok(stream) => handle_connection(stream, &state)?,
             Err(error) => eprintln!("failed to accept connection: {error}"),
         }
     }
@@ -36,13 +71,15 @@ fn backend_address() -> String {
     })
 }
 
-fn build_schema() -> SanchorisSchema {
+fn build_schema(pool: PgPool, env: Arc<BackendEnv>) -> SanchorisSchema {
     Schema::build(QueryRoot, MutationRoot, EmptySubscription)
         .data(Store::sample())
+        .data(pool)
+        .data(env)
         .finish()
 }
 
-fn handle_connection(mut stream: TcpStream, schema: &SanchorisSchema) -> std::io::Result<()> {
+fn handle_connection(mut stream: TcpStream, state: &ServerState) -> std::io::Result<()> {
     let request = read_http_request(&mut stream)?;
     let (method, path) = request_line(&request);
 
@@ -52,8 +89,13 @@ fn handle_connection(mut stream: TcpStream, schema: &SanchorisSchema) -> std::io
             JSON_CONTENT_TYPE,
             r#"{"status":"ok","service":"sanchoris-backend"}"#.to_string(),
         ),
-        ("GET", GRAPHQL_PATH) => ("200 OK", JSON_CONTENT_TYPE, schema_sdl_response(schema)),
-        ("POST", GRAPHQL_PATH) => execute_graphql(schema, &request),
+        ("GET", GRAPHQL_PATH) => (
+            "200 OK",
+            JSON_CONTENT_TYPE,
+            schema_sdl_response(&state.schema),
+        ),
+        ("POST", GRAPHQL_PATH) => execute_graphql(state, &request),
+        ("GET", ME_PATH) => current_user_response(state, &request),
         _ => (
             "404 Not Found",
             JSON_CONTENT_TYPE,
@@ -94,16 +136,76 @@ fn request_body(request: &str) -> &str {
     request.split("\r\n\r\n").nth(1).unwrap_or_default()
 }
 
+fn authorization_header(request: &str) -> Option<&str> {
+    let head = request.split("\r\n\r\n").next().unwrap_or(request);
+    head.lines()
+        .find(|line| {
+            line.len() >= "authorization:".len()
+                && line[.."authorization:".len()].eq_ignore_ascii_case("authorization:")
+        })
+        .and_then(|line| line.split_once(':'))
+        .map(|(_, value)| value.trim())
+        .map(|value| value.strip_prefix("Bearer ").unwrap_or(value).trim())
+        .filter(|token| !token.is_empty())
+}
+
+fn resolve_auth_context(state: &ServerState, request: &str) -> Result<Option<AuthContext>, AuthError> {
+    let Some(token) = authorization_header(request) else {
+        return Ok(None);
+    };
+    let env = state.env.clone();
+    let pool = state.pool.clone();
+    state.runtime.block_on(async move {
+        let identity = verify::verify_token(token, &env).await?;
+        let context = provision::build_auth_context(&pool, &identity).await?;
+        Ok(Some(context))
+    })
+}
+
+fn unauthorized_response() -> (&'static str, &'static str, String) {
+    (
+        "401 Unauthorized",
+        JSON_CONTENT_TYPE,
+        serde_json::json!({ "errors": [{ "message": "unauthorized" }] }).to_string(),
+    )
+}
+
+fn current_user_response(
+    state: &ServerState,
+    request: &str,
+) -> (&'static str, &'static str, String) {
+    match resolve_auth_context(state, request) {
+        Ok(Some(context)) => (
+            "200 OK",
+            JSON_CONTENT_TYPE,
+            serde_json::json!({
+                "id": context.user_id.to_string(),
+                "cognitoSubject": context.cognito_subject,
+                "displayName": context.display_name,
+                "email": context.email,
+            })
+            .to_string(),
+        ),
+        Ok(None) => unauthorized_response(),
+        Err(AuthError::Unauthorized) => unauthorized_response(),
+        Err(AuthError::Internal(message)) => (
+            "500 Internal Server Error",
+            JSON_CONTENT_TYPE,
+            serde_json::json!({ "errors": [{ "message": message }] }).to_string(),
+        ),
+    }
+}
+
 fn schema_sdl_response(schema: &SanchorisSchema) -> String {
     serde_json::json!({ "schema": schema.sdl() }).to_string()
 }
 
 fn execute_graphql(
-    schema: &SanchorisSchema,
+    state: &ServerState,
     http_request: &str,
 ) -> (&'static str, &'static str, String) {
     let body = request_body(http_request);
-    let graphql_request = match parse_graphql_request(body) {
+    let mut graphql_request = match parse_graphql_request(body) {
         Ok(request) => request,
         Err(error) => {
             return (
@@ -114,7 +216,22 @@ fn execute_graphql(
         }
     };
 
-    let response = block_on(schema.execute(graphql_request));
+    match resolve_auth_context(state, http_request) {
+        Ok(Some(context)) => {
+            graphql_request = graphql_request.data(context);
+        }
+        Ok(None) => {}
+        Err(AuthError::Unauthorized) => return unauthorized_response(),
+        Err(AuthError::Internal(message)) => {
+            return (
+                "500 Internal Server Error",
+                JSON_CONTENT_TYPE,
+                serde_json::json!({ "errors": [{ "message": message }] }).to_string(),
+            );
+        }
+    }
+
+    let response = block_on(state.schema.execute(graphql_request));
     let body = serde_json::to_string(&response).unwrap_or_else(|error| {
         serde_json::json!({ "errors": [{ "message": format!("failed to serialize GraphQL response: {error}") }] }).to_string()
     });
@@ -361,6 +478,13 @@ struct QueryRoot;
 #[Object]
 impl QueryRoot {
     async fn viewer(&self, ctx: &Context<'_>) -> Viewer {
+        if let Some(context) = ctx.data_opt::<AuthContext>() {
+            return Viewer {
+                id: context.user_id.to_string(),
+                display_name: context.display_name.clone(),
+                email: context.email.clone(),
+            };
+        }
         ctx.data_unchecked::<Store>().viewer.clone()
     }
 

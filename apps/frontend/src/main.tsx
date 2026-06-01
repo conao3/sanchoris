@@ -1,4 +1,4 @@
-import { ApolloClient, HttpLink, InMemoryCache } from '@apollo/client';
+import { ApolloClient, ApolloLink, HttpLink, InMemoryCache } from '@apollo/client';
 import { ApolloProvider, useMutation, useQuery } from '@apollo/client/react';
 import React from 'react';
 import { Button } from 'react-aria-components';
@@ -9,6 +9,7 @@ import {
   MvpShellDocument,
   ValidateWorkflowCanvasDocument,
 } from './graphql/generated/graphql';
+import { AuthCallbackPage } from './pages/AuthCallbackPage';
 import { ChannelsPage } from './pages/ChannelsPage';
 import { DeploysPage } from './pages/DeploysPage';
 import { DirectCommandPage } from './pages/DirectCommandPage';
@@ -29,6 +30,7 @@ import { RunGatePage } from './pages/RunGatePage';
 import { WorkflowHistoryPage } from './pages/WorkflowHistoryPage';
 import { WorkflowEditorPage } from './pages/WorkflowEditorPage';
 import { WorkflowsPage } from './pages/WorkflowsPage';
+import { getIdToken, isLoggedIn } from './lib/cognito';
 import './style.css';
 
 type PanelMetric = {
@@ -44,8 +46,21 @@ type ShellRun = ShellData['runs'][number];
 type ShellProject = ShellData['projectProfiles'][number];
 type ShellConversation = ShellData['conversations'][number];
 
+const httpLink = new HttpLink({ uri: '/api/graphql' });
+
+// Attach the Cognito ID token as Authorization: Bearer <id_token> on every request.
+const authLink = new ApolloLink((operation, forward) => {
+  const token = getIdToken();
+  if (token) {
+    operation.setContext(({ headers = {} }: { headers?: Record<string, string> }) => ({
+      headers: { ...headers, Authorization: `Bearer ${token}` },
+    }));
+  }
+  return forward(operation);
+});
+
 const apolloClient = new ApolloClient({
-  link: new HttpLink({ uri: '/api/graphql' }),
+  link: ApolloLink.from([authLink, httpLink]),
   cache: new InMemoryCache(),
 });
 
@@ -440,6 +455,19 @@ function formatEnum(value: string) {
 function App() {
   const path = window.location.pathname;
 
+  if (path === '/auth/callback') {
+    return <AuthCallbackPage />;
+  }
+
+  // Single early gate: everything except the login flow requires a token.
+  if (!isLoggedIn() && path !== '/login' && path !== '/auth/callback') {
+    return <LoginPage />;
+  }
+
+  if (path === '/login') {
+    return <LoginPage />;
+  }
+
   if (path === '/projects/acme-platform') {
     return <ProjectPage />;
   }
@@ -493,9 +521,6 @@ function App() {
   }
   if (path === '/incidents') {
     return <IncidentsPage />;
-  }
-  if (path === '/login') {
-    return <LoginPage />;
   }
   if (path === '/memory') {
     return <MemoryPage />;

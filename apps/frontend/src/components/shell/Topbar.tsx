@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Kbd } from './primitives';
+import { clearTokens, getLogoutUrl } from '../../lib/cognito';
 
 export type AvatarVariant = 'default' | 'me' | 'sm' | 'xs' | 'coral' | 'teal' | 'navy' | 'amber';
 
@@ -142,7 +143,17 @@ export function Topbar() {
         <ModelBadge />
         <TopbarIcon title="Notifications" badge={3}>⌁</TopbarIcon>
         <TopbarIcon title="Help">?</TopbarIcon>
-        <Avatar variant="me" title="Yuto Kanagawa (you)">YK</Avatar>
+        <button
+          type="button"
+          title="Sign out"
+          onClick={() => {
+            clearTokens();
+            window.location.href = getLogoutUrl();
+          }}
+          className="inline-flex cursor-pointer items-center border-none bg-transparent p-0"
+        >
+          <Avatar variant="me" title="Yuto Kanagawa (you)">YK</Avatar>
+        </button>
       </div>
     </header>
   );

@@ -3,6 +3,7 @@ import { Button } from '../components/Button';
 import { SSOButton } from '../components/SSOButton';
 import { TextField } from '../components/TextField';
 import { Wordmark } from '../components/Wordmark';
+import { getLoginUrl, getSignupUrl } from '../lib/cognito';
 
 export function LoginPage() {
   return (
@@ -61,7 +62,14 @@ function AuthPanel() {
           </a>
           <div className="flex items-center gap-3 text-base">
             <span className="text-muted">Already have an account?</span>
-            <a href="/signin" className="font-medium text-primary">
+            <a
+              href={getLoginUrl()}
+              className="font-medium text-primary"
+              onClick={(e) => {
+                e.preventDefault();
+                window.location.href = getLoginUrl();
+              }}
+            >
               Sign in →
             </a>
           </div>
@@ -82,7 +90,14 @@ function AuthPanel() {
           </div>
         </div>
 
-        <SSOButton iconLabel="G" iconTone="dark" label="Continue with Google" />
+        <SSOButton
+          iconLabel="G"
+          iconTone="dark"
+          label="Continue with Google"
+          onPress={() => {
+            window.location.href = getLoginUrl();
+          }}
+        />
 
         <div className="flex items-center gap-3.5">
           <span className="h-px flex-1 bg-hairline" aria-hidden="true" />
@@ -96,6 +111,8 @@ function AuthPanel() {
           className="flex flex-col gap-3.5"
           onSubmit={(e) => {
             e.preventDefault();
+            // The app does not manage passwords; hand off to the Cognito Hosted UI signup.
+            window.location.href = getSignupUrl();
           }}
         >
           <TextField

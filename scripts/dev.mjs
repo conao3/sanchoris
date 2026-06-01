@@ -107,6 +107,27 @@ function stopAll() {
 }
 
 loadDotenvIfExists();
+
+// Backend and frontend require Cognito config to start. direnv exports these
+// from the gitignored .envrc.local into the ambient env; loadDotenvIfExists also
+// picks up anything in .env. Fail loudly here so a missing var is obvious rather
+// than surfacing as a deep panic in the backend or a blank Hosted UI redirect.
+const requiredEnv = [
+  'DATABASE_URL',
+  'COGNITO_USER_POOL_ID',
+  'COGNITO_CLIENT_ID',
+  'VITE_COGNITO_DOMAIN',
+  'VITE_COGNITO_CLIENT_ID',
+];
+const missingEnv = requiredEnv.filter((key) => !process.env[key]);
+if (missingEnv.length > 0) {
+  console.error(
+    `sanchoris dev: missing required env: ${missingEnv.join(', ')}.\n` +
+      'Set them in the gitignored repo-root .envrc.local (see .env.example).',
+  );
+  process.exit(1);
+}
+
 applyDatabaseSchema();
 
 const children = [];
@@ -125,6 +146,11 @@ run(
   {
     PORT: String(backendPort),
     SANCHORIS_BACKEND_ADDR: `127.0.0.1:${backendPort}`,
+    // Explicit pass-through so the stateless-JWT + JIT-provisioning backend has
+    // its required config (env::load .expect()s each of these at startup).
+    DATABASE_URL: process.env.DATABASE_URL,
+    COGNITO_USER_POOL_ID: process.env.COGNITO_USER_POOL_ID,
+    COGNITO_CLIENT_ID: process.env.COGNITO_CLIENT_ID,
   },
 );
 
@@ -136,6 +162,9 @@ run(
     PORTLESS_HTTPS: process.env.PORTLESS_HTTPS ?? '0',
     PORTLESS_PORT: process.env.PORTLESS_PORT ?? '1355',
     VITE_BACKEND_URL: backendUrl,
+    // Cognito Hosted UI config baked into the Vite client (import.meta.env.VITE_*).
+    VITE_COGNITO_DOMAIN: process.env.VITE_COGNITO_DOMAIN,
+    VITE_COGNITO_CLIENT_ID: process.env.VITE_COGNITO_CLIENT_ID,
   },
 );
 

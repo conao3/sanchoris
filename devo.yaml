@@ -1,11 +1,28 @@
 session: sanchoris${SLUG:+-$SLUG}
-hook_session_closed: echo "sanchoris dev session closed; run 'docker compose down' to stop postgres"
+hook_session_closed: echo "sanchoris dev session closed; local docker postgres (if started) stays up — run 'docker compose down' to stop it"
 inherit_env:
   - SLUG
 
+# Dev now targets neon (DATABASE_URL set in the gitignored .envrc.local; see
+# .env.example). neon is the source of truth, so the local docker postgres is no
+# longer started by default. The `db` pane is kept for OFFLINE dev only: if you
+# leave DATABASE_URL unset, it falls back to local docker postgres — start that
+# pane manually with `docker compose up`. docker-compose.yml is retained.
 tasks:
   - id: db
-    cmd: docker compose up
+    # Local Postgres for OFFLINE dev only. With neon (DATABASE_URL set) this pane
+    # waits idle; run 'docker compose up' here yourself when working offline.
+    cmd: >-
+      bash -c 'if [ -n "${DATABASE_URL:-}" ]; then
+      echo "DATABASE_URL set (neon) -- local docker postgres not needed. Run: docker compose up";
+      exec sleep infinity;
+      else exec docker compose up; fi'
 
   - id: dev
-    cmd: "bash -c 'until pg_isready -d \"${DATABASE_URL:-postgres://sanchoris:sanchoris@127.0.0.1:54329/sanchoris}\" >/dev/null 2>&1; do echo \"waiting for postgres...\"; sleep 1; done; PORTLESS_HTTPS=1 exec pnpm dev'"
+    # Wait for Postgres only when using the local docker default (no neon URL).
+    # With neon, DATABASE_URL is reachable directly so we skip the wait.
+    cmd: >-
+      bash -c 'if [ -z "${DATABASE_URL:-}" ]; then
+      until pg_isready -d "postgres://sanchoris:sanchoris@127.0.0.1:54329/sanchoris" >/dev/null 2>&1; do
+      echo "waiting for local postgres..."; sleep 1; done; fi;
+      PORTLESS_HTTPS=1 exec pnpm dev'
