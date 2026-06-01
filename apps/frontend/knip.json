@@ -14,6 +14,7 @@
     "tailwindcss"
   ],
   "entry": [
-    "src/components/shell/**/*.tsx"
+    "src/components/shell/**/*.tsx",
+    "src/lib/cognito.ts"
   ]
 }

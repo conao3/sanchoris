@@ -1,7 +1,4 @@
-import { Link } from '@tanstack/react-router';
 import type { AnyRouter } from '@tanstack/react-router';
-
-export { Link };
 
 let _router: AnyRouter | null = null;
 
