@@ -4,6 +4,7 @@ import { Rail } from '../components/shell/Rail';
 import { Screen, ScreenHead, Crumbs } from '../components/shell/Screen';
 import { Btn, Pill, Mono } from '../components/shell/primitives';
 import { ACCOUNT_ITEMS, WORKSPACE_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── W7 Hero ──────────────────────────────────────────────────────────────────
 
@@ -11,7 +12,10 @@ function W7Hero() {
   return (
     <div className="flex flex-shrink-0 items-center gap-4 border-b border-hairline bg-surface-soft px-6 py-[14px]">
       <div className="min-w-0 flex-1">
-        <h3 className="mb-[6px] font-serif text-[22px] font-medium leading-[1.15] tracking-[-0.3px] text-ink">
+        <h3
+          className="mb-[6px] cursor-pointer font-serif text-[22px] font-medium leading-[1.15] tracking-[-0.3px] text-ink"
+          onClick={() => navigate('/runs/r-9143')}
+        >
           <span className="mr-[6px] font-mono text-[13px] font-normal text-muted">CON-1247</span>
           Add OAuth login for vendor portal
         </h3>
@@ -552,7 +556,10 @@ function W7Foot() {
         ↗ Open in Workflow editor (delivery/default v0.3.3)
       </a>
       <span className="text-muted-soft">·</span>
-      <a className="cursor-pointer text-primary no-underline hover:underline">↗ Open PR #482</a>
+      <a
+        className="cursor-pointer text-primary no-underline hover:underline"
+        onClick={() => navigate('/pull-requests')}
+      >↗ Open PR #482</a>
       <span className="text-muted-soft">·</span>
       <a className="cursor-pointer text-primary no-underline hover:underline">
         ↗ Open Linear CON-1247
@@ -573,7 +580,7 @@ export function RunGatePage() {
     <AppShell rail={<Rail items={railItems} bottomItems={ACCOUNT_ITEMS} />}>
       <Screen>
         <ScreenHead>
-          <Crumbs items={['acme-org', 'acme-platform', 'Runs', 'R-9143 · CON-1247']} />
+          <Crumbs items={['acme-org', 'acme-platform', { label: 'Runs', href: '/gates' }, 'R-9143 · CON-1247']} />
           <div className="flex items-start justify-between gap-4">
             <div>
               <h1 className="m-0 font-serif text-[30px] font-medium leading-[1.15] tracking-[-0.6px] text-ink">

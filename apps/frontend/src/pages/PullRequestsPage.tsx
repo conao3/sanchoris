@@ -5,6 +5,7 @@ import { Screen, ScreenHead, ScreenBody, Crumbs } from '../components/shell/Scre
 import { Btn, Kbd, Mono, Pill, type PillKind } from '../components/shell/primitives';
 import { Avatar, type AvatarVariant } from '../components/shell/Topbar';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Rail items ────────────────────────────────────────────────────────────────
 
@@ -201,7 +202,10 @@ const PR_ROWS: PRRow[] = [
 
 function PRTableRow({ row }: { row: PRRow }) {
   return (
-    <tr className="border-b border-hairline">
+    <tr
+      className="cursor-pointer border-b border-hairline"
+      onClick={() => navigate('/runs/r-9143')}
+    >
       <td className="py-[10px] pr-4 align-top">
         <div className="text-[13px] font-semibold text-ink">
           {row.repo} · {row.num}
@@ -234,7 +238,15 @@ function PRTableRow({ row }: { row: PRRow }) {
       </td>
       <td className="py-[10px] pr-4 align-top font-mono text-[12px] text-muted">{row.age}</td>
       <td className="py-[10px] align-top">
-        <Pill kind={row.gate.kind}>{row.gate.label}</Pill>
+        {row.gate.kind === 'gate' ? (
+          <span
+            onClick={(e) => { e.stopPropagation(); navigate('/gates'); }}
+          >
+            <Pill kind={row.gate.kind}>{row.gate.label}</Pill>
+          </span>
+        ) : (
+          <Pill kind={row.gate.kind}>{row.gate.label}</Pill>
+        )}
       </td>
     </tr>
   );

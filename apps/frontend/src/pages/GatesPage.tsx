@@ -4,6 +4,7 @@ import { Rail, type RailItemDef } from '../components/shell/Rail';
 import { Screen, ScreenHead, ScreenBody, Crumbs } from '../components/shell/Screen';
 import { Btn, Pill } from '../components/shell/primitives';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Rail ──────────────────────────────────────────────────────────────────────
 
@@ -122,7 +123,10 @@ type GateCardData = {
 
 function GateCard({ card }: { card: GateCardData }) {
   return (
-    <article className="rounded-[10px] border border-hairline bg-canvas p-[14px_16px]">
+    <article
+      className="cursor-pointer rounded-[10px] border border-hairline bg-canvas p-[14px_16px]"
+      onClick={() => navigate('/runs/r-9143/gate')}
+    >
       <div className="mb-[5px] flex items-center gap-2">
         <KindBadge kind={card.kind} />
         <span className="text-[11px] text-muted">{card.meta}</span>
@@ -142,7 +146,10 @@ function GateCard({ card }: { card: GateCardData }) {
       </div>
       <DiffBlock lines={card.diff} />
       <div className="mb-[10px] text-[11px] leading-[1.5] text-muted">{card.policy}</div>
-      <div className="flex flex-wrap items-center gap-[6px]">
+      <div
+        className="flex flex-wrap items-center gap-[6px]"
+        onClick={(e) => e.stopPropagation()}
+      >
         {card.actions.map((action, i) => (
           <Btn key={i} variant={action.variant} size="sm">
             {action.label}
