@@ -4,6 +4,7 @@ import { Rail } from '../components/shell/Rail';
 import { Screen, ScreenHead, ScreenBody, Crumbs } from '../components/shell/Screen';
 import { Btn } from '../components/shell/primitives';
 import { WORKSPACE_ITEMS, ACCOUNT_ITEMS } from '../components/shell/railItems';
+import { navigate } from '../lib/navigate';
 
 // ─── Shared page-local helpers ────────────────────────────────────────────────
 
@@ -128,6 +129,7 @@ function SlackQuad() {
           <button
             type="button"
             className="cursor-pointer rounded-[5px] border border-primary bg-primary px-[11px] py-[6px] font-[inherit] text-[12px] font-medium leading-[1] text-white"
+            onClick={() => navigate('/runs/r-9143/gate')}
           >
             Approve
           </button>
@@ -178,6 +180,7 @@ function TelegramQuad() {
             <button
               type="button"
               className="flex-1 cursor-pointer rounded-[6px] border border-[rgba(93,184,114,0.45)] bg-[rgba(93,184,114,0.06)] px-[10px] py-[7px] text-center font-[inherit] text-[11.5px] font-medium leading-[1] text-[#386b46]"
+              onClick={() => navigate('/runs/r-9143/gate')}
             >
               ✓ Approve
             </button>
@@ -193,6 +196,7 @@ function TelegramQuad() {
             <button
               type="button"
               className="flex-1 cursor-pointer rounded-[6px] border border-[rgba(93,184,114,0.45)] bg-[rgba(93,184,114,0.06)] px-[10px] py-[7px] text-center font-[inherit] text-[11.5px] font-medium leading-[1] text-[#386b46]"
+              onClick={() => navigate('/runs/r-9143/gate')}
             >
               ✓ Approve
             </button>
@@ -262,6 +266,7 @@ function EmailQuad() {
             <button
               type="button"
               className="cursor-pointer rounded-[5px] border border-primary bg-primary px-[11px] py-[7px] font-[inherit] text-[11.5px] font-medium leading-[1] text-white"
+              onClick={() => navigate('/runs/r-9143/gate')}
             >
               Resolve in 1-click · accept proposed
             </button>
@@ -358,6 +363,7 @@ function PushQuad() {
               <button
                 type="button"
                 className="inline-flex h-[30px] w-full cursor-pointer items-center justify-center rounded-[6px] border border-primary bg-primary font-[inherit] text-[11.5px] font-semibold leading-[1] text-white"
+                onClick={() => navigate('/runs/r-9143/gate')}
               >
                 Approve
               </button>
