@@ -1,29 +1,13 @@
-# Nix
-.direnv/
-
 # Node / pnpm
 node_modules/
 dist/
-.pnpm-store/
 *.tsbuildinfo
 
 # Rust
 /target/
-
-# Env files (only *.example is committed)
-.env
-.env.*
-!.env.example
-!.env.*.example
-/.envrc.local
 
 # Local database
 /.postgres-data/
 
 # Symphony orchestrator runtime
 /log/
-
-# Editor / OS
-.DS_Store
-.idea/
-.vscode/
