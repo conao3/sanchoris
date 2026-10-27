@@ -14,7 +14,7 @@ export function BillingPage() {
   const { slug } = useTenant();
   const { data, error, refetch } = useData(BillingDocument, { tenant: slug });
   const [changePlan, changeState] = useMutation(ChangePlanDocument);
-  const [openPortal] = useMutation(OpenBillingPortalDocument);
+  const [openPortal, portalState] = useMutation(OpenBillingPortalDocument);
   const tenant = data?.tenant;
   const cols = '100px 140px 160px 160px 110px 100px 1fr';
 
@@ -138,6 +138,8 @@ export function BillingPage() {
       <Title>{t('settings.billing')}</Title>
       <Sub>{t('billing.intro', { tenant: tenant?.name ?? '' })}</Sub>
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
+      {portalState.error ? <Dim className="my-3 text-err">{portalState.error.message}</Dim> : null}
+      {changeState.error ? <Dim className="my-3 text-err">{changeState.error.message}</Dim> : null}
       {!data && !error ? <Skeleton rows={6} /> : null}
       {content}
     </SettingsPage>
