@@ -34,15 +34,12 @@ pub struct GitHubConfig {
 
 #[derive(Debug, Clone)]
 pub struct StripeConfig {
-    pub secret_key: String,
-    pub api_url: String,
     pub webhook_secret: HmacKey,
 }
 
 #[derive(Debug, Clone)]
 pub enum RecordsConfig {
     S3 {
-        region: String,
         bucket: String,
         kms_key_prefix: String,
     },
@@ -53,31 +50,47 @@ pub enum RecordsConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct ServeConfig {
-    pub bind_addr: SocketAddr,
-    pub database_url: String,
+pub struct ApiConfig {
     pub public_url: String,
     pub cognito: CognitoConfig,
     pub github: GitHubConfig,
     pub stripe: StripeConfig,
-    pub run_tokens: RunTokenSigner,
     pub task_tokens: TaskTokenSigner,
     pub oauth_state_key: HmacKey,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChannelConfig {
+    pub run_tokens: RunTokenSigner,
     pub records: RecordsConfig,
 }
 
-struct Reader {
+#[derive(Debug, Clone)]
+pub struct LocalConfig {
+    pub bind_addr: SocketAddr,
+    pub docs_dir: PathBuf,
+    pub api: ApiConfig,
+    pub channel: ChannelConfig,
+}
+
+pub struct Reader {
     missing: Vec<&'static str>,
 }
 
+impl Default for Reader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Reader {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             missing: Vec::new(),
         }
     }
 
-    fn get(&mut self, name: &'static str) -> String {
+    pub fn get(&mut self, name: &'static str) -> String {
         match std::env::var(name) {
             Ok(value) if !value.is_empty() => value,
             _ => {
@@ -87,7 +100,7 @@ impl Reader {
         }
     }
 
-    fn finish(self) -> Result<(), ConfigError> {
+    pub fn finish(self) -> Result<(), ConfigError> {
         if self.missing.is_empty() {
             return Ok(());
         }
@@ -103,7 +116,7 @@ fn strong_key(name: &'static str, value: &str) -> Result<HmacKey, ConfigError> {
     HmacKey::strong(value.as_bytes()).map_err(|message| ConfigError::Invalid { name, message })
 }
 
-fn signer(name: &'static str, value: &str) -> Result<Signer, ConfigError> {
+pub fn signer(name: &'static str, value: &str) -> Result<Signer, ConfigError> {
     Signer::new(value.as_bytes()).map_err(|error| ConfigError::Invalid {
         name,
         message: error.to_string(),
@@ -121,11 +134,9 @@ fn url(name: &'static str, value: &str) -> Result<String, ConfigError> {
     Ok(trimmed.to_string())
 }
 
-impl ServeConfig {
+impl ApiConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
         let mut env = Reader::new();
-        let bind_addr = env.get("SANCHORIS_BIND_ADDR");
-        let database_url = env.get("DATABASE_URL");
         let public_url = env.get("SANCHORIS_PUBLIC_URL");
         let user_pool_id = env.get("COGNITO_USER_POOL_ID");
         let client_id = env.get("COGNITO_CLIENT_ID");
@@ -136,50 +147,10 @@ impl ServeConfig {
         let github_url = env.get("GITHUB_URL");
         let github_api_url = env.get("GITHUB_API_URL");
         let stripe_secret = env.get("STRIPE_WEBHOOK_SECRET");
-        let stripe_secret_key = env.get("STRIPE_SECRET_KEY");
-        let stripe_api_url = env.get("STRIPE_API_URL");
-        env.get(sanchoris_graphql::CREDENTIAL_KEY_ENV);
-        let run_key = env.get(RUN_TOKEN_SIGNING_KEY_ENV);
         let task_key = env.get(TASK_TOKEN_SIGNING_KEY_ENV);
         let state_key = env.get("OAUTH_STATE_SIGNING_KEY");
-        let store = env.get("SANCHORIS_RECORDS_STORE");
         env.finish()?;
-        let records = match store.as_str() {
-            "s3" => {
-                let mut env = Reader::new();
-                let region = env.get("AWS_REGION");
-                let bucket = env.get("S3_RECORDS_BUCKET");
-                let kms_key_prefix = env.get("KMS_KEY_PREFIX");
-                env.finish()?;
-                RecordsConfig::S3 {
-                    region,
-                    bucket,
-                    kms_key_prefix,
-                }
-            }
-            "local" => {
-                let mut env = Reader::new();
-                let dir = env.get("SANCHORIS_RECORDS_DIR");
-                let signing_key = env.get("RECORDS_SIGNING_KEY");
-                env.finish()?;
-                RecordsConfig::Local {
-                    dir: PathBuf::from(dir),
-                    signing_key: strong_key("RECORDS_SIGNING_KEY", &signing_key)?,
-                }
-            }
-            other => {
-                return Err(ConfigError::Invalid {
-                    name: "SANCHORIS_RECORDS_STORE",
-                    message: format!("{other:?} is not s3 or local"),
-                });
-            }
-        };
         Ok(Self {
-            bind_addr: bind_addr.parse().map_err(|error| ConfigError::Invalid {
-                name: "SANCHORIS_BIND_ADDR",
-                message: format!("{bind_addr:?}: {error}"),
-            })?,
-            database_url,
             public_url: url("SANCHORIS_PUBLIC_URL", &public_url)?,
             cognito: CognitoConfig {
                 user_pool_id,
@@ -194,33 +165,96 @@ impl ServeConfig {
                 api_url: url("GITHUB_API_URL", &github_api_url)?,
             },
             stripe: StripeConfig {
-                secret_key: stripe_secret_key,
-                api_url: url("STRIPE_API_URL", &stripe_api_url)?,
                 webhook_secret: key("STRIPE_WEBHOOK_SECRET", &stripe_secret)?,
             },
-            run_tokens: RunTokenSigner::new(signer(RUN_TOKEN_SIGNING_KEY_ENV, &run_key)?),
             task_tokens: TaskTokenSigner::new(signer(TASK_TOKEN_SIGNING_KEY_ENV, &task_key)?),
             oauth_state_key: strong_key("OAUTH_STATE_SIGNING_KEY", &state_key)?,
-            records,
         })
     }
 }
 
-pub fn check_worker_env() -> Result<(), ConfigError> {
+impl RecordsConfig {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let mut env = Reader::new();
+        let store = env.get("SANCHORIS_RECORDS_STORE");
+        env.finish()?;
+        match store.as_str() {
+            "s3" => {
+                let mut env = Reader::new();
+                let bucket = env.get("S3_RECORDS_BUCKET");
+                let kms_key_prefix = env.get("KMS_KEY_PREFIX");
+                env.finish()?;
+                Ok(Self::S3 {
+                    bucket,
+                    kms_key_prefix,
+                })
+            }
+            "local" => {
+                let mut env = Reader::new();
+                let dir = env.get("SANCHORIS_RECORDS_DIR");
+                let signing_key = env.get("RECORDS_SIGNING_KEY");
+                env.finish()?;
+                Ok(Self::Local {
+                    dir: PathBuf::from(dir),
+                    signing_key: strong_key("RECORDS_SIGNING_KEY", &signing_key)?,
+                })
+            }
+            other => Err(ConfigError::Invalid {
+                name: "SANCHORIS_RECORDS_STORE",
+                message: format!("{other:?} is not s3 or local"),
+            }),
+        }
+    }
+}
+
+impl ChannelConfig {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let mut env = Reader::new();
+        let run_key = env.get(RUN_TOKEN_SIGNING_KEY_ENV);
+        env.finish()?;
+        Ok(Self {
+            run_tokens: RunTokenSigner::new(signer(RUN_TOKEN_SIGNING_KEY_ENV, &run_key)?),
+            records: RecordsConfig::from_env()?,
+        })
+    }
+}
+
+impl LocalConfig {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let mut env = Reader::new();
+        let bind_addr = env.get("SANCHORIS_BIND_ADDR");
+        let docs_dir = env.get("SANCHORIS_DOCS_DIR");
+        env.finish()?;
+        Ok(Self {
+            bind_addr: bind_addr.parse().map_err(|error| ConfigError::Invalid {
+                name: "SANCHORIS_BIND_ADDR",
+                message: format!("{bind_addr:?}: {error}"),
+            })?,
+            docs_dir: PathBuf::from(docs_dir),
+            api: ApiConfig::from_env()?,
+            channel: ChannelConfig::from_env()?,
+        })
+    }
+}
+
+pub fn require(names: &[&'static str]) -> Result<(), ConfigError> {
     let mut env = Reader::new();
-    for name in [
-        "DATABASE_URL",
-        "GITHUB_APP_ID",
-        "GITHUB_APP_PRIVATE_KEY",
-        "GITHUB_API_URL",
-        RUN_TOKEN_SIGNING_KEY_ENV,
-        "SANCHORIS_WORKSPACE_COMMAND",
-        "SANCHORIS_CONTROL_URL",
-        "SANCHORIS_SOCKET_DIR",
-        "SANCHORIS_WORKSPACES_DIR",
-        "SANCHORIS_GIT_URL",
-    ] {
+    for name in names {
         env.get(name);
     }
     env.finish()
 }
+
+pub const STORE_ENV: [&str; 2] = ["SANCHORIS_TABLE_MAIN", "SANCHORIS_TABLE_AUDIT"];
+
+pub const WORKER_ENV: [&str; 9] = [
+    "GITHUB_APP_ID",
+    "GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_API_URL",
+    RUN_TOKEN_SIGNING_KEY_ENV,
+    "SANCHORIS_WORKSPACE_COMMAND",
+    "SANCHORIS_CONTROL_URL",
+    "SANCHORIS_SOCKET_DIR",
+    "SANCHORIS_WORKSPACES_DIR",
+    "SANCHORIS_GIT_URL",
+];

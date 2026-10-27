@@ -4,41 +4,49 @@ pub mod fake_github;
 pub mod fake_stripe;
 
 use std::future::Future;
-use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use axum::Router;
+use chrono::Utc;
 use reqwest::redirect::Policy;
-use sanchoris_api::app::{AppState, Services, router};
+use sanchoris_api::app::AppState;
 use sanchoris_api::auth::{AuthError, Identity, IdentityVerifier};
-use sanchoris_api::config::{
-    CognitoConfig, GitHubConfig, RecordsConfig, ServeConfig, StripeConfig,
-};
+use sanchoris_api::config::{ApiConfig, CognitoConfig, GitHubConfig, StripeConfig};
 use sanchoris_api::records::{LocalRecordStore, RecordStore};
+use sanchoris_api::server::{LocalServer, drive, local_channel};
 use sanchoris_api::signing::HmacKey;
-use sanchoris_core::testing::{SeededTenant, TestPostgres, WORKER_ROLE};
+use sanchoris_core::clock::{Clock, SystemClock};
+use sanchoris_core::db::{REF_RUN, Store, insert_ref};
+use sanchoris_core::item::Entity;
+use sanchoris_core::items::{Credential, Guard, Integration, Run, RunChannel, Task, User, uniq};
+use sanchoris_core::keys;
+use sanchoris_core::model::TaskStatus;
+use sanchoris_core::store::Relay;
+use sanchoris_core::testing::{SeededTenant, TestDynamo};
 use sanchoris_core::tokens::{RunTokenSigner, Signer, TaskTokenSigner};
-use sanchoris_graphql::AesGcmEncryptor;
-use sanchoris_worker::Deps;
-use sanchoris_worker::clock::SystemClock;
+use sanchoris_worker::driver::LocalDriver;
 use sanchoris_worker::github::transport::ReqwestTransport;
 use sanchoris_worker::github::{AppAuth, GitHubApi};
 use sanchoris_worker::ports::{RunnerError, RunnerPort, WorkspaceHandle, WorkspaceSpec};
 use sanchoris_worker::resources::GitHubResources;
+use sanchoris_worker::runner::{LocalProcessRunner, LocalRunnerConfig};
+use sanchoris_worker::{Deps, Settings};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use tokio::sync::watch;
 use uuid::Uuid;
 
 use fake_github::FakeGitHub;
-use fake_stripe::FakeStripe;
 
 pub const RUN_KEY: &[u8] = b"http-test-run-token-signing-key-0123";
+pub const TASK_KEY: [u8; 32] = [6u8; 32];
 pub const STRIPE_SECRET: &str = "whsec_http";
 pub const WEBHOOK_SECRET: &str = "http-webhook";
+pub const INSTALLATION: i64 = 42;
+pub const REPO: &str = "acme/shop-web";
 
 pub struct StubVerifier;
 
@@ -82,31 +90,72 @@ pub fn rsa_key() -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+pub enum Workspaces {
+    None,
+    Agent {
+        command: Vec<String>,
+        socket_dir: PathBuf,
+        workspaces_dir: PathBuf,
+        git_url: String,
+    },
+}
+
+pub enum Driving {
+    QueueOnly,
+    Full,
+}
+
 pub struct Api {
     pub url: String,
     pub http: reqwest::Client,
-    pub stripe: Arc<FakeStripe>,
+    pub store: Store,
     pub records: Arc<LocalRecordStore>,
+    pub driver: Arc<LocalDriver>,
+    shutdown: watch::Sender<bool>,
+}
+
+impl Drop for Api {
+    fn drop(&mut self) {
+        let _ = self.shutdown.send(true);
+    }
+}
+
+pub async fn listen(router: Router) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    format!("http://{address}")
+}
+
+async fn drive_queue(driver: Arc<LocalDriver>, mut shutdown: watch::Receiver<bool>) {
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            _ = shutdown.changed() => return,
+        }
+        if let Err(error) = driver.fire_due().await {
+            eprintln!("test driver: {error}");
+        }
+        if let Err(error) = driver.drain().await {
+            eprintln!("test driver: {error}");
+        }
+    }
 }
 
 pub async fn start_api(
-    pg: &TestPostgres,
-    seeded: &Seeded,
+    dynamo: &TestDynamo,
     github: Arc<FakeGitHub>,
     dir: &Path,
+    workspaces: Workspaces,
+    driving: Driving,
 ) -> Api {
     let github_url = listen(github.router()).await;
-    let stripe = FakeStripe::new();
-    let stripe_url = listen(stripe.clone().router()).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address: SocketAddr = listener.local_addr().unwrap();
+    let address = listener.local_addr().unwrap();
     let url = format!("http://{address}");
-    let records_key = HmacKey::strong(&[5u8; 32]).unwrap();
-    let records_dir = dir.join("records");
-    let database_url = pg.url(WORKER_ROLE);
-    let config = ServeConfig {
-        bind_addr: address,
-        database_url: database_url.clone(),
+    let config = ApiConfig {
         public_url: url.clone(),
         cognito: CognitoConfig {
             user_pool_id: "us-east-1_http".into(),
@@ -121,19 +170,24 @@ pub async fn start_api(
             api_url: github_url.clone(),
         },
         stripe: StripeConfig {
-            secret_key: fake_stripe::SECRET_KEY.into(),
-            api_url: stripe_url,
             webhook_secret: HmacKey::new(STRIPE_SECRET.as_bytes()).unwrap(),
         },
-        run_tokens: RunTokenSigner::new(Signer::new(RUN_KEY).unwrap()),
-        task_tokens: TaskTokenSigner::new(Signer::new(&[6u8; 32]).unwrap()),
+        task_tokens: TaskTokenSigner::new(Signer::new(&TASK_KEY).unwrap()),
         oauth_state_key: HmacKey::strong(&[7u8; 32]).unwrap(),
-        records: RecordsConfig::Local {
-            dir: records_dir.clone(),
-            signing_key: records_key.clone(),
-        },
     };
-    let records = Arc::new(LocalRecordStore::new(&records_dir, records_key, &url));
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let direct = dynamo.direct_store(clock.clone());
+    let records = Arc::new(LocalRecordStore::new(
+        &dir.join("records"),
+        HmacKey::strong(&[5u8; 32]).unwrap(),
+        &url,
+    ));
+    let run_tokens = RunTokenSigner::new(Signer::new(RUN_KEY).unwrap());
+    let channel = local_channel(
+        direct.store.clone(),
+        run_tokens.clone(),
+        records.clone() as Arc<dyn RecordStore>,
+    );
     let http = reqwest::Client::builder()
         .redirect(Policy::none())
         .build()
@@ -143,43 +197,72 @@ pub async fn start_api(
         Arc::new(ReqwestTransport::new()),
         AppAuth::new("1", &rsa_key()).unwrap(),
     ));
-    let state = AppState::new(Services {
-        pool: seeded.pool.clone(),
-        app_pool: sanchoris_api::app_pool(&database_url).await.unwrap(),
+    let runner: Arc<dyn RunnerPort> = match workspaces {
+        Workspaces::None => Arc::new(NoWorkspaces),
+        Workspaces::Agent {
+            command,
+            socket_dir,
+            workspaces_dir,
+            git_url,
+        } => {
+            let (program, args) = command.split_first().unwrap();
+            Arc::new(LocalProcessRunner::new(
+                LocalRunnerConfig {
+                    program: PathBuf::from(program),
+                    args: args.to_vec(),
+                    control_url: format!("ws://{address}/runs/channel"),
+                    socket_dir,
+                    workspaces_dir,
+                    git_url,
+                    run_tokens: run_tokens.clone(),
+                    token_ttl: chrono::Duration::hours(1),
+                },
+                clock.clone(),
+            ))
+        }
+    };
+    let deps = Deps {
+        clock,
+        github: github_app.clone(),
+        reader: github_app.clone(),
+        config_source: github_app.clone(),
+        resources: Arc::new(GitHubResources::new(github_app.clone())),
+        runner,
+        pusher: Arc::new(channel.channel.clone()),
+    };
+    let state = AppState {
+        store: direct.store.clone(),
         config: Arc::new(config),
         verifier: Arc::new(StubVerifier),
-        records: records.clone() as Arc<dyn RecordStore>,
         http: http.clone(),
-        worker_deps: Deps {
-            clock: Arc::new(SystemClock),
-            github: github_app.clone(),
-            reader: github_app.clone(),
-            config_source: github_app.clone(),
-            resources: Arc::new(GitHubResources::new(github_app.clone())),
-            runner: Arc::new(NoWorkspaces),
-        },
         github_app,
-        encryptor: Arc::new(AesGcmEncryptor::new(&[3u8; 32])),
-    });
-    let app = router(state, Some(records.clone()));
-    tokio::spawn(async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .unwrap()
-    });
+    };
+    let server = LocalServer::new(
+        state,
+        channel,
+        Some(records.clone()),
+        direct.queue,
+        direct.scheduler,
+        deps,
+        Settings::default(),
+    );
+    let (shutdown, receiver) = watch::channel(false);
+    let driver = server.driver.clone();
+    match driving {
+        Driving::QueueOnly => tokio::spawn(drive_queue(driver.clone(), receiver)),
+        Driving::Full => tokio::spawn(drive(driver.clone(), receiver)),
+    };
+    let router = server.router;
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     Api {
         url,
         http,
-        stripe,
+        store: direct.store,
         records,
+        driver,
+        shutdown,
     }
 }
-
-pub const INSTALLATION: i64 = 42;
-pub const REPO: &str = "acme/shop-web";
 
 pub const CONFIG_YAML: &str = r#"Version: 1
 Projects:
@@ -220,15 +303,6 @@ Triggers:
       MaxNudges: 2
       Limits: { Turns: 60, CostUsd: 20, TimeoutSeconds: 14400, HeartbeatSeconds: 900, Children: { MaxDepth: 1, MaxCount: 5 } }
 "#;
-
-pub async fn listen(router: Router) -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
-    });
-    format!("http://{address}")
-}
 
 pub fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -281,44 +355,157 @@ pub fn bare_repo(git_root: &Path, repo: &str) {
 }
 
 pub struct Seeded {
-    pub admin: PgPool,
-    pub pool: PgPool,
     pub tenant: SeededTenant,
+    pub subject: String,
 }
 
-pub async fn seed(pg: &TestPostgres) -> Seeded {
-    let admin = pg.admin_pool().await;
-    let pool = pg.worker_pool().await;
-    let tenant = pg.seed_tenant(&admin, "pro").await;
-    sqlx::query(
-        "UPDATE sanchoris.users SET github_user_id = 1001, github_login = 'mika-dev', display_name = 'Mika' WHERE id = $1",
-    )
-    .bind(tenant.user_id)
-    .execute(&admin)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO sanchoris.integrations (tenant_id, kind, status, github_installation_id, details) \
-         VALUES ($1, 'github_installation', 'connected', $2, '{\"account_login\": \"acme\"}')",
-    )
-    .bind(tenant.tenant_id)
-    .bind(INSTALLATION)
-    .execute(&admin)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO sanchoris.credentials (tenant_id, scope, name, provider, kind, account, status, encrypted_value, kms_key_id) \
-         VALUES ($1, 'org', 'acme-claude-team', 'claude', 'subscription', 'team@acme.test', 'connected', '\\x00', 'test-key')",
-    )
-    .bind(tenant.tenant_id)
-    .execute(&admin)
-    .await
-    .unwrap();
-    Seeded {
-        admin,
-        pool,
-        tenant,
+impl Seeded {
+    pub fn member_token(&self) -> String {
+        format!("user:{}", self.subject)
     }
+}
+
+pub async fn seed(dynamo: &TestDynamo) -> Seeded {
+    let tenant = dynamo.seed_tenant("pro").await;
+    let subject = format!("subject-{}", tenant.user_id);
+    let now = Utc::now();
+    dynamo
+        .modify::<User>(&keys::user_key(tenant.user_id), |user| {
+            user.github_user_id = Some(1001);
+            user.github_login = Some("mika-dev".into());
+            user.display_name = "Mika".into();
+        })
+        .await;
+    for (kind, value) in [
+        (uniq::COGNITO_SUBJECT, subject.clone()),
+        (uniq::EMAIL, format!("{}@example.com", tenant.user_id)),
+        (uniq::GITHUB_USER, "1001".to_string()),
+        (uniq::GITHUB_LOGIN, "mika-dev".to_string()),
+    ] {
+        dynamo
+            .put(&Guard::new(keys::uniq_key(kind, &value), tenant.user_id))
+            .await;
+    }
+    let integration_id = Uuid::new_v4();
+    dynamo
+        .put(&Integration {
+            id: integration_id,
+            tenant_id: tenant.tenant_id,
+            kind: "github_installation".into(),
+            status: "connected".into(),
+            github_installation_id: Some(INSTALLATION),
+            slack_team_id: None,
+            details: json!({ "account_login": "acme" }),
+            created_at: now,
+            updated_at: now,
+        })
+        .await;
+    dynamo
+        .put(&Guard::of_tenant(
+            keys::uniq_key(uniq::INSTALLATION, &INSTALLATION.to_string()),
+            integration_id,
+            tenant.tenant_id,
+        ))
+        .await;
+    dynamo
+        .put(&Credential {
+            id: Uuid::new_v4(),
+            tenant_id: tenant.tenant_id,
+            scope: "org".into(),
+            member_id: None,
+            name: "acme-claude-team".into(),
+            provider: "claude".into(),
+            kind: "subscription".into(),
+            account: "team@acme.test".into(),
+            status: "connected".into(),
+            subscription_plan: None,
+            rejected_at: None,
+            encrypted_value: "AA==".into(),
+            kms_key_id: "test-key".into(),
+            last_used_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await;
+    Seeded { tenant, subject }
+}
+
+pub async fn task_with_run(dynamo: &TestDynamo, seeded: &Seeded) -> (Uuid, Uuid) {
+    let tenant_id = seeded.tenant.tenant_id;
+    let now = Utc::now();
+    let task_id = Uuid::new_v4();
+    let run_id = Uuid::new_v4();
+    let store = dynamo.store(Relay::Stream);
+    let mut tx = store.tx(tenant_id);
+    tx.insert(&Task {
+        id: task_id,
+        tenant_id,
+        trigger_id: seeded.tenant.trigger_id,
+        trigger_event_id: None,
+        config_revision_id: seeded.tenant.config_revision_id,
+        name: "acme/shop-web#1".into(),
+        title: "Task".into(),
+        status: TaskStatus::Running,
+        wait_reason: None,
+        resume_at: None,
+        snoozed_until: None,
+        nudges: 0,
+        definition: json!({
+            "Trigger": { "Name": "labeled-issue", "Definition": {} },
+            "Session": { "Name": "shop", "Definition": {} },
+            "Skills": [],
+        }),
+        parent_task_id: None,
+        channel: None,
+        start_payload: None,
+        requested_by_member_id: None,
+        error: None,
+        cause: None,
+        runs: 1,
+        skill_runs: 0,
+        created_at: now,
+        started_at: Some(now),
+        finished_at: None,
+        updated_at: now,
+    })
+    .unwrap();
+    let run = Run {
+        id: run_id,
+        tenant_id,
+        task_id,
+        number: 1,
+        session_name: "shop".into(),
+        worker: "claude".into(),
+        model: "claude-sonnet-5-5".into(),
+        agent_session_id: None,
+        status: "creating".into(),
+        turns: 0,
+        cost_usd: 0.0,
+        summary: None,
+        error: None,
+        resume_branch: None,
+        record_s3_key: None,
+        log_s3_key: None,
+        last_heartbeat_at: None,
+        started_at: now,
+        finished_at: None,
+        updated_at: now,
+    };
+    tx.insert(&run).unwrap();
+    insert_ref(&mut tx, run_id, REF_RUN, run.key(), Some(task_id)).unwrap();
+    tx.insert(&RunChannel {
+        tenant_id,
+        run_id,
+        task_id,
+        next_outbox_seq: 1,
+        instances: 0,
+        connection_id: None,
+        connection_instance: None,
+        connection_started: false,
+    })
+    .unwrap();
+    tx.commit().await.unwrap();
+    (task_id, run_id)
 }
 
 pub fn github_signature(secret: &str, body: &[u8]) -> String {

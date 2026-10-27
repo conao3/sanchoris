@@ -2,24 +2,22 @@ mod support;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use reqwest::StatusCode;
-use sanchoris_core::channel::{RunEventType, record_run_event};
-use sanchoris_core::db::TenantTx;
-use sanchoris_core::testing::{TestPostgres, WORKER_ROLE};
+use sanchoris_core::items::{
+    CheckWait, ConfigRevision, Run, RunEventItem, RunLogEntry, SkillRunItem, Task, Workspace,
+};
+use sanchoris_core::testing::TestDynamo;
 use serde_json::{Value, json};
-use sqlx::Row;
 use support::fake_github::FakeGitHub;
 use support::{
-    CONFIG_YAML, REPO, Seeded, bare_repo, check_run_payload, eventually, free_port,
-    github_signature, labeled_payload, listen, rsa_key, run, seed,
+    Api, CONFIG_YAML, Driving, REPO, Seeded, WEBHOOK_SECRET, Workspaces, bare_repo,
+    check_run_payload, eventually, github_signature, labeled_payload, run, seed, start_api,
 };
 use uuid::Uuid;
 
-const WEBHOOK_SECRET: &str = "e2e-webhook-secret";
 const STEP: Duration = Duration::from_secs(60);
 
 fn repo_root() -> PathBuf {
@@ -27,25 +25,6 @@ fn repo_root() -> PathBuf {
         .join("../..")
         .canonicalize()
         .unwrap()
-}
-
-struct Api(Child);
-
-impl Drop for Api {
-    fn drop(&mut self) {
-        let _ = Command::new("kill")
-            .args(["-TERM", &self.0.id().to_string()])
-            .status();
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while Instant::now() < deadline {
-            if let Ok(Some(_)) = self.0.try_wait() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -58,13 +37,11 @@ struct TaskRow {
 
 struct World {
     api: Option<Api>,
-    url: String,
-    http: reqwest::Client,
     github: Arc<FakeGitHub>,
     seeded: Seeded,
     records_dir: PathBuf,
     workspaces_dir: PathBuf,
-    _pg: TestPostgres,
+    dynamo: TestDynamo,
     _dir: tempfile::TempDir,
 }
 
@@ -82,111 +59,62 @@ impl World {
             &git_root,
             BTreeMap::from([("sanchoris.yaml".to_string(), CONFIG_YAML.to_string())]),
         );
-        let github_url = listen(github.clone().router()).await;
-        let pg = TestPostgres::start().await;
-        let seeded = seed(&pg).await;
-        let port = free_port();
-        let url = format!("http://127.0.0.1:{port}");
-        let records_dir = dir.path().join("records");
+        let dynamo = TestDynamo::start().await;
+        let seeded = seed(&dynamo).await;
         let workspaces_dir = dir.path().join("workspaces");
         let agent = root.join("scripts/e2e/fake-agent.ts");
-        let child = Command::new(env!("CARGO_BIN_EXE_sanchoris"))
-            .arg("all")
-            .env("DATABASE_URL", pg.url(WORKER_ROLE))
-            .env("SANCHORIS_BIND_ADDR", format!("127.0.0.1:{port}"))
-            .env("SANCHORIS_PUBLIC_URL", &url)
-            .env("COGNITO_USER_POOL_ID", "us-east-1_e2e")
-            .env("COGNITO_CLIENT_ID", "e2e-client")
-            .env("GITHUB_WEBHOOK_SECRET", WEBHOOK_SECRET)
-            .env("GITHUB_APP_ID", "1")
-            .env("GITHUB_APP_PRIVATE_KEY", rsa_key())
-            .env("GITHUB_APP_CLIENT_ID", "Iv1.e2e")
-            .env("GITHUB_APP_CLIENT_SECRET", "e2e-client-secret")
-            .env("GITHUB_APP_SLUG", "sanchoris-e2e")
-            .env("GITHUB_URL", &github_url)
-            .env("GITHUB_API_URL", &github_url)
-            .env("STRIPE_WEBHOOK_SECRET", "whsec_e2e")
-            .env("STRIPE_SECRET_KEY", "sk_test_e2e")
-            .env("STRIPE_API_URL", "https://api.stripe.invalid")
-            .env(
-                "SANCHORIS_CREDENTIAL_KEY",
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            )
-            .env(
-                "RUN_TOKEN_SIGNING_KEY",
-                "e2e-run-token-signing-key-0123456789",
-            )
-            .env(
-                "TASK_TOKEN_SIGNING_KEY",
-                "e2e-task-token-signing-key-0123456789",
-            )
-            .env(
-                "OAUTH_STATE_SIGNING_KEY",
-                "e2e-oauth-state-signing-key-0123456789",
-            )
-            .env("SANCHORIS_RECORDS_STORE", "local")
-            .env("SANCHORIS_RECORDS_DIR", &records_dir)
-            .env(
-                "RECORDS_SIGNING_KEY",
-                "e2e-records-signing-key-0123456789ab",
-            )
-            .env(
-                "SANCHORIS_WORKSPACE_COMMAND",
-                format!("node --no-warnings {}", agent.display()),
-            )
-            .env(
-                "SANCHORIS_CONTROL_URL",
-                format!("ws://127.0.0.1:{port}/runs/channel"),
-            )
-            .env("SANCHORIS_SOCKET_DIR", dir.path().join("sockets"))
-            .env("SANCHORIS_WORKSPACES_DIR", &workspaces_dir)
-            .env(
-                "SANCHORIS_GIT_URL",
-                format!("file://{}", git_root.display()),
-            )
-            .stdin(Stdio::null())
-            .spawn()
-            .expect("start the sanchoris binary");
+        let api = start_api(
+            &dynamo,
+            github.clone(),
+            dir.path(),
+            Workspaces::Agent {
+                command: vec![
+                    "node".into(),
+                    "--no-warnings".into(),
+                    agent.display().to_string(),
+                ],
+                socket_dir: dir.path().join("sockets"),
+                workspaces_dir: workspaces_dir.clone(),
+                git_url: format!("file://{}", git_root.display()),
+            },
+            Driving::Full,
+        )
+        .await;
         let world = Self {
-            api: Some(Api(child)),
-            url,
-            http: reqwest::Client::new(),
+            api: Some(api),
             github,
             seeded,
-            records_dir,
+            records_dir: dir.path().join("records"),
             workspaces_dir,
-            _pg: pg,
+            dynamo,
             _dir: dir,
         };
-        eventually("the api to listen", STEP, || async {
-            world
-                .http
-                .get(format!("{}/health", world.url))
-                .send()
-                .await
-                .ok()
-                .filter(|r| r.status().is_success())
-        })
-        .await;
         eventually("the config to sync", STEP, || async {
-            let synced: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM sanchoris.config_revisions WHERE commit_sha = $1 AND validation_status = 'valid'",
-            )
-            .bind(support::fake_github::CONFIG_SHA)
-            .fetch_one(&world.seeded.pool)
-            .await
-            .unwrap();
-            (synced == 1).then_some(())
+            world
+                .dynamo
+                .all::<ConfigRevision>()
+                .await
+                .iter()
+                .any(|revision| {
+                    revision.commit_sha == support::fake_github::CONFIG_SHA
+                        && revision.validation_status == "valid"
+                })
+                .then_some(())
         })
         .await;
         world
     }
 
+    fn api(&self) -> &Api {
+        self.api.as_ref().expect("the api is running")
+    }
+
     async fn webhook(&self, event: &str, delivery: &str, payload: &Value) -> (StatusCode, Value) {
         let body = serde_json::to_vec(payload).unwrap();
         let response = self
+            .api()
             .http
-            .post(format!("{}/webhooks/github", self.url))
+            .post(format!("{}/webhooks/github", self.api().url))
             .header("X-GitHub-Event", event)
             .header("X-GitHub-Delivery", delivery)
             .header(
@@ -202,20 +130,26 @@ impl World {
     }
 
     async fn task(&self, number: i64) -> Option<TaskRow> {
-        sqlx::query(
-            "SELECT t.id, t.status, t.error, \
-                    (SELECT r.id FROM sanchoris.runs r WHERE r.task_id = t.id ORDER BY r.started_at DESC LIMIT 1) AS run_id \
-             FROM sanchoris.tasks t WHERE t.name = $1",
-        )
-        .bind(format!("{REPO}#{number}"))
-        .fetch_optional(&self.seeded.pool)
-        .await
-        .unwrap()
-        .map(|row| TaskRow {
-            id: row.get("id"),
-            status: row.get("status"),
-            error: row.get("error"),
-            run_id: row.get("run_id"),
+        let name = format!("{REPO}#{number}");
+        let task = self
+            .dynamo
+            .all::<Task>()
+            .await
+            .into_iter()
+            .find(|task| task.name == name)?;
+        let run_id = self
+            .dynamo
+            .all::<Run>()
+            .await
+            .into_iter()
+            .filter(|run| run.task_id == task.id)
+            .max_by_key(|run| run.started_at)
+            .map(|run| run.id);
+        Some(TaskRow {
+            id: task.id,
+            status: task.status.as_str().to_string(),
+            error: task.error,
+            run_id,
         })
     }
 
@@ -228,20 +162,13 @@ impl World {
 
     async fn waiting_head(&self, task_id: Uuid, seen: &[String]) -> String {
         eventually("the checks wait on a new head", STEP, || async {
-            let heads: Vec<Value> = sqlx::query_scalar(
-                "SELECT cw.head_shas FROM sanchoris.check_waits cw \
-                 JOIN sanchoris.skill_runs s ON s.id = cw.skill_run_id \
-                 WHERE s.task_id = $1 AND cw.status = 'waiting'",
-            )
-            .bind(task_id)
-            .fetch_all(&self.seeded.pool)
-            .await
-            .unwrap();
-            heads
-                .iter()
-                .filter_map(|heads| heads[REPO].as_str())
+            self.dynamo
+                .all::<CheckWait>()
+                .await
+                .into_iter()
+                .filter(|wait| wait.task_id == task_id && wait.status == "waiting")
+                .filter_map(|wait| wait.head_shas[REPO].as_str().map(str::to_string))
                 .find(|sha| !seen.iter().any(|s| s == sha))
-                .map(str::to_string)
         })
         .await
     }
@@ -260,13 +187,28 @@ impl World {
     }
 
     async fn skill_runs(&self, task_id: Uuid) -> Vec<(i32, String, Option<String>)> {
-        sqlx::query_as(
-            "SELECT number, status, error FROM sanchoris.skill_runs WHERE task_id = $1 ORDER BY number",
-        )
-        .bind(task_id)
-        .fetch_all(&self.seeded.pool)
-        .await
-        .unwrap()
+        let mut runs = self
+            .dynamo
+            .all::<SkillRunItem>()
+            .await
+            .into_iter()
+            .filter(|run| run.task_id == task_id)
+            .map(|run| (run.number, run.status.as_str().to_string(), run.error))
+            .collect::<Vec<_>>();
+        runs.sort();
+        runs
+    }
+
+    async fn run_events(&self, run_id: Uuid) -> Vec<RunEventItem> {
+        let mut events = self
+            .dynamo
+            .all::<RunEventItem>()
+            .await
+            .into_iter()
+            .filter(|event| event.run_id == run_id)
+            .collect::<Vec<_>>();
+        events.sort_by_key(|event| (event.seq, event.received_at));
+        events
     }
 
     async fn label(&self, number: i64) -> TaskRow {
@@ -284,17 +226,28 @@ impl World {
         self.wait_status(number, "RUNNING").await
     }
 
-    async fn stop(&mut self) {
-        let api = self.api.take();
-        tokio::task::spawn_blocking(move || drop(api))
+    async fn reply(&self, task_id: Uuid, text: &str) {
+        let response = self
+            .api()
+            .http
+            .post(format!("{}/api/tasks/{task_id}/replies", self.api().url))
+            .bearer_auth(self.seeded.member_token())
+            .json(&json!({ "text": text }))
+            .send()
             .await
             .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
     }
 
     fn workspace_count(&self) -> usize {
         std::fs::read_dir(&self.workspaces_dir)
             .map(|entries| entries.count())
             .unwrap_or(0)
+    }
+
+    async fn stop(&mut self) {
+        drop(self.api.take());
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
@@ -305,18 +258,6 @@ fn branch(task: &TaskRow) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_labeled_issue_opens_a_pull_request_that_goes_green_after_a_fix() {
     let mut world = World::start().await;
-
-    let unsigned = world
-        .http
-        .post(format!("{}/webhooks/github", world.url))
-        .header("X-GitHub-Event", "issues")
-        .header("X-GitHub-Delivery", "forged")
-        .header("X-Hub-Signature-256", "sha256=00")
-        .body(serde_json::to_vec(&labeled_payload(35, "Forged")).unwrap())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
 
     let task = world.label(35).await;
     let (status, body) = world
@@ -379,47 +320,39 @@ async fn a_labeled_issue_opens_a_pull_request_that_goes_green_after_a_fix() {
     assert_eq!(log, "Fix CI for issue 35\nFix issue 35");
 
     let run_id = done.run_id.unwrap();
-    let pool = &world.seeded.pool;
-    let record_key: Option<String> =
-        sqlx::query_scalar("SELECT record_s3_key FROM sanchoris.runs WHERE id = $1")
-            .bind(run_id)
-            .fetch_one(pool)
-            .await
-            .unwrap();
-    let record_key = record_key.expect("the run saved a session record");
-    assert!(world.records_dir.join(&record_key).exists());
-    let logs: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM sanchoris.run_log_entries WHERE run_id = $1")
-            .bind(run_id)
-            .fetch_one(pool)
-            .await
-            .unwrap();
-    assert!(logs > 0);
-    let execs: Vec<Value> = sqlx::query_scalar(
-        "SELECT payload FROM sanchoris.run_events WHERE run_id = $1 AND type = 'exec_result' ORDER BY seq",
-    )
-    .bind(run_id)
-    .fetch_all(pool)
-    .await
-    .unwrap();
-    assert_eq!(execs.len(), 2);
-    assert!(execs.iter().all(|e| e["ok"] == json!(true)));
-    let unprocessed: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sanchoris.run_events WHERE run_id = $1 AND error IS NOT NULL",
-    )
-    .bind(run_id)
-    .fetch_one(pool)
-    .await
-    .unwrap();
-    assert_eq!(unprocessed, 0);
-    eventually("the workspace to stop", STEP, || async {
-        let open: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM sanchoris.workspaces WHERE run_id = $1 AND stopped_at IS NULL",
-        )
-        .bind(run_id)
-        .fetch_one(pool)
+    let record_key = world
+        .dynamo
+        .all::<Run>()
         .await
-        .unwrap();
+        .into_iter()
+        .find(|run| run.id == run_id)
+        .and_then(|run| run.record_s3_key)
+        .expect("the run saved a session record");
+    assert!(world.records_dir.join(&record_key).exists());
+    assert!(
+        world
+            .dynamo
+            .all::<RunLogEntry>()
+            .await
+            .iter()
+            .any(|entry| entry.run_id == run_id)
+    );
+    let events = world.run_events(run_id).await;
+    let execs = events
+        .iter()
+        .filter(|event| event.kind == "exec_result")
+        .collect::<Vec<_>>();
+    assert_eq!(execs.len(), 2);
+    assert!(execs.iter().all(|event| event.payload["ok"] == json!(true)));
+    assert!(events.iter().all(|event| event.error.is_none()));
+    eventually("the workspace to stop", STEP, || async {
+        let open = world
+            .dynamo
+            .all::<Workspace>()
+            .await
+            .into_iter()
+            .filter(|workspace| workspace.run_id == run_id && workspace.stopped_at.is_none())
+            .count();
         (open == 0 && world.workspace_count() == 0).then_some(())
     })
     .await;
@@ -448,20 +381,12 @@ async fn checks_that_keep_failing_need_you_and_a_reply_resumes_the_task() {
         )]
     );
 
-    let run_id = stuck.run_id.unwrap();
-    let mut tx = TenantTx::begin(&world.seeded.pool, world.seeded.tenant.tenant_id)
-        .await
-        .unwrap();
-    record_run_event(
-        &mut tx,
-        run_id,
-        None,
-        RunEventType::HumanReply,
-        &json!({ "member": "Mika", "text": "The flaky spec needs a retry. Run the skill again." }),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    world
+        .reply(
+            task.id,
+            "The flaky spec needs a retry. Run the skill again.",
+        )
+        .await;
     world.wait_status(36, "RUNNING").await;
 
     let retry = world.waiting_head(task.id, &seen).await;

@@ -6,27 +6,32 @@ use std::sync::Arc;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
-use sanchoris_api::records::{LocalRecordStore, RecordStore, record_key};
+use sanchoris_api::channel::{CLOSE_PROTOCOL_ERROR, SEQ_STRIDE};
+use sanchoris_api::records::{RecordStore, record_key};
 use sanchoris_api::signing::HmacKey;
 use sanchoris_core::billing::PAYMENT_PENDING;
-use sanchoris_core::testing::TestPostgres;
+use sanchoris_core::items::{
+    ChatMessage, Integration, OutboxItem, RunEventItem, RunLogEntry, Tenant,
+};
+use sanchoris_core::keys;
+use sanchoris_core::testing::TestDynamo;
 use sanchoris_core::tokens::{RunTokenSigner, Signer, TaskTokenSigner};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::Row;
 use support::fake_github::FakeGitHub;
-use support::{RUN_KEY, STRIPE_SECRET, Seeded, seed, start_api};
+use support::{
+    Api, Driving, RUN_KEY, STRIPE_SECRET, Seeded, TASK_KEY, WEBHOOK_SECRET, Workspaces,
+    github_signature, labeled_payload, seed, start_api, task_with_run,
+};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use uuid::Uuid;
 
 struct Server {
-    url: String,
-    http: reqwest::Client,
+    api: Api,
     seeded: Seeded,
     github: Arc<FakeGitHub>,
-    records: Arc<LocalRecordStore>,
-    _pg: TestPostgres,
+    dynamo: TestDynamo,
     _dir: tempfile::TempDir,
 }
 
@@ -34,22 +39,31 @@ impl Server {
     async fn start() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let github = FakeGitHub::new(&dir.path().join("git"), BTreeMap::new());
-        let pg = TestPostgres::start().await;
-        let seeded = seed(&pg).await;
-        let api = start_api(&pg, &seeded, github.clone(), dir.path()).await;
+        let dynamo = TestDynamo::start().await;
+        let seeded = seed(&dynamo).await;
+        let api = start_api(
+            &dynamo,
+            github.clone(),
+            dir.path(),
+            Workspaces::None,
+            Driving::QueueOnly,
+        )
+        .await;
         Self {
-            url: api.url,
-            http: api.http,
+            api,
             seeded,
             github,
-            records: api.records,
-            _pg: pg,
+            dynamo,
             _dir: dir,
         }
     }
 
+    fn tenant(&self) -> Uuid {
+        self.seeded.tenant.tenant_id
+    }
+
     async fn get(&self, path: &str, token: Option<&str>) -> reqwest::Response {
-        let mut request = self.http.get(format!("{}{path}", self.url));
+        let mut request = self.api.http.get(format!("{}{path}", self.api.url));
         if let Some(token) = token {
             request = request.bearer_auth(token);
         }
@@ -57,42 +71,36 @@ impl Server {
     }
 
     async fn post(&self, path: &str, token: Option<&str>, body: &Value) -> reqwest::Response {
-        let mut request = self.http.post(format!("{}{path}", self.url)).json(body);
+        let mut request = self
+            .api
+            .http
+            .post(format!("{}{path}", self.api.url))
+            .json(body);
         if let Some(token) = token {
             request = request.bearer_auth(token);
         }
         request.send().await.unwrap()
     }
 
+    async fn webhook(&self, event: &str, delivery: &str, payload: &Value) -> reqwest::Response {
+        let body = serde_json::to_vec(payload).unwrap();
+        self.api
+            .http
+            .post(format!("{}/webhooks/github", self.api.url))
+            .header("X-GitHub-Event", event)
+            .header("X-GitHub-Delivery", delivery)
+            .header(
+                "X-Hub-Signature-256",
+                github_signature(WEBHOOK_SECRET, &body),
+            )
+            .body(body)
+            .send()
+            .await
+            .unwrap()
+    }
+
     async fn task_with_run(&self) -> (Uuid, Uuid) {
-        let admin = &self.seeded.admin;
-        let tenant = &self.seeded.tenant;
-        let definition = json!({
-            "Trigger": { "Name": "labeled-issue", "Definition": {} },
-            "Session": { "Name": "shop", "Definition": {} },
-            "Skills": [],
-        });
-        let task_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO sanchoris.tasks (tenant_id, trigger_id, config_revision_id, name, title, status, definition, started_at) \
-             VALUES ($1, $2, $3, 'acme/shop-web#1', 'Task', 'RUNNING', $4, now()) RETURNING id",
-        )
-        .bind(tenant.tenant_id)
-        .bind(tenant.trigger_id)
-        .bind(tenant.config_revision_id)
-        .bind(definition)
-        .fetch_one(admin)
-        .await
-        .unwrap();
-        let run_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO sanchoris.runs (tenant_id, task_id, session_name, worker, model, status) \
-             VALUES ($1, $2, 'shop', 'claude', 'claude-sonnet-5-5', 'creating') RETURNING id",
-        )
-        .bind(tenant.tenant_id)
-        .bind(task_id)
-        .fetch_one(admin)
-        .await
-        .unwrap();
-        (task_id, run_id)
+        task_with_run(&self.dynamo, &self.seeded).await
     }
 }
 
@@ -122,6 +130,17 @@ async fn me_requires_a_token_and_provisions_the_user_once() {
     assert_eq!(first["id"], second["id"]);
     assert_eq!(first["email"], "google_42@example.com");
     assert_eq!(first["githubLogin"], Value::Null);
+    let member: Value = server
+        .get("/api/me", Some(&server.seeded.member_token()))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        member["id"],
+        json!(server.seeded.tenant.user_id.to_string())
+    );
+    assert_eq!(member["githubLogin"], "mika-dev");
     assert_eq!(server.get("/health", None).await.status(), StatusCode::OK);
 }
 
@@ -151,7 +170,7 @@ async fn github_linking_stores_the_account_bound_to_the_signed_in_user() {
     assert_eq!(query["client_id"], "Iv1.http");
     assert_eq!(
         query["redirect_uri"],
-        format!("{}/auth/github/callback", server.url)
+        format!("{}/auth/github/callback", server.api.url)
     );
 
     let forged = server
@@ -174,7 +193,7 @@ async fn github_linking_stores_the_account_bound_to_the_signed_in_user() {
     assert_eq!(linked.status(), StatusCode::SEE_OTHER);
     assert_eq!(
         linked.headers()["location"],
-        format!("{}/settings?github=linked", server.url).as_str()
+        format!("{}/settings?github=linked", server.api.url).as_str()
     );
     let me: Value = server
         .get("/api/me", Some("user:google_7"))
@@ -205,7 +224,7 @@ async fn github_linking_stores_the_account_bound_to_the_signed_in_user() {
         .await;
     assert_eq!(
         in_use.headers()["location"],
-        format!("{}/settings?github=in_use", server.url).as_str()
+        format!("{}/settings?github=in_use", server.api.url).as_str()
     );
     let denied = server
         .get(
@@ -215,7 +234,61 @@ async fn github_linking_stores_the_account_bound_to_the_signed_in_user() {
         .await;
     assert_eq!(
         denied.headers()["location"],
-        format!("{}/settings?github=denied", server.url).as_str()
+        format!("{}/settings?github=denied", server.api.url).as_str()
+    );
+}
+
+#[tokio::test]
+async fn github_webhooks_are_verified_recorded_once_and_update_installations() {
+    let server = Server::start().await;
+    let body = serde_json::to_vec(&labeled_payload(35, "Forged")).unwrap();
+    let forged = server
+        .api
+        .http
+        .post(format!("{}/webhooks/github", server.api.url))
+        .header("X-GitHub-Event", "issues")
+        .header("X-GitHub-Delivery", "forged")
+        .header("X-Hub-Signature-256", "sha256=00")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(forged.status(), StatusCode::UNAUTHORIZED);
+
+    let payload = labeled_payload(35, "Fix flaky checkout test");
+    let first = server.webhook("issues", "delivery-35", &payload).await;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    assert_eq!(first.json::<Value>().await.unwrap()["status"], "accepted");
+    let again = server.webhook("issues", "delivery-35", &payload).await;
+    assert_eq!(again.status(), StatusCode::OK);
+    assert_eq!(again.json::<Value>().await.unwrap()["status"], "duplicate");
+    let mut unknown = payload.clone();
+    unknown["installation"]["id"] = json!(999);
+    let ignored = server.webhook("issues", "delivery-999", &unknown).await;
+    assert_eq!(ignored.json::<Value>().await.unwrap()["status"], "ignored");
+
+    let suspend = json!({
+        "action": "suspend",
+        "installation": { "id": support::INSTALLATION, "account": { "login": "acme", "type": "Organization" } },
+    });
+    let suspended = server
+        .webhook("installation", "delivery-suspend", &suspend)
+        .await;
+    assert_eq!(
+        suspended.json::<Value>().await.unwrap()["status"],
+        "processed"
+    );
+    let integrations = server.dynamo.all::<Integration>().await;
+    assert_eq!(integrations.len(), 1);
+    assert_eq!(integrations[0].status, "not_connected");
+    let audit = server
+        .dynamo
+        .all::<sanchoris_core::items::AuditEvent>()
+        .await;
+    assert!(
+        audit
+            .iter()
+            .any(|event| event.action == "integration.github_installation_update")
     );
 }
 
@@ -232,8 +305,9 @@ fn stripe_header(body: &[u8]) -> String {
 async fn stripe(server: &Server, event: &Value, signature: Option<String>) -> reqwest::Response {
     let body = serde_json::to_vec(event).unwrap();
     server
+        .api
         .http
-        .post(format!("{}/webhooks/stripe", server.url))
+        .post(format!("{}/webhooks/stripe", server.api.url))
         .header(
             "Stripe-Signature",
             signature.unwrap_or_else(|| stripe_header(&body)),
@@ -244,22 +318,28 @@ async fn stripe(server: &Server, event: &Value, signature: Option<String>) -> re
         .unwrap()
 }
 
+async fn tenant_item(server: &Server) -> Tenant {
+    server
+        .api
+        .store
+        .get::<Tenant>(&keys::tenant_key(server.tenant()))
+        .await
+        .unwrap()
+        .unwrap()
+}
+
 #[tokio::test]
 async fn stripe_webhooks_are_verified_and_update_the_tenant() {
     let server = Server::start().await;
-    let tenant_id = server.seeded.tenant.tenant_id;
-    sqlx::query(
-        "UPDATE sanchoris.tenants SET status = 'suspended', suspended_reason = $2 WHERE id = $1",
-    )
-    .bind(tenant_id)
-    .bind(PAYMENT_PENDING)
-    .execute(&server.seeded.admin)
-    .await
-    .unwrap();
-    sqlx::query("UPDATE sanchoris.plans SET stripe_price_id = 'price_pro' WHERE id = 'pro'")
-        .execute(&server.seeded.admin)
-        .await
-        .unwrap();
+    let tenant_id = server.tenant();
+    server
+        .dynamo
+        .modify::<Tenant>(&keys::tenant_key(tenant_id), |tenant| {
+            tenant.status = "suspended".into();
+            tenant.suspended_reason = Some(PAYMENT_PENDING.into());
+        })
+        .await;
+    server.dynamo.set_stripe_price("pro", "price_pro").await;
     let checkout = json!({
         "id": "evt_1", "type": "checkout.session.completed", "created": Utc::now().timestamp(),
         "data": { "object": {
@@ -278,17 +358,9 @@ async fn stripe_webhooks_are_verified_and_update_the_tenant() {
         response.json::<Value>().await.unwrap()["status"],
         "processed"
     );
-    let row = sqlx::query("SELECT status, stripe_customer_id FROM sanchoris.tenants WHERE id = $1")
-        .bind(tenant_id)
-        .fetch_one(&server.seeded.pool)
-        .await
-        .unwrap();
-    assert_eq!(row.get::<String, _>("status"), "active");
-    assert_eq!(
-        row.get::<Option<String>, _>("stripe_customer_id")
-            .as_deref(),
-        Some("cus_http")
-    );
+    let tenant = tenant_item(&server).await;
+    assert_eq!(tenant.status, "active");
+    assert_eq!(tenant.stripe_customer_id.as_deref(), Some("cus_http"));
 
     let failed = json!({
         "id": "evt_2", "type": "invoice.payment_failed", "created": Utc::now().timestamp(),
@@ -298,12 +370,7 @@ async fn stripe_webhooks_are_verified_and_update_the_tenant() {
         stripe(&server, &failed, None).await.status(),
         StatusCode::OK
     );
-    let status: String = sqlx::query_scalar("SELECT status FROM sanchoris.tenants WHERE id = $1")
-        .bind(tenant_id)
-        .fetch_one(&server.seeded.pool)
-        .await
-        .unwrap();
-    assert_eq!(status, "suspended");
+    assert_eq!(tenant_item(&server).await.status, "suspended");
 
     let unknown = json!({
         "id": "evt_3", "type": "invoice.paid", "created": Utc::now().timestamp(),
@@ -328,20 +395,21 @@ async fn stripe_webhooks_are_verified_and_update_the_tenant() {
 async fn replies_and_approvals_need_a_member_of_the_tenant() {
     let server = Server::start().await;
     let (task_id, run_id) = server.task_with_run().await;
-    let subject: String =
-        sqlx::query_scalar("SELECT cognito_subject FROM sanchoris.users WHERE id = $1")
-            .bind(server.seeded.tenant.user_id)
-            .fetch_one(&server.seeded.pool)
-            .await
-            .unwrap();
-    let member = format!("user:{subject}");
+    let member = server.seeded.member_token();
     let path = format!("/api/tasks/{task_id}/replies");
     assert_eq!(
         server
             .post(&path, Some("user:stranger"), &json!({ "text": "hi" }))
             .await
             .status(),
-        StatusCode::FORBIDDEN
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        server
+            .post(&path, Some(&member), &json!({ "text": "  " }))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
     );
     let response = server
         .post(
@@ -351,15 +419,16 @@ async fn replies_and_approvals_need_a_member_of_the_tenant() {
         )
         .await;
     assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let payload: Value = sqlx::query_scalar(
-        "SELECT payload FROM sanchoris.run_events WHERE run_id = $1 AND type = 'human_reply'",
-    )
-    .bind(run_id)
-    .fetch_one(&server.seeded.pool)
-    .await
-    .unwrap();
+    let replies = server
+        .dynamo
+        .all::<RunEventItem>()
+        .await
+        .into_iter()
+        .filter(|event| event.run_id == run_id && event.kind == "human_reply")
+        .collect::<Vec<_>>();
+    assert_eq!(replies.len(), 1);
     assert_eq!(
-        payload,
+        replies[0].payload,
         json!({ "member": "Mika", "text": "Use the staging database." })
     );
 
@@ -374,7 +443,7 @@ async fn replies_and_approvals_need_a_member_of_the_tenant() {
             .status(),
         StatusCode::BAD_REQUEST
     );
-    let signed = TaskTokenSigner::new(Signer::new(&[6u8; 32]).unwrap())
+    let signed = TaskTokenSigner::new(Signer::new(&TASK_KEY).unwrap())
         .sign(Uuid::new_v4(), "sanchoris-task:1:4:1");
     assert_eq!(
         server
@@ -392,40 +461,37 @@ async fn replies_and_approvals_need_a_member_of_the_tenant() {
 #[tokio::test]
 async fn local_records_accept_only_signed_uploads_of_the_announced_content() {
     let server = Server::start().await;
-    let tenant = server.seeded.tenant.tenant_id;
+    let tenant = server.tenant();
+    let records = &server.api.records;
     let key = record_key(tenant, Uuid::new_v4(), "session-1", 1).unwrap();
     let body = b"{\"role\":\"user\"}\n".to_vec();
     let sha = hex::encode(Sha256::digest(&body));
-    let put = server
-        .records
+    let put = records
         .presign_put(tenant, &key, body.len() as i64, &sha)
         .await
         .unwrap();
     assert!(
-        server
-            .records
+        records
             .presign_put(Uuid::new_v4(), &key, 1, &sha)
             .await
             .is_err()
     );
-    let wrong = server
-        .http
+    let http = &server.api.http;
+    let wrong = http
         .put(&put.url)
         .body(b"tampered\n".to_vec())
         .send()
         .await
         .unwrap();
     assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
-    let forged = server
-        .http
+    let forged = http
         .put(put.url.replace("length=", "length=1"))
         .body(body.clone())
         .send()
         .await
         .unwrap();
     assert_eq!(forged.status(), StatusCode::FORBIDDEN);
-    let uploaded = server
-        .http
+    let uploaded = http
         .put(&put.url)
         .header("content-type", &put.headers["content-type"])
         .body(body.clone())
@@ -433,11 +499,10 @@ async fn local_records_accept_only_signed_uploads_of_the_announced_content() {
         .await
         .unwrap();
     assert_eq!(uploaded.status(), StatusCode::OK);
-    let url = server.records.presign_get(tenant, &key).await.unwrap();
-    let downloaded = server.http.get(&url).send().await.unwrap();
+    let url = records.presign_get(tenant, &key).await.unwrap();
+    let downloaded = http.get(&url).send().await.unwrap();
     assert_eq!(downloaded.bytes().await.unwrap().to_vec(), body);
-    let unsigned = server
-        .http
+    let unsigned = http
         .get(url.split('?').next().unwrap())
         .send()
         .await
@@ -449,7 +514,7 @@ type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn connect(server: &Server, token: &str) -> Result<Socket, u16> {
-    let mut request = format!("{}/runs/channel", server.url.replace("http", "ws"))
+    let mut request = format!("{}/runs/channel", server.api.url.replace("http", "ws"))
         .into_client_request()
         .unwrap();
     request
@@ -491,49 +556,72 @@ async fn receive(socket: &mut Socket) -> Value {
 #[tokio::test]
 async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     let server = Server::start().await;
-    let (_, run_id) = server.task_with_run().await;
-    let tenant = server.seeded.tenant.tenant_id;
+    let (task_id, run_id) = server.task_with_run().await;
+    let tenant = server.tenant();
     let signer = RunTokenSigner::new(Signer::new(RUN_KEY).unwrap());
-    let token = signer.sign(run_id, Utc::now() + chrono::Duration::hours(1));
+    let token = signer.sign(tenant, run_id, Utc::now() + chrono::Duration::hours(1));
     assert_eq!(connect(&server, "bogus").await.err(), Some(401));
-    let expired = signer.sign(run_id, Utc::now() - chrono::Duration::seconds(1));
+    let expired = signer.sign(tenant, run_id, Utc::now() - chrono::Duration::seconds(1));
     assert_eq!(connect(&server, &expired).await.err(), Some(401));
-    let unknown = signer.sign(Uuid::new_v4(), Utc::now() + chrono::Duration::hours(1));
+    let unknown = signer.sign(
+        tenant,
+        Uuid::new_v4(),
+        Utc::now() + chrono::Duration::hours(1),
+    );
     assert_eq!(connect(&server, &unknown).await.err(), Some(403));
 
-    for (kind, payload, dedupe) in [
+    let now = Utc::now();
+    for (seq, kind, payload) in [
         (
+            1,
             "start",
             json!({
                 "agent": "claude", "model": "claude-sonnet-5-5", "systemPrompt": null, "skills": [],
                 "instruction": "Do the thing.", "resume": null, "heartbeatSeconds": 60,
                 "branch": "sanchoris/x", "repositories": ["acme/shop-web"],
             }),
-            "start:1",
         ),
-        ("user_message", json!({ "text": "Hello." }), "m:1"),
+        (2, "user_message", json!({ "text": "Hello." })),
         (
+            3,
             "chat_post",
             json!({ "text": "Posted.", "channel": null }),
-            "chat:1",
         ),
     ] {
-        sqlx::query(
-            "INSERT INTO sanchoris.run_outbox (tenant_id, run_id, type, payload, dedupe_key) VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(tenant)
-        .bind(run_id)
-        .bind(kind)
-        .bind(payload)
-        .bind(dedupe)
-        .execute(&server.seeded.admin)
-        .await
-        .unwrap();
+        server
+            .dynamo
+            .put(&OutboxItem {
+                id: Uuid::new_v4(),
+                tenant_id: tenant,
+                run_id,
+                seq,
+                kind: kind.into(),
+                payload,
+                dedupe_key: format!("{kind}:1"),
+                created_at: now,
+                delivered_at: None,
+            })
+            .await;
     }
 
     let mut socket = connect(&server, &token).await.unwrap();
     let run = run_id.to_string();
     let instance = Uuid::new_v4().to_string();
+    send(
+        &mut socket,
+        json!({ "type": "ready", "runId": run, "seq": 1, "sessionId": "s-0", "agent": "claude", "model": "m", "resumed": false }),
+    )
+    .await;
+    assert_eq!(
+        receive(&mut socket).await,
+        json!({ "type": "close", "runId": run, "code": CLOSE_PROTOCOL_ERROR, "reason": "the first message must be hello" })
+    );
+    assert_eq!(
+        receive(&mut socket).await,
+        json!({ "closed": CLOSE_PROTOCOL_ERROR })
+    );
+
+    let mut socket = connect(&server, &token).await.unwrap();
     send(
         &mut socket,
         json!({ "type": "hello", "runId": run, "protocolVersion": 1, "instanceId": instance, "started": false, "sessionId": null }),
@@ -601,42 +689,37 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     .await;
     assert_eq!(
         receive(&mut socket).await,
-        json!({ "closed": sanchoris_api::channel::CLOSE_PROTOCOL_ERROR })
+        json!({ "type": "close", "runId": run, "code": CLOSE_PROTOCOL_ERROR, "reason": "expected seq 5, received 9" })
+    );
+    assert_eq!(
+        receive(&mut socket).await,
+        json!({ "closed": CLOSE_PROTOCOL_ERROR })
     );
 
-    let events: Vec<(Option<i64>, String)> =
-        sqlx::query_as("SELECT seq, type FROM sanchoris.run_events WHERE run_id = $1 ORDER BY seq")
-            .bind(run_id)
-            .fetch_all(&server.seeded.pool)
-            .await
-            .unwrap();
-    assert_eq!(events, vec![(Some(1), "ready".to_string())]);
-    let logs: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM sanchoris.run_log_entries WHERE run_id = $1")
-            .bind(run_id)
-            .fetch_one(&server.seeded.pool)
-            .await
-            .unwrap();
-    assert_eq!(logs, 1);
-    let undelivered: Vec<String> = sqlx::query_scalar(
-        "SELECT type FROM sanchoris.run_outbox WHERE run_id = $1 AND delivered_at IS NULL ORDER BY seq",
-    )
-    .bind(run_id)
-    .fetch_all(&server.seeded.pool)
-    .await
-    .unwrap();
-    assert_eq!(undelivered, vec!["chat_post".to_string()]);
-    assert_eq!(
-        sanchoris_api::chat::relay_chat_posts(&server.seeded.pool)
-            .await
-            .unwrap(),
-        1
-    );
-    let chat: String = sqlx::query_scalar("SELECT text FROM sanchoris.chat_messages")
-        .fetch_one(&server.seeded.pool)
+    let events = server
+        .dynamo
+        .all::<RunEventItem>()
         .await
-        .unwrap();
-    assert_eq!(chat, "Posted.");
+        .into_iter()
+        .filter(|event| event.run_id == run_id)
+        .map(|event| (event.seq, event.kind))
+        .collect::<Vec<_>>();
+    assert_eq!(events, vec![(Some(1), "ready".to_string())]);
+    assert_eq!(server.dynamo.all::<RunLogEntry>().await.len(), 1);
+    let undelivered = server
+        .dynamo
+        .all::<OutboxItem>()
+        .await
+        .into_iter()
+        .filter(|item| item.seq <= 3 && item.delivered_at.is_none())
+        .collect::<Vec<_>>();
+    assert_eq!(undelivered, vec![]);
+    let chat = server.dynamo.all::<ChatMessage>().await;
+    assert_eq!(chat.len(), 1);
+    assert_eq!(
+        (chat[0].text.as_str(), chat[0].task_id),
+        ("Posted.", task_id)
+    );
 
     let mut second = connect(&server, &token).await.unwrap();
     let next = Uuid::new_v4().to_string();
@@ -654,15 +737,14 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
         receive(&mut second).await,
         json!({ "type": "ack", "runId": run, "seq": 1 })
     );
-    let seqs: Vec<Option<i64>> = sqlx::query_scalar(
-        "SELECT seq FROM sanchoris.run_events WHERE run_id = $1 AND type = 'ready' ORDER BY seq",
-    )
-    .bind(run_id)
-    .fetch_all(&server.seeded.pool)
-    .await
-    .unwrap();
-    assert_eq!(
-        seqs,
-        vec![Some(1), Some(sanchoris_api::channel::SEQ_STRIDE + 1)]
-    );
+    let mut seqs = server
+        .dynamo
+        .all::<RunEventItem>()
+        .await
+        .into_iter()
+        .filter(|event| event.run_id == run_id && event.kind == "ready")
+        .map(|event| event.seq)
+        .collect::<Vec<_>>();
+    seqs.sort();
+    assert_eq!(seqs, vec![Some(1), Some(SEQ_STRIDE + 1)]);
 }

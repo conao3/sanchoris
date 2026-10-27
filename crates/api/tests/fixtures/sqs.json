@@ -1,0 +1,23 @@
+{
+  "Records": [
+    {
+      "messageId": "059f36b4-87a3-44ab-83d2-661975830a7d",
+      "receiptHandle": "AQEBwJnKyrHigUMZj6rYigCgxlaS3SLy0a",
+      "body": "",
+      "attributes": {
+        "ApproximateReceiveCount": "1",
+        "SentTimestamp": "1793091601000",
+        "SequenceNumber": "18849496460467696128",
+        "MessageGroupId": "run:{{runId}}",
+        "SenderId": "AROAEXAMPLE:sanchoris-relay",
+        "MessageDeduplicationId": "dedupe",
+        "ApproximateFirstReceiveTimestamp": "1793091601010"
+      },
+      "messageAttributes": {},
+      "md5OfBody": "e4e68fb7bd0e697a0ae8f1bb342846b3",
+      "eventSource": "aws:sqs",
+      "eventSourceARN": "arn:aws:sqs:ap-northeast-1:123456789012:sanchoris-work.fifo",
+      "awsRegion": "ap-northeast-1"
+    }
+  ]
+}

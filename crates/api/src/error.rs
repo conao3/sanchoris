@@ -54,12 +54,6 @@ impl IntoResponse for ApiError {
     }
 }
 
-impl From<sqlx::Error> for ApiError {
-    fn from(error: sqlx::Error) -> Self {
-        Self::Internal(error.to_string())
-    }
-}
-
 impl From<DbError> for ApiError {
     fn from(error: DbError) -> Self {
         Self::Internal(error.to_string())

@@ -4,7 +4,11 @@ use async_trait::async_trait;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, header};
-use sqlx::{PgPool, Row};
+use chrono::Utc;
+use sanchoris_core::db::{DbError, Store};
+use sanchoris_core::items::{Guard, User, uniq};
+use sanchoris_core::keys;
+use sanchoris_core::store::retry;
 use uuid::Uuid;
 
 use crate::app::AppState;
@@ -46,6 +50,18 @@ pub struct CurrentUser {
     pub github_login: Option<String>,
 }
 
+impl From<User> for CurrentUser {
+    fn from(user: User) -> Self {
+        Self {
+            user_id: user.id,
+            cognito_subject: user.cognito_subject,
+            email: user.email,
+            display_name: user.display_name,
+            github_login: user.github_login,
+        }
+    }
+}
+
 pub fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::AUTHORIZATION)?
@@ -56,51 +72,52 @@ pub fn bearer(headers: &HeaderMap) -> Option<&str> {
         .filter(|token| !token.is_empty())
 }
 
-fn user(row: &sqlx::postgres::PgRow) -> Result<CurrentUser, sqlx::Error> {
-    Ok(CurrentUser {
-        user_id: row.try_get("id")?,
-        cognito_subject: row.try_get("cognito_subject")?,
-        email: row.try_get("email")?,
-        display_name: row.try_get("display_name")?,
-        github_login: row.try_get("github_login")?,
-    })
+enum Provisioned {
+    User(Box<User>),
+    EmailTaken,
 }
 
-pub async fn provision(pool: &PgPool, identity: &Identity) -> Result<CurrentUser, sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
-        .bind(format!("cognito:{}", identity.subject))
-        .execute(&mut *tx)
-        .await?;
-    let existing = sqlx::query(
-        "SELECT id, cognito_subject, email, display_name, github_login FROM sanchoris.users \
-         WHERE cognito_subject = $1",
-    )
-    .bind(&identity.subject)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let row = match existing {
-        Some(row) => row,
-        None => {
-            let email = identity
-                .email
-                .clone()
-                .unwrap_or_else(|| format!("{}@users.noreply.sanchoris", identity.subject));
-            sqlx::query(
-                "INSERT INTO sanchoris.users (id, cognito_subject, email, display_name) \
-                 VALUES ($1, $2, $3, $4) RETURNING id, cognito_subject, email, display_name, github_login",
-            )
-            .bind(Uuid::new_v4())
-            .bind(&identity.subject)
-            .bind(email)
-            .bind(&identity.display_name)
-            .fetch_one(&mut *tx)
-            .await?
+pub async fn provision(store: &Store, identity: &Identity) -> Result<CurrentUser, ApiError> {
+    let email = identity
+        .email
+        .clone()
+        .unwrap_or_else(|| format!("{}@users.noreply.sanchoris", identity.subject));
+    let provisioned = retry(8, || async {
+        let mut tx = store.global_tx();
+        let subject = keys::uniq_key(uniq::COGNITO_SUBJECT, &identity.subject);
+        if let Some(guard) = tx.get::<Guard>(&subject).await? {
+            let user = tx.require::<User>(&keys::user_key(guard.target)).await?;
+            return Ok::<_, DbError>(Provisioned::User(Box::new(user)));
         }
-    };
-    let current = user(&row)?;
-    tx.commit().await?;
-    Ok(current)
+        let email_key = keys::uniq_key(uniq::EMAIL, &email.to_lowercase());
+        if tx.get::<Guard>(&email_key).await?.is_some() {
+            return Ok(Provisioned::EmailTaken);
+        }
+        let now = Utc::now();
+        let user = User {
+            id: Uuid::new_v4(),
+            cognito_subject: identity.subject.clone(),
+            email: email.clone(),
+            display_name: identity.display_name.clone(),
+            github_user_id: None,
+            github_login: None,
+            is_operator: false,
+            created_at: now,
+            updated_at: now,
+        };
+        tx.insert(&user)?;
+        tx.insert(&Guard::new(subject, user.id))?;
+        tx.insert(&Guard::new(email_key, user.id))?;
+        tx.commit().await?;
+        Ok(Provisioned::User(Box::new(user)))
+    })
+    .await?;
+    match provisioned {
+        Provisioned::User(user) => Ok((*user).into()),
+        Provisioned::EmailTaken => Err(ApiError::Conflict(format!(
+            "the email {email} belongs to another user"
+        ))),
+    }
 }
 
 impl FromRequestParts<AppState> for CurrentUser {
@@ -109,6 +126,6 @@ impl FromRequestParts<AppState> for CurrentUser {
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let token = bearer(&parts.headers).ok_or(ApiError::Unauthorized)?;
         let identity = state.verifier.verify(token).await?;
-        Ok(provision(&state.pool, &identity).await?)
+        provision(&state.store, &identity).await
     }
 }

@@ -1,0 +1,26 @@
+{
+  "requestContext": {
+    "routeKey": "$default",
+    "authorizer": {
+      "principalId": "{{runId}}",
+      "integrationLatency": 41,
+      "tenantId": "{{tenantId}}",
+      "runId": "{{runId}}"
+    },
+    "messageId": "PqRsTuVwXyZaBcD=",
+    "eventType": "MESSAGE",
+    "extendedRequestId": "PqRsTuVwXyZaBcE=",
+    "requestTime": "27/Oct/2026:09:00:01 +0000",
+    "messageDirection": "IN",
+    "stage": "prod",
+    "connectedAt": 1793091600000,
+    "requestTimeEpoch": 1793091601000,
+    "identity": { "sourceIp": "203.0.113.10" },
+    "requestId": "PqRsTuVwXyZaBcE=",
+    "domainName": "abc123defg.execute-api.ap-northeast-1.amazonaws.com",
+    "connectionId": "{{connectionId}}",
+    "apiId": "abc123defg"
+  },
+  "body": "",
+  "isBase64Encoded": false
+}

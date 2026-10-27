@@ -3,8 +3,11 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::Utc;
 use sanchoris_core::channel::{RunEventType, record_run_event};
-use sanchoris_core::db::TenantTx;
+use sanchoris_core::db::{DbError, REF_SKILL_RUN, Store, locate};
+use sanchoris_core::items::{Membership, Task};
+use sanchoris_core::keys;
 use sanchoris_core::skillrun::{self, SkillRunError};
+use sanchoris_core::store::retry;
 use sanchoris_core::tasks::latest_run;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -14,22 +17,7 @@ use crate::app::AppState;
 use crate::auth::CurrentUser;
 use crate::error::ApiError;
 
-async fn require_member(
-    state: &AppState,
-    tenant_id: Uuid,
-    user: &CurrentUser,
-) -> Result<(), ApiError> {
-    let member = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM sanchoris.members WHERE tenant_id = $1 AND user_id = $2",
-    )
-    .bind(tenant_id)
-    .bind(user.user_id)
-    .fetch_optional(&state.pool)
-    .await?;
-    member
-        .map(|_| ())
-        .ok_or_else(|| ApiError::Forbidden("you are not a member of this tenant".into()))
-}
+const ATTEMPTS: u32 = 8;
 
 impl From<SkillRunError> for ApiError {
     fn from(error: SkillRunError) -> Self {
@@ -45,6 +33,49 @@ impl From<SkillRunError> for ApiError {
             },
         }
     }
+}
+
+pub async fn tenants_of(store: &Store, user_id: Uuid) -> Result<Vec<Uuid>, DbError> {
+    Ok(store
+        .query::<Membership>(&keys::user_key(user_id).pk, "MEMBER#")
+        .await?
+        .into_iter()
+        .map(|membership| membership.tenant_id)
+        .collect())
+}
+
+async fn tenant_of_skill_run(
+    store: &Store,
+    user_id: Uuid,
+    skill_run_id: Uuid,
+) -> Result<Option<Uuid>, DbError> {
+    for tenant_id in tenants_of(store, user_id).await? {
+        let mut tx = store.tx(tenant_id);
+        if locate(&mut tx, skill_run_id, REF_SKILL_RUN)
+            .await?
+            .is_some()
+        {
+            return Ok(Some(tenant_id));
+        }
+    }
+    Ok(None)
+}
+
+async fn tenant_of_task(
+    store: &Store,
+    user_id: Uuid,
+    task_id: Uuid,
+) -> Result<Option<Uuid>, DbError> {
+    for tenant_id in tenants_of(store, user_id).await? {
+        if store
+            .get::<Task>(&keys::task_key(tenant_id, task_id))
+            .await?
+            .is_some()
+        {
+            return Ok(Some(tenant_id));
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Deserialize)]
@@ -63,24 +94,32 @@ pub async fn resolve_approval(
         .task_tokens
         .verify(&body.token)
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
-    let tenant_id =
-        sqlx::query_scalar::<_, Uuid>("SELECT tenant_id FROM sanchoris.skill_runs WHERE id = $1")
-            .bind(verified.skill_run_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .ok_or_else(|| ApiError::NotFound("the approval does not exist".into()))?;
-    require_member(&state, tenant_id, &user).await?;
-    let mut tx = TenantTx::begin(&state.pool, tenant_id).await?;
-    skillrun::resolve_approval(
-        &mut tx,
-        &state.config.task_tokens,
-        &body.token,
-        body.approved,
-        &user.display_name,
-        Utc::now(),
-    )
-    .await?;
-    tx.commit().await?;
+    let tenant_id = tenant_of_skill_run(&state.store, user.user_id, verified.skill_run_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("the approval does not exist".into()))?;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let mut tx = state.store.tx(tenant_id);
+        let resolved = skillrun::resolve_approval(
+            &mut tx,
+            &state.config.task_tokens,
+            &body.token,
+            body.approved,
+            &user.display_name,
+            Utc::now(),
+        )
+        .await;
+        let committed = match resolved {
+            Ok(_) => tx.commit().await.map_err(SkillRunError::from),
+            Err(error) => Err(error),
+        };
+        match committed {
+            Err(error) if error.is_conflict() && attempt < ATTEMPTS => {}
+            Err(error) => return Err(error.into()),
+            Ok(()) => break,
+        }
+    }
     Ok(Json(json!({
         "status": if body.approved { "approved" } else { "rejected" },
     })))
@@ -100,26 +139,23 @@ pub async fn reply(
     if body.text.trim().is_empty() {
         return Err(ApiError::BadRequest("the reply is empty".into()));
     }
-    let tenant_id =
-        sqlx::query_scalar::<_, Uuid>("SELECT tenant_id FROM sanchoris.tasks WHERE id = $1")
-            .bind(task_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .ok_or_else(|| ApiError::NotFound(format!("task {task_id}")))?;
-    require_member(&state, tenant_id, &user).await?;
-    let mut tx = TenantTx::begin(&state.pool, tenant_id).await?;
-    let run_id = latest_run(&mut tx, task_id)
+    let tenant_id = tenant_of_task(&state.store, user.user_id, task_id)
         .await?
-        .ok_or_else(|| ApiError::Conflict("the task has no session to reply to".into()))?;
-    let recorded = record_run_event(
-        &mut tx,
-        run_id,
-        None,
-        RunEventType::HumanReply,
-        &json!({ "member": user.display_name, "text": body.text }),
-    )
+        .ok_or_else(|| ApiError::NotFound(format!("task {task_id}")))?;
+    let payload = json!({ "member": user.display_name, "text": body.text });
+    let replied = retry(ATTEMPTS, || async {
+        let mut tx = state.store.tx(tenant_id);
+        let Some(run_id) = latest_run(&mut tx, task_id).await? else {
+            return Ok(None);
+        };
+        let recorded =
+            record_run_event(&mut tx, run_id, None, RunEventType::HumanReply, &payload).await?;
+        tx.commit().await?;
+        Ok(Some((recorded, run_id)))
+    })
     .await?;
-    tx.commit().await?;
+    let (recorded, run_id) =
+        replied.ok_or_else(|| ApiError::Conflict("the task has no session to reply to".into()))?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({ "id": recorded.id(), "runId": run_id })),

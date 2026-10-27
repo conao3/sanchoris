@@ -5,19 +5,22 @@ use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Duration, Utc};
 use sanchoris_core::audit::{AuditEntry, record_audit};
-use sanchoris_core::db::TenantTx;
+use sanchoris_core::db::{DbError, Store, TenantTx};
+use sanchoris_core::items::{Guard, Integration, Member, Membership, User, uniq};
+use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
-use sanchoris_graphql::GithubConnectUrl;
+use sanchoris_core::store::retry;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::auth::CurrentUser;
-use crate::config::ServeConfig;
+use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::signing::HmacKey;
+
+const ATTEMPTS: u32 = 8;
 
 const STATE_TTL_MINUTES: i64 = 10;
 const RESULT_PATH: &str = "/settings";
@@ -92,11 +95,11 @@ pub fn verify_state(key: &HmacKey, sealed: &str, now: DateTime<Utc>) -> Option<O
         .flatten()
 }
 
-fn redirect_uri(config: &ServeConfig) -> String {
+fn redirect_uri(config: &ApiConfig) -> String {
     format!("{}/auth/github/callback", config.public_url)
 }
 
-pub fn authorize_url(config: &ServeConfig, state: &str) -> String {
+pub fn authorize_url(config: &ApiConfig, state: &str) -> String {
     let mut url = reqwest::Url::parse(&format!("{}/login/oauth/authorize", config.github.web_url))
         .expect("GITHUB_URL is a valid URL");
     url.query_pairs_mut()
@@ -106,7 +109,7 @@ pub fn authorize_url(config: &ServeConfig, state: &str) -> String {
     url.to_string()
 }
 
-pub fn install_url(config: &ServeConfig, state: &str) -> String {
+pub fn install_url(config: &ApiConfig, state: &str) -> String {
     let mut url = reqwest::Url::parse(&format!(
         "{}/apps/{}/installations/new",
         config.github.web_url, config.github.app_slug
@@ -117,17 +120,15 @@ pub fn install_url(config: &ServeConfig, state: &str) -> String {
 }
 
 pub struct GitHubLinks {
-    config: Arc<ServeConfig>,
+    config: Arc<ApiConfig>,
 }
 
 impl GitHubLinks {
-    pub fn new(config: Arc<ServeConfig>) -> Self {
+    pub fn new(config: Arc<ApiConfig>) -> Self {
         Self { config }
     }
-}
 
-impl GithubConnectUrl for GitHubLinks {
-    fn link_account(&self, user_id: Uuid) -> String {
+    pub fn link_account(&self, user_id: Uuid) -> String {
         let state = issue_state(
             &self.config.oauth_state_key,
             OAuthState::Link { user_id },
@@ -136,7 +137,7 @@ impl GithubConnectUrl for GitHubLinks {
         authorize_url(&self.config, &state)
     }
 
-    fn install_app(&self, tenant_id: Uuid, user_id: Uuid) -> String {
+    pub fn install_app(&self, tenant_id: Uuid, user_id: Uuid) -> String {
         let state = issue_state(
             &self.config.oauth_state_key,
             OAuthState::Install { tenant_id, user_id },
@@ -312,13 +313,24 @@ async fn user_installation(
     Ok(None)
 }
 
-async fn memberships(pool: &PgPool, user_id: Uuid) -> Result<Vec<(Uuid, Uuid, String)>, ApiError> {
-    Ok(sqlx::query_as::<_, (Uuid, Uuid, String)>(
-        "SELECT tenant_id, id, role FROM sanchoris.members WHERE user_id = $1 ORDER BY tenant_id",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await?)
+async fn memberships(store: &Store, user_id: Uuid) -> Result<Vec<Member>, DbError> {
+    let mut members = Vec::new();
+    for membership in store
+        .query::<Membership>(&keys::user_key(user_id).pk, "MEMBER#")
+        .await?
+    {
+        if let Some(member) = store
+            .get::<Member>(&keys::member_key(
+                membership.tenant_id,
+                membership.member_id,
+            ))
+            .await?
+        {
+            members.push(member);
+        }
+    }
+    members.sort_by_key(|member| member.tenant_id);
+    Ok(members)
 }
 
 struct Audit<'a> {
@@ -329,7 +341,7 @@ struct Audit<'a> {
     summary: &'a str,
 }
 
-async fn audit(tx: &mut TenantTx, entry: Audit<'_>) -> Result<(), ApiError> {
+async fn audit(tx: &mut TenantTx, entry: Audit<'_>) -> Result<(), DbError> {
     record_audit(
         tx,
         &AuditEntry {
@@ -349,37 +361,78 @@ async fn audit(tx: &mut TenantTx, entry: Audit<'_>) -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn link(state: &AppState, user_id: Uuid, github: &GitHubUser) -> Result<Response, ApiError> {
-    let updated = sqlx::query(
-        "UPDATE sanchoris.users SET github_user_id = $2, github_login = $3, updated_at = now() WHERE id = $1",
-    )
-    .bind(user_id)
-    .bind(github.id)
-    .bind(&github.login)
-    .execute(&state.pool)
-    .await;
-    match updated {
-        Ok(done) if done.rows_affected() == 1 => {}
-        Ok(_) => return Err(ApiError::NotFound(format!("user {user_id}"))),
-        Err(sqlx::Error::Database(error)) if error.is_unique_violation() => {
-            return Ok(result(state, "in_use"));
+fn guard_owned_by(guard: Option<&Guard>, owner: Uuid) -> bool {
+    guard.is_none_or(|guard| guard.target == owner)
+}
+
+async fn link_account(store: &Store, user_id: Uuid, github: &GitHubUser) -> Result<bool, ApiError> {
+    retry(ATTEMPTS, || async {
+        let mut tx = store.global_tx();
+        let mut user = tx
+            .get::<User>(&keys::user_key(user_id))
+            .await?
+            .ok_or_else(|| DbError::Missing(format!("user {user_id}")))?;
+        let id_key = keys::uniq_key(uniq::GITHUB_USER, &github.id.to_string());
+        let login_key = keys::uniq_key(uniq::GITHUB_LOGIN, &github.login.to_lowercase());
+        let id_guard = tx.get::<Guard>(&id_key).await?;
+        let login_guard = tx.get::<Guard>(&login_key).await?;
+        if !guard_owned_by(id_guard.as_ref(), user_id)
+            || !guard_owned_by(login_guard.as_ref(), user_id)
+        {
+            return Ok(false);
         }
-        Err(error) => return Err(error.into()),
-    }
-    for (tenant_id, member_id, _) in memberships(&state.pool, user_id).await? {
-        let mut tx = TenantTx::begin(&state.pool, tenant_id).await?;
-        audit(
-            &mut tx,
-            Audit {
-                member_id,
-                action: "integration.github_link",
-                target_kind: "user",
-                target_ref: &user_id.to_string(),
-                summary: &format!("Linked the GitHub account {}", github.login),
-            },
-        )
-        .await?;
+        if let Some(previous) = user.github_user_id.filter(|id| *id != github.id) {
+            tx.delete(&keys::uniq_key(uniq::GITHUB_USER, &previous.to_string()))?;
+        }
+        if let Some(previous) = user
+            .github_login
+            .as_deref()
+            .map(str::to_lowercase)
+            .filter(|login| *login != github.login.to_lowercase())
+        {
+            tx.delete(&keys::uniq_key(uniq::GITHUB_LOGIN, &previous))?;
+        }
+        if id_guard.is_none() {
+            tx.insert(&Guard::new(id_key, user_id))?;
+        }
+        if login_guard.is_none() {
+            tx.insert(&Guard::new(login_key, user_id))?;
+        }
+        user.github_user_id = Some(github.id);
+        user.github_login = Some(github.login.clone());
+        user.updated_at = Utc::now();
+        tx.put(&user)?;
         tx.commit().await?;
+        Ok(true)
+    })
+    .await
+    .map_err(|error| match error {
+        DbError::Missing(message) => ApiError::NotFound(message),
+        other => other.into(),
+    })
+}
+
+async fn link(state: &AppState, user_id: Uuid, github: &GitHubUser) -> Result<Response, ApiError> {
+    if !link_account(&state.store, user_id, github).await? {
+        return Ok(result(state, "in_use"));
+    }
+    for member in memberships(&state.store, user_id).await? {
+        retry(ATTEMPTS, || async {
+            let mut tx = state.store.tx(member.tenant_id);
+            audit(
+                &mut tx,
+                Audit {
+                    member_id: member.id,
+                    action: "integration.github_link",
+                    target_kind: "user",
+                    target_ref: &user_id.to_string(),
+                    summary: &format!("Linked the GitHub account {}", github.login),
+                },
+            )
+            .await?;
+            tx.commit().await
+        })
+        .await?;
     }
     Ok(result(state, "linked"))
 }
@@ -391,14 +444,14 @@ async fn connect_installation(
     installation_id: i64,
     token: &str,
 ) -> Result<Response, ApiError> {
-    let Some((_, member_id, role)) = memberships(&state.pool, user_id)
+    let Some(member) = memberships(&state.store, user_id)
         .await?
         .into_iter()
-        .find(|(tenant, _, _)| *tenant == tenant_id)
+        .find(|member| member.tenant_id == tenant_id)
     else {
         return Ok(result(state, "not_member"));
     };
-    if role == "member" {
+    if member.role == "member" {
         return Ok(result(state, "not_admin"));
     }
     let Some(account) = user_installation(state, token, installation_id).await? else {
@@ -414,38 +467,59 @@ async fn connect_installation(
         "account_type": account.kind,
         "repositories": repositories,
     });
-    let mut tx = TenantTx::begin(&state.pool, tenant_id).await?;
-    let owner = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO sanchoris.integrations (tenant_id, kind, status, github_installation_id, details) \
-         VALUES ($1, 'github_installation', 'connected', $2, $3) \
-         ON CONFLICT (github_installation_id) DO UPDATE SET status = 'connected', details = EXCLUDED.details, updated_at = now() \
-         WHERE sanchoris.integrations.tenant_id = EXCLUDED.tenant_id \
-         RETURNING tenant_id",
-    )
-    .bind(tenant_id)
-    .bind(installation_id)
-    .bind(&details)
-    .fetch_optional(tx.conn())
+    let connected = retry(ATTEMPTS, || async {
+        let mut tx = state.store.tx(tenant_id);
+        let guard_key = keys::uniq_key(uniq::INSTALLATION, &installation_id.to_string());
+        let now = Utc::now();
+        match tx.get::<Guard>(&guard_key).await? {
+            Some(guard) if guard.tenant_id != Some(tenant_id) => return Ok(false),
+            Some(guard) => {
+                let mut integration = tx
+                    .require::<Integration>(&keys::integration_key(tenant_id, guard.target))
+                    .await?;
+                integration.status = "connected".into();
+                integration.details = details.clone();
+                integration.updated_at = now;
+                tx.put(&integration)?;
+            }
+            None => {
+                let integration = Integration {
+                    id: Uuid::new_v4(),
+                    tenant_id,
+                    kind: "github_installation".into(),
+                    status: "connected".into(),
+                    github_installation_id: Some(installation_id),
+                    slack_team_id: None,
+                    details: details.clone(),
+                    created_at: now,
+                    updated_at: now,
+                };
+                tx.insert(&integration)?;
+                tx.insert(&Guard::of_tenant(guard_key, integration.id, tenant_id))?;
+            }
+        }
+        audit(
+            &mut tx,
+            Audit {
+                member_id: member.id,
+                action: "integration.github_install",
+                target_kind: "github_installation",
+                target_ref: &installation_id.to_string(),
+                summary: &format!(
+                    "Connected the GitHub App installation on {} ({} repositories)",
+                    account.login,
+                    repositories.len()
+                ),
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    })
     .await?;
-    if owner.is_none() {
+    if !connected {
         return Ok(result(state, "installation_in_use"));
     }
-    audit(
-        &mut tx,
-        Audit {
-            member_id,
-            action: "integration.github_install",
-            target_kind: "github_installation",
-            target_ref: &installation_id.to_string(),
-            summary: &format!(
-                "Connected the GitHub App installation on {} ({} repositories)",
-                account.login,
-                repositories.len()
-            ),
-        },
-    )
-    .await?;
-    tx.commit().await?;
     Ok(result(state, "installed"))
 }
 

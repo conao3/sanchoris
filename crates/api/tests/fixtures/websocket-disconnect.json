@@ -1,0 +1,38 @@
+{
+  "headers": {
+    "Host": "abc123defg.execute-api.ap-northeast-1.amazonaws.com",
+    "x-api-key": "",
+    "X-Forwarded-For": "",
+    "x-restapi": ""
+  },
+  "multiValueHeaders": {
+    "Host": ["abc123defg.execute-api.ap-northeast-1.amazonaws.com"],
+    "x-api-key": [""],
+    "X-Forwarded-For": [""],
+    "x-restapi": [""]
+  },
+  "requestContext": {
+    "routeKey": "$disconnect",
+    "authorizer": {
+      "principalId": "{{runId}}",
+      "integrationLatency": 41,
+      "tenantId": "{{tenantId}}",
+      "runId": "{{runId}}"
+    },
+    "disconnectStatusCode": 1001,
+    "eventType": "DISCONNECT",
+    "extendedRequestId": "FgHiJkLmNoPqRsT=",
+    "requestTime": "27/Oct/2026:09:05:00 +0000",
+    "messageDirection": "IN",
+    "disconnectReason": "Going away",
+    "stage": "prod",
+    "connectedAt": 1793091600000,
+    "requestTimeEpoch": 1793091900000,
+    "identity": { "sourceIp": "203.0.113.10" },
+    "requestId": "FgHiJkLmNoPqRsT=",
+    "domainName": "abc123defg.execute-api.ap-northeast-1.amazonaws.com",
+    "connectionId": "{{connectionId}}",
+    "apiId": "abc123defg"
+  },
+  "isBase64Encoded": false
+}

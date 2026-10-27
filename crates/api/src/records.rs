@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::config::{ConfigError, RecordsConfig};
 use crate::signing::HmacKey;
 
 const URL_TTL_SECONDS: i64 = 900;
@@ -101,13 +102,9 @@ pub struct S3RecordStore {
 }
 
 impl S3RecordStore {
-    pub async fn new(region: &str, bucket: &str, kms_key_prefix: &str) -> Self {
-        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(aws_config::Region::new(region.to_string()))
-            .load()
-            .await;
+    pub fn new(config: &aws_config::SdkConfig, bucket: &str, kms_key_prefix: &str) -> Self {
         Self {
-            client: aws_sdk_s3::Client::new(&config),
+            client: aws_sdk_s3::Client::new(config),
             bucket: bucket.to_string(),
             kms_key_prefix: kms_key_prefix.to_string(),
         }
@@ -178,6 +175,22 @@ impl RecordStore for S3RecordStore {
             .await
             .map_err(|error| RecordError::Storage(error.to_string()))?;
         Ok(())
+    }
+}
+
+pub fn s3_records(
+    config: &RecordsConfig,
+    sdk: &aws_config::SdkConfig,
+) -> Result<Arc<dyn RecordStore>, ConfigError> {
+    match config {
+        RecordsConfig::S3 {
+            bucket,
+            kms_key_prefix,
+        } => Ok(Arc::new(S3RecordStore::new(sdk, bucket, kms_key_prefix))),
+        RecordsConfig::Local { .. } => Err(ConfigError::Invalid {
+            name: "SANCHORIS_RECORDS_STORE",
+            message: "Lambda functions store records in S3; set it to s3".into(),
+        }),
     }
 }
 

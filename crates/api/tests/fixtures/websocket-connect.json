@@ -1,0 +1,42 @@
+{
+  "headers": {
+    "Authorization": "Bearer {{token}}",
+    "Host": "abc123defg.execute-api.ap-northeast-1.amazonaws.com",
+    "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits",
+    "Sec-WebSocket-Version": "13",
+    "X-Amzn-Trace-Id": "Root=1-671e0000-0123456789abcdef01234567",
+    "X-Forwarded-For": "203.0.113.10",
+    "X-Forwarded-Port": "443",
+    "X-Forwarded-Proto": "https"
+  },
+  "multiValueHeaders": {
+    "Authorization": ["Bearer {{token}}"],
+    "Host": ["abc123defg.execute-api.ap-northeast-1.amazonaws.com"],
+    "Sec-WebSocket-Version": ["13"],
+    "X-Forwarded-For": ["203.0.113.10"],
+    "X-Forwarded-Port": ["443"],
+    "X-Forwarded-Proto": ["https"]
+  },
+  "requestContext": {
+    "routeKey": "$connect",
+    "authorizer": {
+      "principalId": "{{runId}}",
+      "integrationLatency": 41,
+      "tenantId": "{{tenantId}}",
+      "runId": "{{runId}}"
+    },
+    "eventType": "CONNECT",
+    "extendedRequestId": "AbCdEfGhIjKlMnO=",
+    "requestTime": "27/Oct/2026:09:00:00 +0000",
+    "messageDirection": "IN",
+    "stage": "prod",
+    "connectedAt": 1793091600000,
+    "requestTimeEpoch": 1793091600041,
+    "identity": { "sourceIp": "203.0.113.10" },
+    "requestId": "AbCdEfGhIjKlMnO=",
+    "domainName": "abc123defg.execute-api.ap-northeast-1.amazonaws.com",
+    "connectionId": "{{connectionId}}",
+    "apiId": "abc123defg"
+  },
+  "isBase64Encoded": false
+}

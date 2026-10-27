@@ -1,0 +1,29 @@
+{
+  "Records": [
+    {
+      "eventID": "c4ca4238a0b923820dcc509a6f75849b",
+      "eventName": "INSERT",
+      "eventVersion": "1.1",
+      "eventSource": "aws:dynamodb",
+      "awsRegion": "ap-northeast-1",
+      "dynamodb": {
+        "ApproximateCreationDateTime": 1793091601,
+        "Keys": {
+          "pk": { "S": "MSG#3f0e1a52-6c1d-4f1e-9b8a-6d2f0c4b7e11" },
+          "sk": { "S": "#" }
+        },
+        "NewImage": {
+          "pk": { "S": "MSG#3f0e1a52-6c1d-4f1e-9b8a-6d2f0c4b7e11" },
+          "sk": { "S": "#" },
+          "kind": { "S": "msg" },
+          "body": { "S": "" },
+          "expires_at": { "N": "1793178001" }
+        },
+        "SequenceNumber": "4421584500000000017450439091",
+        "SizeBytes": 268,
+        "StreamViewType": "NEW_IMAGE"
+      },
+      "eventSourceARN": "arn:aws:dynamodb:ap-northeast-1:123456789012:table/sanchoris-main/stream/2026-10-27T00:00:00.000"
+    }
+  ]
+}

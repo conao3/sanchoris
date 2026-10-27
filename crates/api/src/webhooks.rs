@@ -7,7 +7,9 @@ use chrono::{DateTime, Utc};
 use sanchoris_core::audit::{AuditEntry, record_audit};
 use sanchoris_core::billing::{self, BillingError};
 use sanchoris_core::channel::{IngestError, ingest_github_delivery};
-use sanchoris_core::db::{Recorded, TenantTx};
+use sanchoris_core::db::{DbError, Recorded};
+use sanchoris_core::items::{Guard, Integration, uniq};
+use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -17,6 +19,7 @@ use crate::error::ApiError;
 use crate::signing::HmacKey;
 
 pub const STRIPE_TOLERANCE_SECONDS: i64 = 300;
+const CONFLICT_ATTEMPTS: u32 = 8;
 
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, ApiError> {
     headers
@@ -55,7 +58,7 @@ pub async fn github(
     if matches!(event, "installation" | "installation_repositories") {
         return installation_event(&state, event, &payload).await;
     }
-    match ingest_github_delivery(&state.pool, delivery, event, &payload).await {
+    match ingest_github_delivery(&state.store, delivery, event, &payload).await {
         Ok(Some(Recorded::New(_))) => Ok(status(StatusCode::ACCEPTED, "accepted")),
         Ok(Some(Recorded::Duplicate(_))) => Ok(status(StatusCode::OK, "duplicate")),
         Ok(None) => Ok(status(StatusCode::OK, "ignored")),
@@ -93,18 +96,68 @@ async fn installation_event(
         .and_then(Value::as_i64)
         .ok_or_else(|| ApiError::BadRequest("the event has no installation.id".into()))?;
     let action = text(payload, "/action")?;
-    let mut tx = state.pool.begin().await?;
-    let Some((tenant_id, current, mut details)) = sqlx::query_as::<_, (Uuid, String, Value)>(
-        "SELECT tenant_id, status, details FROM sanchoris.integrations \
-         WHERE github_installation_id = $1 FOR UPDATE",
-    )
-    .bind(installation_id)
-    .fetch_optional(&mut *tx)
-    .await?
+    let Some(guard) = state
+        .store
+        .get::<Guard>(&keys::uniq_key(
+            uniq::INSTALLATION,
+            &installation_id.to_string(),
+        ))
+        .await?
     else {
         return Ok(status(StatusCode::OK, "ignored"));
     };
-    let mut connected = current == "connected";
+    let tenant_id = guard.tenant_id.ok_or_else(|| {
+        ApiError::Internal(format!("installation {installation_id} has no tenant"))
+    })?;
+    let integration_key = keys::integration_key(tenant_id, guard.target);
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let mut tx = state.store.tx(tenant_id);
+        let Some(integration) = tx.get::<Integration>(&integration_key).await? else {
+            return Ok(status(StatusCode::OK, "ignored"));
+        };
+        let Some(updated) = apply_installation_event(integration, event, action, payload)? else {
+            return Ok(status(StatusCode::OK, "ignored"));
+        };
+        tx.put(&updated)?;
+        let mut metadata = Map::new();
+        metadata.insert("event".into(), json!(event));
+        metadata.insert("action".into(), json!(action));
+        record_audit(
+            &mut tx,
+            &AuditEntry {
+                at: Utc::now(),
+                actor_kind: ActorKind::System,
+                actor_ref: "github",
+                action: "integration.github_installation_update",
+                target_kind: "github_installation",
+                target_ref: &installation_id.to_string(),
+                summary: &format!(
+                    "GitHub sent {event}.{action} for installation {installation_id}"
+                ),
+                origin: AuditOrigin::Github,
+                source_ip: None,
+                metadata,
+            },
+        )
+        .await?;
+        match tx.commit().await {
+            Err(DbError::Conflict) if attempt < CONFLICT_ATTEMPTS => {}
+            Err(error) => return Err(error.into()),
+            Ok(()) => return Ok(status(StatusCode::OK, "processed")),
+        }
+    }
+}
+
+fn apply_installation_event(
+    mut integration: Integration,
+    event: &str,
+    action: &str,
+    payload: &Value,
+) -> Result<Option<Integration>, ApiError> {
+    let details = &mut integration.details;
+    let mut connected = integration.status == "connected";
     match (event, action) {
         ("installation", "deleted" | "suspend") => connected = false,
         ("installation", "unsuspend") => connected = true,
@@ -134,43 +187,16 @@ async fn installation_event(
             repositories.dedup();
             details["repositories"] = json!(repositories);
         }
-        _ => return Ok(status(StatusCode::OK, "ignored")),
+        _ => return Ok(None),
     }
-    sqlx::query(
-        "UPDATE sanchoris.integrations SET status = $2, details = $3, updated_at = now() \
-         WHERE github_installation_id = $1",
-    )
-    .bind(installation_id)
-    .bind(if connected {
+    integration.status = if connected {
         "connected"
     } else {
         "not_connected"
-    })
-    .bind(&details)
-    .execute(&mut *tx)
-    .await?;
-    let mut tx = TenantTx::adopt(tx, tenant_id).await?;
-    let mut metadata = Map::new();
-    metadata.insert("event".into(), json!(event));
-    metadata.insert("action".into(), json!(action));
-    record_audit(
-        &mut tx,
-        &AuditEntry {
-            at: Utc::now(),
-            actor_kind: ActorKind::System,
-            actor_ref: "github",
-            action: "integration.github_installation_update",
-            target_kind: "github_installation",
-            target_ref: &installation_id.to_string(),
-            summary: &format!("GitHub sent {event}.{action} for installation {installation_id}"),
-            origin: AuditOrigin::Github,
-            source_ip: None,
-            metadata,
-        },
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(status(StatusCode::OK, "processed"))
+    }
+    .to_string();
+    integration.updated_at = Utc::now();
+    Ok(Some(integration))
 }
 
 pub fn verify_stripe_signature(
@@ -247,14 +273,13 @@ pub async fn stripe(
         .map_err(|error| ApiError::BadRequest(format!("the body is not JSON: {error}")))?;
     let kind = text(&event, "/type")?;
     let object = &event["data"]["object"];
-    let mut tx = state.pool.begin().await?;
     match kind {
         "checkout.session.completed" => {
             let tenant_id: Uuid = text(object, "/client_reference_id")?.parse().map_err(|_| {
                 ApiError::BadRequest("client_reference_id is not a tenant id".into())
             })?;
             billing::complete_checkout(
-                &mut tx,
+                &state.store,
                 tenant_id,
                 text(object, "/customer")?,
                 text(object, "/metadata/plan_id")?,
@@ -272,14 +297,14 @@ pub async fn stripe(
                 ));
             };
             billing::change_plan(
-                &mut tx,
+                &state.store,
                 text(object, "/customer")?,
                 text(item, "/price/id")?,
             )
             .await?;
         }
         "customer.subscription.deleted" => {
-            billing::end_subscription(&mut tx, text(object, "/customer")?).await?;
+            billing::end_subscription(&state.store, text(object, "/customer")?).await?;
         }
         "invoice.paid" => {
             let created = event
@@ -287,14 +312,13 @@ pub async fn stripe(
                 .and_then(Value::as_i64)
                 .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
                 .ok_or_else(|| ApiError::BadRequest("the event has no created".into()))?;
-            billing::start_period(&mut tx, text(object, "/customer")?, created).await?;
+            billing::start_period(&state.store, text(object, "/customer")?, created).await?;
         }
         "invoice.payment_failed" => {
-            billing::fail_payment(&mut tx, text(object, "/customer")?).await?;
+            billing::fail_payment(&state.store, text(object, "/customer")?).await?;
         }
         _ => return Ok(status(StatusCode::OK, "ignored")),
     }
-    tx.commit().await?;
     Ok(status(StatusCode::OK, "processed"))
 }
 
