@@ -1,0 +1,119 @@
+query Tasks($tenant: String!, $filter: TaskFilter) {
+  tenant(slug: $tenant) {
+    id
+    tasks(filter: $filter) {
+      ...TaskRow
+    }
+    triggers {
+      id
+      name
+    }
+    skills {
+      id
+      name
+      kind
+    }
+  }
+}
+
+query Task($tenant: String!, $id: ID!) {
+  tenant(slug: $tenant) {
+    id
+    task(id: $id) {
+      ...TaskRow
+      name
+      nudges
+      maxNudges
+      configRevision
+      startedAt
+      endedAt
+      triggerEvent {
+        id
+        receivedAt
+        senderLogin
+      }
+      requester {
+        kind
+        viaChat
+        member {
+          id
+          user {
+            id
+            name
+          }
+        }
+        task {
+          id
+          title
+        }
+      }
+      session {
+        id
+        name
+        agent
+      }
+      children {
+        id
+        title
+        status
+        waitReason
+        issue {
+          repository
+          number
+        }
+      }
+      skillRuns {
+        ...SkillRunRow
+        skill {
+          id
+          name
+        }
+        stateEntryCount
+        stateEntries(last: 5) {
+          id
+          sequence
+          stateName
+          stateType
+          status
+          enteredAt
+          attempts
+          result
+        }
+      }
+      runs {
+        id
+        number
+        sessionName
+        agent
+        status
+      }
+      outputs {
+        id
+        kind
+        repository
+        number
+        url
+        state
+      }
+    }
+  }
+}
+
+mutation ResumeTask($input: ResumeTaskInput!) {
+  resumeTask(input: $input) {
+    id
+    status
+    needsYouReason
+    error
+    cause
+    updatedAt
+  }
+}
+
+mutation StopTask($taskId: ID!) {
+  stopTask(taskId: $taskId) {
+    id
+    status
+    updatedAt
+  }
+}

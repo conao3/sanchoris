@@ -25,12 +25,6 @@ export function getLoginUrl(): string {
   )}&scope=email+openid+profile`;
 }
 
-export function getSignupUrl(): string {
-  return `https://${COGNITO_DOMAIN}/signup?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(
-    REDIRECT_URI,
-  )}&scope=email+openid+profile`;
-}
-
 export function getLogoutUrl(): string {
   return `https://${COGNITO_DOMAIN}/logout?client_id=${CLIENT_ID}&logout_uri=${encodeURIComponent(
     `${window.location.origin}/login`,

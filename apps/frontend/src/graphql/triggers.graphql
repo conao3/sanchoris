@@ -1,0 +1,101 @@
+query Triggers($tenant: String!) {
+  tenant(slug: $tenant) {
+    id
+    triggers {
+      id
+      name
+      state
+      editUrl
+      tasksLast7d
+      match {
+        source
+        kind
+        repositories
+        labels
+        senders
+        chatScope
+        slackChannel
+        scheduleExpression
+        nextRunAt
+      }
+      limits {
+        childrenMaxDepth
+        childrenMaxCount
+      }
+      session {
+        id
+        name
+        agent
+        repositories
+      }
+      requiredSkills {
+        id
+        name
+      }
+      config {
+        id
+        repository
+      }
+      openChangeRequest {
+        id
+        number
+        url
+      }
+    }
+    triggerEvents(limit: 20) {
+      id
+      receivedAt
+      result
+      reason
+      senderLogin
+      trigger {
+        id
+        name
+      }
+      task {
+        id
+        title
+        issue {
+          repository
+          number
+        }
+        parent {
+          id
+          issue {
+            repository
+            number
+          }
+        }
+      }
+      limitedTask {
+        id
+        issue {
+          repository
+          number
+        }
+      }
+    }
+    configs {
+      id
+      repository
+    }
+    integrations {
+      id
+      kind
+      repositories
+    }
+  }
+  triggerTemplates {
+    id
+    name
+    description
+  }
+}
+
+mutation ProposeTrigger($input: ProposeTriggerInput!) {
+  proposeTriggerFromTemplate(input: $input) {
+    id
+    number
+    url
+  }
+}

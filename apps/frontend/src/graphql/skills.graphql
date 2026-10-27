@@ -1,0 +1,110 @@
+query Skills($tenant: String!) {
+  tenant(slug: $tenant) {
+    id
+    configs {
+      id
+      newSkillUrl
+    }
+    skills {
+      id
+      name
+      kind
+      description
+      requiredBy {
+        id
+        name
+      }
+      stats(days: 30) {
+        days
+        runs
+        succeeded
+        medianDurationSeconds
+      }
+    }
+  }
+}
+
+fragment SkillRunRow on SkillRun {
+  id
+  number
+  status
+  currentState
+  handoffs
+  startedAt
+  endedAt
+  error
+  cause
+  task {
+    id
+    title
+    issue {
+      repository
+      number
+    }
+  }
+}
+
+query Skill($tenant: String!, $name: String!) {
+  tenant(slug: $tenant) {
+    id
+    skill(name: $name) {
+      id
+      name
+      kind
+      description
+      comment
+      editUrl
+      timeoutSeconds
+      skillYaml
+      startAt
+      inputs {
+        name
+        type
+      }
+      states {
+        name
+        type
+        resource
+        summary
+        x
+        y
+        transitions {
+          to
+          kind
+          label
+        }
+        activity {
+          running
+          withAgent
+          needsYou
+          succeededToday
+        }
+      }
+      requiredBy {
+        id
+        name
+      }
+      stats(days: 30) {
+        days
+        runs
+        succeeded
+        medianDurationSeconds
+        medianHandoffs
+        gaveUp
+        failureErrors
+      }
+      recentRuns(limit: 10) {
+        ...SkillRunRow
+      }
+      openChangeRequest {
+        id
+        number
+        title
+        url
+        validation {
+          valid
+        }
+      }
+    }
+  }
+}

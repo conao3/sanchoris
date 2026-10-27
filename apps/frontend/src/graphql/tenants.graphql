@@ -1,0 +1,98 @@
+query OperatorTenants {
+  operator {
+    runningRuns
+    runHoursThisMonth
+    revenueThisMonthUsd
+    tenants {
+      id
+      name
+      state
+      suspendedReason
+      githubOwner {
+        kind
+        login
+      }
+      plan {
+        id
+        name
+        taskLimit
+        workspaceHourLimit
+        limitPeriod
+        memberLimit
+        concurrencyLimit
+      }
+      usage {
+        tasksThisPeriod
+        workspaceSecondsThisPeriod
+        seatsUsed
+      }
+    }
+  }
+}
+
+mutation SuspendTenant($tenantId: ID!, $reason: String!) {
+  suspendTenant(tenantId: $tenantId, reason: $reason) {
+    id
+    state
+    suspendedReason
+  }
+}
+
+mutation UnsuspendTenant($tenantId: ID!) {
+  unsuspendTenant(tenantId: $tenantId) {
+    id
+    state
+    suspendedReason
+  }
+}
+
+query CreateTenantPage {
+  viewer {
+    invitations {
+      id
+      role
+      expiresAt
+      tenantName
+      invitedBy {
+        id
+        user {
+          id
+          name
+        }
+      }
+    }
+  }
+  plans {
+    id
+    name
+    priceUsd
+    taskLimit
+    workspaceHourLimit
+    limitPeriod
+    memberLimit
+    requiresPayment
+  }
+}
+
+mutation CreateTenant($input: CreateTenantInput!) {
+  createTenant(input: $input) {
+    checkoutUrl
+    tenant {
+      id
+      slug
+      name
+    }
+  }
+}
+
+mutation AcceptInvitation($invitationId: ID!) {
+  acceptInvitation(invitationId: $invitationId) {
+    id
+    role
+    tenant {
+      id
+      slug
+      name
+    }
+  }
+}

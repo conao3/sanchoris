@@ -1,0 +1,335 @@
+query Integrations($tenant: String!) {
+  viewer {
+    user {
+      id
+      githubLogin
+    }
+  }
+  tenant(slug: $tenant) {
+    id
+    githubAppInstallUrl
+    integrations {
+      id
+      kind
+      status
+      account
+      repositories
+      manageUrl
+      lastSyncedAt
+      error
+    }
+  }
+}
+
+mutation UnlinkGitHub {
+  unlinkGitHub {
+    user {
+      id
+      githubLogin
+    }
+  }
+}
+
+mutation ConnectSlack($tenantId: ID!) {
+  connectSlack(tenantId: $tenantId) {
+    url
+  }
+}
+
+query Configs($tenant: String!) {
+  tenant(slug: $tenant) {
+    id
+    configs {
+      id
+      repository
+      root
+      branch
+      url
+      syncedAt
+      syncError
+      triggerCount
+      skillCount
+      revision {
+        id
+        number
+        validation {
+          valid
+          errors {
+            path
+            line
+            column
+            message
+          }
+        }
+      }
+      changeRequests(state: OPEN) {
+        id
+      }
+    }
+    projects {
+      id
+      name
+      repositories {
+        id
+        name
+      }
+      warmBuild {
+        succeeded
+        finishedAt
+      }
+      sessions {
+        id
+        name
+      }
+    }
+    changeRequests(state: OPEN) {
+      id
+      number
+      title
+      url
+      changes {
+        kind
+        name
+      }
+      validation {
+        valid
+      }
+      openedFromTask {
+        id
+      }
+      openedBy {
+        id
+        user {
+          id
+          name
+        }
+      }
+    }
+    integrations {
+      id
+      kind
+      repositories
+    }
+  }
+}
+
+mutation AddConfig($input: AddConfigInput!) {
+  addConfig(input: $input) {
+    config {
+      id
+      repository
+    }
+    errors {
+      path
+      line
+      column
+      message
+    }
+  }
+}
+
+mutation SyncConfig($configId: ID!) {
+  syncConfig(configId: $configId) {
+    id
+    syncedAt
+    syncError
+  }
+}
+
+query Credentials($tenant: String!) {
+  tenant(slug: $tenant) {
+    id
+    name
+    credentials {
+      id
+      name
+      provider
+      kind
+      subscriptionPlan
+      account
+      scope
+      status
+      rejectedAt
+      lastUsedAt
+      owner {
+        id
+        user {
+          id
+          name
+        }
+      }
+      usage {
+        fiveHour {
+          utilization
+          resetsAt
+        }
+        sevenDay {
+          utilization
+          resetsAt
+        }
+      }
+    }
+  }
+}
+
+mutation RemoveCredential($credentialId: ID!) {
+  removeCredential(credentialId: $credentialId)
+}
+
+query Members($tenant: String!) {
+  tenant(slug: $tenant) {
+    id
+    name
+    plan {
+      id
+      memberLimit
+    }
+    usage {
+      seatsUsed
+    }
+    viewerMember {
+      id
+      role
+    }
+    members {
+      id
+      role
+      lastActiveAt
+      tasksStarted
+      user {
+        id
+        name
+        githubLogin
+      }
+      credentials {
+        id
+        name
+        provider
+        status
+      }
+    }
+    invitations(state: PENDING) {
+      id
+      email
+      role
+      expiresAt
+      invitedBy {
+        id
+        user {
+          id
+          name
+        }
+      }
+    }
+  }
+}
+
+mutation InviteMember($input: InviteMemberInput!) {
+  inviteMember(input: $input) {
+    id
+    email
+    role
+    state
+  }
+}
+
+mutation RevokeInvitation($invitationId: ID!) {
+  revokeInvitation(invitationId: $invitationId) {
+    id
+    state
+  }
+}
+
+mutation ChangeMemberRole($memberId: ID!, $role: Role!) {
+  changeMemberRole(memberId: $memberId, role: $role) {
+    id
+    role
+  }
+}
+
+query AuditLog($tenant: String!, $filter: AuditFilter) {
+  tenant(slug: $tenant) {
+    id
+    name
+    members {
+      id
+      user {
+        id
+        name
+      }
+    }
+    auditEvents(filter: $filter, limit: 100) {
+      id
+      at
+      actorKind
+      actorName
+      action
+      target
+      summary
+      origin
+      ip
+      targetTask {
+        id
+      }
+    }
+  }
+}
+
+mutation ExportAuditLog($tenantId: ID!, $filter: AuditFilter) {
+  exportAuditLog(tenantId: $tenantId, filter: $filter) {
+    url
+  }
+}
+
+query Billing($tenant: String!) {
+  tenant(slug: $tenant) {
+    id
+    name
+    plan {
+      id
+      name
+      priceUsd
+      memberLimit
+      concurrencyLimit
+      taskLimit
+      workspaceHourLimit
+      limitPeriod
+    }
+    usage {
+      periodStart
+      periodEnd
+      tasksThisPeriod
+      workspaceSecondsThisPeriod
+      seatsUsed
+    }
+  }
+  plans {
+    id
+    name
+    priceUsd
+    taskLimit
+    workspaceHourLimit
+    limitPeriod
+    concurrencyLimit
+    memberLimit
+  }
+}
+
+mutation ChangePlan($tenantId: ID!, $planId: ID!) {
+  changePlan(tenantId: $tenantId, planId: $planId) {
+    checkoutUrl
+    tenant {
+      id
+      plan {
+        id
+        name
+      }
+    }
+  }
+}
+
+mutation OpenBillingPortal($tenantId: ID!) {
+  openBillingPortal(tenantId: $tenantId) {
+    url
+  }
+}

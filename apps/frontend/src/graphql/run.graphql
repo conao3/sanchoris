@@ -1,0 +1,77 @@
+query Run($tenant: String!, $task: ID!, $number: Int!) {
+  tenant(slug: $tenant) {
+    id
+    task(id: $task) {
+      id
+      title
+      issue {
+        repository
+        number
+      }
+      run(number: $number) {
+        id
+        number
+        sessionName
+        agent
+        model
+        credentialName
+        status
+        startedAt
+        turns
+        costUsd
+        workspace {
+          platform
+          vcpu
+          repositories
+          branch
+        }
+        log {
+          sequence
+          at
+          kind
+          text
+        }
+        skillRuns {
+          id
+          status
+          handoffs
+          skill {
+            id
+            name
+          }
+        }
+        outputs {
+          id
+          kind
+          repository
+          number
+          url
+          state
+        }
+      }
+    }
+  }
+}
+
+mutation StopRun($runId: ID!) {
+  stopRun(runId: $runId) {
+    id
+    status
+  }
+}
+
+mutation SendChatMessage($input: SendChatMessageInput!) {
+  sendChatMessage(input: $input) {
+    task {
+      id
+      status
+      waitReason
+      updatedAt
+    }
+    message {
+      id
+      text
+      at
+    }
+  }
+}

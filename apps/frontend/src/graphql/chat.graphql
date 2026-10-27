@@ -1,0 +1,126 @@
+query Chat($tenant: String!, $task: ID!, $withTask: Boolean!) {
+  tenant(slug: $tenant) {
+    id
+    name
+    chats {
+      id
+      title
+      channel {
+        kind
+        scope
+      }
+      filedTasks {
+        id
+      }
+    }
+    triggers {
+      id
+      state
+      match {
+        source
+        kind
+        chatScope
+      }
+      session {
+        id
+        repositories
+      }
+    }
+    task(id: $task) @include(if: $withTask) {
+      id
+      title
+      status
+      waitReason
+      channel {
+        kind
+        scope
+      }
+      trigger {
+        id
+        name
+      }
+      session {
+        id
+        name
+        repositories
+      }
+      runs {
+        id
+        number
+      }
+      requester {
+        kind
+        member {
+          id
+          user {
+            id
+            name
+          }
+        }
+      }
+      messages {
+        id
+        authorKind
+        text
+        at
+        member {
+          id
+          user {
+            id
+            name
+          }
+        }
+        issues {
+          repository
+          number
+          title
+          url
+          task {
+            id
+            blockedBy {
+              id
+              issue {
+                number
+              }
+            }
+          }
+        }
+      }
+      filedTasks {
+        id
+        title
+        status
+        waitReason
+        issue {
+          repository
+          number
+        }
+        trigger {
+          id
+          name
+        }
+        parent {
+          id
+          issue {
+            number
+          }
+        }
+        blockedBy {
+          id
+          issue {
+            number
+          }
+        }
+        requiredSkills {
+          state
+          latestRun {
+            id
+            status
+            currentState
+            handoffs
+          }
+        }
+      }
+    }
+  }
+}

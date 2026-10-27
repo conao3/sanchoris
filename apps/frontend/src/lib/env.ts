@@ -3,3 +3,5 @@ export const env = {
   cognitoDomain: import.meta.env.VITE_COGNITO_DOMAIN as string,
   cognitoClientId: import.meta.env.VITE_COGNITO_CLIENT_ID as string,
 } as const;
+
+export const mockApi = import.meta.env.VITE_MOCK_API === '1';
