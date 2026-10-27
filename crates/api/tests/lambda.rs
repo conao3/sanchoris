@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
+use sanchoris_api::channel::credentials::NoRunCredentials;
 use sanchoris_api::channel::{Channel, ConnectionSender, SendError};
 use sanchoris_api::graphql;
 use sanchoris_api::lambda::{
@@ -153,6 +154,7 @@ async fn the_lambda_handlers_run_the_channel_from_recorded_events() {
             "https://records.example",
         )),
         sender: sender.clone(),
+        credentials: Arc::new(NoRunCredentials),
     };
     dynamo
         .put(&OutboxItem {

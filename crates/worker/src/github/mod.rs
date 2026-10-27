@@ -202,6 +202,37 @@ impl GitHubApi {
         Ok(token)
     }
 
+    pub async fn scoped_installation_token(
+        &self,
+        installation: i64,
+        repositories: Option<&[String]>,
+        permissions: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(String, DateTime<Utc>), GitHubError> {
+        let jwt = self.auth.app_jwt(Utc::now())?;
+        let mut body = json!({ "permissions": permissions });
+        if let Some(repositories) = repositories {
+            body["repositories"] = json!(repositories);
+        }
+        let response = self
+            .transport
+            .send(HttpRequest {
+                method: "POST",
+                url: format!(
+                    "{}/app/installations/{installation}/access_tokens",
+                    self.base_url
+                ),
+                headers: Self::headers(&jwt),
+                body: Some(body),
+            })
+            .await?;
+        let body: Value = Self::check(response)?;
+        let token = string(&body, "/token")?;
+        let expires_at = DateTime::parse_from_rfc3339(&string(&body, "/expires_at")?)
+            .map_err(|error| GitHubError::Decode(error.to_string()))?
+            .with_timezone(&Utc);
+        Ok((token, expires_at))
+    }
+
     fn check<T: serde::de::DeserializeOwned>(response: HttpResponse) -> Result<T, GitHubError> {
         if !(200..300).contains(&response.status) {
             return Err(GitHubError::Status {

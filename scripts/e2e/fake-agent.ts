@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { WorkspaceAgent } from "../../apps/workspace-agent/src/agent.ts";
+import { type CredentialSource, WorkspaceAgent } from "../../apps/workspace-agent/src/agent.ts";
 import { stderrLogger } from "../../apps/workspace-agent/src/log.ts";
 import { writeCliWrapper } from "../../apps/workspace-agent/src/testing/cli-wrapper.ts";
 import { fakeWorkerFactory, type CommandResult, type FakeScript } from "../../apps/workspace-agent/src/testing/fake-worker.ts";
@@ -95,12 +95,19 @@ const script: FakeScript = async (text, { history, exec }) => {
   return `Nothing to do for: ${text}`;
 };
 
+function environmentSource(): CredentialSource {
+  const source = requireEnv(env, "SANCHORIS_CREDENTIAL_SOURCE");
+  if (source !== "environment") throw new Error(`the scripted agent takes credentials from the environment, not ${source}`);
+  return { kind: "environment" };
+}
+
 const agent = new WorkspaceAgent({
   runId: requireEnv(env, "SANCHORIS_RUN_ID"),
   token: requireEnv(env, "SANCHORIS_RUN_TOKEN"),
   controlUrl: requireEnv(env, "SANCHORIS_CONTROL_URL"),
   socketPath: requireEnv(env, "SANCHORIS_SOCKET_PATH"),
   workspaceDir,
+  credentialSource: environmentSource(),
   env,
   createWorker: fakeWorkerFactory(script),
   logger: stderrLogger,

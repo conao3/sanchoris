@@ -103,6 +103,43 @@ export const RecordUploadResponseMessage = z.discriminatedUnion("ok", [
 ]);
 export type RecordUploadResponseMessage = z.infer<typeof RecordUploadResponseMessage>;
 
+export const GitTokenResponseMessage = z.discriminatedUnion("ok", [
+  z.strictObject({
+    type: z.literal("git_token_response"),
+    runId: RunId,
+    requestId: RequestId,
+    ok: z.literal(true),
+    token: z.string().min(1),
+    expiresAt: z.iso.datetime(),
+  }),
+  z.strictObject({
+    type: z.literal("git_token_response"),
+    runId: RunId,
+    requestId: RequestId,
+    ok: z.literal(false),
+    error: ErrorBody,
+  }),
+]);
+export type GitTokenResponseMessage = z.infer<typeof GitTokenResponseMessage>;
+
+export const WorkerCredentialResponseMessage = z.discriminatedUnion("ok", [
+  z.strictObject({
+    type: z.literal("worker_credential_response"),
+    runId: RunId,
+    requestId: RequestId,
+    ok: z.literal(true),
+    env: z.record(z.string().regex(/^[A-Z][A-Z0-9_]*$/), z.string().min(1)),
+  }),
+  z.strictObject({
+    type: z.literal("worker_credential_response"),
+    runId: RunId,
+    requestId: RequestId,
+    ok: z.literal(false),
+    error: ErrorBody,
+  }),
+]);
+export type WorkerCredentialResponseMessage = z.infer<typeof WorkerCredentialResponseMessage>;
+
 export const ExecMessage = z.strictObject({
   type: z.literal("exec"),
   runId: RunId,
@@ -133,6 +170,8 @@ export const InboundMessage = z.union([
   ExecMessage,
   SkillResponseMessage,
   RecordUploadResponseMessage,
+  GitTokenResponseMessage,
+  WorkerCredentialResponseMessage,
   AckMessage,
   CloseMessage,
 ]);
@@ -271,6 +310,18 @@ export const SessionRecordMessage = z.strictObject({
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
 });
 
+export const GitTokenRequestMessage = z.strictObject({
+  type: z.literal("git_token_request"),
+  ...sequenced,
+  requestId: RequestId,
+});
+
+export const WorkerCredentialRequestMessage = z.strictObject({
+  type: z.literal("worker_credential_request"),
+  ...sequenced,
+  requestId: RequestId,
+});
+
 export const ExecCommandResult = z.strictObject({
   command: z.string(),
   exitCode: z.number().int(),
@@ -298,6 +349,8 @@ export const OutboundMessage = z.union([
   RecordUploadRequestMessage,
   SessionRecordMessage,
   ExecResultMessage,
+  GitTokenRequestMessage,
+  WorkerCredentialRequestMessage,
 ]);
 export type OutboundMessage = z.infer<typeof OutboundMessage>;
 
@@ -320,6 +373,10 @@ export const SocketRequest = z.discriminatedUnion("action", [
   z.strictObject({
     action: z.literal("status"),
     skillRunId: SkillRunId,
+  }),
+  z.strictObject({
+    action: z.literal("git_credential"),
+    host: z.string().min(1),
   }),
 ]);
 export type SocketRequest = z.infer<typeof SocketRequest>;

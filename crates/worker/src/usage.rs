@@ -24,7 +24,7 @@ fn window(payload: &Value, name: &str) -> Result<(f64, DateTime<Utc>)> {
     Ok(((utilization * 100.0).clamp(0.0, 999.99), resets_at))
 }
 
-async fn credential_of(tx: &mut TenantTx, task_id: Uuid) -> Result<Credential> {
+pub async fn credential_of(tx: &mut TenantTx, task_id: Uuid) -> Result<Credential> {
     let task = load_task(tx, task_id).await?;
     let worker = &task.definition["Session"]["Definition"]["Worker"];
     let name = worker["Credential"]

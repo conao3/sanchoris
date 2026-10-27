@@ -46,6 +46,7 @@ async function run(label: string, control: FakeControl, root: string, workspaceD
       SANCHORIS_CONTROL_URL: control.url,
       SANCHORIS_SOCKET_PATH: join(root, "agent.sock"),
       SANCHORIS_WORKSPACE_DIR: workspaceDir,
+      SANCHORIS_CREDENTIAL_SOURCE: "environment",
     },
     (line) => process.stderr.write(`[${label}] ${line}\n`),
   );

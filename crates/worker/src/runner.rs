@@ -126,6 +126,7 @@ impl LocalProcessRunner {
                 "SANCHORIS_WORKSPACE_DIR",
                 workspace_dir.display().to_string(),
             ),
+            ("SANCHORIS_CREDENTIAL_SOURCE", "environment".to_string()),
         ]
     }
 
@@ -281,6 +282,7 @@ mod tests {
             branch: "sanchoris/x".into(),
             compute: "standard".into(),
             repositories,
+            network_allow: vec!["github.com".into()],
         }
     }
 
@@ -347,6 +349,7 @@ mod tests {
             "ws://127.0.0.1:1/runs/channel"
         );
         assert_eq!(get("SANCHORIS_WORKSPACE_DIR"), "/w/1");
+        assert_eq!(get("SANCHORIS_CREDENTIAL_SOURCE"), "environment");
         assert_eq!(
             PathBuf::from(get("SANCHORIS_SOCKET_PATH")),
             fixture

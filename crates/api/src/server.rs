@@ -12,6 +12,7 @@ use tokio::sync::watch;
 
 use crate::app::{AppState, router};
 use crate::channel::Channel;
+use crate::channel::credentials::RunCredentials;
 use crate::channel::local::{self as local_channel, LocalChannel, LocalConnections};
 use crate::frontend::Frontend;
 use crate::graphql;
@@ -24,6 +25,7 @@ pub fn local_channel(
     store: Store,
     run_tokens: RunTokenSigner,
     records: Arc<dyn RecordStore>,
+    credentials: Arc<dyn RunCredentials>,
 ) -> LocalChannel {
     let connections = Arc::new(LocalConnections::default());
     LocalChannel {
@@ -32,6 +34,7 @@ pub fn local_channel(
             run_tokens,
             records,
             sender: connections.clone(),
+            credentials,
         },
         connections,
     }

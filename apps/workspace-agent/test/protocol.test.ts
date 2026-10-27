@@ -10,6 +10,8 @@ import {
   EventMessage,
   ExecMessage,
   ExecResultMessage,
+  GitTokenRequestMessage,
+  GitTokenResponseMessage,
   HeartbeatMessage,
   HelloMessage,
   InboundMessage,
@@ -28,6 +30,8 @@ import {
   StartMessage,
   TurnEndMessage,
   UserMessage,
+  WorkerCredentialRequestMessage,
+  WorkerCredentialResponseMessage,
 } from "../src/protocol.ts";
 import { claudeRateLimit } from "../src/workers/claude.ts";
 import { codexRateLimit, mergeCodexRateLimits } from "../src/workers/codex.ts";
@@ -40,6 +44,8 @@ const inbound: Record<string, ZodType> = {
   exec: ExecMessage,
   skill_response: SkillResponseMessage,
   record_upload_response: RecordUploadResponseMessage,
+  git_token_response: GitTokenResponseMessage,
+  worker_credential_response: WorkerCredentialResponseMessage,
   ack: AckMessage,
   close: CloseMessage,
 };
@@ -55,6 +61,8 @@ const outbound: Record<string, ZodType> = {
   record_upload_request: RecordUploadRequestMessage,
   session_record: SessionRecordMessage,
   exec_result: ExecResultMessage,
+  git_token_request: GitTokenRequestMessage,
+  worker_credential_request: WorkerCredentialRequestMessage,
 };
 
 const examples = [...readFileSync(resolve(import.meta.dirname, "../PROTOCOL.md"), "utf8").matchAll(/```json\n([\s\S]*?)```/g)].map(

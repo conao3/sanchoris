@@ -15,6 +15,7 @@ use chrono::Utc;
 use reqwest::redirect::Policy;
 use sanchoris_api::app::AppState;
 use sanchoris_api::auth::{AuthError, Identity, IdentityVerifier};
+use sanchoris_api::channel::credentials::IssuedCredentials;
 use sanchoris_api::config::{
     ApiConfig, CognitoConfig, CredentialKey, GitHubAppConfig, GitHubConfig, RecordsConfig,
     StripeConfig,
@@ -203,16 +204,21 @@ pub async fn start_api(
     let direct = dynamo.direct_store(clock.clone());
     let records = Arc::new(LocalRecordStore::new(&records_dir, records_key, &url));
     let run_tokens = RunTokenSigner::new(Signer::new(RUN_KEY).unwrap());
-    let channel = local_channel(
-        direct.store.clone(),
-        run_tokens.clone(),
-        records.clone() as Arc<dyn RecordStore>,
-    );
     let http = reqwest::Client::builder()
         .redirect(Policy::none())
         .build()
         .unwrap();
     let github_app = Arc::new(config.github_app.client().unwrap());
+    let channel = local_channel(
+        direct.store.clone(),
+        run_tokens.clone(),
+        records.clone() as Arc<dyn RecordStore>,
+        Arc::new(IssuedCredentials::new(
+            direct.store.clone(),
+            github_app.clone(),
+            config.credential_key.0.clone(),
+        )),
+    );
     let runner: Arc<dyn RunnerPort> = match workspaces {
         Workspaces::None => Arc::new(NoWorkspaces),
         Workspaces::Agent {

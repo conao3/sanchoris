@@ -1,3 +1,4 @@
+pub mod credentials;
 pub mod gateway;
 pub mod local;
 
@@ -26,6 +27,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::records::{RecordError, RecordStore, record_key};
+use credentials::{CredentialError, RunCredentials};
 
 pub const SEQ_STRIDE: i64 = 1_000_000_000;
 pub const CLOSE_PROTOCOL_ERROR: u16 = 4000;
@@ -112,6 +114,7 @@ pub struct Channel {
     pub run_tokens: RunTokenSigner,
     pub records: Arc<dyn RecordStore>,
     pub sender: Arc<dyn ConnectionSender>,
+    pub credentials: Arc<dyn RunCredentials>,
 }
 
 fn strip(mut message: Value) -> Value {
@@ -319,7 +322,11 @@ impl Channel {
             | "record_upload_request"
             | "session_record"
             | "turn_end"
-            | "exec_result" => self.sequenced(claims, connection_id, &kind, message).await,
+            | "exec_result"
+            | "git_token_request"
+            | "worker_credential_request" => {
+                self.sequenced(claims, connection_id, &kind, message).await
+            }
             other => Err(protocol(format!("unknown message type {other}"))),
         }
     }
@@ -418,6 +425,10 @@ impl Channel {
                 }
                 "skill_request" => Some(self.skill(&mut tx, claims, &payload).await?),
                 "record_upload_request" => Some(self.upload(&mut tx, claims, &payload).await?),
+                "git_token_request" => Some(self.git_token(claims, &payload).await?),
+                "worker_credential_request" => {
+                    Some(self.worker_credential(claims, &payload).await?)
+                }
                 other => {
                     let kind = RunEventType::parse(other).expect("sequenced run event types parse");
                     record_run_event(&mut tx, claims.run_id, Some(global), kind, &payload).await?;
@@ -624,6 +635,51 @@ impl Channel {
         Ok(Self::reply(
             claims,
             "record_upload_response",
+            request_id,
+            outcome,
+        ))
+    }
+
+    async fn git_token(&self, claims: RunClaims, payload: &Value) -> Result<Value, ChannelError> {
+        let request_id = payload["requestId"]
+            .as_str()
+            .ok_or_else(|| protocol("git_token_request needs requestId"))?;
+        let outcome = match self.credentials.git_token(claims).await {
+            Ok(token) => Ok(json!({
+                "token": token.token,
+                "expiresAt": token.expires_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            })),
+            Err(CredentialError::Db(error)) => return Err(error.into()),
+            Err(CredentialError::Unavailable(message)) => {
+                Err(("credential_unavailable".to_string(), message))
+            }
+        };
+        Ok(Self::reply(
+            claims,
+            "git_token_response",
+            request_id,
+            outcome,
+        ))
+    }
+
+    async fn worker_credential(
+        &self,
+        claims: RunClaims,
+        payload: &Value,
+    ) -> Result<Value, ChannelError> {
+        let request_id = payload["requestId"]
+            .as_str()
+            .ok_or_else(|| protocol("worker_credential_request needs requestId"))?;
+        let outcome = match self.credentials.worker_env(claims).await {
+            Ok(env) => Ok(json!({ "env": env })),
+            Err(CredentialError::Db(error)) => return Err(error.into()),
+            Err(CredentialError::Unavailable(message)) => {
+                Err(("credential_unavailable".to_string(), message))
+            }
+        };
+        Ok(Self::reply(
+            claims,
+            "worker_credential_response",
             request_id,
             outcome,
         ))

@@ -5,7 +5,8 @@ import { SocketResponse, type SocketRequest } from "./protocol.ts";
 const USAGE = `Usage:
   sanchoris skill run <name> [--input '<json object>']
   sanchoris skill continue <skill-run-id> [--output '<json>']
-  sanchoris skill status <skill-run-id>`;
+  sanchoris skill status <skill-run-id>
+  sanchoris git-credential get|store|erase`;
 
 const RESPONSE_TIMEOUT_MS = 60_000;
 
@@ -96,7 +97,58 @@ function callAgent(socketPath: string, request: SocketRequest): Promise<SocketRe
   });
 }
 
+function credentialHost(input: string): string | null {
+  const fields = new Map<string, string>();
+  for (const line of input.split("\n")) {
+    const index = line.indexOf("=");
+    if (index > 0) fields.set(line.slice(0, index), line.slice(index + 1));
+  }
+  if (fields.get("protocol") !== "https") return null;
+  return fields.get("host") ?? null;
+}
+
+async function readStdin(): Promise<string> {
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) input += chunk as string;
+  return input;
+}
+
+async function gitCredential(action: string | undefined, env: NodeJS.ProcessEnv): Promise<number> {
+  if (action === "store" || action === "erase") return 0;
+  if (action !== "get") {
+    process.stderr.write(`sanchoris: ${USAGE}\n`);
+    return 2;
+  }
+  const host = credentialHost(await readStdin());
+  if (host === null) return 0;
+  const socketPath = env.SANCHORIS_SOCKET_PATH;
+  if (socketPath === undefined || socketPath === "") {
+    process.stderr.write("sanchoris: SANCHORIS_SOCKET_PATH is not set\n");
+    return 1;
+  }
+  let response: SocketResponse;
+  try {
+    response = await callAgent(socketPath, { action: "git_credential", host });
+  } catch (error) {
+    process.stderr.write(`sanchoris: ${(error as Error).message}\n`);
+    return 1;
+  }
+  if (!response.ok) {
+    process.stderr.write(`sanchoris: ${response.error.code}: ${response.error.message}\n`);
+    return 1;
+  }
+  const { username, password } = response.result;
+  if (typeof username !== "string" || typeof password !== "string") {
+    process.stderr.write("sanchoris: the workspace agent returned no git credential\n");
+    return 1;
+  }
+  process.stdout.write(`username=${username}\npassword=${password}\n`);
+  return 0;
+}
+
 export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<number> {
+  if (argv[0] === "git-credential") return gitCredential(argv[1], env);
   let request: SocketRequest;
   try {
     request = parseArgs(argv);

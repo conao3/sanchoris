@@ -13,6 +13,9 @@ The `runner` starts `workspace-agent` with these variables. A missing or empty o
 | `SANCHORIS_CONTROL_URL` | always | WebSocket URL of the Run channel (`ws://` or `wss://`) |
 | `SANCHORIS_SOCKET_PATH` | always | Unix socket path for the `sanchoris` command (also set in the worker's environment) |
 | `SANCHORIS_WORKSPACE_DIR` | always | Working directory of the agent session |
+| `SANCHORIS_CREDENTIAL_SOURCE` | always | `environment`: the worker's credentials are already in its environment and the runner checked out the repositories (local workspaces). `channel`: the agent asks the control plane for the worker credential and GitHub tokens over the Run channel and checks out the repositories itself (Fargate workspaces) |
+| `SANCHORIS_GIT_URL`, `SANCHORIS_BRANCH`, `SANCHORIS_REPOSITORIES` | `channel` | Git origin (`https://github.com`), the task branch, and the comma-separated `owner/name` repositories to check out |
+| `HTTPS_PROXY` | Fargate workspaces | The network relay with the Run's relay token as the password (`http://run:<token>@<relay>:3128`). The agent sends the Run channel, record uploads (with `NODE_USE_ENV_PROXY=1`), and the worker's traffic through it |
 | `CLAUDE_CONFIG_DIR`, `SANCHORIS_CLAUDE_PATH` | `agent: "claude"` | Claude config directory (credentials, session records) and the `claude` executable |
 | `CODEX_HOME`, `SANCHORIS_CODEX_PATH` | `agent: "codex"` | Codex home (credentials, session records) and the `codex` executable |
 
@@ -46,6 +49,8 @@ The worker runs with the agent's environment, so `sanchoris` must be on `PATH`.
 | `exec` | `requestId`, `purpose`, `commands` | Run shell commands in the workspace for a skill (`purpose`: `git_push` for `git:push`, `exec` for `workspace:exec`). The agent answers with `exec_result` |
 | `skill_response` | `requestId`, `ok`, `result` or `error` | Reply to `skill_request` |
 | `record_upload_response` | `requestId`, `ok`, `url`, `headers`, `key` or `error` | Reply to `record_upload_request` |
+| `git_token_response` | `requestId`, `ok`, `token` and `expiresAt` or `error` | Reply to `git_token_request` |
+| `worker_credential_response` | `requestId`, `ok`, `env` or `error` | Reply to `worker_credential_request` |
 | `ack` | `seq` | Cumulative acknowledgement of outbound messages |
 | `close` | `code`, `reason` | The control plane rejects this agent (`4000`: protocol error). The agent exits with code 1 without reconnecting |
 
@@ -155,6 +160,8 @@ The worker runs with the agent's environment, so `sanchoris` must be on `PATH`.
 | `session_record` | yes | `sessionId`, `turn`, `key`, `relativePath`, `contentLength`, `sha256` | The record of `turn` has been uploaded to `key` |
 | `turn_end` | yes | `turn`, `sessionId`, `result`, `summary`, `error`, `usage`, `totalCostUsd`, `durationMs` | A turn ended |
 | `exec_result` | yes | `requestId`, `ok`, `results` | The outcome of `exec` |
+| `git_token_request` | yes | `requestId` | Asks for a GitHub token for `git` (`channel` source only) |
+| `worker_credential_request` | yes | `requestId` | Asks for the worker credential before the session starts (`channel` source only) |
 
 Field details:
 
@@ -268,6 +275,36 @@ Field details:
 ## Commands (`exec`)
 
 The control plane sends `exec` when a skill state runs commands in the workspace (`git:push`, `workspace:exec`). The agent runs `commands` one at a time with `/bin/sh -c`, in `SANCHORIS_WORKSPACE_DIR` (each repository is cloned into a directory named after the repository), with the agent's environment. It stops at the first command that exits non-zero and sends `exec_result`: `ok` is `true` when every command exited 0, and `results` has one entry per command that ran (`exitCode`, and the last 16000 characters of `stdout` and `stderr`). `exec` requests run in the order received, independently of the worker's turns. The agent drops an `exec` whose `requestId` it has already seen in this process.
+
+## Credentials (`channel` source)
+
+A Fargate workspace holds no credentials when it starts. After `start` and before it starts the worker, the agent sends `worker_credential_request`; the control plane decrypts the Session's `Worker.Credential` and answers with the environment variables to add to the worker's environment (an Anthropic API key as `ANTHROPIC_API_KEY`, a Claude Code OAuth token from `claude setup-token` as `CLAUDE_CODE_OAUTH_TOKEN`). A refusal stops the agent with exit code 1. The agent then clones `SANCHORIS_REPOSITORIES` from `SANCHORIS_GIT_URL` into `SANCHORIS_WORKSPACE_DIR` and checks out `SANCHORIS_BRANCH` (from `origin` when it exists, otherwise a new branch).
+
+Git asks for credentials through the helper `sanchoris git-credential` (the workspace image configures it). The helper sends `git_credential` with the host over the command socket; the agent answers only for the host of `SANCHORIS_GIT_URL`, with `x-access-token` and a token from `git_token_request`, which it reuses until five minutes before `expiresAt`. The control plane issues a GitHub App installation token narrowed to the Session's `GitHub.Repos` (all repositories of the installation when a pattern is `owner/*`) and `GitHub.Permissions`; it expires after one hour.
+
+```json
+{ "type": "worker_credential_request", "runId": "42", "seq": 1, "requestId": "6a1f0c2e-1d4b-4e8a-9c3f-7b2d5e8a1c90" }
+```
+
+```json
+{ "type": "worker_credential_response", "runId": "42", "requestId": "6a1f0c2e-1d4b-4e8a-9c3f-7b2d5e8a1c90", "ok": true, "env": { "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-example" } }
+```
+
+```json
+{ "type": "git_token_request", "runId": "42", "seq": 2, "requestId": "9e4d2b7a-3c1f-4a6e-8b5d-0f2a7c9e1b34" }
+```
+
+```json
+{ "type": "git_token_response", "runId": "42", "requestId": "9e4d2b7a-3c1f-4a6e-8b5d-0f2a7c9e1b34", "ok": true, "token": "ghs_example", "expiresAt": "2026-10-27T04:15:00Z" }
+```
+
+```json
+{ "type": "git_token_response", "runId": "42", "requestId": "9e4d2b7a-3c1f-4a6e-8b5d-0f2a7c9e1b35", "ok": false, "error": { "code": "credential_unavailable", "message": "the session's GitHub.Repos spans more than one GitHub installation" } }
+```
+
+```json
+{ "action": "git_credential", "host": "github.com" }
+```
 
 ## Request and response correlation
 

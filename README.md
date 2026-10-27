@@ -6,6 +6,8 @@ Sanchoris is a pnpm + Vite frontend and Rust backend monorepo.
 
 - `apps/frontend`: Vite frontend package managed by pnpm
 - `apps/workspace-agent`: the agent that runs inside a Workspace, and the `sanchoris` command (`PROTOCOL.md` describes the Run channel)
+- `apps/egress-relay`: the Workspaces' egress proxy (`CONNECT` to port 443 after the operator deny list, the platform hosts, and the Run's `Network.Allow`)
+- `infra/workspace/Dockerfile`, `infra/relay/Dockerfile`: the Workspace and relay images (`linux/amd64`)
 - `crates/api`: the HTTP API, the Run channel, and their Lambda functions (`api`, `channel`, `channel-authorizer`, `worker`, `relay`), and the `sanchoris` binary that runs everything in one process for local development
 - `crates/config`, `crates/engine`, `crates/core`, `crates/worker`: configuration, the skill engine, persistence (DynamoDB, S3, and the queue and scheduler ports), and the worker's message handlers
 - `crates/graphql`: the GraphQL schema of the web app (`apps/frontend/src/graphql/schema.graphql`) over the DynamoDB store
@@ -100,8 +102,8 @@ Secrets (the rows marked *secret*) come from the environment in `sanchoris all` 
 | `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` | api | aws-infra-k8s exports `dev-k8s-UserPool` and `dev-k8s-SanchorisUserPoolClient` (the region is the pool-id prefix) |
 | `VITE_COGNITO_DOMAIN`, `VITE_COGNITO_CLIENT_ID` | frontend (`pnpm dev`, `pnpm build:lambda`) | Hosted UI domain (host only, dev `dev-auth-k8s.sancode.dev`) and the same client id |
 | `GITHUB_URL` | api | `https://github.com` |
-| `GITHUB_API_URL` | api, worker | `https://api.github.com` |
-| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | api, worker (*secret*) | GitHub App id and private key (PEM) |
+| `GITHUB_API_URL` | api, channel, worker | `https://api.github.com` |
+| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | api, channel, worker (*secret*) | GitHub App id and private key (PEM) |
 | `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` | api (*secret*) | GitHub App OAuth client for account linking and installation checks |
 | `GITHUB_APP_SLUG` | api (*secret*) | The App slug in `https://github.com/apps/<slug>`; the install URL is `<GITHUB_URL>/apps/<slug>/installations/new`. Set the App's Setup URL to `<SANCHORIS_PUBLIC_URL>/auth/github/setup` |
 | `GITHUB_WEBHOOK_SECRET` | api (*secret*) | GitHub App webhook secret |
@@ -113,7 +115,7 @@ Secrets (the rows marked *secret*) come from the environment in `sanchoris all` 
 | `RUN_TOKEN_SIGNING_KEY` | channel, channel-authorizer, worker (*secret*) | Signs Run channel tokens (32+ bytes) |
 | `TASK_TOKEN_SIGNING_KEY` | api (*secret*) | Signs approval tokens (32+ bytes) |
 | `OAUTH_STATE_SIGNING_KEY` | api (*secret*) | Signs the GitHub OAuth and installation `state`, bound to the signed-in user and tenant (32+ bytes) |
-| `SANCHORIS_CREDENTIAL_KEY` | api (*secret*) | AES-256-GCM key for stored API keys: 32 bytes in base64 (`openssl rand -base64 32`) |
+| `SANCHORIS_CREDENTIAL_KEY` | api, channel (*secret*) | AES-256-GCM key for stored API keys: 32 bytes in base64 (`openssl rand -base64 32`) |
 | `SANCHORIS_RECORDS_STORE` | api, channel, worker | `s3` or `local` (Lambda functions take `s3`) |
 | `SANCHORIS_RECORDS_BUCKET`, `SANCHORIS_RECORDS_KMS_KEY` | api, channel, worker (`s3`) | Bucket of session records and audit exports, and the KMS key (ARN or alias) that encrypts them with the tenant id in the encryption context |
 | `SANCHORIS_RECORDS_DIR`, `RECORDS_SIGNING_KEY` | `sanchoris all` (`local`) | Record directory (set by `pnpm dev`) and the URL signing key (32+ bytes) |
@@ -124,6 +126,8 @@ Secrets (the rows marked *secret*) come from the environment in `sanchoris all` 
 | `SANCHORIS_DOCS_DIR` | `sanchoris all` | Directory for attributes larger than 32 KiB (set by `pnpm dev`) |
 | `SANCHORIS_CHANNEL_ENDPOINT` | channel, worker | API Gateway Management API endpoint of the WebSocket stage |
 | `SANCHORIS_ECS_CLUSTER`, `SANCHORIS_ECS_TASK_DEFINITION`, `SANCHORIS_ECS_CONTAINER`, `SANCHORIS_ECS_SUBNETS`, `SANCHORIS_ECS_SECURITY_GROUPS` | worker | Fargate cluster, task definition, container name, and the comma-separated subnets and security groups of Workspaces |
+| `SANCHORIS_RELAY_URL` | worker | `http://<host>:<port>` of the egress relay (`apps/egress-relay`), the Workspaces' `HTTPS_PROXY` |
+| `RELAY_TOKEN_SIGNING_KEY` | worker (*secret*) | Signs the relay tokens that carry each Run's `Network.Allow` (32+ bytes) |
 
 `sanchoris all` reads every variable of the api and the worker except the AWS-only ones. The functions and their variables and IAM actions are listed in `docs/architecture.md` ("Lambda functions").
 

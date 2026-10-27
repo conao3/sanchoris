@@ -543,6 +543,7 @@ async fn start_workspace(
             branch: branch.clone(),
             compute: session.workspace.compute.as_str().to_string(),
             repositories: repositories.clone(),
+            network_allow: session.network.allow.clone(),
         })
         .await?;
     let workspace_id = Uuid::new_v4();

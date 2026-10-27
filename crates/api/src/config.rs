@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use aws_sdk_ssm::error::DisplayErrorContext;
 use sanchoris_core::tokens::{
-    RUN_TOKEN_SIGNING_KEY_ENV, RunTokenSigner, Signer, TASK_TOKEN_SIGNING_KEY_ENV, TaskTokenSigner,
+    RELAY_TOKEN_SIGNING_KEY_ENV, RUN_TOKEN_SIGNING_KEY_ENV, RunTokenSigner, Signer,
+    TASK_TOKEN_SIGNING_KEY_ENV, TaskTokenSigner,
 };
 use sanchoris_graphql::AesGcmEncryptor;
 use sanchoris_worker::github::transport::ReqwestTransport;
@@ -28,7 +29,7 @@ pub const SECRETS_PATH_ENV: &str = "SANCHORIS_SECRETS_PATH";
 pub const CREDENTIAL_KEY_ENV: &str = "SANCHORIS_CREDENTIAL_KEY";
 pub const SSM_BATCH: usize = 10;
 
-pub const SECRET_PARAMETERS: [(&str, &str); 12] = [
+pub const SECRET_PARAMETERS: [(&str, &str); 13] = [
     ("GITHUB_APP_ID", "github-app-id"),
     ("GITHUB_APP_PRIVATE_KEY", "github-app-private-key"),
     ("GITHUB_APP_CLIENT_ID", "github-app-client-id"),
@@ -41,6 +42,7 @@ pub const SECRET_PARAMETERS: [(&str, &str); 12] = [
     (TASK_TOKEN_SIGNING_KEY_ENV, "task-token-signing-key"),
     ("OAUTH_STATE_SIGNING_KEY", "oauth-state-signing-key"),
     (CREDENTIAL_KEY_ENV, "credential-key"),
+    (RELAY_TOKEN_SIGNING_KEY_ENV, "relay-token-signing-key"),
 ];
 
 pub const API_SECRETS: [&str; 11] = [
@@ -59,10 +61,18 @@ pub const API_SECRETS: [&str; 11] = [
 
 pub const RUN_TOKEN_SECRETS: [&str; 1] = [RUN_TOKEN_SIGNING_KEY_ENV];
 
-pub const WORKER_SECRETS: [&str; 3] = [
+pub const CHANNEL_SECRETS: [&str; 4] = [
+    RUN_TOKEN_SIGNING_KEY_ENV,
+    "GITHUB_APP_ID",
+    "GITHUB_APP_PRIVATE_KEY",
+    CREDENTIAL_KEY_ENV,
+];
+
+pub const WORKER_SECRETS: [&str; 4] = [
     "GITHUB_APP_ID",
     "GITHUB_APP_PRIVATE_KEY",
     RUN_TOKEN_SIGNING_KEY_ENV,
+    RELAY_TOKEN_SIGNING_KEY_ENV,
 ];
 
 #[derive(Debug, Clone)]
@@ -308,6 +318,22 @@ fn url(name: &'static str, value: &str) -> Result<String, ConfigError> {
     Ok(trimmed.to_string())
 }
 
+pub fn credential_key_of(value: &str) -> Result<CredentialKey, ConfigError> {
+    Ok(CredentialKey(Arc::new(
+        AesGcmEncryptor::from_base64(value).map_err(|message| ConfigError::Invalid {
+            name: CREDENTIAL_KEY_ENV,
+            message,
+        })?,
+    )))
+}
+
+pub fn credential_key(secrets: &Secrets) -> Result<CredentialKey, ConfigError> {
+    let mut env = Reader::new();
+    let value = env.secret(secrets, CREDENTIAL_KEY_ENV);
+    env.finish()?;
+    credential_key_of(&value)
+}
+
 pub fn run_tokens(secrets: &Secrets) -> Result<RunTokenSigner, ConfigError> {
     let mut env = Reader::new();
     let run_key = env.secret(secrets, RUN_TOKEN_SIGNING_KEY_ENV);
@@ -361,14 +387,7 @@ impl ApiConfig {
             },
             task_tokens: TaskTokenSigner::new(signer(TASK_TOKEN_SIGNING_KEY_ENV, &task_key)?),
             oauth_state_key: strong_key("OAUTH_STATE_SIGNING_KEY", &state_key)?,
-            credential_key: CredentialKey(Arc::new(
-                AesGcmEncryptor::from_base64(&credential_key).map_err(|message| {
-                    ConfigError::Invalid {
-                        name: CREDENTIAL_KEY_ENV,
-                        message,
-                    }
-                })?,
-            )),
+            credential_key: credential_key_of(&credential_key)?,
             records: RecordsConfig::from_env()?,
         })
     }
@@ -465,6 +484,7 @@ mod tests {
         for name in API_SECRETS
             .iter()
             .chain(RUN_TOKEN_SECRETS.iter())
+            .chain(CHANNEL_SECRETS.iter())
             .chain(WORKER_SECRETS.iter())
         {
             assert!(!parameter_name(name).is_empty());

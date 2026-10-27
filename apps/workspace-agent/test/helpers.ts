@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { WorkspaceAgent } from "../src/agent.ts";
+import { type CredentialSource, WorkspaceAgent } from "../src/agent.ts";
 import type { Logger } from "../src/log.ts";
 import type { StartMessage } from "../src/protocol.ts";
 import { writeCliWrapper } from "../src/testing/cli-wrapper.ts";
@@ -49,7 +49,7 @@ export function startAgent(
   sandbox: Sandbox,
   control: FakeControl,
   createWorker: WorkerFactory,
-  overrides: { token?: string } = {},
+  overrides: { token?: string; credentialSource?: CredentialSource } = {},
 ): { agent: WorkspaceAgent; exitCode: Promise<number> } {
   const agent = new WorkspaceAgent({
     runId: RUN_ID,
@@ -57,6 +57,7 @@ export function startAgent(
     controlUrl: control.url,
     socketPath: sandbox.socketPath,
     workspaceDir: sandbox.workspaceDir,
+    credentialSource: overrides.credentialSource ?? { kind: "environment" },
     env: sandbox.env,
     createWorker,
     logger: silentLogger,

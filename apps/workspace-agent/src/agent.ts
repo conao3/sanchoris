@@ -2,6 +2,7 @@ import { unlink } from "node:fs/promises";
 import type { Server } from "node:net";
 
 import { RunChannel } from "./channel.ts";
+import { type Checkout, checkout } from "./checkout.ts";
 import { runCommands } from "./exec.ts";
 import type { Logger } from "./log.ts";
 import type { ExecMessage, InboundMessage, SocketRequest, SocketResponse, StartMessage } from "./protocol.ts";
@@ -10,12 +11,17 @@ import { validateSkillRun } from "./skills.ts";
 import { listenSocket } from "./socket-server.ts";
 import type { RestoredRecord, Worker, WorkerFactory, WorkerTurnResult } from "./worker.ts";
 
+export type CredentialSource = { kind: "environment" } | ({ kind: "channel" } & Checkout);
+
+const GIT_TOKEN_MARGIN_MS = 5 * 60_000;
+
 export interface AgentConfig {
   runId: string;
   token: string;
   controlUrl: string;
   socketPath: string;
   workspaceDir: string;
+  credentialSource: CredentialSource;
   env: NodeJS.ProcessEnv;
   createWorker: WorkerFactory;
   logger: Logger;
@@ -40,6 +46,7 @@ export class WorkspaceAgent {
   private readonly seenMessageIds = new Set<string>();
   private readonly seenExecRequestIds = new Set<string>();
   private finished = false;
+  private gitToken: { token: string; expiresAt: number } | null = null;
   private resolveExit: (code: number) => void = () => {};
   readonly exitCode: Promise<number>;
 
@@ -52,6 +59,7 @@ export class WorkspaceAgent {
       url: config.controlUrl,
       token: config.token,
       runId: config.runId,
+      env: config.env,
       logger: config.logger,
       initialBackoffMs: config.initialBackoffMs,
       maxBackoffMs: config.maxBackoffMs,
@@ -67,7 +75,12 @@ export class WorkspaceAgent {
     return this.exitCode;
   }
 
-  private handleCommand(message: Exclude<InboundMessage, { type: "ack" | "close" | "skill_response" | "record_upload_response" }>): void {
+  private handleCommand(
+    message: Exclude<
+      InboundMessage,
+      { type: "ack" | "close" | "skill_response" | "record_upload_response" | "git_token_response" | "worker_credential_response" }
+    >,
+  ): void {
     switch (message.type) {
       case "start":
         if (this.start) {
@@ -112,6 +125,13 @@ export class WorkspaceAgent {
   }
 
   private async begin(start: StartMessage): Promise<void> {
+    let env = this.config.env;
+    const source = this.config.credentialSource;
+    if (source.kind === "channel") {
+      env = { ...env, ...(await this.workerCredential()) };
+      await checkout(source, this.config.workspaceDir, this.config.env);
+      this.config.logger("info", "repositories checked out", { repositories: source.repositories, branch: source.branch });
+    }
     let restored: RestoredRecord | null = null;
     if (start.resume) {
       const bytes = await downloadRecord(start.resume.url, start.resume.sha256);
@@ -123,7 +143,7 @@ export class WorkspaceAgent {
       model: start.model,
       systemPrompt: start.systemPrompt,
       workspaceDir: this.config.workspaceDir,
-      env: this.config.env,
+      env,
       handlers: {
         onEvent: (kind, data) => {
           if (kind === "log") this.config.logger("info", "worker log", data);
@@ -141,6 +161,36 @@ export class WorkspaceAgent {
     this.channel.send({ type: "ready", sessionId, agent: start.agent, model: start.model, resumed: restored !== null });
     this.channel.startHeartbeat(start.heartbeatSeconds, () => this.busy);
     if (start.instruction !== null) this.deliver(start.instruction);
+  }
+
+  private async workerCredential(): Promise<Record<string, string>> {
+    const reply = await this.channel.request(
+      (requestId) => ({ type: "worker_credential_request", requestId }),
+      this.config.requestTimeoutMs,
+    );
+    if (reply.type !== "worker_credential_response") throw new Error(`Unexpected reply ${reply.type}`);
+    if (!reply.ok) throw new Error(`Control plane refused the worker credential: ${reply.error.code} ${reply.error.message}`);
+    return reply.env;
+  }
+
+  private async gitCredential(host: string): Promise<SocketResponse> {
+    const source = this.config.credentialSource;
+    if (source.kind !== "channel") {
+      return { ok: false, error: { code: "invalid_request", message: "This workspace takes its credentials from the environment" } };
+    }
+    if (host !== new URL(source.gitUrl).host) {
+      return { ok: false, error: { code: "invalid_request", message: `No credential for ${host}` } };
+    }
+    if (!this.gitToken || this.gitToken.expiresAt - GIT_TOKEN_MARGIN_MS <= Date.now()) {
+      const reply = await this.channel.request(
+        (requestId) => ({ type: "git_token_request", requestId }),
+        this.config.requestTimeoutMs,
+      );
+      if (reply.type !== "git_token_response") throw new Error(`Unexpected reply ${reply.type}`);
+      if (!reply.ok) return { ok: false, error: reply.error };
+      this.gitToken = { token: reply.token, expiresAt: Date.parse(reply.expiresAt) };
+    }
+    return { ok: true, result: { username: "x-access-token", password: this.gitToken.token } };
   }
 
   private exec(message: ExecMessage): void {
@@ -200,6 +250,7 @@ export class WorkspaceAgent {
   }
 
   private async handleSocket(request: SocketRequest): Promise<SocketResponse> {
+    if (request.action === "git_credential") return this.gitCredential(request.host);
     const start = this.start;
     if (!start || !this.ready) {
       return { ok: false, error: { code: "not_started", message: "The workspace agent has not started a session yet" } };

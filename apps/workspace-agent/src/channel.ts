@@ -1,17 +1,25 @@
 import { randomUUID } from "node:crypto";
+import http from "node:http";
+import https from "node:https";
 import WebSocket from "ws";
 
 import type { Logger } from "./log.ts";
 import {
+  type GitTokenResponseMessage,
   InboundMessage,
   type OutboundMessage,
   type RecordUploadResponseMessage,
   type SequencedMessage,
   type SequencedPayload,
   type SkillResponseMessage,
+  type WorkerCredentialResponseMessage,
 } from "./protocol.ts";
 
-type ReplyMessage = SkillResponseMessage | RecordUploadResponseMessage;
+type ReplyMessage =
+  | SkillResponseMessage
+  | RecordUploadResponseMessage
+  | GitTokenResponseMessage
+  | WorkerCredentialResponseMessage;
 type InboundCommand = Exclude<InboundMessage, ReplyMessage | { type: "ack" | "close" }>;
 
 interface PendingReply {
@@ -24,6 +32,7 @@ export interface RunChannelOptions {
   url: string;
   token: string;
   runId: string;
+  env: NodeJS.ProcessEnv;
   logger: Logger;
   hello: () => { started: boolean; sessionId: string | null };
   onCommand: (message: InboundCommand) => void;
@@ -55,8 +64,10 @@ export class RunChannel {
 
   connect(): void {
     if (this.closed) return;
+    const agentOptions = { keepAlive: false, proxyEnv: this.options.env } as http.AgentOptions;
     const socket = new WebSocket(this.options.url, {
       headers: { Authorization: `Bearer ${this.options.token}` },
+      agent: this.options.url.startsWith("wss:") ? new https.Agent(agentOptions) : new http.Agent(agentOptions),
     });
     this.socket = socket;
     socket.on("open", () => {
@@ -178,7 +189,9 @@ export class RunChannel {
         this.fail(new ProtocolError(`Run channel closed by control plane: ${parsed.code} ${parsed.reason}`));
         return;
       case "skill_response":
-      case "record_upload_response": {
+      case "record_upload_response":
+      case "git_token_response":
+      case "worker_credential_response": {
         const reply = this.replies.get(parsed.requestId);
         if (!reply) {
           if (this.expiredReplies.delete(parsed.requestId)) return;

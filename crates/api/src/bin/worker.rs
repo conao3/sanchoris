@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use lambda_runtime::{LambdaEvent, service_fn};
 use sanchoris_api::channel::Channel;
+use sanchoris_api::channel::credentials::NoRunCredentials;
 use sanchoris_api::channel::gateway::GatewaySender;
 use sanchoris_api::config::{ChannelConfig, GitHubAppConfig, Secrets, WORKER_SECRETS};
 use sanchoris_api::ecs::{EcsRunner, EcsRunnerConfig};
@@ -25,6 +26,7 @@ async fn main() -> Result<(), lambda_runtime::Error> {
         run_tokens: config.run_tokens,
         records: s3_records(&config.records, &sdk)?,
         sender: Arc::new(GatewaySender::from_env(&sdk)?),
+        credentials: Arc::new(NoRunCredentials),
     };
     let deps = Deps {
         clock: clock.clone(),

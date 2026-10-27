@@ -8,11 +8,11 @@ use aws_sdk_ecs::types::{
 };
 use chrono::Duration;
 use sanchoris_core::clock::Clock;
-use sanchoris_core::tokens::RunTokenSigner;
+use sanchoris_core::tokens::{RELAY_TOKEN_SIGNING_KEY_ENV, RelayTokenSigner, RunTokenSigner};
 use sanchoris_worker::ports::{RunnerError, RunnerPort, WorkspaceHandle, WorkspaceSpec};
 use uuid::Uuid;
 
-use crate::config::{ConfigError, Reader, Secrets, run_tokens};
+use crate::config::{ConfigError, Reader, Secrets, run_tokens, signer};
 
 pub const PLATFORM: &str = "ecs";
 const TOKEN_TTL_HOURS: i64 = 12;
@@ -26,7 +26,9 @@ pub struct EcsRunnerConfig {
     pub security_groups: Vec<String>,
     pub control_url: String,
     pub git_url: String,
+    pub relay_address: String,
     pub run_tokens: RunTokenSigner,
+    pub relay_tokens: RelayTokenSigner,
 }
 
 fn list(value: &str) -> Vec<String> {
@@ -48,7 +50,19 @@ impl EcsRunnerConfig {
         let security_groups = env.get("SANCHORIS_ECS_SECURITY_GROUPS");
         let control_url = env.get("SANCHORIS_CONTROL_URL");
         let git_url = env.get("SANCHORIS_GIT_URL");
+        let relay_url = env.get("SANCHORIS_RELAY_URL");
+        let relay_key = env.secret(secrets, RELAY_TOKEN_SIGNING_KEY_ENV);
         env.finish()?;
+        let (scheme, relay_host) = relay_url.split_once("://").ok_or(ConfigError::Invalid {
+            name: "SANCHORIS_RELAY_URL",
+            message: format!("{relay_url:?} is not http://<host>:<port>"),
+        })?;
+        if scheme != "http" || relay_host.is_empty() || relay_host.contains(['/', '@']) {
+            return Err(ConfigError::Invalid {
+                name: "SANCHORIS_RELAY_URL",
+                message: format!("{relay_url:?} is not http://<host>:<port>"),
+            });
+        }
         Ok(Self {
             cluster,
             task_definition,
@@ -57,7 +71,9 @@ impl EcsRunnerConfig {
             security_groups: list(&security_groups),
             control_url,
             git_url: git_url.trim_end_matches('/').to_string(),
+            relay_address: relay_host.to_string(),
             run_tokens: run_tokens(secrets)?,
+            relay_tokens: RelayTokenSigner::new(signer(RELAY_TOKEN_SIGNING_KEY_ENV, &relay_key)?),
         })
     }
 }
@@ -82,11 +98,16 @@ impl EcsRunner {
     }
 
     pub fn environment(&self, spec: &WorkspaceSpec) -> Vec<(&'static str, String)> {
-        let token = self.config.run_tokens.sign(
-            spec.tenant_id,
-            spec.run_id,
-            self.clock.now() + Duration::hours(TOKEN_TTL_HOURS),
-        );
+        let expires_at = self.clock.now() + Duration::hours(TOKEN_TTL_HOURS);
+        let token = self
+            .config
+            .run_tokens
+            .sign(spec.tenant_id, spec.run_id, expires_at);
+        let relay_token =
+            self.config
+                .relay_tokens
+                .sign(spec.run_id, &spec.network_allow, expires_at);
+        let proxy = format!("http://run:{relay_token}@{}", self.config.relay_address);
         vec![
             ("SANCHORIS_RUN_ID", spec.run_id.to_string()),
             ("SANCHORIS_RUN_TOKEN", token),
@@ -94,6 +115,9 @@ impl EcsRunner {
             ("SANCHORIS_GIT_URL", self.config.git_url.clone()),
             ("SANCHORIS_BRANCH", spec.branch.clone()),
             ("SANCHORIS_REPOSITORIES", spec.repositories.join(",")),
+            ("SANCHORIS_CREDENTIAL_SOURCE", "channel".to_string()),
+            ("HTTPS_PROXY", proxy.clone()),
+            ("HTTP_PROXY", proxy),
         ]
     }
 }

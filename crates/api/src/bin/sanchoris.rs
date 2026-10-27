@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use sanchoris_api::app::{AppState, http_client};
 use sanchoris_api::auth::cognito::CognitoVerifier;
+use sanchoris_api::channel::credentials::IssuedCredentials;
 use sanchoris_api::config::{LocalConfig, RecordsConfig, STORE_ENV, WORKER_ENV, require};
 use sanchoris_api::frontend::Frontend;
 use sanchoris_api::graphql::{self, GraphqlPorts};
@@ -65,17 +66,22 @@ async fn run() -> Result<(), String> {
                 (local.clone(), Some(local))
             }
         };
-    let channel = local_channel(
-        store.clone(),
-        config.channel.run_tokens.clone(),
-        records.clone(),
-    );
     let github_app = Arc::new(
         config
             .api
             .github_app
             .client()
             .map_err(|error| error.to_string())?,
+    );
+    let channel = local_channel(
+        store.clone(),
+        config.channel.run_tokens.clone(),
+        records.clone(),
+        Arc::new(IssuedCredentials::new(
+            store.clone(),
+            github_app.clone(),
+            config.api.credential_key.0.clone(),
+        )),
     );
     let worker = Arc::new(Worker::new(
         store.clone(),

@@ -225,6 +225,7 @@ pub struct WorkspaceSpec {
     pub branch: String,
     pub compute: String,
     pub repositories: Vec<String>,
+    pub network_allow: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
