@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 sanchoris-config.workspace = true
 sanchoris-core.workspace = true
+sanchoris-worker.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
@@ -15,8 +16,8 @@ thiserror.workspace = true
 async-graphql = "7.2.1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "macros", "uuid", "chrono", "json", "tls-rustls"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+aws-sdk-dynamodb = "1"
 aes-gcm = "0.10"
 base64 = "0.22"
 

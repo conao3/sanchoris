@@ -1,16 +1,23 @@
+use std::future::Future;
 use std::net::IpAddr;
 
 use async_graphql::{Context, Enum, Error, Result};
+use aws_sdk_dynamodb::types::AttributeValue;
 use chrono::{DateTime, Utc};
 use sanchoris_core::audit::{AuditEntry, record_audit};
-use sanchoris_core::db::{TenantTx, UserTx};
+use sanchoris_core::db::{self, DbError, Store, TenantTx};
+use sanchoris_core::item::{Entity, Key, format_time};
+use sanchoris_core::items::{self, Member, Ref, Tenant, User};
+use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
+use sanchoris_core::store::Update;
 use serde_json::{Map, Value, json};
-use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::error::{forbidden, not_found, unauthenticated};
+use crate::error::{conflict, forbidden, not_found, unauthenticated};
 use crate::ports::GraphqlDeps;
+
+const WRITE_ATTEMPTS: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthUser {
@@ -23,7 +30,7 @@ pub struct AuthUser {
 pub struct ClientIp(pub IpAddr);
 
 pub(crate) struct State {
-    pub pool: PgPool,
+    pub store: Store,
     pub deps: GraphqlDeps,
 }
 
@@ -52,7 +59,7 @@ impl Role {
         }
     }
 
-    fn rank(self) -> u8 {
+    pub fn rank(self) -> u8 {
         match self {
             Self::Owner => 3,
             Self::Admin => 2,
@@ -111,6 +118,18 @@ pub(crate) fn state<'a>(ctx: &Context<'a>) -> &'a State {
     ctx.data_unchecked::<State>()
 }
 
+pub(crate) fn store<'a>(ctx: &Context<'a>) -> &'a Store {
+    &state(ctx).store
+}
+
+pub(crate) fn tx(ctx: &Context<'_>, tenant_id: Uuid) -> TenantTx {
+    store(ctx).tx(tenant_id)
+}
+
+pub(crate) fn user_tx(ctx: &Context<'_>) -> TenantTx {
+    store(ctx).tx(Uuid::nil())
+}
+
 pub(crate) fn auth<'a>(ctx: &Context<'a>) -> Result<&'a AuthUser> {
     ctx.data_opt::<AuthUser>().ok_or_else(unauthenticated)
 }
@@ -119,23 +138,16 @@ pub(crate) fn now(ctx: &Context<'_>) -> DateTime<Utc> {
     state(ctx).deps.clock.now()
 }
 
-pub(crate) async fn tenant_tx(ctx: &Context<'_>, tenant_id: Uuid) -> Result<TenantTx> {
-    Ok(TenantTx::begin(&state(ctx).pool, tenant_id).await?)
-}
-
-pub(crate) async fn user_tx(ctx: &Context<'_>) -> Result<UserTx> {
-    let user = auth(ctx)?;
-    Ok(UserTx::begin(&state(ctx).pool, user.user_id).await?)
+pub(crate) async fn viewer_user(ctx: &Context<'_>) -> Result<User> {
+    let user_id = auth(ctx)?.user_id;
+    store(ctx)
+        .get::<User>(&keys::user_key(user_id))
+        .await?
+        .ok_or_else(|| not_found(format!("user {user_id}")))
 }
 
 pub(crate) async fn is_operator(ctx: &Context<'_>) -> Result<bool> {
-    let mut tx = user_tx(ctx).await?;
-    let user_id = tx.user_id();
-    sqlx::query_scalar::<_, bool>("SELECT is_operator FROM sanchoris.users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(tx.conn())
-        .await?
-        .ok_or_else(|| not_found(format!("user {user_id}")))
+    Ok(viewer_user(ctx).await?.is_operator)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -157,33 +169,60 @@ impl Membership {
     }
 }
 
+async fn membership_of(
+    ctx: &Context<'_>,
+    item: &items::Membership,
+) -> Result<(String, Membership)> {
+    let mut tx = tx(ctx, item.tenant_id);
+    let member = tx
+        .require::<Member>(&keys::member_key(item.tenant_id, item.member_id))
+        .await?;
+    let tenant = tx
+        .get::<Tenant>(&keys::tenant_key(item.tenant_id))
+        .await?
+        .ok_or_else(|| not_found(format!("tenant {}", item.tenant_id)))?;
+    Ok((
+        tenant.name,
+        Membership {
+            member_id: member.id,
+            tenant_id: item.tenant_id,
+            role: Role::from_db(&member.role),
+        },
+    ))
+}
+
 pub(crate) async fn memberships(ctx: &Context<'_>) -> Result<Vec<Membership>> {
-    let mut tx = user_tx(ctx).await?;
-    let rows = sqlx::query(
-        "SELECT m.id, m.tenant_id, m.role FROM sanchoris.members m \
-         JOIN sanchoris.tenants t ON t.id = m.tenant_id \
-         WHERE m.user_id = $1 ORDER BY t.name, t.id",
-    )
-    .bind(tx.user_id())
-    .fetch_all(tx.conn())
-    .await?;
-    rows.iter()
-        .map(|row| {
-            Ok(Membership {
-                member_id: row.try_get("id")?,
-                tenant_id: row.try_get("tenant_id")?,
-                role: Role::from_db(row.try_get("role")?),
-            })
-        })
-        .collect()
+    let user_id = auth(ctx)?.user_id;
+    let items = store(ctx)
+        .query::<items::Membership>(&keys::user_key(user_id).pk, "MEMBER#")
+        .await?;
+    let mut found = Vec::new();
+    for item in &items {
+        found.push(membership_of(ctx, item).await?);
+    }
+    found.sort_by(|a, b| (&a.0, a.1.tenant_id).cmp(&(&b.0, b.1.tenant_id)));
+    Ok(found
+        .into_iter()
+        .map(|(_, membership)| membership)
+        .collect())
+}
+
+pub(crate) async fn membership_in(
+    ctx: &Context<'_>,
+    tenant_id: Uuid,
+) -> Result<Option<Membership>> {
+    let user_id = auth(ctx)?.user_id;
+    match store(ctx)
+        .get::<items::Membership>(&keys::membership_key(user_id, tenant_id))
+        .await?
+    {
+        Some(item) => Ok(Some(membership_of(ctx, &item).await?.1)),
+        None => Ok(None),
+    }
 }
 
 pub(crate) async fn scope_for_tenant(ctx: &Context<'_>, tenant_id: Uuid) -> Result<Scope> {
-    if let Some(membership) = memberships(ctx)
-        .await?
-        .into_iter()
-        .find(|m| m.tenant_id == tenant_id)
-    {
+    if let Some(membership) = membership_in(ctx, tenant_id).await? {
         return Ok(membership.scope());
     }
     if is_operator(ctx).await? {
@@ -196,28 +235,100 @@ pub(crate) async fn scope_for_tenant(ctx: &Context<'_>, tenant_id: Uuid) -> Resu
 }
 
 pub(crate) async fn member_scope(ctx: &Context<'_>, tenant_id: Uuid) -> Result<Scope> {
-    memberships(ctx)
+    membership_in(ctx, tenant_id)
         .await?
-        .into_iter()
-        .find(|m| m.tenant_id == tenant_id)
         .map(|m| m.scope())
         .ok_or_else(|| not_found(format!("tenant {tenant_id}")))
 }
 
-pub(crate) async fn locate(ctx: &Context<'_>, table: &'static str, id: Uuid) -> Result<Scope> {
+pub(crate) async fn locate_item<E: Entity>(
+    ctx: &Context<'_>,
+    what: &str,
+    id: Uuid,
+    key: impl Fn(Uuid) -> Key,
+) -> Result<(Scope, E)> {
     for membership in memberships(ctx).await? {
-        let mut tx = tenant_tx(ctx, membership.tenant_id).await?;
-        let found = sqlx::query_scalar::<_, bool>(sql!(
-            "SELECT EXISTS (SELECT 1 FROM sanchoris.{table} WHERE id = $1)"
-        ))
-        .bind(id)
-        .fetch_one(tx.conn())
-        .await?;
-        if found {
-            return Ok(membership.scope());
+        if let Some(item) = tx(ctx, membership.tenant_id)
+            .get::<E>(&key(membership.tenant_id))
+            .await?
+        {
+            return Ok((membership.scope(), item));
         }
     }
-    Err(not_found(format!("{} {id}", table.trim_end_matches('s'))))
+    Err(not_found(format!("{what} {id}")))
+}
+
+pub(crate) async fn locate_ref(
+    ctx: &Context<'_>,
+    what: &str,
+    id: Uuid,
+    kind: &str,
+) -> Result<(Scope, Ref)> {
+    for membership in memberships(ctx).await? {
+        let mut tx = tx(ctx, membership.tenant_id);
+        if let Some(found) = db::locate(&mut tx, id, kind).await? {
+            return Ok((membership.scope(), found));
+        }
+    }
+    Err(not_found(format!("{what} {id}")))
+}
+
+pub(crate) enum Failure {
+    Db(DbError),
+    Api(Error),
+}
+
+impl From<DbError> for Failure {
+    fn from(error: DbError) -> Self {
+        Self::Db(error)
+    }
+}
+
+impl From<Error> for Failure {
+    fn from(error: Error) -> Self {
+        Self::Api(error)
+    }
+}
+
+pub(crate) type Written<T> = std::result::Result<T, Failure>;
+
+pub(crate) async fn write<T, F, Fut>(mut operation: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Written<T>>,
+{
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(Failure::Db(DbError::Conflict)) if attempt < WRITE_ATTEMPTS => {}
+            Err(Failure::Db(DbError::Conflict)) => {
+                return Err(conflict(
+                    "the change conflicted with concurrent changes; try again",
+                ));
+            }
+            Err(Failure::Db(error)) => return Err(error.into()),
+            Err(Failure::Api(error)) => return Err(error),
+        }
+    }
+}
+
+pub(crate) async fn serialize_tenant(tx: &mut TenantTx) -> Result<()> {
+    let key = keys::tenant_key(tx.tenant_id());
+    let item = tx
+        .get_item(&key)
+        .await?
+        .ok_or_else(|| not_found(format!("tenant {}", tx.tenant_id())))?;
+    let version = item
+        .get(sanchoris_core::item::VERSION)
+        .cloned()
+        .ok_or_else(|| Error::new("the tenant has no version"))?;
+    tx.update(
+        &key,
+        Update::new().require(sanchoris_core::item::VERSION, version),
+    )?;
+    Ok(())
 }
 
 pub(crate) struct AuditTarget<'a> {
@@ -246,11 +357,10 @@ pub(crate) async fn audit_member(
         at,
     )
     .await?;
-    sqlx::query("UPDATE sanchoris.members SET last_active_at = $2 WHERE id = $1")
-        .bind(member_id)
-        .bind(at)
-        .execute(tx.conn())
-        .await?;
+    tx.update(
+        &keys::member_key(tx.tenant_id(), member_id),
+        Update::new().set("last_active_at", AttributeValue::S(format_time(at))),
+    )?;
     Ok(())
 }
 
@@ -304,7 +414,6 @@ async fn write_audit(
             metadata,
         },
     )
-    .await
-    .map_err(Error::from)?;
+    .await?;
     Ok(())
 }

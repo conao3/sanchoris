@@ -1,34 +1,28 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use async_graphql::{Context, ID, Object, Result};
-use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sanchoris_config::builtin_skill;
 use sanchoris_config::skill::{ChoiceRule, SkillDefinition, State};
+use sanchoris_core::db::TenantTx;
+use sanchoris_core::item::format_time;
+use sanchoris_core::items::{SkillDef, SkillRunItem, StateEntryItem, Task as TaskItem};
+use sanchoris_core::keys;
+use sanchoris_core::model::{SkillRunStatus as CoreRunStatus, TaskStatus as CoreTaskStatus};
+use sanchoris_core::store::{Index, Listing, SortKey};
 use serde_json::Value;
-use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::config::{ChangeRequest, Config, edit_url};
-use crate::context::{Scope, now, tenant_tx};
+use crate::config::{ChangeRequest, Config, config_rows, edit_url};
+use crate::context::{Scope, now, tx};
 use crate::enums::{
     ConfigObjectKind, SkillKind, SkillRunStatus, StateEntryStatus, StateType, TransitionKind,
 };
 use crate::error::not_found;
 use crate::scalars::{Timestamp, ts, ts_opt};
 use crate::task::{Output, Run, Task};
+use crate::tenant::midnight;
 use crate::trigger::Trigger;
-
-#[derive(Debug, Clone, FromRow)]
-struct SkillRow {
-    id: Uuid,
-    config_id: Uuid,
-    name: String,
-    kind: String,
-    description: String,
-    skill_md: String,
-    skill_yaml: Option<String>,
-    definition: Option<Value>,
-}
 
 pub(crate) struct Skill {
     scope: Scope,
@@ -53,7 +47,7 @@ fn parse_definition(name: &str, value: Option<Value>) -> Result<Option<SkillDefi
 }
 
 impl Skill {
-    fn from_row(scope: Scope, row: SkillRow) -> Result<Self> {
+    fn from_row(scope: Scope, row: SkillDef) -> Result<Self> {
         Ok(Self {
             scope,
             id: row.id.to_string(),
@@ -73,19 +67,20 @@ impl Skill {
         config_id: Option<Uuid>,
         names: Option<&[String]>,
     ) -> Result<Vec<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, SkillRow>(
-            "SELECT s.id, s.config_id, s.name, s.kind, s.description, s.skill_md, s.skill_yaml, s.definition \
-             FROM sanchoris.skills s JOIN sanchoris.configs c ON c.id = s.config_id \
-             WHERE s.tenant_id = $1 AND ($2::uuid IS NULL OR s.config_id = $2) \
-               AND ($3::text[] IS NULL OR s.name = ANY($3)) \
-             ORDER BY s.name, c.repository, c.root_path",
-        )
-        .bind(scope.tenant_id)
-        .bind(config_id)
-        .bind(names)
-        .fetch_all(tx.conn())
-        .await?;
+        let mut tx = tx(ctx, scope.tenant_id);
+        let mut rows = Vec::new();
+        for config in config_rows(ctx, scope).await? {
+            if config_id.is_some_and(|id| id != config.id) {
+                continue;
+            }
+            rows.extend(
+                tx.query::<SkillDef>(&keys::config_pk(scope.tenant_id, config.id), "SKILL#")
+                    .await?
+                    .into_iter()
+                    .filter(|row| names.is_none_or(|names| names.contains(&row.name))),
+            );
+        }
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
         rows.into_iter()
             .map(|row| Self::from_row(scope, row))
             .collect()
@@ -133,12 +128,11 @@ impl Skill {
         name: &str,
         definition: &Value,
     ) -> Result<Self> {
-        if let Some(skill) = Self::rows(ctx, scope, Some(config_id), Some(&[name.to_string()]))
+        if let Some(row) = tx(ctx, scope.tenant_id)
+            .get::<SkillDef>(&keys::skill_key(scope.tenant_id, config_id, name))
             .await?
-            .into_iter()
-            .next()
         {
-            return Ok(skill);
+            return Self::from_row(scope, row);
         }
         Ok(Self {
             scope,
@@ -177,20 +171,22 @@ impl Skill {
         &self,
         ctx: &Context<'_>,
         since: Option<DateTime<Utc>>,
-        limit: Option<i64>,
-    ) -> Result<Vec<SkillRunRow>> {
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        Ok(sqlx::query_as::<_, SkillRunRow>(sql!(
-            "{SKILL_RUN_SELECT} WHERE s.tenant_id = $1 AND s.skill_name = $2 \
-               AND ($3::timestamptz IS NULL OR s.started_at >= $3) \
-             ORDER BY s.started_at DESC, s.id DESC LIMIT $4"
-        ))
-        .bind(self.scope.tenant_id)
-        .bind(&self.name)
-        .bind(since)
-        .bind(limit.unwrap_or(i64::MAX))
-        .fetch_all(tx.conn())
-        .await?)
+        limit: Option<usize>,
+    ) -> Result<Vec<SkillRunItem>> {
+        let mut listing = Listing::index(
+            Index::Gsi1,
+            keys::skill_runs_index(self.scope.tenant_id, &self.name),
+        )
+        .descending();
+        if let Some(since) = since {
+            listing = listing.sort(SortKey::AtLeast(format_time(since)));
+        }
+        if let Some(limit) = limit {
+            listing = listing.limit(limit);
+        }
+        Ok(tx(ctx, self.scope.tenant_id)
+            .list::<SkillRunItem>(&listing, |_| true)
+            .await?)
     }
 }
 
@@ -338,7 +334,7 @@ impl Skill {
     ) -> Result<SkillStats> {
         let since = now(ctx) - Duration::days(i64::from(days.unwrap_or(30)));
         let runs = self.run_rows(ctx, Some(since), None).await?;
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
+        let mut tx = tx(ctx, self.scope.tenant_id);
         let mut durations = Vec::new();
         let mut handoffs = Vec::new();
         let mut errors = BTreeMap::<String, usize>::new();
@@ -349,9 +345,9 @@ impl Skill {
                 durations.push((finished - run.started_at).num_seconds());
                 handoffs.push(i64::from(count_handoffs(&mut tx, run).await?));
             }
-            match run.status.as_str() {
-                "SUCCEEDED" => succeeded += 1,
-                "FAILED" => {
+            match run.status {
+                CoreRunStatus::Succeeded => succeeded += 1,
+                CoreRunStatus::Failed => {
                     failed += 1;
                     *errors
                         .entry(run.error.clone().unwrap_or_else(|| "States.Unknown".into()))
@@ -379,7 +375,7 @@ impl Skill {
         #[graphql(default = 10)] limit: Option<i32>,
     ) -> Result<Vec<SkillRun>> {
         Ok(self
-            .run_rows(ctx, None, Some(i64::from(limit.unwrap_or(10))))
+            .run_rows(ctx, None, Some(usize::try_from(limit.unwrap_or(10))?))
             .await?
             .into_iter()
             .map(|row| SkillRun {
@@ -531,64 +527,60 @@ fn transitions(state: &State) -> Vec<StateTransition> {
     }
 }
 
-#[derive(Debug, FromRow)]
-struct ActivityRow {
-    state: String,
-    running: i64,
-    with_agent: i64,
-    needs_you: i64,
-    succeeded_today: i64,
-}
-
 async fn state_activity(
     ctx: &Context<'_>,
     scope: Scope,
     skill_name: &str,
 ) -> Result<BTreeMap<String, StateActivity>> {
-    let at = now(ctx);
-    let today = Utc
-        .with_ymd_and_hms(at.year(), at.month(), at.day(), 0, 0, 0)
-        .single()
-        .expect("midnight is unambiguous in UTC");
-    let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-    let rows = sqlx::query_as::<_, ActivityRow>(
-        "WITH current AS ( \
-           SELECT s.current_state AS state, \
-                  count(*) FILTER (WHERE s.status IN ('RUNNING', 'WAITING') AND t.status <> 'NEEDS_YOU') AS running, \
-                  count(*) FILTER (WHERE s.status = 'WAITING_AGENT' AND t.status <> 'NEEDS_YOU') AS with_agent, \
-                  count(*) FILTER (WHERE t.status = 'NEEDS_YOU') AS needs_you \
-           FROM sanchoris.skill_runs s JOIN sanchoris.tasks t ON t.id = s.task_id \
-           WHERE s.tenant_id = $1 AND s.skill_name = $2 AND s.current_state IS NOT NULL \
-             AND s.status IN ('RUNNING', 'WAITING_AGENT', 'WAITING') \
-           GROUP BY s.current_state), \
-         done AS ( \
-           SELECT e.state_name AS state, count(*) AS succeeded_today \
-           FROM sanchoris.state_entries e JOIN sanchoris.skill_runs s ON s.id = e.skill_run_id \
-           WHERE e.tenant_id = $1 AND s.skill_name = $2 AND e.status = 'SUCCEEDED' AND e.exited_at >= $3 \
-           GROUP BY e.state_name) \
-         SELECT coalesce(c.state, d.state) AS state, coalesce(c.running, 0) AS running, \
-                coalesce(c.with_agent, 0) AS with_agent, coalesce(c.needs_you, 0) AS needs_you, \
-                coalesce(d.succeeded_today, 0) AS succeeded_today \
-         FROM current c FULL JOIN done d ON d.state = c.state",
-    )
-    .bind(scope.tenant_id)
-    .bind(skill_name)
-    .bind(today)
-    .fetch_all(tx.conn())
-    .await?;
-    rows.into_iter()
-        .map(|row| {
-            Ok((
-                row.state,
-                StateActivity {
-                    running: i32::try_from(row.running)?,
-                    with_agent: i32::try_from(row.with_agent)?,
-                    needs_you: i32::try_from(row.needs_you)?,
-                    succeeded_today: i32::try_from(row.succeeded_today)?,
-                },
-            ))
-        })
-        .collect()
+    let today = midnight(now(ctx));
+    let mut tx = tx(ctx, scope.tenant_id);
+    let runs = tx
+        .list::<SkillRunItem>(
+            &Listing::index(
+                Index::Gsi1,
+                keys::skill_runs_index(scope.tenant_id, skill_name),
+            ),
+            |run| run.status.is_active() || run.finished_at.is_none_or(|at| at >= today),
+        )
+        .await?;
+    let mut activity = BTreeMap::<String, StateActivity>::new();
+    for run in &runs {
+        if run.status.is_active()
+            && let Some(state) = &run.current_state
+        {
+            let task = tx
+                .require::<TaskItem>(&keys::task_key(scope.tenant_id, run.task_id))
+                .await?;
+            let entry = activity.entry(state.clone()).or_default();
+            if task.status == CoreTaskStatus::NeedsYou {
+                entry.needs_you += 1;
+            } else if run.status == CoreRunStatus::WaitingAgent {
+                entry.with_agent += 1;
+            } else {
+                entry.running += 1;
+            }
+        }
+        for state_entry in state_entries(&mut tx, run).await? {
+            if state_entry.status == "SUCCEEDED"
+                && state_entry.exited_at.is_some_and(|at| at >= today)
+            {
+                activity
+                    .entry(state_entry.state_name)
+                    .or_default()
+                    .succeeded_today += 1;
+            }
+        }
+    }
+    Ok(activity)
+}
+
+async fn state_entries(tx: &mut TenantTx, run: &SkillRunItem) -> Result<Vec<StateEntryItem>> {
+    Ok(tx
+        .query::<StateEntryItem>(
+            &keys::task_pk(run.tenant_id, run.task_id),
+            &format!("{}#E#", keys::skill_run_prefix(run.number)),
+        )
+        .await?)
 }
 
 pub(crate) struct SkillInput {
@@ -744,31 +736,9 @@ impl SkillStats {
     }
 }
 
-pub(crate) const SKILL_RUN_SELECT: &str = "SELECT s.id, s.task_id, s.run_id, s.number, s.skill_name, s.definition, s.input, \
-     s.output, s.status, s.current_state, s.error, s.cause, s.started_at, s.finished_at \
-     FROM sanchoris.skill_runs s";
-
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct SkillRunRow {
-    pub id: Uuid,
-    pub task_id: Uuid,
-    pub run_id: Option<Uuid>,
-    pub number: i32,
-    pub skill_name: String,
-    pub definition: Value,
-    pub input: Value,
-    pub output: Option<Value>,
-    pub status: String,
-    pub current_state: Option<String>,
-    pub error: Option<String>,
-    pub cause: Option<String>,
-    pub started_at: DateTime<Utc>,
-    pub finished_at: Option<DateTime<Utc>>,
-}
-
 pub(crate) struct SkillRun {
     pub scope: Scope,
-    pub row: SkillRunRow,
+    pub row: SkillRunItem,
 }
 
 fn handoff_states(definition: &Value) -> Vec<String> {
@@ -789,35 +759,22 @@ fn handoff_states(definition: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-async fn count_handoffs(tx: &mut sanchoris_core::db::TenantTx, row: &SkillRunRow) -> Result<i32> {
-    let states = handoff_states(&row.definition);
-    let count = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM sanchoris.state_entries WHERE skill_run_id = $1 AND state_name = ANY($2)",
-    )
-    .bind(row.id)
-    .bind(&states)
-    .fetch_one(tx.conn())
-    .await?;
+async fn count_handoffs(tx: &mut TenantTx, run: &SkillRunItem) -> Result<i32> {
+    let states = handoff_states(&run.definition);
+    let count = state_entries(tx, run)
+        .await?
+        .iter()
+        .filter(|entry| states.contains(&entry.state_name))
+        .count();
     Ok(i32::try_from(count)?)
 }
 
 impl SkillRun {
-    pub async fn query(
-        ctx: &Context<'_>,
-        scope: Scope,
-        task_id: Option<Uuid>,
-        run_id: Option<Uuid>,
-    ) -> Result<Vec<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, SkillRunRow>(sql!(
-            "{SKILL_RUN_SELECT} WHERE s.tenant_id = $1 AND ($2::uuid IS NULL OR s.task_id = $2) \
-               AND ($3::uuid IS NULL OR s.run_id = $3) ORDER BY s.task_id, s.number"
-        ))
-        .bind(scope.tenant_id)
-        .bind(task_id)
-        .bind(run_id)
-        .fetch_all(tx.conn())
-        .await?;
+    pub async fn of_task(ctx: &Context<'_>, scope: Scope, task_id: Uuid) -> Result<Vec<Self>> {
+        let mut rows = tx(ctx, scope.tenant_id)
+            .query::<SkillRunItem>(&keys::task_pk(scope.tenant_id, task_id), "SR#")
+            .await?;
+        rows.sort_by_key(|row| row.number);
         Ok(rows
             .into_iter()
             .map(|row| SkillRun { scope, row })
@@ -864,7 +821,7 @@ impl SkillRun {
     }
 
     async fn status(&self) -> Result<SkillRunStatus> {
-        SkillRunStatus::from_db(&self.row.status)
+        SkillRunStatus::from_db(self.row.status.as_str())
     }
 
     async fn current_state(&self) -> Option<&str> {
@@ -872,8 +829,7 @@ impl SkillRun {
     }
 
     async fn handoffs(&self, ctx: &Context<'_>) -> Result<i32> {
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        count_handoffs(&mut tx, &self.row).await
+        count_handoffs(&mut tx(ctx, self.scope.tenant_id), &self.row).await
     }
 
     async fn input(&self) -> String {
@@ -901,64 +857,39 @@ impl SkillRun {
     }
 
     async fn state_entry_count(&self, ctx: &Context<'_>) -> Result<i32> {
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        let count = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM sanchoris.state_entries WHERE skill_run_id = $1",
-        )
-        .bind(self.row.id)
-        .fetch_one(tx.conn())
-        .await?;
-        Ok(i32::try_from(count)?)
+        let entries = state_entries(&mut tx(ctx, self.scope.tenant_id), &self.row).await?;
+        Ok(i32::try_from(entries.len())?)
     }
 
     async fn state_entries(&self, ctx: &Context<'_>, last: Option<i32>) -> Result<Vec<StateEntry>> {
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        let mut rows = sqlx::query_as::<_, StateEntryRow>(
-            "SELECT id, sequence, state_name, state_type, status, entered_at, exited_at, attempts, \
-                    input, output, error, cause, next_state \
-             FROM sanchoris.state_entries WHERE skill_run_id = $1 \
-             ORDER BY sequence DESC LIMIT $2",
-        )
-        .bind(self.row.id)
-        .bind(last.map_or(i64::MAX, i64::from))
-        .fetch_all(tx.conn())
-        .await?;
+        let mut listing = Listing::main(keys::task_pk(self.scope.tenant_id, self.row.task_id))
+            .prefix(&format!("{}#E#", keys::skill_run_prefix(self.row.number)))
+            .descending();
+        if let Some(last) = last {
+            listing = listing.limit(usize::try_from(last)?);
+        }
+        let mut rows = tx(ctx, self.scope.tenant_id)
+            .list::<StateEntryItem>(&listing, |_| true)
+            .await?;
         rows.reverse();
         Ok(rows.into_iter().map(StateEntry).collect())
     }
 
     async fn outputs(&self, ctx: &Context<'_>) -> Result<Vec<Output>> {
-        Output::query(ctx, self.scope, None, Some(self.row.id)).await
+        Output::of_skill_run(ctx, self.scope, self.row.task_id, self.row.number).await
     }
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct StateEntryRow {
-    id: Uuid,
-    sequence: i32,
-    state_name: String,
-    state_type: String,
-    status: String,
-    entered_at: DateTime<Utc>,
-    exited_at: Option<DateTime<Utc>>,
-    attempts: i32,
-    input: Value,
-    output: Option<Value>,
-    error: Option<String>,
-    cause: Option<String>,
-    next_state: Option<String>,
-}
-
-pub(crate) struct StateEntry(StateEntryRow);
+pub(crate) struct StateEntry(StateEntryItem);
 
 #[Object]
 impl StateEntry {
     async fn id(&self) -> ID {
-        ID(self.0.id.to_string())
+        ID(Uuid::new_v5(&self.0.skill_run_id, &self.0.sequence.to_be_bytes()).to_string())
     }
 
-    async fn sequence(&self) -> i32 {
-        self.0.sequence
+    async fn sequence(&self) -> Result<i32> {
+        Ok(i32::try_from(self.0.sequence)?)
     }
 
     async fn state_name(&self) -> &str {
@@ -981,8 +912,8 @@ impl StateEntry {
         ts_opt(self.0.exited_at)
     }
 
-    async fn attempts(&self) -> i32 {
-        self.0.attempts
+    async fn attempts(&self) -> Result<i32> {
+        Ok(i32::try_from(self.0.attempts)?)
     }
 
     async fn input(&self) -> Option<String> {

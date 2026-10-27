@@ -266,6 +266,8 @@ async fn activate(
                         .as_ref()
                         .map(serde_json::to_value)
                         .transpose()?,
+                    prebuild_status: None,
+                    prebuild_at: None,
                 },
             )
             .await?;

@@ -126,12 +126,12 @@ Every item in `main` has `kind` (the entity), `v` (a version incremented by ever
 | `USER#<user>` | `#` | `user` | `cognito_subject`, `email`, `display_name`, `github_user_id`, `github_login`, `is_operator` |
 | `USER#<user>` | `MEMBER#<t>` | `membership` | `member_id`; the user's tenants. Unique per (user, tenant) |
 | `UNIQ#<kind>#<value>` | `#` | `guard` | Global uniqueness and lookup: `cognito`, `email` (lowercase), `ghuser`, `ghlogin` (lowercase) → user; `slug`, `stripe` → tenant; `installation` → integration (+ `tenant_id`); `slack` → integration |
-| `INVITEMAIL#<lowercase email>` | `INVITE#<t>#<invitation>` | — | Invitations addressed to an email, for the invitee before they are a member |
+| `INVITEMAIL#<lowercase email>` | `INVITE#<t>#<invitation>` | `invitation_email` | `tenant_id`, `invitation_id`; invitations addressed to an email, for the invitee before they are a member |
 | `MSG#<uuid>` | `#` | `msg` | Relayed jobs (TTL 24 h) |
 | `T#<t>` | `#TENANT` | `tenant` | `slug`, `name`, `plan_id`, `period_start`, `status`, `suspended_reason`, `stripe_customer_id`, counters `tasks_this_period`, `workspace_seconds_this_period`, `running_tasks`; `gsi2` = (`TENANTS`, `<t>`). Changed only with update expressions |
 | `T#<t>` | `MEMBER#<member>` | `member` | `user_id`, `role`, `joined_at`, `last_active_at` |
-| `T#<t>` | `INVITE#<invitation>` / `INVITEPENDING#<email>` | `invitation` / `guard` | The guard keeps one pending invitation per email |
-| `T#<t>` | `CRED#<credential>` / `CREDNAME#<name>` | `credential` / `guard` | Encrypted value, KMS key id, status; the guard keeps names unique |
+| `T#<t>` | `INVITE#<invitation>` / `INVITEPENDING#<email>` | `invitation` / `guard` | `email`, `role`, `status`, `invited_by_member_id`, `expires_at`, `accepted_at`; the guard points at the pending invitation of an email and keeps one per email |
+| `T#<t>` | `CRED#<credential>` / `CREDNAME#<name>` | `credential` / `guard` | Encrypted value (base64), KMS key id, status; the guard keeps names unique and finds a credential by name |
 | `T#<t>` | `USAGESNAP#<credential>#<captured_at>` | `usage_snapshot` | TTL 30 days |
 | `T#<t>` | `INTEG#<integration>` | `integration` | GitHub installation or Slack team; `details` JSON |
 | `T#<t>` | `CONFIG#<config>` / `CONFIGREPO#<repository>#<root>` | `config` / `guard` | `active_revision_id`, `revisions` (counter), `synced_at`; `gsi2` = (`SWEEP#CONFIG`, `<synced_at or 0>#<t>#<config>`) |
@@ -141,12 +141,13 @@ Every item in `main` has `kind` (the entity), `v` (a version incremented by ever
 | `T#<t>#REF#<id>` | `#` | `ref` | Immutable pointer from an id to its item (`ref_kind`, `target_pk`, `target_sk`, `parent_id`) for trigger events, triggers, config revisions, runs, skill runs, resource invocations, and check waits |
 | `T#<t>#CONFIG#<config>` | `REV#<number>` / `REVSHA#<sha>` | `config_revision` / `guard` | `parsed` (offloaded when large), validation result. Unique per (config, sha) |
 | `T#<t>#CONFIG#<config>` | `PROJECT#<name>`, `PROJECT#<name>#REPO#<repo>`, `SESSION#<name>`, `SKILL#<name>`, `TRIGGER#<name>` | `project`, `repository`, `session`, `skill`, `trigger` | The active revision's definitions. Ids are `uuid v5(config, "<kind>:<name>")`, so a trigger keeps its id across revisions. Triggers carry `removed_at`, `next_run_at`, `schedule_message_id` |
-| `T#<t>#CONFIG#<config>` | `CR#<pr number>` | `change_request` | Unique per (config, PR) |
+| `T#<t>#CONFIG#<config>` | `PROJECT#<name>#REPO#<repo>` | `repository` | `prebuild_status`, `prebuild_at` of the warm build |
+| `T#<t>#CONFIG#<config>` | `CR#<pr number>` | `change_request` | `title`, `state`, `changed_files`, `changed_definitions`, validation, requesting member or task. Unique per (config, PR) |
 | `T#<t>#TRIGGER#<trigger>` | `EVT#<key>` | `trigger_event` | Unique per (trigger, idempotency key); `result`, `reason`, `task_id`; `gsi1` = (`T#<t>#TRIGGEREVENTS`, `<received_at>#<id>`) |
 | `T#<t>#TRIGGER#<trigger>` | `TASK#<name>` | `task_name` | Unique per (trigger, task name); `task_id`, `created_at`; `gsi1` = (`T#<t>#TASKNAME#<name>`, `<created_at>#<task>`) |
 | `T#<t>#TASK#<task>` | `#TASK` | `task` | Every `tasks` column, `definition` (offloaded when large), counters `runs`, `skill_runs`; `gsi1` = (`T#<t>#TASKS`, `<created_at>#<task>`); `gsi2` = (`SWEEP#ACTIVETASK`, `<t>#<task>`) while `RUNNING` or `WAITING` |
 | `T#<t>#TASK#<task>` | `DEP#<blocker>`, `CHILD#<created_at>#<child>` | `task_dependency`, `task_child` | `blocked_by` and children |
-| `T#<t>#TASK#<task>` | `RUN#<run>` | `run` | `number`, status, turns, cost, record key; `gsi1` = (`T#<t>#RUNS`, `<started_at>#<run>`) |
+| `T#<t>#TASK#<task>` | `RUN#<run>` | `run` | `number`, status, turns, cost, record key; `gsi1` = (`T#<t>#RUNS`, `<started_at>#<run>`); `gsi2` = (`T#<t>#OPENRUNS`, `<started_at>#<run>`) until the status is `completed` or `failed` |
 | `T#<t>#TASK#<task>` | `WS#<workspace>` | `workspace` | `run_id`, platform, `started_at`, `stopped_at`; `gsi1` = (`T#<t>#WORKSPACES`, `<started_at>#<id>`) |
 | `T#<t>#TASK#<task>` | `SR#<number>` | `skill_run` | `state` (the engine's `SkillRun`), status, output; `gsi1` = (`T#<t>#SKILLRUNS#<skill>`, `<started_at>#<id>`) |
 | `T#<t>#TASK#<task>` | `SR#<number>#E#<sequence>` | `state_entry` | Unique per (skill run, sequence) |
@@ -169,7 +170,7 @@ The Postgres tables map as follows: `plans` → `PLANS`; `users` → `USER#`; `t
 
 ### Transactions
 
-`TenantTx` is the unit of work. `get` and `query` read with strong consistency, remember each item's version, and return the transaction's own staged writes; `insert` writes with `attribute_not_exists(pk)`, `put` replaces with `v = <read version>`, `delete` checks the read version, and `update` applies an update expression (counters with `ADD`, conditions with `cap_after` and `require`). `commit` sends everything, including message items and audit inserts, in one `TransactWriteItems` (at most 100 items, otherwise `DbError::TooManyWrites`). A failed condition or a concurrent transaction returns `DbError::Conflict`; callers re-run the whole operation (`store::retry`, `Worker::handle`). Indexes (`gsi1`, `gsi2`) are eventually consistent and are only used for listings and sweeps, never for decisions inside a transaction.
+`TenantTx` is the unit of work. `get` and `query` read with strong consistency, remember each item's version, and return the transaction's own staged writes; `insert` writes with `attribute_not_exists(pk)`, `put` replaces with `v = <read version>`, `delete` checks the read version, and `update` applies an update expression (counters with `ADD`, conditions with `cap_after` and `require`). `commit` sends everything, including message items and audit inserts, in one `TransactWriteItems` (at most 100 items, otherwise `DbError::TooManyWrites`). A failed condition or a concurrent transaction returns `DbError::Conflict`; callers re-run the whole operation (`store::retry`, `Worker::handle`, the GraphQL mutations). `list` reads a `Listing` (a partition or index key, a sort key range such as a prefix or a lower bound, ascending or descending, an optional limit) and keeps the items of one entity that pass a filter in code, paging until the limit is reached; it does not track versions. `TenantTx::list` rejects partitions outside the tenant like `get`. Indexes (`gsi1`, `gsi2`) are eventually consistent and are only used for listings and sweeps, never for decisions inside a transaction.
 
 ### How the Postgres guarantees carry over
 
@@ -222,36 +223,41 @@ Reads marked "consistent" use the base table; "index" uses `gsi1`/`gsi2`; "app" 
 | Screen or endpoint | Keys |
 |---|---|
 | Sign-in (`provision`) | Get `UNIQ#cognito#<sub>` → Get `USER#<u>`; create with Insert `USER#`, `UNIQ#cognito`, `UNIQ#email` |
-| Memberships, tenant switcher | Query `USER#<u>` `MEMBER#` → Get each `T#<t>` `#TENANT` (app sort by name) |
-| `tenant(slug)` | Get `UNIQ#slug#<slug>` → Get `USER#<u>` `MEMBER#<t>` (or `is_operator`) |
+| Memberships, tenant switcher | Query `USER#<u>` `MEMBER#` → Get each `T#<t>` `MEMBER#<member>` (role) and `#TENANT` (app sort by name) |
+| Membership in one tenant (every tenant-scoped field and mutation) | Get `USER#<u>` `MEMBER#<t>` → Get `T#<t>` `MEMBER#<member>`; no membership is `NOT_FOUND` |
+| `tenant(slug)` | Get `UNIQ#slug#<slug>` → Get `USER#<u>` `MEMBER#<t>`; null for non-members, operators included |
 | Viewer invitations | Query `INVITEMAIL#<email>` → Get invitations (app filter pending, unexpired, not a member) |
-| Accept invitation | Update invitation (version), delete `INVITEPENDING#`, insert member + membership, audit |
+| Accept invitation | Query `INVITEMAIL#<email>` for the invitation's tenant; Put invitation (version), delete `INVITEPENDING#`, insert member + membership, audit |
 | Plans, billing | Query `PLANS` |
-| Home setup state | Query `T#<t>` `INTEG#`, `CONFIG#`, `CRED#`; per config Query `TRIGGER#`, `PROJECT#`; Query index `gsi1` `T#<t>#TASKS` limit 1 |
-| Home usage and activity | Tenant counters (`running_tasks`, `tasks_this_period`); Query `T#<t>` `MEMBER#`, `INVITE#`; Query index `gsi1` `T#<t>#RUNS`, `T#<t>#USAGE`, `T#<t>#OUTPUTS` between today's bounds (app sums and buckets) |
-| Task list, chats | Query index `gsi1` `T#<t>#TASKS` (app filter by status, trigger, skill, channel source; app sort `NEEDS_YOU` first, then `updated_at`) |
-| Task row and detail | Query the task partition with prefixes `#TASK`, `RUN#`, `DEP#`, `CHILD#`, `SR#` (app); trigger event and trigger by ref; parent and blockers by Get |
+| Home setup state | Get `USER#<u>`; Query `T#<t>` `INTEG#`, `CONFIG#`, `CRED#`; per config Query `TRIGGER#`, `PROJECT#`; Query index `gsi1` `T#<t>#TASKS` limit 1 |
+| Home usage and activity | Tenant counters (`running_tasks`, `tasks_this_period`); seats by Query `T#<t>` `MEMBER#`, `INVITE#` (app filter pending, unexpired); running runs by Query index `gsi2` `T#<t>#OPENRUNS`; Query index `gsi1` `T#<t>#RUNS`, `T#<t>#USAGE`, `T#<t>#OUTPUTS` from the earlier of midnight and 24 hours ago (app sums and buckets) |
+| Task list, chats, counts per trigger or member | Query index `gsi1` `T#<t>#TASKS` (app filter by status, trigger, skill, channel source, requester; app sort `NEEDS_YOU` first, then `updated_at`) |
+| Task row and detail | Get `T#<t>#TASK#<task>` `#TASK`; Query the task partition with prefixes `RUN#`, `DEP#`, `CHILD#`, `SR#` (app); trigger event, config revision, and the trigger's config (`parent_id`) by ref; parent, children, and blockers by Get |
 | Task by name | Query index `gsi1` `T#<t>#TASKNAME#<name>` (latest) |
 | Task by trigger event | The trigger event's `task_id` |
 | State entries, last N | Query `SR#<n>#E#` descending with a limit; count by Query `SR#<n>#E#` |
 | Run log | Query run partition `EVT#`, `OUT#`, `LOG#` (from `after`); Query task `WS#` |
-| Chat messages of a task | Query index `gsi1` `T#<t>#THREAD#<source>#<thread>` between the task's start and the next thread task (Query trigger `TASK#<thread>/`); task `CHAT#` |
-| Send chat message | `record_inbound_event`, then `dispatcher::dispatch_tenant`; result by Get `T#<t>#TRIGGER#<tr>` `EVT#<key>` per trigger |
+| Chat messages of a task | Get `T#<t>#INBOUND` `EVT#<source>#<trigger event key>` for the start; Query index `gsi1` `T#<t>#THREAD#<source>#<thread>` from the start, before the next thread task (Query trigger `TASK#<thread>/`); `chat_post` items of each run's `OUT#` |
+| Send chat message | `record_inbound_event`, then the `ChatDispatcher` port (`dispatcher::dispatch_tenant`); result by Get `T#<t>#TRIGGER#<tr>` `EVT#<key>` per trigger |
+| Resume, snooze, stop a task; stop a run | Get the task; `record_run_event` (human reply), `tasks::abort_task`, or `tasks::stop_run`; Put the task; audit |
 | Triggers | Per config Query `TRIGGER#` (app filter `removed_at`); counts by Query index `gsi1` `T#<t>#TASKS` (app); `next_run_at` on the trigger |
-| Trigger events | Query index `gsi1` `T#<t>#TRIGGEREVENTS` descending, limit 20 (app filter trigger) |
-| Enable or disable a trigger | Put the trigger and `dispatcher::schedule_trigger` |
+| Trigger events | Query index `gsi1` `T#<t>#TRIGGEREVENTS` descending, limit 20 (app filter evaluated, trigger) |
+| Enable or disable a trigger | Get ref → Put the trigger after `dispatcher::schedule_trigger` (cancels the previous schedule, arms the next one while enabled); audit |
+| Propose a trigger | Insert `T#<t>#CONFIG#<config>` `CR#<number>`; audit |
 | Skills and skill stats | Per config Query `SKILL#`; Query index `gsi1` `T#<t>#SKILLRUNS#<skill>` descending (since, limit); entries per skill run |
+| State activity of a skill | Query index `gsi1` `T#<t>#SKILLRUNS#<skill>` (app filter active or finished today); Get the task of each active run; Query `SR#<n>#E#` per run (app count succeeded today) |
 | Config, revisions | Query `T#<t>` `CONFIG#`; Query config `REV#` descending, limit 10; active revision by ref |
-| Projects, repositories, sessions, change requests | Query config `PROJECT#`, `PROJECT#<p>#REPO#`, `SESSION#`, `CR#` |
-| Add config | Insert config + `CONFIGREPO#` guard, emit `ConfigSync` (or run `config_sync::sync_config` inline) |
-| Credentials | Query `T#<t>` `CRED#`; by name Get `CREDNAME#<name>`; latest usage Query `USAGESNAP#<cred>#` descending limit 1 |
-| Members, invitations | Query `T#<t>` `MEMBER#` → Get users; Query `INVITE#`; invite with `INVITEPENDING#` guard and a condition check on the tenant |
-| Audit log, export | Query audit `T#<t>` descending from `since`, filter `actor_kind`, `actor_ref`, `action`, limit 100; export writes all pages to the `audit-exports` bucket |
-| Operator | Query index `gsi2` `TENANTS`; per tenant counters, Query index `gsi1` `T#<t>#WORKSPACES` for run hours |
-| Integrations, OAuth | Query `T#<t>` `INTEG#`; link GitHub with Insert `UNIQ#ghuser`, `UNIQ#ghlogin`; installation with `UNIQ#installation#<id>` (+ tenant check) |
+| Projects, repositories, sessions, change requests | Query config `PROJECT#`, `PROJECT#<p>#REPO#`, `SESSION#`, `CR#`; by name Get `PROJECT#<name>`, `SESSION#<name>`, `SKILL#<name>` |
+| Add config | Get `CONFIGREPO#` guard; Insert config + guard; audit; then the `ConfigSyncTrigger` port (`ConfigSync` or `config_sync::sync_config` inline) |
+| Credentials | Query `T#<t>` `CRED#`; by name Get `CREDNAME#<name>`; latest usage Query `USAGESNAP#<cred>#` descending limit 1; add with Insert `CRED#` + `CREDNAME#`; remove deletes both |
+| Members, invitations | Query `T#<t>` `MEMBER#` → Get users; Query `INVITE#`; invite with `INVITEPENDING#` guard, `INVITEMAIL#` item, and an update of the tenant item conditioned on its read version; role changes and removals take the same tenant condition, so seat and owner counts are checked one change at a time |
+| Audit log, export | Query audit `T#<t>` descending from `since`, filter `actor_kind`, `actor_ref`, `action`, limit 100; actor names by Get `MEMBER#` + `USER#`, `USER#`, or ref (trigger, run → task); export writes all pages to the `audit-exports` bucket |
+| Plan change, suspension | Update `#TENANT` (`plan_id`; `status` with the condition on the current status); audit |
+| Operator | Query index `gsi2` `TENANTS`; per tenant Get `#TENANT`, Query index `gsi2` `T#<t>#OPENRUNS`, Query index `gsi1` `T#<t>#WORKSPACES` for run hours |
+| Integrations, OAuth | Query `T#<t>` `INTEG#`; link GitHub with Insert `UNIQ#ghuser`, `UNIQ#ghlogin`; unlink with Put `USER#<u>` and Delete both guards, then an audit item per tenant of the user; installation with `UNIQ#installation#<id>` (+ tenant check) |
 | GitHub webhook | `channel::ingest_github_delivery`: Get `UNIQ#installation#<id>` → integration → `record_inbound_event` |
 | Stripe webhook | `billing::*`: Get `UNIQ#stripe#<customer>` → tenant; plans by Query `PLANS` |
-| Requests by bare id (reply, approval, `locate`) | Get `T#<t>#REF#<id>` or `T#<t>#TASK#<id>` for each of the user's tenants |
+| Requests by bare id (reply, approval, GraphQL ids) | For each of the user's tenants, Get `T#<t>#REF#<id>` (runs, triggers, trigger events, config revisions) or the item keyed by the id (`T#<t>#TASK#<id>` `#TASK`, `T#<t>` `MEMBER#<id>`, `INVITE#<id>`, `CRED#<id>`, `CONFIG#<id>`); an id of another tenant is never found |
 | Run channel connect | Authorizer: Run token → `(tenant, run)`; Get ref → run status. `$connect`: Put `#CHANNEL` with the connection id; `$disconnect`: clear it when it is still that connection |
 | Agent instance (`hello`) | Get or insert `INST#<instance>` with `seq_offset` from `#CHANNEL.instances`; Put `#CHANNEL` with the instance and `started`; emit `DeliverOutbox` |
 | Sequenced message | Get `#CHANNEL` (current connection) and `INST#<instance>`; Put `INST#` with `processed_seq = seq` (version) and `record_run_event` with `(run, offset + seq)` in one transaction |

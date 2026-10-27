@@ -1,10 +1,15 @@
 use async_graphql::{Context, ID, InputObject, Object, Result};
-use chrono::{DateTime, Utc};
+use sanchoris_core::db::{self, REF_RUN, REF_TRIGGER};
+use sanchoris_core::item::format_time;
+use sanchoris_core::items::{
+    AuditEvent as AuditItem, Member, Run, Task as TaskItem, Trigger, User,
+};
+use sanchoris_core::keys;
+use sanchoris_core::store::{Listing, SortKey};
 use serde_json::{Value, json};
-use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::context::{Scope, tenant_tx};
+use crate::context::{Scope, store, tx};
 use crate::enums::{ActorKind, AuditOrigin};
 use crate::error::parse_id;
 use crate::scalars::{Timestamp, ts};
@@ -18,24 +23,47 @@ pub(crate) struct AuditFilter {
     pub since: Option<Timestamp>,
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct AuditRow {
-    id: Uuid,
-    at: DateTime<Utc>,
-    actor_kind: String,
-    actor_ref: String,
-    actor_name: Option<String>,
-    action: String,
-    target_kind: String,
-    target_ref: String,
-    summary: String,
-    ip: Option<String>,
-    metadata: Value,
-}
-
 pub(crate) struct AuditEvent {
     scope: Scope,
-    row: AuditRow,
+    row: AuditItem,
+    actor_name: Option<String>,
+}
+
+async fn actor_name(ctx: &Context<'_>, scope: Scope, row: &AuditItem) -> Result<Option<String>> {
+    let Ok(id) = row.actor_ref.parse::<Uuid>() else {
+        return Ok(None);
+    };
+    let mut tx = tx(ctx, scope.tenant_id);
+    let user_name = |user: Option<User>| user.map(|user| user.display_name);
+    Ok(match row.actor_kind.as_str() {
+        "member" => match tx
+            .get::<Member>(&keys::member_key(scope.tenant_id, id))
+            .await?
+        {
+            Some(member) => user_name(
+                store(ctx)
+                    .get::<User>(&keys::user_key(member.user_id))
+                    .await?,
+            ),
+            None => None,
+        },
+        "operator" => user_name(store(ctx).get::<User>(&keys::user_key(id)).await?),
+        "trigger" => match db::locate(&mut tx, id, REF_TRIGGER).await? {
+            Some(location) => tx.get::<Trigger>(&location.target).await?.map(|t| t.name),
+            None => None,
+        },
+        "agent" => match db::locate(&mut tx, id, REF_RUN).await? {
+            Some(location) => match tx.get::<Run>(&location.target).await? {
+                Some(run) => tx
+                    .get::<TaskItem>(&keys::task_key(scope.tenant_id, run.task_id))
+                    .await?
+                    .map(|task| format!("run of {}", task.title)),
+                None => None,
+            },
+            None => None,
+        },
+        _ => None,
+    })
 }
 
 impl AuditEvent {
@@ -46,38 +74,36 @@ impl AuditEvent {
         limit: Option<i32>,
     ) -> Result<Vec<Self>> {
         let member_id = filter.member_id.as_ref().map(parse_id).transpose()?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, AuditRow>(
-            "SELECT a.id, a.at, a.actor_kind, a.actor_ref, \
-                    CASE a.actor_kind \
-                      WHEN 'member' THEN (SELECT u.display_name FROM sanchoris.members m JOIN sanchoris.users u ON u.id = m.user_id \
-                                          WHERE m.id::text = a.actor_ref) \
-                      WHEN 'operator' THEN (SELECT u.display_name FROM sanchoris.users u WHERE u.id::text = a.actor_ref) \
-                      WHEN 'trigger' THEN (SELECT t.name FROM sanchoris.triggers t WHERE t.id::text = a.actor_ref) \
-                      WHEN 'agent' THEN (SELECT 'run of ' || t.title FROM sanchoris.runs r JOIN sanchoris.tasks t ON t.id = r.task_id \
-                                         WHERE r.id::text = a.actor_ref) \
-                    END AS actor_name, \
-                    a.action, a.target_kind, a.target_ref, a.summary, host(a.source_ip) AS ip, a.metadata \
-             FROM sanchoris.audit_events a \
-             WHERE a.tenant_id = $1 \
-               AND ($2::text IS NULL OR a.actor_kind = $2) \
-               AND ($3::text IS NULL OR (a.actor_kind = 'member' AND a.actor_ref = $3)) \
-               AND ($4::text IS NULL OR a.action = $4) \
-               AND ($5::timestamptz IS NULL OR a.at >= $5) \
-             ORDER BY a.at DESC, a.id DESC LIMIT $6",
-        )
-        .bind(scope.tenant_id)
-        .bind(filter.actor_kind.map(ActorKind::as_db))
-        .bind(member_id.map(|id| id.to_string()))
-        .bind(filter.action)
-        .bind(filter.since.map(|since| since.0))
-        .bind(limit.map_or(i64::MAX, i64::from))
-        .fetch_all(tx.conn())
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| AuditEvent { scope, row })
-            .collect())
+        let mut listing = Listing::audit(keys::tenant_pk(scope.tenant_id)).descending();
+        if let Some(since) = filter.since {
+            listing = listing.sort(SortKey::AtLeast(format_time(since.0)));
+        }
+        if let Some(limit) = limit {
+            listing = listing.limit(usize::try_from(limit)?);
+        }
+        let actor_kind = filter.actor_kind.map(ActorKind::as_db);
+        let rows = tx(ctx, scope.tenant_id)
+            .list::<AuditItem>(&listing, |event| {
+                actor_kind.is_none_or(|kind| event.actor_kind == kind)
+                    && member_id.is_none_or(|id| {
+                        event.actor_kind == "member" && event.actor_ref == id.to_string()
+                    })
+                    && filter
+                        .action
+                        .as_deref()
+                        .is_none_or(|action| event.action == action)
+            })
+            .await?;
+        let mut events = Vec::new();
+        for row in rows {
+            let actor_name = actor_name(ctx, scope, &row).await?;
+            events.push(AuditEvent {
+                scope,
+                row,
+                actor_name,
+            });
+        }
+        Ok(events)
     }
 
     pub fn json_line(&self) -> Value {
@@ -91,14 +117,13 @@ impl AuditEvent {
             "targetKind": self.row.target_kind,
             "targetRef": self.row.target_ref,
             "summary": self.row.summary,
-            "ip": self.row.ip,
+            "ip": self.row.source_ip,
             "metadata": self.row.metadata,
         })
     }
 
     fn actor_name(&self) -> String {
-        self.row
-            .actor_name
+        self.actor_name
             .clone()
             .unwrap_or_else(|| self.row.actor_ref.clone())
     }
@@ -155,6 +180,6 @@ impl AuditEvent {
     }
 
     async fn ip(&self) -> Option<&str> {
-        self.row.ip.as_deref()
+        self.row.source_ip.as_deref()
     }
 }

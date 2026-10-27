@@ -1,9 +1,3 @@
-macro_rules! sql {
-    ($($arg:tt)*) => {
-        sqlx::AssertSqlSafe(format!($($arg)*))
-    };
-}
-
 mod account;
 mod audit;
 mod config;
@@ -21,7 +15,7 @@ mod tenant;
 mod trigger;
 
 use async_graphql::{EmptySubscription, Schema};
-use sqlx::PgPool;
+use sanchoris_core::db::Store;
 
 pub use context::{AuthUser, ClientIp};
 pub use crypto::{AesGcmEncryptor, CREDENTIAL_KEY_ENV, LOCAL_KEY_ID};
@@ -35,9 +29,9 @@ pub use query::QueryRoot;
 
 pub type SanchorisSchema = Schema<QueryRoot, MutationRoot, EmptySubscription>;
 
-pub fn build_schema(pool: PgPool, deps: GraphqlDeps) -> SanchorisSchema {
+pub fn build_schema(store: Store, deps: GraphqlDeps) -> SanchorisSchema {
     Schema::build(QueryRoot, MutationRoot, EmptySubscription)
-        .data(context::State { pool, deps })
+        .data(context::State { store, deps })
         .finish()
 }
 

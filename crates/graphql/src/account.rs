@@ -1,10 +1,16 @@
 use async_graphql::{Context, ID, Object, Result};
 use chrono::{DateTime, Utc};
-use sqlx::FromRow;
+use sanchoris_core::db;
+use sanchoris_core::items::{
+    self, Guard, InvitationEmail, Membership as MembershipItem, Task as TaskItem,
+    Tenant as TenantItem, UsageSnapshot as SnapshotItem, User as UserItem,
+};
+use sanchoris_core::keys;
+use sanchoris_core::store::{Index, Listing};
 use uuid::Uuid;
 
 use crate::context::{
-    Access, Role, Scope, auth, is_operator, memberships, now, tenant_tx, user_tx,
+    Access, Role, Scope, auth, is_operator, memberships, now, store, tx, viewer_user,
 };
 use crate::enums::{
     BillingUnit, CredentialKind, CredentialScope, CredentialStatus, InvitationState, LimitPeriod,
@@ -14,27 +20,15 @@ use crate::error::not_found;
 use crate::scalars::{Timestamp, ts, ts_opt};
 use crate::tenant::Tenant;
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct UserRow {
-    pub id: Uuid,
-    pub email: String,
-    pub display_name: String,
-    pub github_login: Option<String>,
-}
-
-pub(crate) struct User(pub UserRow);
+pub(crate) struct User(pub UserItem);
 
 impl User {
-    pub async fn load(ctx: &Context<'_>, tenant_id: Uuid, user_id: Uuid) -> Result<Self> {
-        let mut tx = tenant_tx(ctx, tenant_id).await?;
-        let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, display_name, github_login FROM sanchoris.users WHERE id = $1",
-        )
-        .bind(user_id)
-        .fetch_optional(tx.conn())
-        .await?
-        .ok_or_else(|| not_found(format!("user {user_id}")))?;
-        Ok(Self(row))
+    pub async fn load(ctx: &Context<'_>, user_id: Uuid) -> Result<Self> {
+        store(ctx)
+            .get::<UserItem>(&keys::user_key(user_id))
+            .await?
+            .map(User)
+            .ok_or_else(|| not_found(format!("user {user_id}")))
     }
 }
 
@@ -62,16 +56,7 @@ pub(crate) struct Viewer;
 #[Object]
 impl Viewer {
     async fn user(&self, ctx: &Context<'_>) -> Result<User> {
-        let mut tx = user_tx(ctx).await?;
-        let user_id = tx.user_id();
-        let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, display_name, github_login FROM sanchoris.users WHERE id = $1",
-        )
-        .bind(user_id)
-        .fetch_optional(tx.conn())
-        .await?
-        .ok_or_else(|| not_found(format!("user {user_id}")))?;
-        Ok(User(row))
+        Ok(User(viewer_user(ctx).await?))
     }
 
     async fn memberships(&self, ctx: &Context<'_>) -> Result<Vec<Member>> {
@@ -83,27 +68,41 @@ impl Viewer {
     }
 
     async fn invitations(&self, ctx: &Context<'_>) -> Result<Vec<Invitation>> {
-        let mut tx = user_tx(ctx).await?;
-        let rows = sqlx::query_as::<_, InvitationRow>(sql!(
-            "SELECT {INVITATION_COLUMNS} FROM sanchoris.invitations i \
-             WHERE i.status = 'pending' AND i.expires_at > $1 \
-               AND NOT EXISTS (SELECT 1 FROM sanchoris.members m WHERE m.tenant_id = i.tenant_id AND m.user_id = $2) \
-             ORDER BY i.created_at DESC, i.id"
-        ))
-        .bind(now(ctx))
-        .bind(auth(ctx)?.user_id)
-        .fetch_all(tx.conn())
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| Invitation {
+        let user = auth(ctx)?;
+        let at = now(ctx);
+        let addressed = store(ctx)
+            .query::<InvitationEmail>(&keys::invitation_email_pk(&user.email), "INVITE#")
+            .await?;
+        let mut invitations = Vec::new();
+        for entry in addressed {
+            let Some(invitation) = tx(ctx, entry.tenant_id)
+                .get::<items::Invitation>(&keys::invitation_key(
+                    entry.tenant_id,
+                    entry.invitation_id,
+                ))
+                .await?
+            else {
+                continue;
+            };
+            if !invitation.is_pending_at(at) {
+                continue;
+            }
+            let member = store(ctx)
+                .get::<MembershipItem>(&keys::membership_key(user.user_id, entry.tenant_id))
+                .await?;
+            if member.is_some() {
+                continue;
+            }
+            invitations.push(Invitation {
                 scope: Scope {
-                    tenant_id: row.tenant_id,
+                    tenant_id: entry.tenant_id,
                     access: Access::Invitee,
                 },
-                row,
-            })
-            .collect())
+                row: invitation,
+            });
+        }
+        invitations.sort_by(|a, b| (b.row.created_at, a.row.id).cmp(&(a.row.created_at, b.row.id)));
+        Ok(invitations)
     }
 
     async fn is_operator(&self, ctx: &Context<'_>) -> Result<bool> {
@@ -111,47 +110,21 @@ impl Viewer {
     }
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct PlanRow {
-    pub id: String,
-    pub name: String,
-    pub price_cents: i32,
-    pub billing_unit: String,
-    pub task_limit: i32,
-    pub task_limit_period: String,
-    pub workspace_seconds_limit: i64,
-    pub member_limit: i32,
-    pub max_concurrency: i32,
-    pub retention_days: i32,
-    pub audit_retention_days: i32,
-}
-
-pub(crate) const PLAN_COLUMNS: &str = "id, name, price_cents, billing_unit, task_limit, task_limit_period, \
-     workspace_seconds_limit, member_limit, max_concurrency, retention_days, audit_retention_days";
-
-pub(crate) struct Plan(pub PlanRow);
+pub(crate) struct Plan(pub items::Plan);
 
 impl Plan {
     pub async fn all(ctx: &Context<'_>) -> Result<Vec<Self>> {
-        let mut tx = user_tx(ctx).await?;
-        let rows = sqlx::query_as::<_, PlanRow>(sql!(
-            "SELECT {PLAN_COLUMNS} FROM sanchoris.plans ORDER BY price_cents, id"
-        ))
-        .fetch_all(tx.conn())
-        .await?;
-        Ok(rows.into_iter().map(Plan).collect())
+        let mut plans = db::plans(store(ctx)).await?;
+        plans.sort_by(|a, b| (a.price_cents, &a.id).cmp(&(b.price_cents, &b.id)));
+        Ok(plans.into_iter().map(Plan).collect())
     }
 
     pub async fn load(ctx: &Context<'_>, plan_id: &str) -> Result<Self> {
-        let mut tx = user_tx(ctx).await?;
-        let row = sqlx::query_as::<_, PlanRow>(sql!(
-            "SELECT {PLAN_COLUMNS} FROM sanchoris.plans WHERE id = $1"
-        ))
-        .bind(plan_id)
-        .fetch_optional(tx.conn())
-        .await?
-        .ok_or_else(|| not_found(format!("plan {plan_id}")))?;
-        Ok(Plan(row))
+        store(ctx)
+            .get::<items::Plan>(&keys::plan_key(plan_id))
+            .await?
+            .map(Plan)
+            .ok_or_else(|| not_found(format!("plan {plan_id}")))
     }
 
     pub fn period(&self) -> Result<LimitPeriod> {
@@ -169,40 +142,40 @@ impl Plan {
         &self.0.name
     }
 
-    async fn price_usd(&self) -> i32 {
-        self.0.price_cents / 100
+    async fn price_usd(&self) -> Result<i32> {
+        Ok(i32::try_from(self.0.price_cents / 100)?)
     }
 
     async fn billing_unit(&self) -> Result<BillingUnit> {
         BillingUnit::from_db(&self.0.billing_unit)
     }
 
-    async fn task_limit(&self) -> i32 {
-        self.0.task_limit
+    async fn task_limit(&self) -> Result<i32> {
+        Ok(i32::try_from(self.0.task_limit)?)
     }
 
-    async fn workspace_hour_limit(&self) -> i32 {
-        i32::try_from(self.0.workspace_seconds_limit / 3600).expect("hours fit in i32")
+    async fn workspace_hour_limit(&self) -> Result<i32> {
+        Ok(i32::try_from(self.0.workspace_seconds_limit / 3600)?)
     }
 
     async fn limit_period(&self) -> Result<LimitPeriod> {
         self.period()
     }
 
-    async fn member_limit(&self) -> i32 {
-        self.0.member_limit
+    async fn member_limit(&self) -> Result<i32> {
+        Ok(i32::try_from(self.0.member_limit)?)
     }
 
-    async fn concurrency_limit(&self) -> i32 {
-        self.0.max_concurrency
+    async fn concurrency_limit(&self) -> Result<i32> {
+        Ok(i32::try_from(self.0.max_concurrency)?)
     }
 
-    async fn retention_days(&self) -> i32 {
-        self.0.retention_days
+    async fn retention_days(&self) -> Result<i32> {
+        Ok(i32::try_from(self.0.retention_days)?)
     }
 
-    async fn audit_retention_days(&self) -> i32 {
-        self.0.audit_retention_days
+    async fn audit_retention_days(&self) -> Result<i32> {
+        Ok(i32::try_from(self.0.audit_retention_days)?)
     }
 
     async fn requires_payment(&self) -> bool {
@@ -210,20 +183,9 @@ impl Plan {
     }
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct MemberRow {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub role: String,
-    pub joined_at: DateTime<Utc>,
-    pub last_active_at: Option<DateTime<Utc>>,
-}
-
-pub(crate) const MEMBER_COLUMNS: &str = "id, user_id, role, joined_at, last_active_at";
-
 pub(crate) struct Member {
     pub scope: Scope,
-    pub row: MemberRow,
+    pub row: items::Member,
 }
 
 impl Member {
@@ -234,29 +196,26 @@ impl Member {
     }
 
     pub async fn find(ctx: &Context<'_>, scope: Scope, member_id: Uuid) -> Result<Option<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let row = sqlx::query_as::<_, MemberRow>(sql!(
-            "SELECT {MEMBER_COLUMNS} FROM sanchoris.members WHERE id = $1 AND tenant_id = $2"
-        ))
-        .bind(member_id)
-        .bind(scope.tenant_id)
-        .fetch_optional(tx.conn())
-        .await?;
-        Ok(row.map(|row| Member { scope, row }))
+        Ok(tx(ctx, scope.tenant_id)
+            .get::<items::Member>(&keys::member_key(scope.tenant_id, member_id))
+            .await?
+            .map(|row| Member { scope, row }))
     }
 
     pub async fn all(ctx: &Context<'_>, scope: Scope) -> Result<Vec<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, MemberRow>(
-            "SELECT m.id, m.user_id, m.role, m.joined_at, m.last_active_at FROM sanchoris.members m \
-             JOIN sanchoris.users u ON u.id = m.user_id \
-             WHERE m.tenant_id = $1 \
-             ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, u.display_name, m.id",
-        )
-        .bind(scope.tenant_id)
-        .fetch_all(tx.conn())
-        .await?;
-        Ok(rows.into_iter().map(|row| Member { scope, row }).collect())
+        let rows = tx(ctx, scope.tenant_id)
+            .query::<items::Member>(&keys::tenant_pk(scope.tenant_id), "MEMBER#")
+            .await?;
+        let mut members = Vec::new();
+        for row in rows {
+            let user = User::load(ctx, row.user_id).await?;
+            members.push((Role::from_db(&row.role), user.0.display_name, row));
+        }
+        members.sort_by(|a, b| (b.0.rank(), &a.1, a.2.id).cmp(&(a.0.rank(), &b.1, b.2.id)));
+        Ok(members
+            .into_iter()
+            .map(|(_, _, row)| Member { scope, row })
+            .collect())
     }
 }
 
@@ -267,7 +226,7 @@ impl Member {
     }
 
     async fn user(&self, ctx: &Context<'_>) -> Result<User> {
-        User::load(ctx, self.scope.tenant_id, self.row.user_id).await
+        User::load(ctx, self.row.user_id).await
     }
 
     async fn tenant(&self, ctx: &Context<'_>) -> Result<Tenant> {
@@ -288,59 +247,49 @@ impl Member {
 
     async fn tasks_started(&self, ctx: &Context<'_>) -> Result<i32> {
         self.scope.member()?;
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        let count = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM sanchoris.tasks WHERE tenant_id = $1 AND requested_by_member_id = $2",
-        )
-        .bind(self.scope.tenant_id)
-        .bind(self.row.id)
-        .fetch_one(tx.conn())
-        .await?;
-        Ok(i32::try_from(count)?)
+        let member_id = self.row.id;
+        let tasks = tx(ctx, self.scope.tenant_id)
+            .list::<TaskItem>(
+                &Listing::index(Index::Gsi1, keys::tasks_index(self.scope.tenant_id)),
+                |task| task.requested_by_member_id == Some(member_id),
+            )
+            .await?;
+        Ok(i32::try_from(tasks.len())?)
     }
 
     async fn credentials(&self, ctx: &Context<'_>) -> Result<Vec<Credential>> {
         self.scope.member()?;
-        Credential::query(
-            ctx,
-            self.scope,
-            "c.scope = 'personal' AND c.member_id = $2",
-            Some(self.row.id),
-        )
+        let member_id = self.row.id;
+        Credential::filtered(ctx, self.scope, |c| {
+            c.scope == "personal" && c.member_id == Some(member_id)
+        })
         .await
     }
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct InvitationRow {
-    pub id: Uuid,
-    pub tenant_id: Uuid,
-    pub email: String,
-    pub role: String,
-    pub status: String,
-    pub invited_by_member_id: Uuid,
-    pub expires_at: DateTime<Utc>,
-}
-
-pub(crate) const INVITATION_COLUMNS: &str =
-    "i.id, i.tenant_id, i.email, i.role, i.status, i.invited_by_member_id, i.expires_at";
-
 pub(crate) struct Invitation {
     pub scope: Scope,
-    pub row: InvitationRow,
+    pub row: items::Invitation,
 }
 
 impl Invitation {
     pub async fn load(ctx: &Context<'_>, scope: Scope, invitation_id: Uuid) -> Result<Self> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let row = sqlx::query_as::<_, InvitationRow>(sql!(
-            "SELECT {INVITATION_COLUMNS} FROM sanchoris.invitations i WHERE i.id = $1"
-        ))
-        .bind(invitation_id)
-        .fetch_optional(tx.conn())
-        .await?
-        .ok_or_else(|| not_found(format!("invitation {invitation_id}")))?;
-        Ok(Self { scope, row })
+        tx(ctx, scope.tenant_id)
+            .get::<items::Invitation>(&keys::invitation_key(scope.tenant_id, invitation_id))
+            .await?
+            .map(|row| Invitation { scope, row })
+            .ok_or_else(|| not_found(format!("invitation {invitation_id}")))
+    }
+
+    pub async fn all(ctx: &Context<'_>, scope: Scope) -> Result<Vec<Self>> {
+        let mut rows = tx(ctx, scope.tenant_id)
+            .query::<items::Invitation>(&keys::tenant_pk(scope.tenant_id), "INVITE#")
+            .await?;
+        rows.sort_by(|a, b| (b.created_at, a.id).cmp(&(a.created_at, b.id)));
+        Ok(rows
+            .into_iter()
+            .map(|row| Invitation { scope, row })
+            .collect())
     }
 
     pub fn state_at(&self, at: DateTime<Utc>) -> Result<InvitationState> {
@@ -379,54 +328,32 @@ impl Invitation {
     }
 
     async fn tenant_name(&self, ctx: &Context<'_>) -> Result<String> {
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        Ok(
-            sqlx::query_scalar::<_, String>("SELECT name FROM sanchoris.tenants WHERE id = $1")
-                .bind(self.scope.tenant_id)
-                .fetch_one(tx.conn())
-                .await?,
-        )
+        Ok(tx(ctx, self.scope.tenant_id)
+            .get::<TenantItem>(&keys::tenant_key(self.scope.tenant_id))
+            .await?
+            .ok_or_else(|| not_found(format!("tenant {}", self.scope.tenant_id)))?
+            .name)
     }
-}
-
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct CredentialRow {
-    pub id: Uuid,
-    pub scope: String,
-    pub member_id: Option<Uuid>,
-    pub name: String,
-    pub provider: String,
-    pub kind: String,
-    pub account: String,
-    pub status: String,
-    pub subscription_plan: Option<String>,
-    pub rejected_at: Option<DateTime<Utc>>,
-    pub last_used_at: Option<DateTime<Utc>>,
 }
 
 pub(crate) struct Credential {
     pub scope: Scope,
-    pub row: CredentialRow,
+    pub row: items::Credential,
 }
 
 impl Credential {
-    pub async fn query(
+    pub async fn filtered(
         ctx: &Context<'_>,
         scope: Scope,
-        condition: &str,
-        member_id: Option<Uuid>,
+        keep: impl Fn(&items::Credential) -> bool,
     ) -> Result<Vec<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, CredentialRow>(sql!(
-            "SELECT c.id, c.scope, c.member_id, c.name, c.provider, c.kind, c.account, c.status, \
-                    c.subscription_plan, c.rejected_at, c.last_used_at \
-             FROM sanchoris.credentials c \
-             WHERE c.tenant_id = $1 AND {condition} ORDER BY c.scope, c.name"
-        ))
-        .bind(scope.tenant_id)
-        .bind(member_id)
-        .fetch_all(tx.conn())
-        .await?;
+        let mut rows = tx(ctx, scope.tenant_id)
+            .query::<items::Credential>(&keys::tenant_pk(scope.tenant_id), "CRED#")
+            .await?
+            .into_iter()
+            .filter(|row| keep(row))
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| (&a.scope, &a.name).cmp(&(&b.scope, &b.name)));
         Ok(rows
             .into_iter()
             .map(|row| Credential { scope, row })
@@ -435,47 +362,29 @@ impl Credential {
 
     pub async fn visible(ctx: &Context<'_>, scope: Scope) -> Result<Vec<Self>> {
         let (member_id, _) = scope.member()?;
-        Self::query(
-            ctx,
-            scope,
-            "(c.scope = 'org' OR c.member_id = $2)",
-            Some(member_id),
-        )
+        Self::filtered(ctx, scope, |c| {
+            c.scope == "org" || c.member_id == Some(member_id)
+        })
         .await
     }
 
     pub async fn by_id(ctx: &Context<'_>, scope: Scope, id: Uuid) -> Result<Self> {
-        Self::query(ctx, scope, "c.id = $2", Some(id))
+        tx(ctx, scope.tenant_id)
+            .get::<items::Credential>(&keys::credential_key(scope.tenant_id, id))
             .await?
-            .into_iter()
-            .next()
+            .map(|row| Credential { scope, row })
             .ok_or_else(|| not_found(format!("credential {id}")))
     }
 
     pub async fn by_name(ctx: &Context<'_>, scope: Scope, name: &str) -> Result<Option<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM sanchoris.credentials WHERE tenant_id = $1 AND name = $2",
-        )
-        .bind(scope.tenant_id)
-        .bind(name)
-        .fetch_optional(tx.conn())
-        .await?;
-        drop(tx);
-        match id {
-            Some(id) => Ok(Some(Self::by_id(ctx, scope, id).await?)),
+        let guard = tx(ctx, scope.tenant_id)
+            .get::<Guard>(&keys::credential_name_key(scope.tenant_id, name))
+            .await?;
+        match guard {
+            Some(guard) => Ok(Some(Self::by_id(ctx, scope, guard.target).await?)),
             None => Ok(None),
         }
     }
-}
-
-#[derive(Debug, Clone, FromRow)]
-struct SnapshotRow {
-    captured_at: DateTime<Utc>,
-    five_hour_utilization: f64,
-    five_hour_resets_at: DateTime<Utc>,
-    seven_day_utilization: f64,
-    seven_day_resets_at: DateTime<Utc>,
 }
 
 pub(crate) struct UsageWindow {
@@ -494,7 +403,7 @@ impl UsageWindow {
     }
 }
 
-pub(crate) struct UsageSnapshot(SnapshotRow);
+pub(crate) struct UsageSnapshot(SnapshotItem);
 
 #[Object]
 impl UsageSnapshot {
@@ -570,16 +479,16 @@ impl Credential {
         if self.row.kind != "subscription" || self.row.status != "connected" {
             return Ok(None);
         }
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        let row = sqlx::query_as::<_, SnapshotRow>(
-            "SELECT captured_at, five_hour_utilization::float8 AS five_hour_utilization, five_hour_resets_at, \
-                    seven_day_utilization::float8 AS seven_day_utilization, seven_day_resets_at \
-             FROM sanchoris.usage_snapshots WHERE credential_id = $1 ORDER BY captured_at DESC LIMIT 1",
-        )
-        .bind(self.row.id)
-        .fetch_optional(tx.conn())
-        .await?;
-        Ok(row.map(UsageSnapshot))
+        let latest = tx(ctx, self.scope.tenant_id)
+            .list::<SnapshotItem>(
+                &Listing::main(keys::tenant_pk(self.scope.tenant_id))
+                    .prefix(&keys::usage_snapshot_prefix(self.row.id))
+                    .descending()
+                    .limit(1),
+                |_| true,
+            )
+            .await?;
+        Ok(latest.into_iter().next().map(UsageSnapshot))
     }
 }
 

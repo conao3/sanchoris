@@ -1,8 +1,10 @@
 use async_graphql::{Context, Object, Result};
-use uuid::Uuid;
+use sanchoris_core::items::{Guard, Tenant as TenantItem, uniq};
+use sanchoris_core::keys;
+use sanchoris_core::store::{Index, SortKey};
 
 use crate::account::{Plan, Viewer};
-use crate::context::{is_operator, memberships, user_tx};
+use crate::context::{is_operator, membership_in, store};
 use crate::tenant::{Operator, Tenant};
 use crate::trigger::{TriggerTemplate, templates};
 
@@ -21,24 +23,16 @@ impl QueryRoot {
     }
 
     async fn tenant(&self, ctx: &Context<'_>, slug: String) -> Result<Option<Tenant>> {
-        let mut tx = user_tx(ctx).await?;
-        let tenant_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT t.id FROM sanchoris.tenants t JOIN sanchoris.members m ON m.tenant_id = t.id \
-             WHERE t.slug = $1 AND m.user_id = $2",
-        )
-        .bind(&slug)
-        .bind(tx.user_id())
-        .fetch_optional(tx.conn())
-        .await?;
-        drop(tx);
-        let Some(tenant_id) = tenant_id else {
+        crate::context::auth(ctx)?;
+        let Some(guard) = store(ctx)
+            .get::<Guard>(&keys::uniq_key(uniq::SLUG, &slug))
+            .await?
+        else {
             return Ok(None);
         };
-        let membership = memberships(ctx)
-            .await?
-            .into_iter()
-            .find(|m| m.tenant_id == tenant_id)
-            .expect("the tenant was found through the membership");
+        let Some(membership) = membership_in(ctx, guard.target).await? else {
+            return Ok(None);
+        };
         Ok(Some(Tenant::load(ctx, membership.scope()).await?))
     }
 
@@ -46,12 +40,13 @@ impl QueryRoot {
         if !is_operator(ctx).await? {
             return Ok(None);
         }
-        let mut tx = user_tx(ctx).await?;
-        let tenant_ids =
-            sqlx::query_scalar::<_, Uuid>("SELECT id FROM sanchoris.tenants ORDER BY name, id")
-                .fetch_all(tx.conn())
-                .await?;
-        Ok(Some(Operator { tenant_ids }))
+        let mut tenants = store(ctx)
+            .query_index::<TenantItem>(Index::Gsi2, keys::TENANTS_INDEX, SortKey::All)
+            .await?;
+        tenants.sort_by(|a, b| (&a.name, a.id).cmp(&(&b.name, b.id)));
+        Ok(Some(Operator {
+            tenant_ids: tenants.into_iter().map(|tenant| tenant.id).collect(),
+        }))
     }
 
     async fn trigger_templates(&self, ctx: &Context<'_>) -> Result<Vec<&'static TriggerTemplate>> {

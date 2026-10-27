@@ -372,6 +372,88 @@ impl Entity for Membership {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Invitation {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub email: String,
+    pub role: String,
+    pub status: String,
+    pub invited_by_member_id: Uuid,
+    pub expires_at: DateTime<Utc>,
+    pub accepted_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl Invitation {
+    pub fn is_pending_at(&self, at: DateTime<Utc>) -> bool {
+        self.status == "pending" && self.expires_at > at
+    }
+}
+
+impl Entity for Invitation {
+    const KIND: &'static str = "invitation";
+
+    fn key(&self) -> Key {
+        keys::invitation_key(self.tenant_id, self.id)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("id", self.id)
+            .uuid("tenant_id", self.tenant_id)
+            .s("email", &self.email)
+            .s("role", &self.role)
+            .s("status", &self.status)
+            .uuid("invited_by_member_id", self.invited_by_member_id)
+            .time("expires_at", self.expires_at)
+            .opt_time("accepted_at", self.accepted_at)
+            .time("created_at", self.created_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            id: r.uuid("id")?,
+            tenant_id: r.uuid("tenant_id")?,
+            email: r.s("email")?,
+            role: r.s("role")?,
+            status: r.s("status")?,
+            invited_by_member_id: r.uuid("invited_by_member_id")?,
+            expires_at: r.time("expires_at")?,
+            accepted_at: r.opt_time("accepted_at")?,
+            created_at: r.time("created_at")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InvitationEmail {
+    pub email: String,
+    pub tenant_id: Uuid,
+    pub invitation_id: Uuid,
+}
+
+impl Entity for InvitationEmail {
+    const KIND: &'static str = "invitation_email";
+
+    fn key(&self) -> Key {
+        keys::invitation_email_key(&self.email, self.tenant_id, self.invitation_id)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.s("email", self.email.to_lowercase())
+            .uuid("tenant_id", self.tenant_id)
+            .uuid("invitation_id", self.invitation_id);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            email: r.s("email")?,
+            tenant_id: r.uuid("tenant_id")?,
+            invitation_id: r.uuid("invitation_id")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Credential {
     pub id: Uuid,
     pub tenant_id: Uuid,
@@ -682,6 +764,8 @@ pub struct Repository {
     pub url: String,
     pub warm_hook: Option<Value>,
     pub start_hook: Option<Value>,
+    pub prebuild_status: Option<String>,
+    pub prebuild_at: Option<DateTime<Utc>>,
 }
 
 impl Entity for Repository {
@@ -699,7 +783,9 @@ impl Entity for Repository {
             .s("name", &self.name)
             .s("url", &self.url)
             .opt_json("warm_hook", self.warm_hook.as_ref())
-            .opt_json("start_hook", self.start_hook.as_ref());
+            .opt_json("start_hook", self.start_hook.as_ref())
+            .opt_s("prebuild_status", self.prebuild_status.as_ref())
+            .opt_time("prebuild_at", self.prebuild_at);
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -712,6 +798,8 @@ impl Entity for Repository {
             url: r.s("url")?,
             warm_hook: r.opt_json("warm_hook")?,
             start_hook: r.opt_json("start_hook")?,
+            prebuild_status: r.opt_s("prebuild_status")?,
+            prebuild_at: r.opt_time("prebuild_at")?,
         })
     }
 }
@@ -868,6 +956,68 @@ impl Entity for Trigger {
             removed_at: r.opt_time("removed_at")?,
             next_run_at: r.opt_time("next_run_at")?,
             schedule_message_id: r.opt_uuid("schedule_message_id")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChangeRequest {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub config_id: Uuid,
+    pub pr_number: i64,
+    pub title: String,
+    pub state: String,
+    pub changed_files: Value,
+    pub changed_definitions: Value,
+    pub validation_status: Option<String>,
+    pub validation_messages: Value,
+    pub requested_by_member_id: Option<Uuid>,
+    pub requested_by_task_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl Entity for ChangeRequest {
+    const KIND: &'static str = "change_request";
+
+    fn key(&self) -> Key {
+        keys::change_request_key(self.tenant_id, self.config_id, self.pr_number)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("id", self.id)
+            .uuid("tenant_id", self.tenant_id)
+            .uuid("config_id", self.config_id)
+            .n("pr_number", self.pr_number)
+            .s("title", &self.title)
+            .s("state", &self.state)
+            .json("changed_files", &self.changed_files)
+            .json("changed_definitions", &self.changed_definitions)
+            .opt_s("validation_status", self.validation_status.as_ref())
+            .json("validation_messages", &self.validation_messages)
+            .opt_uuid("requested_by_member_id", self.requested_by_member_id)
+            .opt_uuid("requested_by_task_id", self.requested_by_task_id)
+            .time("created_at", self.created_at)
+            .time("updated_at", self.updated_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            id: r.uuid("id")?,
+            tenant_id: r.uuid("tenant_id")?,
+            config_id: r.uuid("config_id")?,
+            pr_number: r.n("pr_number")?,
+            title: r.s("title")?,
+            state: r.s("state")?,
+            changed_files: r.json("changed_files")?,
+            changed_definitions: r.json("changed_definitions")?,
+            validation_status: r.opt_s("validation_status")?,
+            validation_messages: r.json("validation_messages")?,
+            requested_by_member_id: r.opt_uuid("requested_by_member_id")?,
+            requested_by_task_id: r.opt_uuid("requested_by_task_id")?,
+            created_at: r.time("created_at")?,
+            updated_at: r.time("updated_at")?,
         })
     }
 }
@@ -1223,6 +1373,10 @@ impl Entity for Run {
             .time("updated_at", self.updated_at)
             .s("gsi1pk", keys::runs_index(self.tenant_id))
             .s("gsi1sk", keys::time_id(self.started_at, self.id));
+        if !self.is_finished() {
+            w.s("gsi2pk", keys::open_runs_index(self.tenant_id))
+                .s("gsi2sk", keys::time_id(self.started_at, self.id));
+        }
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {

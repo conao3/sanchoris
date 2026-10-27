@@ -1,10 +1,21 @@
-use async_graphql::{Context, ID, InputObject, Object, Result, SimpleObject};
+use async_graphql::{Context, Error, ID, InputObject, Object, Result, SimpleObject};
+use aws_sdk_dynamodb::types::AttributeValue;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use chrono::Duration;
 use sanchoris_core::channel::{RunEventType, record_inbound_event, record_run_event};
-use sanchoris_core::db::{DbError, TenantTx};
-use sanchoris_core::model::AuditOrigin;
-use sanchoris_core::tasks::{abort_task, latest_run, stop_run};
+use sanchoris_core::db::{self, REF_RUN, REF_TRIGGER, TenantTx};
+use sanchoris_core::item::format_time;
+use sanchoris_core::items::{
+    self, Guard, InboundEvent, InvitationEmail, Membership as MembershipItem, Task as TaskItem,
+    Trigger as TriggerItem, TriggerEvent as EventItem, User, uniq,
+};
+use sanchoris_core::keys;
+use sanchoris_core::model::{AuditOrigin, TaskStatus as CoreStatus, WaitReason};
+use sanchoris_core::store::Update;
+use sanchoris_core::tasks::{abort_task, latest_run, load_task, stop_run};
 use sanchoris_core::tenants::{NewTenant, create_tenant};
+use sanchoris_worker::dispatcher::schedule_trigger;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
@@ -12,12 +23,11 @@ use crate::account::{Credential, Invitation, Member, Plan, Viewer, mask_key};
 use crate::audit::{AuditEvent, AuditFilter};
 use crate::config::{ChangeRequest, Config, Session, ValidationError};
 use crate::context::{
-    AuditTarget, ClientIp, Role, Scope, audit_member, audit_operator, auth, is_operator, locate,
-    member_scope, memberships, now, scope_for_tenant, state, tenant_tx, user_tx,
+    Access, AuditTarget, ClientIp, Role, Scope, audit_member, audit_operator, auth, is_operator,
+    locate_item, locate_ref, member_scope, membership_in, memberships, now, scope_for_tenant,
+    serialize_tenant, state, store, tx, user_tx, viewer_user, write,
 };
-use crate::enums::{
-    ApiKeyProvider, CredentialScope, EventSource, InvitationState, TaskStatus, TriggerState,
-};
+use crate::enums::{ApiKeyProvider, CredentialScope, EventSource, InvitationState, TriggerState};
 use crate::error::{bad_input, conflict, forbidden, not_found, parse_id, port};
 use crate::ports::{ConfigLocation, PlanChange, TenantCheckout, TriggerProposal};
 use crate::scalars::Timestamp;
@@ -128,10 +138,6 @@ fn target(kind: &str, id: Uuid, name: impl Into<String>) -> AuditTarget<'_> {
     }
 }
 
-fn is_unique_violation(error: &DbError) -> bool {
-    matches!(error, DbError::Sqlx(sqlx::Error::Database(db)) if db.is_unique_violation())
-}
-
 fn is_repository(name: &str) -> bool {
     let Some((owner, repo)) = name.split_once('/') else {
         return false;
@@ -145,13 +151,19 @@ fn is_repository(name: &str) -> bool {
     valid(owner) && valid(repo)
 }
 
-async fn member_name(tx: &mut TenantTx, member_id: Uuid) -> Result<String> {
-    Ok(sqlx::query_scalar::<_, String>(
-        "SELECT u.display_name FROM sanchoris.members m JOIN sanchoris.users u ON u.id = m.user_id WHERE m.id = $1",
-    )
-    .bind(member_id)
-    .fetch_one(tx.conn())
-    .await?)
+fn s(value: &str) -> AttributeValue {
+    AttributeValue::S(value.to_string())
+}
+
+async fn member_name(ctx: &Context<'_>, tx: &mut TenantTx, member_id: Uuid) -> Result<String> {
+    let member = tx
+        .require::<items::Member>(&keys::member_key(tx.tenant_id(), member_id))
+        .await?;
+    Ok(store(ctx)
+        .get::<User>(&keys::user_key(member.user_id))
+        .await?
+        .ok_or_else(|| not_found(format!("user {}", member.user_id)))?
+        .display_name)
 }
 
 async fn tenant_scope(ctx: &Context<'_>, tenant_id: &ID) -> Result<Scope> {
@@ -159,30 +171,82 @@ async fn tenant_scope(ctx: &Context<'_>, tenant_id: &ID) -> Result<Scope> {
 }
 
 async fn audit_user_tenants(ctx: &Context<'_>, action: &str, summary: &str) -> Result<()> {
-    let user_id = auth(ctx)?.user_id;
+    let user = auth(ctx)?;
     for membership in memberships(ctx).await? {
-        let mut tx = tenant_tx(ctx, membership.tenant_id).await?;
-        audit_member(
-            ctx,
-            &mut tx,
-            membership.member_id,
-            action,
-            target("user", user_id, auth(ctx)?.email.clone()),
-            summary,
-        )
+        write(|| async {
+            let mut tx = tx(ctx, membership.tenant_id);
+            audit_member(
+                ctx,
+                &mut tx,
+                membership.member_id,
+                action,
+                target("user", user.user_id, user.email.clone()),
+                summary,
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
         .await?;
-        tx.commit().await?;
     }
     Ok(())
 }
 
-async fn owner_count(tx: &mut TenantTx) -> Result<i64> {
-    Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM sanchoris.members WHERE tenant_id = $1 AND role = 'owner'",
-    )
-    .bind(tx.tenant_id())
-    .fetch_one(tx.conn())
-    .await?)
+async fn owner_count(tx: &mut TenantTx) -> Result<usize> {
+    Ok(tx
+        .query::<items::Member>(&keys::tenant_pk(tx.tenant_id()), "MEMBER#")
+        .await?
+        .iter()
+        .filter(|member| member.role == "owner")
+        .count())
+}
+
+async fn suspend_or_resume(
+    ctx: &Context<'_>,
+    tenant_id: &ID,
+    from: &str,
+    update: Update,
+    action: &str,
+    summary: &str,
+) -> Result<Tenant> {
+    let tenant_id = parse_id(tenant_id)?;
+    let to = if from == "active" {
+        "suspended"
+    } else {
+        "active"
+    };
+    write(|| async {
+        let mut tx = tx(ctx, tenant_id);
+        let tenant = tx
+            .get::<items::Tenant>(&keys::tenant_key(tenant_id))
+            .await?
+            .filter(|tenant| tenant.status == from)
+            .ok_or_else(|| conflict(format!("the tenant does not exist or is not {from}")))?;
+        tx.update(
+            &keys::tenant_key(tenant_id),
+            update
+                .clone()
+                .set("status", s(to))
+                .set("updated_at", s(&format_time(now(ctx))))
+                .require("status", s(from)),
+        )?;
+        audit_operator(
+            ctx,
+            &mut tx,
+            &format!("tenant.{action}"),
+            target("tenant", tenant_id, tenant.name.clone()),
+            summary,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    })
+    .await?;
+    Tenant::load(ctx, scope_for_tenant(ctx, tenant_id).await?).await
+}
+
+fn worker_error(error: impl std::fmt::Display) -> Error {
+    Error::new(error.to_string())
 }
 
 #[Object(name = "Mutation")]
@@ -215,20 +279,16 @@ impl MutationRoot {
                 checkout_url: Some(url),
             });
         }
-        let mut tx = user_tx(ctx).await?;
-        let free_tenants = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM sanchoris.tenants t JOIN sanchoris.plans p ON p.id = t.plan_id \
-             WHERE t.created_by_user_id = $1 AND p.price_cents = 0",
-        )
-        .bind(user.user_id)
-        .fetch_one(tx.conn())
-        .await?;
-        drop(tx);
-        if free_tenants > 0 {
-            return Err(conflict("a user can create one tenant on a free plan"));
+        for membership in memberships(ctx).await? {
+            let tenant = Tenant::load(ctx, membership.scope()).await?;
+            if tenant.row.created_by_user_id == user.user_id
+                && Plan::load(ctx, &tenant.row.plan_id).await?.0.price_cents == 0
+            {
+                return Err(conflict("a user can create one tenant on a free plan"));
+            }
         }
         let created = create_tenant(
-            &state(ctx).pool,
+            store(ctx),
             &NewTenant {
                 id: Uuid::new_v4(),
                 name,
@@ -252,25 +312,19 @@ impl MutationRoot {
     async fn accept_invitation(&self, ctx: &Context<'_>, invitation_id: ID) -> Result<Member> {
         let invitation_id = parse_id(&invitation_id)?;
         let user = auth(ctx)?;
-        let mut tx = user_tx(ctx).await?;
-        let tenant_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT tenant_id FROM sanchoris.invitations WHERE id = $1",
-        )
-        .bind(invitation_id)
-        .fetch_optional(tx.conn())
-        .await?
-        .ok_or_else(|| not_found(format!("invitation {invitation_id}")))?;
-        drop(tx);
-        if memberships(ctx)
+        let entry = store(ctx)
+            .query::<InvitationEmail>(&keys::invitation_email_pk(&user.email), "INVITE#")
             .await?
-            .iter()
-            .any(|m| m.tenant_id == tenant_id)
-        {
+            .into_iter()
+            .find(|entry| entry.invitation_id == invitation_id)
+            .ok_or_else(|| not_found(format!("invitation {invitation_id}")))?;
+        let tenant_id = entry.tenant_id;
+        if membership_in(ctx, tenant_id).await?.is_some() {
             return Err(conflict("the viewer is already a member of the tenant"));
         }
         let invitee = Scope {
             tenant_id,
-            access: crate::context::Access::Invitee,
+            access: Access::Invitee,
         };
         let invitation = Invitation::load(ctx, invitee, invitation_id).await?;
         if invitation.state_at(now(ctx))? != InvitationState::Pending {
@@ -280,38 +334,52 @@ impl MutationRoot {
             return Err(forbidden("the invitation is addressed to another email"));
         }
         let at = now(ctx);
-        let mut tx = tenant_tx(ctx, tenant_id).await?;
-        let updated = sqlx::query(
-            "UPDATE sanchoris.invitations SET status = 'accepted', accepted_at = $2 \
-             WHERE id = $1 AND status = 'pending'",
-        )
-        .bind(invitation_id)
-        .bind(at)
-        .execute(tx.conn())
+        let member_id = write(|| async {
+            let mut tx = tx(ctx, tenant_id);
+            if tx
+                .get::<MembershipItem>(&keys::membership_key(user.user_id, tenant_id))
+                .await?
+                .is_some()
+            {
+                return Err(conflict("the viewer is already a member of the tenant").into());
+            }
+            let mut invitation = tx
+                .require::<items::Invitation>(&keys::invitation_key(tenant_id, invitation_id))
+                .await?;
+            if !invitation.is_pending_at(at) {
+                return Err(conflict("the invitation is no longer pending").into());
+            }
+            invitation.status = "accepted".into();
+            invitation.accepted_at = Some(at);
+            tx.put(&invitation)?;
+            tx.delete(&keys::pending_invitation_key(tenant_id, &invitation.email))?;
+            let member_id = Uuid::new_v4();
+            tx.insert(&items::Member {
+                id: member_id,
+                tenant_id,
+                user_id: user.user_id,
+                role: invitation.role.clone(),
+                joined_at: at,
+                last_active_at: Some(at),
+            })?;
+            tx.insert(&MembershipItem {
+                user_id: user.user_id,
+                tenant_id,
+                member_id,
+            })?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "member.invitation_accept",
+                target("invitation", invitation_id, invitation.email.clone()),
+                &format!("Accepted the invitation as {}", invitation.role),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(member_id)
+        })
         .await?;
-        if updated.rows_affected() != 1 {
-            return Err(conflict("the invitation is no longer pending"));
-        }
-        let member_id = sqlx::query_scalar::<_, Uuid>(
-            "INSERT INTO sanchoris.members (tenant_id, user_id, role, joined_at, last_active_at) \
-             VALUES ($1, $2, $3, $4, $4) RETURNING id",
-        )
-        .bind(tenant_id)
-        .bind(user.user_id)
-        .bind(&invitation.row.role)
-        .bind(at)
-        .fetch_one(tx.conn())
-        .await?;
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "member.invitation_accept",
-            target("invitation", invitation_id, invitation.row.email.clone()),
-            &format!("Accepted the invitation as {}", invitation.row.role),
-        )
-        .await?;
-        tx.commit().await?;
         Member::load(ctx, member_scope(ctx, tenant_id).await?, member_id).await
     }
 
@@ -331,22 +399,27 @@ impl MutationRoot {
 
     #[graphql(name = "unlinkGitHub")]
     async fn unlink_github(&self, ctx: &Context<'_>) -> Result<Viewer> {
-        let mut tx = user_tx(ctx).await?;
-        let login = sqlx::query_scalar::<_, Option<String>>(
-            "SELECT github_login FROM sanchoris.users WHERE id = $1",
-        )
-        .bind(tx.user_id())
-        .fetch_one(tx.conn())
-        .await?
-        .ok_or_else(|| conflict("no GitHub account is linked"))?;
-        sqlx::query(
-            "UPDATE sanchoris.users SET github_user_id = NULL, github_login = NULL, updated_at = $2 WHERE id = $1",
-        )
-        .bind(tx.user_id())
-        .bind(now(ctx))
-        .execute(tx.conn())
+        let login = viewer_user(ctx)
+            .await?
+            .github_login
+            .ok_or_else(|| conflict("no GitHub account is linked"))?;
+        let user_id = auth(ctx)?.user_id;
+        write(|| async {
+            let mut tx = user_tx(ctx);
+            let mut user = tx.require::<User>(&keys::user_key(user_id)).await?;
+            let Some(login) = user.github_login.take() else {
+                return Err(conflict("no GitHub account is linked").into());
+            };
+            if let Some(github_user) = user.github_user_id.take() {
+                tx.delete(&keys::uniq_key(uniq::GITHUB_USER, &github_user.to_string()))?;
+            }
+            tx.delete(&keys::uniq_key(uniq::GITHUB_LOGIN, &login.to_lowercase()))?;
+            user.updated_at = now(ctx);
+            tx.put(&user)?;
+            tx.commit().await?;
+            Ok(())
+        })
         .await?;
-        tx.commit().await?;
         audit_user_tenants(
             ctx,
             "integration.github_unlink",
@@ -364,17 +437,21 @@ impl MutationRoot {
             .slack
             .install(scope.tenant_id)
             .map_err(port)?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "integration.slack_connect_start",
-            target("tenant", scope.tenant_id, "slack"),
-            "Started the Slack installation",
-        )
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "integration.slack_connect_start",
+                target("tenant", scope.tenant_id, "slack"),
+                "Started the Slack installation",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
         .await?;
-        tx.commit().await?;
         Ok(RedirectPayload { url })
     }
 
@@ -393,95 +470,127 @@ impl MutationRoot {
             return Err(bad_input(format!("{email} is not an email address")));
         }
         let at = now(ctx);
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        sqlx::query("SELECT id FROM sanchoris.tenants WHERE id = $1 FOR UPDATE")
-            .bind(scope.tenant_id)
-            .execute(tx.conn())
-            .await?;
-        let (seats, limit, already) = sqlx::query_as::<_, (i64, i32, bool)>(
-            "SELECT (SELECT count(*) FROM sanchoris.members WHERE tenant_id = $1) \
-                  + (SELECT count(*) FROM sanchoris.invitations WHERE tenant_id = $1 AND status = 'pending' AND expires_at > $2), \
-                    (SELECT p.member_limit FROM sanchoris.tenants t JOIN sanchoris.plans p ON p.id = t.plan_id WHERE t.id = $1), \
-                    EXISTS (SELECT 1 FROM sanchoris.members m JOIN sanchoris.users u ON u.id = m.user_id \
-                            WHERE m.tenant_id = $1 AND lower(u.email) = $3)",
-        )
-        .bind(scope.tenant_id)
-        .bind(at)
-        .bind(&email)
-        .fetch_one(tx.conn())
-        .await?;
-        if already {
-            return Err(conflict(format!("{email} is already a member")));
-        }
-        if seats >= i64::from(limit) {
-            return Err(conflict(format!(
-                "the plan allows {limit} members including pending invitations"
-            )));
-        }
-        sqlx::query(
-            "UPDATE sanchoris.invitations SET status = 'expired' \
-             WHERE tenant_id = $1 AND email = $2 AND status = 'pending' AND expires_at <= $3",
-        )
-        .bind(scope.tenant_id)
-        .bind(&email)
-        .bind(at)
-        .execute(tx.conn())
-        .await?;
-        let invitation_id = sqlx::query_scalar::<_, Uuid>(
-            "INSERT INTO sanchoris.invitations (tenant_id, email, role, status, invited_by_member_id, expires_at, created_at) \
-             VALUES ($1, $2, $3, 'pending', $4, $5, $6) RETURNING id",
-        )
-        .bind(scope.tenant_id)
-        .bind(&email)
-        .bind(input.role.as_db())
-        .bind(member_id)
-        .bind(at + Duration::days(INVITATION_DAYS))
-        .bind(at)
-        .fetch_one(tx.conn())
-        .await
-        .map_err(DbError::from)
-        .map_err(|error| {
-            if is_unique_violation(&error) {
-                conflict(format!("{email} already has a pending invitation"))
-            } else {
-                error.into()
+        let tenant_id = scope.tenant_id;
+        let email = &email;
+        let invitation_id = write(|| async {
+            let mut tx = tx(ctx, tenant_id);
+            serialize_tenant(&mut tx).await?;
+            let (_, plan) = db::tenant_plan(&mut tx).await?;
+            let members = tx
+                .query::<items::Member>(&keys::tenant_pk(tenant_id), "MEMBER#")
+                .await?;
+            for member in &members {
+                let user = store(ctx)
+                    .get::<User>(&keys::user_key(member.user_id))
+                    .await?
+                    .ok_or_else(|| not_found(format!("user {}", member.user_id)))?;
+                if user.email.to_lowercase() == *email {
+                    return Err(conflict(format!("{email} is already a member")).into());
+                }
             }
-        })?;
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "member.invite",
-            target("invitation", invitation_id, email.clone()),
-            &format!("Invited {email} as {}", input.role.as_db()),
-        )
+            let invitations = tx
+                .query::<items::Invitation>(&keys::tenant_pk(tenant_id), "INVITE#")
+                .await?;
+            let pending = invitations
+                .iter()
+                .filter(|invitation| invitation.is_pending_at(at))
+                .count();
+            let seats = i64::try_from(members.len() + pending).map_err(worker_error)?;
+            if seats >= plan.member_limit {
+                return Err(conflict(format!(
+                    "the plan allows {} members including pending invitations",
+                    plan.member_limit
+                ))
+                .into());
+            }
+            let guard_key = keys::pending_invitation_key(tenant_id, email);
+            if let Some(guard) = tx.get::<Guard>(&guard_key).await?
+                && let Some(mut previous) = invitations
+                    .into_iter()
+                    .find(|invitation| invitation.id == guard.target)
+                && previous.status == "pending"
+            {
+                if previous.is_pending_at(at) {
+                    return Err(
+                        conflict(format!("{email} already has a pending invitation")).into(),
+                    );
+                }
+                previous.status = "expired".into();
+                tx.put(&previous)?;
+            }
+            let invitation_id = Uuid::new_v4();
+            tx.insert(&items::Invitation {
+                id: invitation_id,
+                tenant_id,
+                email: email.clone(),
+                role: input.role.as_db().to_string(),
+                status: "pending".into(),
+                invited_by_member_id: member_id,
+                expires_at: at + Duration::days(INVITATION_DAYS),
+                accepted_at: None,
+                created_at: at,
+            })?;
+            tx.put(&Guard::new(guard_key, invitation_id))?;
+            tx.insert(&InvitationEmail {
+                email: email.clone(),
+                tenant_id,
+                invitation_id,
+            })?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "member.invite",
+                target("invitation", invitation_id, email.clone()),
+                &format!("Invited {email} as {}", input.role.as_db()),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(invitation_id)
+        })
         .await?;
-        tx.commit().await?;
         Invitation::load(ctx, scope, invitation_id).await
     }
 
     async fn revoke_invitation(&self, ctx: &Context<'_>, invitation_id: ID) -> Result<Invitation> {
         let invitation_id = parse_id(&invitation_id)?;
-        let scope = locate(ctx, "invitations", invitation_id).await?;
+        let (scope, _) =
+            locate_item::<items::Invitation>(ctx, "invitation", invitation_id, |tenant| {
+                keys::invitation_key(tenant, invitation_id)
+            })
+            .await?;
         let member_id = scope.require(Role::Admin, "revoking invitations")?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let email = sqlx::query_scalar::<_, String>(
-            "UPDATE sanchoris.invitations SET status = 'revoked' WHERE id = $1 AND status = 'pending' RETURNING email",
-        )
-        .bind(invitation_id)
-        .fetch_optional(tx.conn())
-        .await?
-        .ok_or_else(|| conflict("the invitation is no longer pending"))?;
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "member.invitation_revoke",
-            target("invitation", invitation_id, email.clone()),
-            &format!("Revoked the invitation of {email}"),
-        )
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let mut invitation = tx
+                .require::<items::Invitation>(&keys::invitation_key(scope.tenant_id, invitation_id))
+                .await?;
+            if invitation.status != "pending" {
+                return Err(conflict("the invitation is no longer pending").into());
+            }
+            invitation.status = "revoked".into();
+            tx.put(&invitation)?;
+            let guard_key = keys::pending_invitation_key(scope.tenant_id, &invitation.email);
+            if tx
+                .get::<Guard>(&guard_key)
+                .await?
+                .is_some_and(|guard| guard.target == invitation_id)
+            {
+                tx.delete(&guard_key)?;
+            }
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "member.invitation_revoke",
+                target("invitation", invitation_id, invitation.email.clone()),
+                &format!("Revoked the invitation of {}", invitation.email),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
         .await?;
-        tx.commit().await?;
         Invitation::load(ctx, scope, invitation_id).await
     }
 
@@ -492,222 +601,236 @@ impl MutationRoot {
         role: Role,
     ) -> Result<Member> {
         let target_id = parse_id(&member_id)?;
-        let scope = locate(ctx, "members", target_id).await?;
-        let actor = scope.require(Role::Admin, "changing roles")?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let current = Role::from_db(
-            &sqlx::query_scalar::<_, String>(
-                "SELECT role FROM sanchoris.members WHERE id = $1 FOR UPDATE",
-            )
-            .bind(target_id)
-            .fetch_one(tx.conn())
-            .await?,
-        );
-        if current != Role::Member || role != Role::Member {
-            scope.require(Role::Owner, "appointing or changing owners and admins")?;
-        }
-        if current == Role::Owner && role != Role::Owner && owner_count(&mut tx).await? <= 1 {
-            return Err(conflict("the tenant needs at least one owner"));
-        }
-        sqlx::query("UPDATE sanchoris.members SET role = $2 WHERE id = $1")
-            .bind(target_id)
-            .bind(role.as_db())
-            .execute(tx.conn())
-            .await?;
-        let name = member_name(&mut tx, target_id).await?;
-        audit_member(
-            ctx,
-            &mut tx,
-            actor,
-            "member.role_change",
-            target("member", target_id, name.clone()),
-            &format!(
-                "Changed the role of {name} from {} to {}",
-                current.as_db(),
-                role.as_db()
-            ),
-        )
+        let (scope, _) = locate_item::<items::Member>(ctx, "member", target_id, |tenant| {
+            keys::member_key(tenant, target_id)
+        })
         .await?;
-        tx.commit().await?;
+        let actor = scope.require(Role::Admin, "changing roles")?;
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            serialize_tenant(&mut tx).await?;
+            let mut member = tx
+                .require::<items::Member>(&keys::member_key(scope.tenant_id, target_id))
+                .await?;
+            let current = Role::from_db(&member.role);
+            if current != Role::Member || role != Role::Member {
+                scope.require(Role::Owner, "appointing or changing owners and admins")?;
+            }
+            if current == Role::Owner && role != Role::Owner && owner_count(&mut tx).await? <= 1 {
+                return Err(conflict("the tenant needs at least one owner").into());
+            }
+            member.role = role.as_db().to_string();
+            tx.put(&member)?;
+            let name = member_name(ctx, &mut tx, target_id).await?;
+            audit_member(
+                ctx,
+                &mut tx,
+                actor,
+                "member.role_change",
+                target("member", target_id, name.clone()),
+                &format!(
+                    "Changed the role of {name} from {} to {}",
+                    current.as_db(),
+                    role.as_db()
+                ),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
         Member::load(ctx, scope, target_id).await
     }
 
     async fn remove_member(&self, ctx: &Context<'_>, member_id: ID) -> Result<ID> {
         let target_id = parse_id(&member_id)?;
-        let scope = locate(ctx, "members", target_id).await?;
-        let actor = scope.require(Role::Admin, "removing members")?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let current = Role::from_db(
-            &sqlx::query_scalar::<_, String>(
-                "SELECT role FROM sanchoris.members WHERE id = $1 FOR UPDATE",
-            )
-            .bind(target_id)
-            .fetch_one(tx.conn())
-            .await?,
-        );
-        if current != Role::Member {
-            scope.require(Role::Owner, "removing owners and admins")?;
-        }
-        if current == Role::Owner && owner_count(&mut tx).await? <= 1 {
-            return Err(conflict("the tenant needs at least one owner"));
-        }
-        let name = member_name(&mut tx, target_id).await?;
-        audit_member(
-            ctx,
-            &mut tx,
-            actor,
-            "member.remove",
-            target("member", target_id, name.clone()),
-            &format!("Removed {name}"),
-        )
+        let (scope, _) = locate_item::<items::Member>(ctx, "member", target_id, |tenant| {
+            keys::member_key(tenant, target_id)
+        })
         .await?;
-        sqlx::query("DELETE FROM sanchoris.members WHERE id = $1")
-            .bind(target_id)
-            .execute(tx.conn())
+        let actor = scope.require(Role::Admin, "removing members")?;
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            serialize_tenant(&mut tx).await?;
+            let member = tx
+                .require::<items::Member>(&keys::member_key(scope.tenant_id, target_id))
+                .await?;
+            let current = Role::from_db(&member.role);
+            if current != Role::Member {
+                scope.require(Role::Owner, "removing owners and admins")?;
+            }
+            if current == Role::Owner && owner_count(&mut tx).await? <= 1 {
+                return Err(conflict("the tenant needs at least one owner").into());
+            }
+            let name = member_name(ctx, &mut tx, target_id).await?;
+            audit_member(
+                ctx,
+                &mut tx,
+                actor,
+                "member.remove",
+                target("member", target_id, name.clone()),
+                &format!("Removed {name}"),
+            )
             .await?;
-        tx.commit().await?;
+            tx.delete(&member_key_of(&member))?;
+            tx.delete(&keys::membership_key(member.user_id, scope.tenant_id))?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
         Ok(member_id)
     }
 
     async fn resume_task(&self, ctx: &Context<'_>, input: ResumeTaskInput) -> Result<Task> {
         let task_id = parse_id(&input.task_id)?;
-        let scope = locate(ctx, "tasks", task_id).await?;
+        let (scope, _) = locate_task(ctx, task_id).await?;
         let (member_id, _) = scope.member()?;
         let message = input.message.trim();
         if message.is_empty() {
             return Err(bad_input("the message is empty"));
         }
-        let task = Task::load(ctx, scope, task_id).await?;
-        if task.status_value()? != TaskStatus::NeedsYou {
-            return Err(conflict("only a task that needs you can be resumed"));
-        }
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let run_id = latest_run(&mut tx, task_id)
-            .await?
-            .ok_or_else(|| conflict("the task has no agent session yet"))?;
-        let name = member_name(&mut tx, member_id).await?;
-        record_run_event(
-            &mut tx,
-            run_id,
-            None,
-            RunEventType::HumanReply,
-            &json!({ "member": name, "text": message }),
-        )
-        .await?;
-        sqlx::query("UPDATE sanchoris.tasks SET snoozed_until = NULL WHERE id = $1")
-            .bind(task_id)
-            .execute(tx.conn())
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let mut task = load_task(&mut tx, task_id).await?;
+            if task.status != CoreStatus::NeedsYou {
+                return Err(conflict("only a task that needs you can be resumed").into());
+            }
+            let run_id = latest_run(&mut tx, task_id)
+                .await?
+                .ok_or_else(|| conflict("the task has no agent session yet"))?;
+            let name = member_name(ctx, &mut tx, member_id).await?;
+            record_run_event(
+                &mut tx,
+                run_id,
+                None,
+                RunEventType::HumanReply,
+                &json!({ "member": name, "text": message }),
+            )
             .await?;
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "task.resume",
-            target("task", task_id, task.row.title.clone()),
-            "Resumed the task with a message",
-        )
+            task.snoozed_until = None;
+            tx.put(&task)?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "task.resume",
+                target("task", task_id, task.title.clone()),
+                "Resumed the task with a message",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
         .await?;
-        tx.commit().await?;
         Task::load(ctx, scope, task_id).await
     }
 
     async fn snooze_task(&self, ctx: &Context<'_>, task_id: ID, until: Timestamp) -> Result<Task> {
         let task_id = parse_id(&task_id)?;
-        let scope = locate(ctx, "tasks", task_id).await?;
+        let (scope, _) = locate_task(ctx, task_id).await?;
         let (member_id, _) = scope.member()?;
         if until.0 <= now(ctx) {
             return Err(bad_input("the snooze time must be in the future"));
         }
-        let task = Task::load(ctx, scope, task_id).await?;
-        let snoozable = task.row.status == "NEEDS_YOU"
-            || (task.row.status == "WAITING"
-                && task.row.wait_reason.as_deref() == Some("usage_limit"));
-        if !snoozable {
-            return Err(conflict(
-                "only a task that needs you or waits for usage can be snoozed",
-            ));
-        }
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        sqlx::query("UPDATE sanchoris.tasks SET snoozed_until = $2, updated_at = $3 WHERE id = $1")
-            .bind(task_id)
-            .bind(until.0)
-            .bind(now(ctx))
-            .execute(tx.conn())
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let mut task = load_task(&mut tx, task_id).await?;
+            let snoozable = task.status == CoreStatus::NeedsYou
+                || (task.status == CoreStatus::Waiting
+                    && task.wait_reason == Some(WaitReason::UsageLimit));
+            if !snoozable {
+                return Err(conflict(
+                    "only a task that needs you or waits for usage can be snoozed",
+                )
+                .into());
+            }
+            task.snoozed_until = Some(until.0);
+            task.updated_at = now(ctx);
+            tx.put(&task)?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "task.snooze",
+                target("task", task_id, task.title.clone()),
+                &format!("Snoozed the task until {}", until.0.to_rfc3339()),
+            )
             .await?;
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "task.snooze",
-            target("task", task_id, task.row.title.clone()),
-            &format!("Snoozed the task until {}", until.0.to_rfc3339()),
-        )
+            tx.commit().await?;
+            Ok(())
+        })
         .await?;
-        tx.commit().await?;
         Task::load(ctx, scope, task_id).await
     }
 
     async fn stop_task(&self, ctx: &Context<'_>, task_id: ID) -> Result<Task> {
         let task_id = parse_id(&task_id)?;
-        let scope = locate(ctx, "tasks", task_id).await?;
+        let (scope, task) = locate_task(ctx, task_id).await?;
         let (member_id, _) = scope.member()?;
-        let task = Task::load(ctx, scope, task_id).await?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let name = member_name(&mut tx, member_id).await?;
-        if !abort_task(
-            &mut tx,
-            task_id,
-            &format!("{name} stopped the task"),
-            now(ctx),
-        )
-        .await?
-        {
-            return Err(conflict("the task has already finished"));
-        }
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "task.stop",
-            target("task", task_id, task.row.title.clone()),
-            "Stopped the task",
-        )
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let name = member_name(ctx, &mut tx, member_id).await?;
+            if !abort_task(
+                &mut tx,
+                task_id,
+                &format!("{name} stopped the task"),
+                now(ctx),
+            )
+            .await?
+            {
+                return Err(conflict("the task has already finished").into());
+            }
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "task.stop",
+                target("task", task_id, task.title.clone()),
+                "Stopped the task",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
         .await?;
-        tx.commit().await?;
         Task::load(ctx, scope, task_id).await
     }
 
     async fn stop_run(&self, ctx: &Context<'_>, run_id: ID) -> Result<Run> {
         let run_id = parse_id(&run_id)?;
-        let scope = locate(ctx, "runs", run_id).await?;
+        let (scope, _) = locate_ref(ctx, "run", run_id, REF_RUN).await?;
         let (member_id, _) = scope.member()?;
         let run = Run::load(ctx, scope, run_id).await?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let name = member_name(&mut tx, member_id).await?;
-        if !stop_run(
-            &mut tx,
-            run_id,
-            &format!("{name} stopped the session"),
-            now(ctx),
-        )
-        .await?
-        {
-            return Err(conflict("the session has already ended"));
-        }
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "run.stop",
-            AuditTarget {
-                kind: "task",
-                id: run.row.task_id.to_string(),
-                name: format!("run {}", run.row.number),
-            },
-            &format!("Stopped run {}", run.row.number),
-        )
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let name = member_name(ctx, &mut tx, member_id).await?;
+            if !stop_run(
+                &mut tx,
+                run_id,
+                &format!("{name} stopped the session"),
+                now(ctx),
+            )
+            .await?
+            {
+                return Err(conflict("the session has already ended").into());
+            }
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "run.stop",
+                AuditTarget {
+                    kind: "task",
+                    id: run.row.task_id.to_string(),
+                    name: format!("run {}", run.row.number),
+                },
+                &format!("Stopped run {}", run.row.number),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
         .await?;
-        tx.commit().await?;
         Run::load(ctx, scope, run_id).await
     }
 
@@ -722,6 +845,7 @@ impl MutationRoot {
         if text.is_empty() {
             return Err(bad_input("the message is empty"));
         }
+        let triggers = Trigger::all(ctx, scope).await?;
         let (existing, thread, chat_scope) = match &input.task_id {
             Some(task_id) => {
                 let task = Task::load(ctx, scope, parse_id(task_id)?).await?;
@@ -736,8 +860,7 @@ impl MutationRoot {
                     .scope
                     .clone()
                     .ok_or_else(|| bad_input("a new chat needs a scope"))?;
-                let accepts = Trigger::all(ctx, scope)
-                    .await?
+                let accepts = triggers
                     .iter()
                     .filter(|trigger| trigger.row.state == "ENABLED")
                     .map(Trigger::trigger_match)
@@ -756,46 +879,45 @@ impl MutationRoot {
             }
         };
         let key = Uuid::new_v4().to_string();
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let user = member_name(&mut tx, member_id).await?;
-        let event = json!({
-            "source": "web",
-            "detail-type": "Message",
-            "detail": {
-                "scope": chat_scope,
-                "thread": thread,
-                "user": user,
-                "member_id": member_id,
-                "text": text,
-            },
-        });
-        let inbound_id = record_inbound_event(&mut tx, "web", &key, &event)
-            .await?
-            .id();
-        let received_at = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
-            "SELECT received_at FROM sanchoris.inbound_events WHERE id = $1",
-        )
-        .bind(inbound_id)
-        .fetch_one(tx.conn())
+        let (inbound_id, received_at) = write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let user = member_name(ctx, &mut tx, member_id).await?;
+            let event = json!({
+                "source": "web",
+                "detail-type": "Message",
+                "detail": {
+                    "scope": chat_scope,
+                    "thread": thread,
+                    "user": user,
+                    "member_id": member_id,
+                    "text": text,
+                },
+            });
+            record_inbound_event(&mut tx, "web", &key, &event).await?;
+            let inbound = tx
+                .require::<InboundEvent>(&keys::inbound_event_key(scope.tenant_id, "web", &key))
+                .await?;
+            let audit_target = match existing {
+                Some(task_id) => target("task", task_id, thread.clone()),
+                None => AuditTarget {
+                    kind: "chat",
+                    id: thread.clone(),
+                    name: chat_scope.clone(),
+                },
+            };
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "chat.message_send",
+                audit_target,
+                &format!("Sent a chat message in {chat_scope}"),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok((inbound.id, inbound.received_at))
+        })
         .await?;
-        let audit_target = match existing {
-            Some(task_id) => target("task", task_id, thread.clone()),
-            None => AuditTarget {
-                kind: "chat",
-                id: thread.clone(),
-                name: chat_scope.clone(),
-            },
-        };
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "chat.message_send",
-            audit_target,
-            &format!("Sent a chat message in {chat_scope}"),
-        )
-        .await?;
-        tx.commit().await?;
         state(ctx)
             .deps
             .chat
@@ -805,25 +927,33 @@ impl MutationRoot {
         let task = match existing {
             Some(task_id) => Task::load(ctx, scope, task_id).await?,
             None => {
-                let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-                let started = sqlx::query_as::<_, (Option<Uuid>, Option<String>)>(
-                    "SELECT t.id, e.reason FROM sanchoris.trigger_events e \
-                     LEFT JOIN sanchoris.tasks t ON t.trigger_event_id = e.id \
-                     WHERE e.key = $1 ORDER BY t.id NULLS LAST LIMIT 1",
-                )
-                .bind(&key)
-                .fetch_optional(tx.conn())
-                .await?;
-                drop(tx);
-                match started {
-                    Some((Some(task_id), _)) => Task::load(ctx, scope, task_id).await?,
-                    Some((None, reason)) => {
-                        return Err(conflict(format!(
-                            "the chat trigger did not start a task: {}",
-                            reason.unwrap_or_else(|| "the event is not evaluated yet".into())
-                        )));
+                let mut tx = tx(ctx, scope.tenant_id);
+                let mut events = Vec::new();
+                for trigger in &triggers {
+                    if let Some(event) = tx
+                        .get::<EventItem>(&keys::trigger_event_key(
+                            scope.tenant_id,
+                            trigger.row.id,
+                            &key,
+                        ))
+                        .await?
+                    {
+                        events.push(event);
                     }
-                    None => return Err(conflict("no chat trigger received the message")),
+                }
+                match events.iter().find_map(|event| event.task_id) {
+                    Some(task_id) => Task::load(ctx, scope, task_id).await?,
+                    None => match events.into_iter().next() {
+                        Some(event) => {
+                            return Err(conflict(format!(
+                                "the chat trigger did not start a task: {}",
+                                event
+                                    .reason
+                                    .unwrap_or_else(|| "the event is not evaluated yet".into())
+                            )));
+                        }
+                        None => return Err(conflict("no chat trigger received the message")),
+                    },
                 }
             }
         };
@@ -840,36 +970,32 @@ impl MutationRoot {
         state: TriggerState,
     ) -> Result<Trigger> {
         let trigger_id = parse_id(&trigger_id)?;
-        let scope = locate(ctx, "triggers", trigger_id).await?;
+        let (scope, location) = locate_ref(ctx, "trigger", trigger_id, REF_TRIGGER).await?;
         let member_id = scope.require(Role::Admin, "enabling and disabling triggers")?;
-        let trigger = Trigger::load(ctx, scope, trigger_id).await?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        sqlx::query("UPDATE sanchoris.triggers SET state = $2 WHERE id = $1")
-            .bind(trigger_id)
-            .bind(state.as_db())
-            .execute(tx.conn())
+        let location = &location;
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let mut trigger = tx.require::<TriggerItem>(&location.target).await?;
+            trigger.state = state.as_db().to_string();
+            schedule_trigger(&mut tx, &mut trigger, now(ctx)).map_err(worker_error)?;
+            tx.put(&trigger)?;
+            let (action, verb) = match state {
+                TriggerState::Enabled => ("trigger.enable", "Enabled"),
+                TriggerState::Disabled => ("trigger.disable", "Disabled"),
+            };
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                action,
+                target("trigger", trigger_id, trigger.name.clone()),
+                &format!("{verb} the trigger {}", trigger.name),
+            )
             .await?;
-        if state == TriggerState::Disabled {
-            sqlx::query("DELETE FROM sanchoris.due_jobs WHERE kind = $1 AND ref_id = $2")
-                .bind(crate::trigger::DUE_TRIGGER_SCHEDULE)
-                .bind(trigger_id)
-                .execute(tx.conn())
-                .await?;
-        }
-        let (action, verb) = match state {
-            TriggerState::Enabled => ("trigger.enable", "Enabled"),
-            TriggerState::Disabled => ("trigger.disable", "Disabled"),
-        };
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            action,
-            target("trigger", trigger_id, trigger.row.name.clone()),
-            &format!("{verb} the trigger {}", trigger.row.name),
-        )
+            tx.commit().await?;
+            Ok(())
+        })
         .await?;
-        tx.commit().await?;
         Trigger::load(ctx, scope, trigger_id).await
     }
 
@@ -946,37 +1072,45 @@ impl MutationRoot {
                 },
             )
             .await?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let change_id = sqlx::query_scalar::<_, Uuid>(
-            "INSERT INTO sanchoris.change_requests \
-             (tenant_id, config_id, pr_number, title, state, changed_files, changed_definitions, requested_by_member_id, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, 'open', $5, $6, $7, $8, $8) RETURNING id",
-        )
-        .bind(scope.tenant_id)
-        .bind(config.row.id)
-        .bind(number)
-        .bind(&title)
-        .bind(json!([format!(
-            "{}{}",
-            crate::config::root_prefix(&config.row.root_path),
-            sanchoris_config::CONFIG_FILE
-        )]))
-        .bind(json!([{ "kind": "trigger", "name": trigger_name }]))
-        .bind(member_id)
-        .bind(now(ctx))
-        .fetch_one(tx.conn())
+        let config_row = &config.row;
+        let row = write(|| async {
+            let at = now(ctx);
+            let row = items::ChangeRequest {
+                id: Uuid::new_v4(),
+                tenant_id: scope.tenant_id,
+                config_id: config_row.id,
+                pr_number: i64::from(number),
+                title: title.clone(),
+                state: "open".into(),
+                changed_files: json!([format!(
+                    "{}{}",
+                    crate::config::root_prefix(&config_row.root_path),
+                    sanchoris_config::CONFIG_FILE
+                )]),
+                changed_definitions: json!([{ "kind": "trigger", "name": trigger_name }]),
+                validation_status: None,
+                validation_messages: json!([]),
+                requested_by_member_id: Some(member_id),
+                requested_by_task_id: None,
+                created_at: at,
+                updated_at: at,
+            };
+            let mut tx = tx(ctx, scope.tenant_id);
+            tx.insert(&row)?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "change_request.open",
+                target("change_request", row.id, format!("#{number}")),
+                &title,
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(row)
+        })
         .await?;
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "change_request.open",
-            target("change_request", change_id, format!("#{number}")),
-            &title,
-        )
-        .await?;
-        tx.commit().await?;
-        ChangeRequest::by_id(ctx, scope, change_id).await
+        Ok(ChangeRequest::new(scope, config.row.repository, row))
     }
 
     async fn add_config(
@@ -1005,26 +1139,30 @@ impl MutationRoot {
             .check(scope.tenant_id, &location)
             .await
             .map_err(port)?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
         if !problems.is_empty() {
-            audit_member(
-                ctx,
-                &mut tx,
-                member_id,
-                "config.validation_fail",
-                AuditTarget {
-                    kind: "config",
-                    id: format!("{repository}:{}", input.root),
-                    name: repository.clone(),
-                },
-                &format!(
-                    "The config at {repository} {} has {} problems",
-                    input.root,
-                    problems.len()
-                ),
-            )
+            let count = problems.len();
+            write(|| async {
+                let mut tx = tx(ctx, scope.tenant_id);
+                audit_member(
+                    ctx,
+                    &mut tx,
+                    member_id,
+                    "config.validation_fail",
+                    AuditTarget {
+                        kind: "config",
+                        id: format!("{repository}:{}", input.root),
+                        name: repository.clone(),
+                    },
+                    &format!(
+                        "The config at {repository} {} has {count} problems",
+                        input.root
+                    ),
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(())
+            })
             .await?;
-            tx.commit().await?;
             return Ok(AddConfigPayload {
                 config: None,
                 errors: problems
@@ -1039,28 +1177,41 @@ impl MutationRoot {
             });
         }
         let at = now(ctx);
-        let config_id = sqlx::query_scalar::<_, Uuid>(
-            "INSERT INTO sanchoris.configs (tenant_id, repository, root_path, branch, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $5) ON CONFLICT (tenant_id, repository, root_path) DO NOTHING RETURNING id",
-        )
-        .bind(scope.tenant_id)
-        .bind(&repository)
-        .bind(&input.root)
-        .bind(&branch)
-        .bind(at)
-        .fetch_optional(tx.conn())
-        .await?
-        .ok_or_else(|| conflict(format!("{repository} {} is already a config", input.root)))?;
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "config.add",
-            target("config", config_id, repository.clone()),
-            &format!("Added the config {repository} {} on {branch}", input.root),
-        )
+        let config_id = write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let guard_key = keys::config_repository_key(scope.tenant_id, &repository, &input.root);
+            if tx.get::<Guard>(&guard_key).await?.is_some() {
+                return Err(
+                    conflict(format!("{repository} {} is already a config", input.root)).into(),
+                );
+            }
+            let config_id = Uuid::new_v4();
+            tx.insert(&items::Config {
+                id: config_id,
+                tenant_id: scope.tenant_id,
+                repository: repository.clone(),
+                root_path: input.root.clone(),
+                branch: branch.clone(),
+                active_revision_id: None,
+                revisions: 0,
+                synced_at: None,
+                created_at: at,
+                updated_at: at,
+            })?;
+            tx.insert(&Guard::new(guard_key, config_id))?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "config.add",
+                target("config", config_id, repository.clone()),
+                &format!("Added the config {repository} {} on {branch}", input.root),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(config_id)
+        })
         .await?;
-        tx.commit().await?;
         state(ctx)
             .deps
             .config_sync
@@ -1075,20 +1226,26 @@ impl MutationRoot {
 
     async fn sync_config(&self, ctx: &Context<'_>, config_id: ID) -> Result<Config> {
         let config_id = parse_id(&config_id)?;
-        let scope = locate(ctx, "configs", config_id).await?;
-        let member_id = scope.require(Role::Admin, "syncing configs")?;
-        let config = Config::load(ctx, scope, config_id).await?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "config.sync",
-            target("config", config_id, config.row.repository.clone()),
-            "Requested a config sync",
-        )
+        let (scope, config) = locate_item::<items::Config>(ctx, "config", config_id, |tenant| {
+            keys::config_key(tenant, config_id)
+        })
         .await?;
-        tx.commit().await?;
+        let member_id = scope.require(Role::Admin, "syncing configs")?;
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "config.sync",
+                target("config", config_id, config.repository.clone()),
+                "Requested a config sync",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
         state(ctx)
             .deps
             .config_sync
@@ -1128,65 +1285,83 @@ impl MutationRoot {
             .await
             .map_err(port)?;
         let at = now(ctx);
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let credential_id = sqlx::query_scalar::<_, Uuid>(
-            "INSERT INTO sanchoris.credentials \
-             (tenant_id, scope, member_id, name, provider, kind, account, status, encrypted_value, kms_key_id, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, 'connected', $8, $9, $10, $10) \
-             ON CONFLICT (tenant_id, name) DO NOTHING RETURNING id",
-        )
-        .bind(scope.tenant_id)
-        .bind(input.scope.as_db())
-        .bind((input.scope == CredentialScope::Personal).then_some(member_id))
-        .bind(&name)
-        .bind(provider)
-        .bind(kind)
-        .bind(mask_key(key))
-        .bind(&encrypted.ciphertext)
-        .bind(&encrypted.key_id)
-        .bind(at)
-        .fetch_optional(tx.conn())
-        .await?
-        .ok_or_else(|| conflict(format!("a credential named {name} exists")))?;
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "credential.connect",
-            target("credential", credential_id, name.clone()),
-            &format!("Added the {kind} credential {name}"),
-        )
+        let encrypted = &encrypted;
+        let credential_id = write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let guard_key = keys::credential_name_key(scope.tenant_id, &name);
+            if tx.get::<Guard>(&guard_key).await?.is_some() {
+                return Err(conflict(format!("a credential named {name} exists")).into());
+            }
+            let credential_id = Uuid::new_v4();
+            tx.insert(&items::Credential {
+                id: credential_id,
+                tenant_id: scope.tenant_id,
+                scope: input.scope.as_db().to_string(),
+                member_id: (input.scope == CredentialScope::Personal).then_some(member_id),
+                name: name.clone(),
+                provider: provider.to_string(),
+                kind: kind.to_string(),
+                account: mask_key(key),
+                status: "connected".into(),
+                subscription_plan: None,
+                rejected_at: None,
+                encrypted_value: STANDARD.encode(&encrypted.ciphertext),
+                kms_key_id: encrypted.key_id.clone(),
+                last_used_at: None,
+                created_at: at,
+                updated_at: at,
+            })?;
+            tx.insert(&Guard::new(guard_key, credential_id))?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "credential.connect",
+                target("credential", credential_id, name.clone()),
+                &format!("Added the {kind} credential {name}"),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(credential_id)
+        })
         .await?;
-        tx.commit().await?;
         Credential::by_id(ctx, scope, credential_id).await
     }
 
     async fn remove_credential(&self, ctx: &Context<'_>, credential_id: ID) -> Result<ID> {
         let id = parse_id(&credential_id)?;
-        let scope = locate(ctx, "credentials", id).await?;
+        let (scope, credential) =
+            locate_item::<items::Credential>(ctx, "credential", id, |tenant| {
+                keys::credential_key(tenant, id)
+            })
+            .await?;
         let (member_id, role) = scope.member()?;
-        let credential = Credential::by_id(ctx, scope, id).await?;
-        let own = credential.row.member_id == Some(member_id);
+        let own = credential.member_id == Some(member_id);
         if !own && !role.at_least(Role::Admin) {
             return Err(forbidden(
                 "removing this credential needs the admin role or higher",
             ));
         }
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        sqlx::query("DELETE FROM sanchoris.credentials WHERE id = $1")
-            .bind(id)
-            .execute(tx.conn())
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            tx.delete(&keys::credential_key(scope.tenant_id, id))?;
+            tx.delete(&keys::credential_name_key(
+                scope.tenant_id,
+                &credential.name,
+            ))?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "credential.delete",
+                target("credential", id, credential.name.clone()),
+                &format!("Removed the credential {}", credential.name),
+            )
             .await?;
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "credential.delete",
-            target("credential", id, credential.row.name.clone()),
-            &format!("Removed the credential {}", credential.row.name),
-        )
+            tx.commit().await?;
+            Ok(())
+        })
         .await?;
-        tx.commit().await?;
         Ok(credential_id)
     }
 
@@ -1212,45 +1387,48 @@ impl MutationRoot {
             .change_plan(scope.tenant_id, &plan.0.id)
             .await
             .map_err(port)?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let checkout_url = match change {
-            PlanChange::Applied => {
-                sqlx::query(
-                    "UPDATE sanchoris.tenants SET plan_id = $2, updated_at = $3 WHERE id = $1",
-                )
-                .bind(scope.tenant_id)
-                .bind(&plan.0.id)
-                .bind(now(ctx))
-                .execute(tx.conn())
-                .await?;
-                audit_member(
-                    ctx,
-                    &mut tx,
-                    member_id,
-                    "tenant.plan_change",
-                    target("tenant", scope.tenant_id, tenant.row.name.clone()),
-                    &format!(
-                        "Changed the plan from {} to {}",
-                        tenant.row.plan_id, plan.0.id
-                    ),
-                )
-                .await?;
-                None
-            }
-            PlanChange::Checkout { url } => {
-                audit_member(
-                    ctx,
-                    &mut tx,
-                    member_id,
-                    "tenant.plan_checkout_start",
-                    target("tenant", scope.tenant_id, tenant.row.name.clone()),
-                    &format!("Started the checkout for {}", plan.0.id),
-                )
-                .await?;
-                Some(url)
-            }
-        };
-        tx.commit().await?;
+        let change = &change;
+        let checkout_url = write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let checkout_url = match change {
+                PlanChange::Applied => {
+                    tx.update(
+                        &keys::tenant_key(scope.tenant_id),
+                        Update::new()
+                            .set("plan_id", s(&plan.0.id))
+                            .set("updated_at", s(&format_time(now(ctx)))),
+                    )?;
+                    audit_member(
+                        ctx,
+                        &mut tx,
+                        member_id,
+                        "tenant.plan_change",
+                        target("tenant", scope.tenant_id, tenant.row.name.clone()),
+                        &format!(
+                            "Changed the plan from {} to {}",
+                            tenant.row.plan_id, plan.0.id
+                        ),
+                    )
+                    .await?;
+                    None
+                }
+                PlanChange::Checkout { url } => {
+                    audit_member(
+                        ctx,
+                        &mut tx,
+                        member_id,
+                        "tenant.plan_checkout_start",
+                        target("tenant", scope.tenant_id, tenant.row.name.clone()),
+                        &format!("Started the checkout for {}", plan.0.id),
+                    )
+                    .await?;
+                    Some(url.clone())
+                }
+            };
+            tx.commit().await?;
+            Ok(checkout_url)
+        })
+        .await?;
         Ok(ChangePlanPayload {
             tenant: Tenant::load(ctx, scope).await?,
             checkout_url,
@@ -1270,17 +1448,21 @@ impl MutationRoot {
             .billing_portal(scope.tenant_id)
             .await
             .map_err(port)?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "billing.portal_open",
-            target("tenant", scope.tenant_id, "billing"),
-            "Opened the billing portal",
-        )
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "billing.portal_open",
+                target("tenant", scope.tenant_id, "billing"),
+                "Opened the billing portal",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
         .await?;
-        tx.commit().await?;
         Ok(RedirectPayload { url })
     }
 
@@ -1310,17 +1492,21 @@ impl MutationRoot {
             .publish(scope.tenant_id, &file_name, body)
             .await
             .map_err(port)?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        audit_member(
-            ctx,
-            &mut tx,
-            member_id,
-            "audit_log.export",
-            target("tenant", scope.tenant_id, file_name.clone()),
-            &format!("Exported {} audit events", events.len()),
-        )
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "audit_log.export",
+                target("tenant", scope.tenant_id, file_name.clone()),
+                &format!("Exported {} audit events", events.len()),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
         .await?;
-        tx.commit().await?;
         Ok(RedirectPayload { url })
     }
 
@@ -1330,7 +1516,6 @@ impl MutationRoot {
         tenant_id: ID,
         reason: String,
     ) -> Result<Tenant> {
-        let tenant_id = parse_id(&tenant_id)?;
         if !is_operator(ctx).await? {
             return Err(forbidden("only operators can suspend tenants"));
         }
@@ -1338,53 +1523,40 @@ impl MutationRoot {
         if reason.is_empty() {
             return Err(bad_input("suspending a tenant needs a reason"));
         }
-        let mut tx = tenant_tx(ctx, tenant_id).await?;
-        let name = sqlx::query_scalar::<_, String>(
-            "UPDATE sanchoris.tenants SET status = 'suspended', suspended_reason = $2, updated_at = $3 \
-             WHERE id = $1 AND status = 'active' RETURNING name",
-        )
-        .bind(tenant_id)
-        .bind(&reason)
-        .bind(now(ctx))
-        .fetch_optional(tx.conn())
-        .await?
-        .ok_or_else(|| conflict("the tenant does not exist or is already suspended"))?;
-        audit_operator(
+        suspend_or_resume(
             ctx,
-            &mut tx,
-            "tenant.suspend",
-            target("tenant", tenant_id, name),
+            &tenant_id,
+            "active",
+            Update::new().set("suspended_reason", s(&reason)),
+            "suspend",
             &format!("Suspended the tenant: {reason}"),
         )
-        .await?;
-        tx.commit().await?;
-        Tenant::load(ctx, scope_for_tenant(ctx, tenant_id).await?).await
+        .await
     }
 
     async fn unsuspend_tenant(&self, ctx: &Context<'_>, tenant_id: ID) -> Result<Tenant> {
-        let tenant_id = parse_id(&tenant_id)?;
         if !is_operator(ctx).await? {
             return Err(forbidden("only operators can unsuspend tenants"));
         }
-        let mut tx = tenant_tx(ctx, tenant_id).await?;
-        let name = sqlx::query_scalar::<_, String>(
-            "UPDATE sanchoris.tenants SET status = 'active', suspended_reason = NULL, updated_at = $2 \
-             WHERE id = $1 AND status = 'suspended' RETURNING name",
-        )
-        .bind(tenant_id)
-        .bind(now(ctx))
-        .fetch_optional(tx.conn())
-        .await?
-        .ok_or_else(|| conflict("the tenant does not exist or is not suspended"))?;
-        audit_operator(
+        suspend_or_resume(
             ctx,
-            &mut tx,
-            "tenant.unsuspend",
-            target("tenant", tenant_id, name),
+            &tenant_id,
+            "suspended",
+            Update::new().remove("suspended_reason"),
+            "unsuspend",
             "Unsuspended the tenant",
         )
-        .await?;
-        tx.commit().await?;
-        Tenant::load(ctx, scope_for_tenant(ctx, tenant_id).await?).await
+        .await
     }
+}
+
+fn member_key_of(member: &items::Member) -> sanchoris_core::item::Key {
+    keys::member_key(member.tenant_id, member.id)
+}
+
+async fn locate_task(ctx: &Context<'_>, task_id: Uuid) -> Result<(Scope, TaskItem)> {
+    locate_item::<TaskItem>(ctx, "task", task_id, |tenant| {
+        keys::task_key(tenant, task_id)
+    })
+    .await
 }
