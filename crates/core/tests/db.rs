@@ -56,7 +56,9 @@ async fn create_task(
 
 async fn dispatch(pool: &PgPool, tenant_id: Uuid) -> Vec<db::DispatchedTask> {
     let mut tx = TenantTx::begin(pool, tenant_id).await.unwrap();
-    let dispatched = db::dispatch_pending_tasks(&mut tx).await.unwrap();
+    let dispatched = db::dispatch_pending_tasks(&mut tx, Utc::now())
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     dispatched
 }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/backend", "crates/config", "crates/engine", "crates/core"]
+members = ["crates/backend", "crates/config", "crates/engine", "crates/core", "crates/worker"]
 resolver = "2"
 
 [workspace.package]
@@ -11,6 +11,7 @@ repository = "https://github.com/conao3/sanchoris"
 sanchoris-config = { path = "crates/config" }
 sanchoris-engine = { path = "crates/engine" }
 sanchoris-core = { path = "crates/core" }
+sanchoris-worker = { path = "crates/worker" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml_ng = "0.10"

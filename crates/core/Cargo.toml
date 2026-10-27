@@ -15,7 +15,9 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+hmac = "0.13"
+sha2 = "0.11"
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "macros", "uuid", "chrono", "json", "tls-rustls"] }
 tempfile = { version = "3", optional = true }
 

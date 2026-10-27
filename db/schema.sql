@@ -38,17 +38,24 @@ CREATE TABLE IF NOT EXISTS sanchoris.plans (
     max_concurrency integer NOT NULL CHECK (max_concurrency > 0),
     retention_days integer NOT NULL CHECK (retention_days > 0),
     audit_retention_days integer NOT NULL CHECK (audit_retention_days > 0),
+    max_task_turns integer NOT NULL CHECK (max_task_turns > 0),
+    max_task_cost_usd numeric(10, 2) NOT NULL CHECK (max_task_cost_usd > 0),
+    max_task_timeout_seconds bigint NOT NULL CHECK (max_task_timeout_seconds > 0),
+    max_idle_seconds bigint NOT NULL CHECK (max_idle_seconds > 0),
+    max_children_depth integer NOT NULL CHECK (max_children_depth >= 0),
+    max_children_count integer NOT NULL CHECK (max_children_count >= 0),
+    computes text[] NOT NULL CHECK (computes <@ ARRAY['standard', 'docker']::text[]),
     stripe_price_id text UNIQUE,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-INSERT INTO sanchoris.plans (id, name, price_cents, currency, billing_unit, task_limit, task_limit_period, workspace_seconds_limit, workspace_limit_period, member_limit, max_concurrency, retention_days, audit_retention_days)
+INSERT INTO sanchoris.plans (id, name, price_cents, currency, billing_unit, task_limit, task_limit_period, workspace_seconds_limit, workspace_limit_period, member_limit, max_concurrency, retention_days, audit_retention_days, max_task_turns, max_task_cost_usd, max_task_timeout_seconds, max_idle_seconds, max_children_depth, max_children_count, computes)
 VALUES
-    ('free', 'Free', 0, 'usd', 'tenant', 5, 'total', 36000, 'total', 1, 1, 30, 30),
-    ('starter', 'Starter', 2000, 'usd', 'tenant', 10, 'month', 180000, 'month', 3, 2, 90, 365),
-    ('pro', 'Pro', 10000, 'usd', 'tenant', 50, 'month', 900000, 'month', 10, 5, 90, 365),
-    ('max', 'Max', 20000, 'usd', 'tenant', 200, 'month', 1800000, 'month', 30, 10, 90, 365)
+    ('free', 'Free', 0, 'usd', 'tenant', 5, 'total', 36000, 'total', 1, 1, 30, 30, 100, 20, 86400, 1800, 1, 5, ARRAY['standard']),
+    ('starter', 'Starter', 2000, 'usd', 'tenant', 10, 'month', 180000, 'month', 3, 2, 90, 365, 200, 50, 86400, 3600, 2, 10, ARRAY['standard', 'docker']),
+    ('pro', 'Pro', 10000, 'usd', 'tenant', 50, 'month', 900000, 'month', 10, 5, 90, 365, 200, 100, 86400, 3600, 3, 20, ARRAY['standard', 'docker']),
+    ('max', 'Max', 20000, 'usd', 'tenant', 200, 'month', 1800000, 'month', 30, 10, 90, 365, 400, 200, 172800, 7200, 3, 50, ARRAY['standard', 'docker'])
 ON CONFLICT (id) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS sanchoris.users (
@@ -298,6 +305,7 @@ CREATE TABLE IF NOT EXISTS sanchoris.tasks (
     definition jsonb NOT NULL,
     parent_task_id uuid REFERENCES sanchoris.tasks(id) ON DELETE SET NULL,
     channel jsonb,
+    start_payload jsonb,
     requested_by_member_id uuid REFERENCES sanchoris.members(id) ON DELETE SET NULL,
     error text,
     cause text,
@@ -449,8 +457,103 @@ CREATE TABLE IF NOT EXISTS sanchoris.due_jobs (
     ref_id uuid NOT NULL,
     due_at timestamptz NOT NULL,
     attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (kind, ref_id)
+);
+
+CREATE TABLE IF NOT EXISTS sanchoris.inbound_events (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES sanchoris.tenants(id) ON DELETE CASCADE,
+    source text NOT NULL CHECK (source IN ('github', 'slack', 'web', 'schedule')),
+    key text NOT NULL,
+    event jsonb NOT NULL,
+    received_at timestamptz NOT NULL DEFAULT now(),
+    processed_at timestamptz,
+    UNIQUE (tenant_id, source, key)
+);
+
+CREATE TABLE IF NOT EXISTS sanchoris.run_events (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES sanchoris.tenants(id) ON DELETE CASCADE,
+    run_id uuid NOT NULL REFERENCES sanchoris.runs(id) ON DELETE CASCADE,
+    seq bigint,
+    type text NOT NULL CHECK (type IN ('ready', 'turn_end', 'rate_limit', 'heartbeat', 'session_record', 'exec_result', 'human_reply')),
+    payload jsonb NOT NULL,
+    received_at timestamptz NOT NULL DEFAULT now(),
+    processed_at timestamptz,
+    error text,
+    UNIQUE (run_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS sanchoris.run_outbox (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES sanchoris.tenants(id) ON DELETE CASCADE,
+    run_id uuid NOT NULL REFERENCES sanchoris.runs(id) ON DELETE CASCADE,
+    seq bigint GENERATED ALWAYS AS IDENTITY,
+    type text NOT NULL CHECK (type IN ('start', 'user_message', 'exec', 'interrupt', 'shutdown', 'chat_post')),
+    payload jsonb NOT NULL,
+    dedupe_key text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    delivered_at timestamptz,
+    UNIQUE (run_id, dedupe_key)
+);
+
+CREATE TABLE IF NOT EXISTS sanchoris.resource_invocations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES sanchoris.tenants(id) ON DELETE CASCADE,
+    skill_run_id uuid NOT NULL REFERENCES sanchoris.skill_runs(id) ON DELETE CASCADE,
+    idempotency_key text NOT NULL,
+    resource text NOT NULL,
+    invocation jsonb NOT NULL,
+    status text NOT NULL CHECK (status IN ('pending', 'awaiting', 'done')),
+    result jsonb,
+    attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    completed_at timestamptz,
+    UNIQUE (skill_run_id, idempotency_key),
+    CHECK ((status = 'done') = (completed_at IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS sanchoris.check_waits (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES sanchoris.tenants(id) ON DELETE CASCADE,
+    skill_run_id uuid NOT NULL REFERENCES sanchoris.skill_runs(id) ON DELETE CASCADE,
+    task_token text NOT NULL,
+    repos jsonb NOT NULL,
+    head_shas jsonb NOT NULL DEFAULT '{}'::jsonb,
+    status text NOT NULL CHECK (status IN ('waiting', 'done')),
+    next_poll_at timestamptz NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    completed_at timestamptz,
+    UNIQUE (skill_run_id, task_token),
+    CHECK ((status = 'done') = (completed_at IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS sanchoris.approval_waits (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES sanchoris.tenants(id) ON DELETE CASCADE,
+    task_id uuid NOT NULL REFERENCES sanchoris.tasks(id) ON DELETE CASCADE,
+    skill_run_id uuid NOT NULL REFERENCES sanchoris.skill_runs(id) ON DELETE CASCADE,
+    task_token text NOT NULL,
+    message text NOT NULL,
+    status text NOT NULL CHECK (status IN ('waiting', 'approved', 'rejected')),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    resolved_at timestamptz,
+    UNIQUE (skill_run_id, task_token),
+    CHECK ((status = 'waiting') = (resolved_at IS NULL))
+);
+
+CREATE TABLE IF NOT EXISTS sanchoris.usage_alerts (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES sanchoris.tenants(id) ON DELETE CASCADE,
+    period_start timestamptz NOT NULL,
+    metric text NOT NULL CHECK (metric IN ('tasks', 'workspace_seconds')),
+    threshold_percent integer NOT NULL CHECK (threshold_percent > 0),
+    used bigint NOT NULL,
+    limit_value bigint NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, period_start, metric, threshold_percent)
 );
 
 CREATE INDEX IF NOT EXISTS members_tenant_idx ON sanchoris.members (tenant_id);
@@ -473,6 +576,11 @@ CREATE INDEX IF NOT EXISTS state_entries_skill_run_sequence_idx ON sanchoris.sta
 CREATE INDEX IF NOT EXISTS outputs_skill_run_idx ON sanchoris.outputs (skill_run_id);
 CREATE INDEX IF NOT EXISTS usage_run_idx ON sanchoris.usage (run_id);
 CREATE INDEX IF NOT EXISTS due_jobs_due_at_idx ON sanchoris.due_jobs (due_at);
+CREATE INDEX IF NOT EXISTS inbound_events_unprocessed_idx ON sanchoris.inbound_events (received_at) WHERE processed_at IS NULL;
+CREATE INDEX IF NOT EXISTS run_events_unprocessed_idx ON sanchoris.run_events (received_at) WHERE processed_at IS NULL;
+CREATE INDEX IF NOT EXISTS run_outbox_undelivered_idx ON sanchoris.run_outbox (run_id, seq) WHERE delivered_at IS NULL;
+CREATE INDEX IF NOT EXISTS resource_invocations_pending_idx ON sanchoris.resource_invocations (created_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS check_waits_waiting_idx ON sanchoris.check_waits (next_poll_at) WHERE status = 'waiting';
 
 CREATE OR REPLACE TRIGGER audit_events_reject_update_delete
     BEFORE UPDATE OR DELETE ON sanchoris.audit_events
@@ -491,7 +599,8 @@ BEGIN
         'integrations', 'configs', 'config_revisions', 'projects', 'repositories',
         'sessions', 'skills', 'triggers', 'trigger_events', 'tasks', 'task_dependencies',
         'change_requests', 'runs', 'workspaces', 'skill_runs', 'state_entries',
-        'outputs', 'usage', 'due_jobs'
+        'outputs', 'usage', 'due_jobs', 'inbound_events', 'run_events', 'run_outbox',
+        'resource_invocations', 'check_waits', 'approval_waits', 'usage_alerts'
     ]
     LOOP
         EXECUTE format('ALTER TABLE sanchoris.%I ENABLE ROW LEVEL SECURITY', table_name);
