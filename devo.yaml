@@ -11,4 +11,4 @@ tasks:
     cmd: >-
       bash -c 'until (exec 3<>/dev/tcp/127.0.0.1/${SANCHORIS_DYNAMO_PORT:?set SANCHORIS_DYNAMO_PORT}) 2>/dev/null; do
       echo "waiting for DynamoDB Local..."; sleep 1; done;
-      PORTLESS_HTTPS=1 exec pnpm dev'
+      exec pnpm dev'

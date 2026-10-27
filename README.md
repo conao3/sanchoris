@@ -37,7 +37,10 @@ pnpm dev
 
 Dev targets DynamoDB Local, **Cognito Hosted UI** login, and a GitHub App, so the environment must be set first (see [Environment](#environment)). `pnpm dev` fails fast with the list of missing variables.
 
-The dev command creates the DynamoDB tables at startup (`pnpm dynamo:create`), builds the frontend for the api's fallback (`apps/frontend/dist`), then runs `sanchoris all` (through `cargo watch`) on an internal free port, starts Vite through portless, and proxies `/api`, `/auth/github`, `/webhooks`, `/records`, and `/runs` through the same frontend host. Local workspaces are processes started by the worker under `.sanchoris/dev/workspaces`, and session records are stored under `.sanchoris/dev/records`. By default, local development uses plain HTTP on an unprivileged port so it works without sudo or TLS setup.
+The dev command creates the DynamoDB tables at startup (`pnpm dynamo:create`), builds the frontend for the api's fallback (`apps/frontend/dist`), then runs `sanchoris all` (through `cargo watch`) on an internal free port, starts Vite through portless, and proxies `/api`, `/auth/github`, `/webhooks`, `/records`, and `/runs` through the same frontend host. Local workspaces are processes started by the worker under `.sanchoris/dev/workspaces`, and session records are stored under `.sanchoris/dev/records`. Vite registers its route with the host's portless proxy, which serves HTTPS on port 443 with a locally trusted CA and must already run as a system service:
+
+- Main worktree: `https://sanchoris.localhost/`
+- Linked worktree, e.g. branch `fix-health`: `https://fix-health.sanchoris.localhost/`
 
 A local workspace runs `apps/workspace-agent` with Claude Code, so the dev environment also needs `CLAUDE_CONFIG_DIR` and `SANCHORIS_CLAUDE_PATH` (see `apps/workspace-agent/PROTOCOL.md`) and a `sanchoris` command on `PATH`.
 
@@ -93,7 +96,7 @@ Secrets (the rows marked *secret*) come from the environment in `sanchoris all` 
 | `SANCHORIS_WORK_QUEUE_URL`, `SANCHORIS_WORK_QUEUE_ARN`, `SANCHORIS_SCHEDULE_GROUP`, `SANCHORIS_SCHEDULER_ROLE_ARN` | relay | The SQS FIFO work queue and the EventBridge Scheduler group and role that deliver delayed jobs to it |
 | `SANCHORIS_BIND_ADDR` | `sanchoris all` | Listen address, e.g. `127.0.0.1:8080` (set by `pnpm dev`) |
 | `SANCHORIS_FRONTEND_DIR` | `sanchoris all` | Built frontend (`apps/frontend/dist`, built and set by `pnpm dev`); the api Lambda embeds it instead |
-| `SANCHORIS_PUBLIC_URL` | api | Public origin, e.g. `http://sanchoris.localhost:1355`; OAuth redirects, Stripe return URLs, and local record URLs start with it |
+| `SANCHORIS_PUBLIC_URL` | api | Public origin, e.g. `https://sanchoris.localhost`; OAuth redirects, Stripe return URLs, and local record URLs start with it |
 | `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` | api | aws-infra-k8s exports `dev-k8s-UserPool` and `dev-k8s-SanchorisUserPoolClient` (the region is the pool-id prefix) |
 | `VITE_COGNITO_DOMAIN`, `VITE_COGNITO_CLIENT_ID` | frontend (`pnpm dev`, `pnpm build:lambda`) | Hosted UI domain (host only, dev `dev-auth-k8s.sancode.dev`) and the same client id |
 | `GITHUB_URL` | api | `https://github.com` |
@@ -153,11 +156,11 @@ Login mirrors sanplan: Cognito Hosted UI (OAuth2 authorization-code, no Amplify)
 
 > **Prerequisite (separate repo).** The sanchoris app client of the shared
 > user pool (aws-infra-k8s `cognito.clj`, export
-> `<prefix>-SanchorisUserPoolClient`) allows callback
+> `dev-k8s-SanchorisUserPoolClient`) allows callback
 > `<origin>/auth/callback` and logout `<origin>/login` for
-> `http://sanchoris.localhost:1355` and the deployed origin. Deploy the
-> `dev-k8s-cognito` stack with it before signing in; until then the Hosted UI
-> rejects the `redirect_uri`.
+> `https://sanchoris.localhost` and `https://dev-sanchoris.sancode.dev`. The
+> Hosted UI rejects every other `redirect_uri`, so sign in on the main
+> worktree's origin.
 
 ### DynamoDB Local
 
@@ -172,16 +175,7 @@ pnpm dynamo:create
 
 The Rust tests start their own in-memory DynamoDB Local on a free port (`sanchoris_core::testing::TestDynamo`) and create uniquely named tables per test.
 
-- Main worktree: `http://sanchoris.localhost:1355/`
-- Linked worktree, e.g. branch `fix-health`: `http://fix-health.sanchoris.localhost:1355/`
-
 The frontend GraphQL documents live in `apps/frontend/src/graphql/` (`schema.graphql`, `mvp-shell.graphql`, and the GraphQL Code Generator output in `generated/`).
-
-If you want clean HTTPS URLs without port numbers, start portless with TLS explicitly:
-
-```sh
-PORTLESS_HTTPS=1 PORTLESS_PORT=443 pnpm dev
-```
 
 ## End-to-end test
 

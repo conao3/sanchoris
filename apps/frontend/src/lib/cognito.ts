@@ -3,7 +3,7 @@ import { env } from './env';
 const COGNITO_DOMAIN = env.cognitoDomain;
 const CLIENT_ID = env.cognitoClientId;
 
-// Redirect URI is derived from the current origin (e.g. http://sanchoris.localhost:1355
+// Redirect URI is derived from the current origin (e.g. https://sanchoris.localhost
 // in dev). It is NOT an env var; it must exactly match the Cognito app client CallbackURL.
 const REDIRECT_URI = `${window.location.origin}/auth/callback`;
 

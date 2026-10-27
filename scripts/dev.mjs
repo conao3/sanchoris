@@ -203,8 +203,6 @@ run(
   'pnpm',
   ['--filter', '@sanchoris/frontend', 'dev'],
   {
-    PORTLESS_HTTPS: process.env.PORTLESS_HTTPS ?? '0',
-    PORTLESS_PORT: process.env.PORTLESS_PORT ?? '1355',
     VITE_BACKEND_URL: backendUrl,
     // Cognito Hosted UI config baked into the Vite client (import.meta.env.VITE_*).
     VITE_COGNITO_DOMAIN: process.env.VITE_COGNITO_DOMAIN,
