@@ -12,12 +12,12 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     proxy: backendUrl
-      ? {
-          '/api': {
-            target: backendUrl,
-            changeOrigin: true,
-          },
-        }
+      ? Object.fromEntries(
+          ['/api', '/auth/github', '/webhooks', '/records', '/runs'].map((path) => [
+            path,
+            { target: backendUrl, changeOrigin: true, ws: path === '/runs' },
+          ]),
+        )
       : undefined,
   },
 });

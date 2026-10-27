@@ -8,7 +8,8 @@
     "db:schema:check": "node scripts/db-schema-check.mjs",
     "build": "pnpm --filter @sanchoris/frontend build",
     "lint": "pnpm --filter @sanchoris/frontend lint",
-    "check": "pnpm --filter @sanchoris/frontend check && pnpm --filter @sanchoris/workspace-agent check && pnpm run db:schema:check"
+    "check": "pnpm --filter @sanchoris/frontend check && pnpm --filter @sanchoris/workspace-agent check && pnpm run db:schema:check",
+    "e2e": "cargo test -p sanchoris-api --test e2e"
   },
   "devDependencies": {
     "portless": "^0.15.11"

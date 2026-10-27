@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import net from 'node:net';
+import { join, resolve } from 'node:path';
 
 function loadDotenvIfExists(path = '.env') {
   if (!existsSync(path)) {
@@ -25,7 +26,10 @@ function loadDotenvIfExists(path = '.env') {
       continue;
     }
 
-    process.env[key] = rawValue.replace(/^(['"])(.*)\1$/, '$2');
+    const doubleQuoted = /^"(.*)"$/.exec(rawValue);
+    process.env[key] = doubleQuoted
+      ? doubleQuoted[1].replace(/\\n/g, '\n')
+      : rawValue.replace(/^'(.*)'$/, '$1');
   }
 }
 
@@ -110,15 +114,32 @@ function stopAll() {
 loadDotenvIfExists('.env.local');
 loadDotenvIfExists('.env');
 
-// Backend and frontend require Cognito config to start. Fail loudly here so a
-// missing var is obvious rather than surfacing as a deep panic in the backend or
-// a blank Hosted UI redirect.
+// The api, the worker, and the frontend require this config to start. Fail loudly
+// here so a missing var is obvious rather than surfacing as a startup error in
+// the sanchoris binary or a blank Hosted UI redirect.
 const requiredEnv = [
   'DATABASE_URL',
   'COGNITO_USER_POOL_ID',
   'COGNITO_CLIENT_ID',
   'VITE_COGNITO_DOMAIN',
   'VITE_COGNITO_CLIENT_ID',
+  'SANCHORIS_PUBLIC_URL',
+  'GITHUB_URL',
+  'GITHUB_API_URL',
+  'GITHUB_APP_ID',
+  'GITHUB_APP_PRIVATE_KEY',
+  'GITHUB_APP_CLIENT_ID',
+  'GITHUB_APP_CLIENT_SECRET',
+  'GITHUB_WEBHOOK_SECRET',
+  'STRIPE_WEBHOOK_SECRET',
+  'RUN_TOKEN_SIGNING_KEY',
+  'TASK_TOKEN_SIGNING_KEY',
+  'OAUTH_STATE_SIGNING_KEY',
+  'SANCHORIS_RECORDS_STORE',
+  'SANCHORIS_GIT_URL',
+  ...(process.env.SANCHORIS_RECORDS_STORE === 's3'
+    ? ['AWS_REGION', 'S3_RECORDS_BUCKET', 'KMS_KEY_PREFIX']
+    : ['RECORDS_SIGNING_KEY']),
 ];
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 if (missingEnv.length > 0) {
@@ -136,22 +157,25 @@ let shuttingDown = false;
 
 const backendPort = await findAvailablePort();
 const backendUrl = `http://127.0.0.1:${backendPort}`;
+const devDir = resolve('.sanchoris/dev');
+for (const dir of ['records', 'sockets', 'workspaces']) {
+  mkdirSync(join(devDir, dir), { recursive: true });
+}
 
-console.log(`sanchoris dev backend: ${backendUrl}`);
-console.log('sanchoris dev frontend: managed by portless on http://sanchoris.localhost:1355 by default');
+console.log(`sanchoris dev api: ${backendUrl}`);
+console.log(`sanchoris dev public origin: ${process.env.SANCHORIS_PUBLIC_URL}`);
 
 run(
-  'backend',
+  'api',
   'cargo',
-  ['watch', '-x', 'run -p sanchoris-backend'],
+  ['watch', '-x', 'run -p sanchoris-api --bin sanchoris -- all'],
   {
-    PORT: String(backendPort),
-    SANCHORIS_BACKEND_ADDR: `127.0.0.1:${backendPort}`,
-    // Explicit pass-through so the stateless-JWT + JIT-provisioning backend has
-    // its required config (env::load .expect()s each of these at startup).
-    DATABASE_URL: process.env.DATABASE_URL,
-    COGNITO_USER_POOL_ID: process.env.COGNITO_USER_POOL_ID,
-    COGNITO_CLIENT_ID: process.env.COGNITO_CLIENT_ID,
+    SANCHORIS_BIND_ADDR: `127.0.0.1:${backendPort}`,
+    SANCHORIS_CONTROL_URL: `ws://127.0.0.1:${backendPort}/runs/channel`,
+    SANCHORIS_WORKSPACE_COMMAND: `node --no-warnings ${resolve('apps/workspace-agent/src/bin/workspace-agent.ts')}`,
+    SANCHORIS_SOCKET_DIR: join(devDir, 'sockets'),
+    SANCHORIS_WORKSPACES_DIR: join(devDir, 'workspaces'),
+    ...(process.env.SANCHORIS_RECORDS_STORE === 's3' ? {} : { SANCHORIS_RECORDS_DIR: join(devDir, 'records') }),
   },
 );
 

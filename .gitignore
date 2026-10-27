@@ -11,3 +11,6 @@ dist/
 
 # Symphony orchestrator runtime
 /log/
+
+# Local dev state (records, sockets, workspaces, codex runs)
+/.sanchoris/

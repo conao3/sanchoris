@@ -5,7 +5,7 @@ use tokio::sync::watch;
 
 const USAGE: &str = "Usage: sanchoris <serve|worker|all>
 
-  serve   Run the HTTP API (GraphQL, webhooks, GitHub OAuth, Run channel, records)
+  serve   Run the HTTP API (webhooks, GitHub OAuth, approvals, Run channel, records)
   worker  Run the background loops
   all     Run both in one process (local development)";
 

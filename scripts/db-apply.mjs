@@ -30,3 +30,4 @@ if (reset) {
   psql(['--command', 'DROP SCHEMA IF EXISTS sanchoris CASCADE']);
 }
 psql(['--file', schemaPath]);
+psql(['--command', 'GRANT sanchoris_worker TO CURRENT_USER']);
