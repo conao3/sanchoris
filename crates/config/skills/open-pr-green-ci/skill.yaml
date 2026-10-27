@@ -1,0 +1,84 @@
+Comment: Push the branch, open pull requests, and hand CI failures back to the agent until the checks pass
+Inputs: { Repos: array, Repo: string, Issue: number }
+StartAt: Init
+TimeoutSeconds: 14400
+States:
+  Init:
+    Type: Pass
+    Result: { Count: 0 }
+    ResultPath: $.fixes
+    Next: Push
+  Push:
+    Type: Task
+    Resource: sanchoris:::git:push
+    Parameters: { Repos.$: $.Repos }
+    TimeoutSeconds: 300
+    Retry:
+      - ErrorEquals: [States.TaskFailed]
+        IntervalSeconds: 10
+        MaxAttempts: 3
+        BackoffRate: 2
+    Next: OpenPRs
+  OpenPRs:
+    Type: Task
+    Resource: sanchoris:::github:createPullRequests
+    Parameters: { Repos.$: $.Repos }
+    ResultPath: $.pullRequests
+    TimeoutSeconds: 120
+    Next: WaitChecks
+  WaitChecks:
+    Type: Task
+    Resource: sanchoris:::github:checks.waitForTaskToken
+    Parameters: { Repos.$: $.Repos, TaskToken.$: $$.Task.Token }
+    ResultPath: $.checks
+    TimeoutSeconds: 3600
+    Next: Green
+  Green:
+    Type: Choice
+    Choices:
+      - Variable: $.checks.Conclusion
+        StringEquals: success
+        Next: Report
+      - Variable: $.fixes.Count
+        NumericGreaterThanEquals: 3
+        Next: GiveUp
+    Default: HandOff
+  HandOff:
+    Type: Task
+    Resource: sanchoris:::agent:handoff.waitForTaskToken
+    Parameters:
+      Instruction.$: "States.Format('CI failed on {}. Fix it, commit, and continue this skill. Log: {}', $.checks.Failed, $.checks.Log)"
+      TaskToken.$: $$.Task.Token
+    TimeoutSeconds: 3600
+    HeartbeatSeconds: 900
+    ResultPath: null
+    Next: CountFix
+  CountFix:
+    Type: Pass
+    Parameters: { "Count.$": "States.MathAdd($.fixes.Count, 1)" }
+    ResultPath: $.fixes
+    Next: Push
+  GiveUp:
+    Type: Fail
+    Error: Skill.FixesExhausted
+    Cause: The checks still fail after 3 fixes
+  Report:
+    Type: Task
+    Resource: sanchoris:::github:commentOnIssue
+    Parameters:
+      Repo.$: $.Repo
+      Number.$: $.Issue
+      Mode: update
+      Body.$: "States.Format('Pull requests are open and the checks pass: {}', $.pullRequests)"
+    TimeoutSeconds: 60
+    End: true
+Layout:
+  Init: { x: 40, y: 120 }
+  Push: { x: 240, y: 120 }
+  OpenPRs: { x: 440, y: 120 }
+  WaitChecks: { x: 640, y: 120 }
+  Green: { x: 840, y: 120 }
+  Report: { x: 1040, y: 120 }
+  HandOff: { x: 840, y: 300 }
+  CountFix: { x: 640, y: 300 }
+  GiveUp: { x: 1040, y: 300 }
