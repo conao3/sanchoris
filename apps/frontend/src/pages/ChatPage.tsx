@@ -143,7 +143,8 @@ function Thread({ task, tenant }: { task: ChatTask; tenant: Tenant }) {
 function NewChat({ tenant, scope, onPickScope }: { tenant: Tenant; scope?: string; onPickScope: () => void }) {
   const navigate = useNavigate();
   const [send, { error }] = useMutation(SendChatMessageDocument, { refetchQueries: [ChatDocument] });
-  const option = scopes(tenant).find((item) => item.value === scope);
+  const options = scopes(tenant);
+  const option = options.find((item) => item.value === scope);
   return (
     <>
       <Title>{t('chat.newChat')}</Title>
@@ -151,6 +152,10 @@ function NewChat({ tenant, scope, onPickScope }: { tenant: Tenant; scope?: strin
         {option ? (
           <>
             {t('chat.scopeIs', { scope: option.label })} · {option.detail}
+          </>
+        ) : options.length === 0 ? (
+          <>
+            {t('chat.noScopes')} <Lk to="/triggers">{t('nav.triggers')}</Lk>
           </>
         ) : (
           <button type="button" className="underline decoration-line2 underline-offset-[3px]" onClick={onPickScope}>
@@ -250,7 +255,7 @@ export function ChatPage() {
               label={t('chat.scope')}
               title={t('chat.startIn')}
               align="right"
-              open={scopeOpen}
+              open={scopeOpen && scopes(tenant).length > 0}
               onOpenChange={setScopeOpen}
               value={scope}
               options={scopes(tenant)}

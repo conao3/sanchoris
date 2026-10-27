@@ -294,6 +294,7 @@
   "chat.scopeProjectDetail": "Starts in {repos}.",
   "chat.scopeIs": "Scope: {scope}",
   "chat.pickScope": "Pick a scope to start the chat.",
+  "chat.noScopes": "No chat trigger is on. A chat starts in the scope of an enabled trigger with source web; add one to your config from",
   "chat.newChat": "New chat",
   "chat.web": "Web",
   "chat.slack": "Slack",

@@ -294,6 +294,7 @@
   "chat.scopeProjectDetail": "{repos} で始まります。",
   "chat.scopeIs": "範囲: {scope}",
   "chat.pickScope": "範囲を選んでチャットを始めます。",
+  "chat.noScopes": "有効なチャットのトリガーがありません。チャットは source が web の有効なトリガーの範囲で始まります。設定リポジトリへの追加はこちらから:",
   "chat.newChat": "新しいチャット",
   "chat.web": "Web",
   "chat.slack": "Slack",
