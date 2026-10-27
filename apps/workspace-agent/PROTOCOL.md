@@ -41,7 +41,8 @@ The worker runs with the agent's environment, so `sanchoris` must be on `PATH`.
 | `start` | `agent`, `model`, `systemPrompt`, `skills`, `instruction`, `resume`, `heartbeatSeconds` | Start (or restore) the agent session. Sent once per agent process, after `hello` with `started: false` |
 | `user_message` | `messageId`, `text` | A user turn: `[sanchoris]` notifications, a person's reply, "Continue where you left off.", chat messages |
 | `interrupt` | | Interrupt the current turn. The turn ends with `turn_end` `result: "interrupted"` |
-| `shutdown` | `reason` | Finish: the agent waits for the in-flight record upload, stops the worker, waits up to 10 s for all `ack`s, closes with code 1000, and exits 0 |
+| `shutdown` | `reason` | Finish: the agent waits for the in-flight record upload and commands, stops the worker, waits up to 10 s for all `ack`s, closes with code 1000, and exits 0 |
+| `exec` | `requestId`, `purpose`, `commands` | Run shell commands in the workspace for a skill (`purpose`: `git_push` for `git:push`, `exec` for `workspace:exec`). The agent answers with `exec_result` |
 | `skill_response` | `requestId`, `ok`, `result` or `error` | Reply to `skill_request` |
 | `record_upload_response` | `requestId`, `ok`, `url`, `headers`, `key` or `error` | Reply to `record_upload_request` |
 | `ack` | `seq` | Cumulative acknowledgement of outbound messages |
@@ -99,6 +100,10 @@ The worker runs with the agent's environment, so `sanchoris` must be on `PATH`.
 ```
 
 ```json
+{ "type": "exec", "runId": "42", "requestId": "3d0f8f6e-6b8e-4d7a-9b1c-2a4e5f6a7b80", "purpose": "git_push", "commands": ["git -C 'shop-web' push origin 'HEAD:refs/heads/sanchoris/7c1e2d3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f'"] }
+```
+
+```json
 { "type": "shutdown", "runId": "42", "reason": "idle for 900 seconds" }
 ```
 
@@ -143,6 +148,7 @@ The worker runs with the agent's environment, so `sanchoris` must be on `PATH`.
 | `record_upload_request` | yes | `requestId`, `sessionId`, `turn`, `contentLength`, `sha256` | Asks for a presigned PUT URL for the session record after a turn |
 | `session_record` | yes | `sessionId`, `turn`, `key`, `relativePath`, `contentLength`, `sha256` | The record of `turn` has been uploaded to `key` |
 | `turn_end` | yes | `turn`, `sessionId`, `result`, `summary`, `error`, `usage`, `totalCostUsd`, `durationMs` | A turn ended |
+| `exec_result` | yes | `requestId`, `ok`, `results` | The outcome of `exec` |
 
 Field details:
 
@@ -241,6 +247,21 @@ Field details:
   "durationMs": 912
 }
 ```
+
+```json
+{
+  "type": "exec_result",
+  "runId": "42",
+  "seq": 31,
+  "requestId": "3d0f8f6e-6b8e-4d7a-9b1c-2a4e5f6a7b80",
+  "ok": true,
+  "results": [{ "command": "git -C 'shop-web' push origin 'HEAD:refs/heads/sanchoris/7c1e2d3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f'", "exitCode": 0, "stdout": "", "stderr": "" }]
+}
+```
+
+## Commands (`exec`)
+
+The control plane sends `exec` when a skill state runs commands in the workspace (`git:push`, `workspace:exec`). The agent runs `commands` one at a time with `/bin/sh -c`, in `SANCHORIS_WORKSPACE_DIR` (each repository is cloned into a directory named after the repository), with the agent's environment. It stops at the first command that exits non-zero and sends `exec_result`: `ok` is `true` when every command exited 0, and `results` has one entry per command that ran (`exitCode`, and the last 16000 characters of `stdout` and `stderr`). `exec` requests run in the order received, independently of the worker's turns. The agent drops an `exec` whose `requestId` it has already seen in this process.
 
 ## Request and response correlation
 

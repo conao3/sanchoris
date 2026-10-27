@@ -103,6 +103,15 @@ export const RecordUploadResponseMessage = z.discriminatedUnion("ok", [
 ]);
 export type RecordUploadResponseMessage = z.infer<typeof RecordUploadResponseMessage>;
 
+export const ExecMessage = z.strictObject({
+  type: z.literal("exec"),
+  runId: RunId,
+  requestId: RequestId,
+  purpose: z.enum(["git_push", "exec"]),
+  commands: z.array(z.string().min(1)).min(1),
+});
+export type ExecMessage = z.infer<typeof ExecMessage>;
+
 export const AckMessage = z.strictObject({
   type: z.literal("ack"),
   runId: RunId,
@@ -114,6 +123,7 @@ export const InboundMessage = z.union([
   UserMessage,
   InterruptMessage,
   ShutdownMessage,
+  ExecMessage,
   SkillResponseMessage,
   RecordUploadResponseMessage,
   AckMessage,
@@ -253,6 +263,22 @@ export const SessionRecordMessage = z.strictObject({
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
 });
 
+export const ExecCommandResult = z.strictObject({
+  command: z.string(),
+  exitCode: z.number().int(),
+  stdout: z.string(),
+  stderr: z.string(),
+});
+export type ExecCommandResult = z.infer<typeof ExecCommandResult>;
+
+export const ExecResultMessage = z.strictObject({
+  type: z.literal("exec_result"),
+  ...sequenced,
+  requestId: RequestId,
+  ok: z.boolean(),
+  results: z.array(ExecCommandResult),
+});
+
 export const OutboundMessage = z.union([
   HelloMessage,
   HeartbeatMessage,
@@ -263,6 +289,7 @@ export const OutboundMessage = z.union([
   SkillRequestMessage,
   RecordUploadRequestMessage,
   SessionRecordMessage,
+  ExecResultMessage,
 ]);
 export type OutboundMessage = z.infer<typeof OutboundMessage>;
 

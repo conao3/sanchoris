@@ -2,8 +2,9 @@ import { unlink } from "node:fs/promises";
 import type { Server } from "node:net";
 
 import { RunChannel } from "./channel.ts";
+import { runCommands } from "./exec.ts";
 import type { Logger } from "./log.ts";
-import type { InboundMessage, SocketRequest, SocketResponse, StartMessage } from "./protocol.ts";
+import type { ExecMessage, InboundMessage, SocketRequest, SocketResponse, StartMessage } from "./protocol.ts";
 import { downloadRecord, sha256, uploadRecord } from "./session-record.ts";
 import { validateSkillRun } from "./skills.ts";
 import { listenSocket } from "./socket-server.ts";
@@ -35,7 +36,9 @@ export class WorkspaceAgent {
   private busy = false;
   private ready: Promise<void> | null = null;
   private turnChain: Promise<void> = Promise.resolve();
+  private execChain: Promise<void> = Promise.resolve();
   private readonly seenMessageIds = new Set<string>();
+  private readonly seenExecRequestIds = new Set<string>();
   private finished = false;
   private resolveExit: (code: number) => void = () => {};
   readonly exitCode: Promise<number>;
@@ -82,6 +85,11 @@ export class WorkspaceAgent {
         return;
       case "interrupt":
         void this.whenReady(() => this.requireWorker().interrupt());
+        return;
+      case "exec":
+        if (this.seenExecRequestIds.has(message.requestId)) return;
+        this.seenExecRequestIds.add(message.requestId);
+        this.exec(message);
         return;
       case "shutdown":
         this.config.logger("info", "shutdown requested", { reason: message.reason });
@@ -133,6 +141,16 @@ export class WorkspaceAgent {
     this.channel.send({ type: "ready", sessionId, agent: start.agent, model: start.model, resumed: restored !== null });
     this.channel.startHeartbeat(start.heartbeatSeconds, () => this.busy);
     if (start.instruction !== null) this.deliver(start.instruction);
+  }
+
+  private exec(message: ExecMessage): void {
+    this.config.logger("info", "exec requested", { requestId: message.requestId, purpose: message.purpose });
+    this.execChain = this.execChain
+      .then(() => runCommands(message.commands, this.config.workspaceDir, this.config.env))
+      .then((outcome) => {
+        this.channel.send({ type: "exec_result", requestId: message.requestId, ...outcome });
+      })
+      .catch((error: Error) => this.fail(error));
   }
 
   private deliver(text: string): void {
@@ -225,6 +243,7 @@ export class WorkspaceAgent {
     if (this.finished) return;
     try {
       await this.turnChain;
+      await this.execChain;
       await this.worker?.close();
       await this.channel.drain(this.config.drainTimeoutMs);
     } catch (error) {

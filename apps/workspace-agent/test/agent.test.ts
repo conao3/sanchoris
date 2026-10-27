@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -139,6 +140,37 @@ describe("workspace agent with a fake worker", () => {
     control.send({ type: "shutdown", reason: "done" });
     expect(await exitCode).toBe(0);
     expect(control.received.filter((message) => message.type === "turn_end")).toHaveLength(2);
+  });
+
+  it("runs exec commands in the workspace in order and stops at the first failure", async () => {
+    const { control, sandbox, exitCode } = await setup(async () => "unused");
+    await control.waitFor("hello");
+    control.send(startMessage());
+    await control.waitFor("ready");
+    control.send({
+      type: "exec",
+      requestId: "exec-1",
+      purpose: "exec",
+      commands: ["printf hello > made.txt", "cat made.txt", "echo oops >&2; exit 3", "touch never.txt"],
+    });
+    control.send({ type: "exec", requestId: "exec-1", purpose: "exec", commands: ["touch duplicate.txt"] });
+    control.send({ type: "exec", requestId: "exec-2", purpose: "git_push", commands: ["pwd"] });
+    const failed = await control.waitFor("exec_result", (message) => message.requestId === "exec-1");
+    expect(failed.ok).toBe(false);
+    expect(failed.results).toEqual([
+      { command: "printf hello > made.txt", exitCode: 0, stdout: "", stderr: "" },
+      { command: "cat made.txt", exitCode: 0, stdout: "hello", stderr: "" },
+      { command: "echo oops >&2; exit 3", exitCode: 3, stdout: "", stderr: "oops\n" },
+    ]);
+    const succeeded = await control.waitFor("exec_result", (message) => message.requestId === "exec-2");
+    expect(succeeded.ok).toBe(true);
+    expect(succeeded.results[0]?.stdout.trim()).toBe(sandbox.workspaceDir);
+    expect(control.received.indexOf(failed)).toBeLessThan(control.received.indexOf(succeeded));
+    expect(existsSync(join(sandbox.workspaceDir, "never.txt"))).toBe(false);
+    expect(existsSync(join(sandbox.workspaceDir, "duplicate.txt"))).toBe(false);
+    control.send({ type: "shutdown", reason: "done" });
+    expect(await exitCode).toBe(0);
+    expect(control.received.filter((message) => message.type === "exec_result")).toHaveLength(2);
   });
 
   it("reconnects after the channel drops and reports that the session has started", async () => {

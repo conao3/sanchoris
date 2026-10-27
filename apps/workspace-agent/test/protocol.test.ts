@@ -7,6 +7,8 @@ import type { ZodType } from "zod";
 import {
   AckMessage,
   EventMessage,
+  ExecMessage,
+  ExecResultMessage,
   HeartbeatMessage,
   HelloMessage,
   InboundMessage,
@@ -34,6 +36,7 @@ const inbound: Record<string, ZodType> = {
   user_message: UserMessage,
   interrupt: InterruptMessage,
   shutdown: ShutdownMessage,
+  exec: ExecMessage,
   skill_response: SkillResponseMessage,
   record_upload_response: RecordUploadResponseMessage,
   ack: AckMessage,
@@ -49,6 +52,7 @@ const outbound: Record<string, ZodType> = {
   skill_request: SkillRequestMessage,
   record_upload_request: RecordUploadRequestMessage,
   session_record: SessionRecordMessage,
+  exec_result: ExecResultMessage,
 };
 
 const examples = [...readFileSync(resolve(import.meta.dirname, "../PROTOCOL.md"), "utf8").matchAll(/```json\n([\s\S]*?)```/g)].map(
