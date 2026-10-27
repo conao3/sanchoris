@@ -146,7 +146,7 @@ impl Task {
         for id in ids {
             tasks.push(Self::load(ctx, scope, id).await?);
         }
-        tasks.sort_by(|a, b| (a.row.created_at, a.row.id).cmp(&(b.row.created_at, b.row.id)));
+        tasks.sort_by_key(|a| (a.row.created_at, a.row.id));
         Ok(tasks)
     }
 
@@ -230,7 +230,7 @@ impl Task {
         let mut rows = tx(ctx, self.scope.tenant_id)
             .query::<RunItem>(&self.pk(), "RUN#")
             .await?;
-        rows.sort_by(|a, b| (a.started_at, a.id).cmp(&(b.started_at, b.id)));
+        rows.sort_by_key(|a| (a.started_at, a.id));
         Ok(rows
             .into_iter()
             .map(|row| Run {
@@ -720,7 +720,7 @@ impl Run {
             .into_iter()
             .filter(|workspace| workspace.run_id == self.row.id)
             .collect::<Vec<_>>();
-        workspaces.sort_by(|a, b| (a.started_at, a.id).cmp(&(b.started_at, b.id)));
+        workspaces.sort_by_key(|a| (a.started_at, a.id));
         Ok(workspaces)
     }
 
@@ -790,7 +790,7 @@ impl Run {
             entries.push((outbox.created_at, 1, line.0, line.1));
         }
         let mut events = tx.query::<RunEventItem>(&run_pk, "EVT#").await?;
-        events.sort_by(|a, b| (a.received_at, a.seq, a.id).cmp(&(b.received_at, b.seq, b.id)));
+        events.sort_by_key(|a| (a.received_at, a.seq, a.id));
         for event in events {
             let payload = &event.payload;
             let line = match event.kind.as_str() {
@@ -1025,7 +1025,7 @@ pub(crate) struct Output {
 
 impl Output {
     fn sorted(mut rows: Vec<OutputItem>) -> Vec<Self> {
-        rows.sort_by(|a, b| (a.created_at, a.id).cmp(&(b.created_at, b.id)));
+        rows.sort_by_key(|a| (a.created_at, a.id));
         rows.into_iter().map(|row| Output { row }).collect()
     }
 
