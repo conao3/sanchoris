@@ -278,10 +278,11 @@ async fn the_lambda_handlers_run_the_channel_from_recorded_events() {
         lambda::work(&worker, &batch).await,
         failures(&["message-2", "message-3"])
     );
-    let start = sender.sent_to(&connection);
-    assert_eq!(start.len(), 1);
-    assert_eq!(start[0]["type"], "start");
-    assert_eq!(start[0]["instruction"], "Do the thing.");
+    let sent = sender.sent_to(&connection);
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0], json!({ "type": "ack", "runId": run, "seq": 0 }));
+    assert_eq!(sent[1]["type"], "start");
+    assert_eq!(sent[1]["instruction"], "Do the thing.");
 
     let ready = json!({ "type": "ready", "runId": run, "seq": 1, "sessionId": "s-1", "agent": "claude", "model": "m", "resumed": false });
     for _ in 0..2 {

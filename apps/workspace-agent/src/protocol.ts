@@ -152,7 +152,7 @@ export type ExecMessage = z.infer<typeof ExecMessage>;
 export const AckMessage = z.strictObject({
   type: z.literal("ack"),
   runId: RunId,
-  seq: z.number().int().positive(),
+  seq: z.number().int().nonnegative(),
 });
 
 export const CloseMessage = z.strictObject({

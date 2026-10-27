@@ -23,7 +23,7 @@ The worker runs with the agent's environment, so `sanchoris` must be on `PATH`.
 
 ## Transport
 
-- The agent opens a WebSocket to `SANCHORIS_CONTROL_URL` (`ws://` or `wss://`) with the header `Authorization: Bearer <SANCHORIS_RUN_TOKEN>`.
+- The agent opens a WebSocket to `SANCHORIS_CONTROL_URL` (`ws://` or `wss://`) with the header `Authorization: Bearer <SANCHORIS_RUN_TOKEN>`. It sends a WebSocket ping every 30 s, so proxies that close idle connections (Cloudflare closes a WebSocket after 100 s without frames) keep the connection open.
 - The control plane rejects an invalid or expired token at the upgrade with HTTP `401` (or `403`). The agent treats that as fatal and exits with code 1.
 - Each WebSocket text frame is one JSON object. Every object has `type` and `runId`. `runId` is an opaque string equal to `SANCHORIS_RUN_ID`. Unknown fields are rejected on both sides.
 - An inbound message that fails validation, or carries another `runId`, is a protocol error: the agent exits with code 1.
@@ -34,7 +34,7 @@ The worker runs with the agent's environment, so `sanchoris` must be on `PATH`.
 
 - Each agent process has an `instanceId` (UUID) sent in `hello`. A new Workspace, or a restarted agent, has a new `instanceId`.
 - Outbound messages other than `hello` and `heartbeat` carry `seq`, a positive integer that increases by 1 per message within one agent process, starting at 1. Sequence numbers are scoped to the `instanceId` of the connection's `hello`.
-- The control plane acknowledges with `ack` (`seq` = the highest sequence number of the current `instanceId` it has persisted; acks are cumulative). The agent keeps unacknowledged messages and resends them in order after every reconnect, right after `hello`. The control plane must ignore a message whose `(instanceId, seq)` it has already processed and should re-ack it.
+- The control plane answers `hello` with `ack` (`seq` = the highest sequence number of that `instanceId` it has persisted, `0` for a new instance) and acknowledges each sequenced message with `ack` (`seq` = the highest sequence number of the current `instanceId` it has persisted; acks are cumulative). The agent sends sequenced messages only after the `ack` of its `hello` and keeps one sequenced message in flight: the API Gateway WebSocket API invokes Lambda once per frame and concurrently, so two frames sent back to back may be processed out of order. Unacknowledged messages are sent again in order after every reconnect. The control plane must ignore a message whose `(instanceId, seq)` it has already processed and should re-ack it.
 - Inbound messages are not acknowledged. `user_message` carries `messageId`; the agent drops a `messageId` it has already seen in this process, so the control plane may resend after a reconnect.
 - `hello` is sent first on every connection. `started: false` means the agent has not received `start` in this process; the control plane then sends `start`. `started: true` means it must not send `start` again (a second `start` is a protocol error).
 
@@ -51,7 +51,7 @@ The worker runs with the agent's environment, so `sanchoris` must be on `PATH`.
 | `record_upload_response` | `requestId`, `ok`, `url`, `headers`, `key` or `error` | Reply to `record_upload_request` |
 | `git_token_response` | `requestId`, `ok`, `token` and `expiresAt` or `error` | Reply to `git_token_request` |
 | `worker_credential_response` | `requestId`, `ok`, `env` or `error` | Reply to `worker_credential_request` |
-| `ack` | `seq` | Cumulative acknowledgement of outbound messages |
+| `ack` | `seq` | Cumulative acknowledgement of outbound messages, and the answer to `hello` |
 | `close` | `code`, `reason` | The control plane rejects this agent (`4000`: protocol error). The agent exits with code 1 without reconnecting |
 
 `start` fields:

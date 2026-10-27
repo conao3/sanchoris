@@ -43,17 +43,23 @@ export interface RunChannelOptions {
 
 class ProtocolError extends Error {}
 
+const SEND_WINDOW = 1;
+const PING_INTERVAL_MS = 30_000;
+
 export class RunChannel {
   private readonly options: RunChannelOptions;
   private socket: WebSocket | null = null;
   private seq = 0;
   private readonly instanceId = randomUUID();
   private unacked: SequencedMessage[] = [];
+  private writtenThrough = 0;
+  private helloAcked = false;
   private readonly replies = new Map<string, PendingReply>();
   private readonly expiredReplies = new Set<string>();
   private backoffMs: number;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private pingTimer: NodeJS.Timeout | null = null;
   private closed = false;
   private readonly ackWaiters: Array<() => void> = [];
 
@@ -72,6 +78,8 @@ export class RunChannel {
     this.socket = socket;
     socket.on("open", () => {
       this.backoffMs = this.options.initialBackoffMs;
+      if (this.pingTimer) clearInterval(this.pingTimer);
+      this.pingTimer = setInterval(() => socket.ping(), PING_INTERVAL_MS);
       const hello = this.options.hello();
       this.write({
         type: "hello",
@@ -81,7 +89,8 @@ export class RunChannel {
         started: hello.started,
         sessionId: hello.sessionId,
       });
-      for (const message of this.unacked) this.write(message);
+      this.writtenThrough = 0;
+      this.helloAcked = false;
     });
     socket.on("message", (data) => {
       this.receive(data.toString());
@@ -100,6 +109,10 @@ export class RunChannel {
     });
     socket.on("close", (code, reason) => {
       if (this.socket === socket) this.socket = null;
+      if (this.socket === null && this.pingTimer) {
+        clearInterval(this.pingTimer);
+        this.pingTimer = null;
+      }
       if (this.closed) return;
       if (code >= 4000 && code <= 4999) {
         this.fail(new ProtocolError(`Run channel closed by control plane: ${code} ${reason.toString()}`));
@@ -113,7 +126,7 @@ export class RunChannel {
     this.seq += 1;
     const message = { ...payload, runId: this.options.runId, seq: this.seq } as SequencedMessage;
     this.unacked.push(message);
-    this.write(message);
+    this.flush();
     return this.seq;
   }
 
@@ -155,6 +168,7 @@ export class RunChannel {
   close(): void {
     this.closed = true;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.pingTimer) clearInterval(this.pingTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     for (const reply of this.replies.values()) {
       clearTimeout(reply.timer);
@@ -162,6 +176,15 @@ export class RunChannel {
     }
     this.replies.clear();
     this.socket?.close(1000, "shutdown");
+  }
+
+  private flush(): void {
+    if (this.socket?.readyState !== WebSocket.OPEN || !this.helloAcked) return;
+    for (const message of this.unacked.slice(0, SEND_WINDOW)) {
+      if (message.seq <= this.writtenThrough) continue;
+      this.write(message);
+      this.writtenThrough = message.seq;
+    }
   }
 
   private write(message: OutboundMessage): void {
@@ -182,7 +205,9 @@ export class RunChannel {
     }
     switch (parsed.type) {
       case "ack":
+        this.helloAcked = true;
         this.unacked = this.unacked.filter((message) => message.seq > parsed.seq);
+        this.flush();
         if (this.unacked.length === 0) for (const waiter of this.ackWaiters.splice(0)) waiter();
         return;
       case "close":

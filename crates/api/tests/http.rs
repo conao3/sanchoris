@@ -627,6 +627,10 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
         json!({ "type": "hello", "runId": run, "protocolVersion": 1, "instanceId": instance, "started": false, "sessionId": null }),
     )
     .await;
+    assert_eq!(
+        receive(&mut socket).await,
+        json!({ "type": "ack", "runId": run, "seq": 0 })
+    );
     let start = receive(&mut socket).await;
     assert_eq!(
         start,
@@ -728,6 +732,10 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
         json!({ "type": "hello", "runId": run, "protocolVersion": 1, "instanceId": next, "started": true, "sessionId": "s-1" }),
     )
     .await;
+    assert_eq!(
+        receive(&mut second).await,
+        json!({ "type": "ack", "runId": run, "seq": 0 })
+    );
     send(
         &mut second,
         json!({ "type": "ready", "runId": run, "seq": 1, "sessionId": "s-1", "agent": "claude", "model": "m", "resumed": true }),

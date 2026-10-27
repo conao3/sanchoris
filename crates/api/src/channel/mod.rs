@@ -347,7 +347,7 @@ impl Channel {
         let started = hello["started"]
             .as_bool()
             .ok_or_else(|| protocol("hello needs started"))?;
-        retrying(|| async {
+        let processed = retrying(|| async {
             let tenant_id = claims.tenant_id;
             let mut tx = self.store.tx(tenant_id);
             let mut channel = channel_item(&mut tx, claims.run_id).await?;
@@ -362,10 +362,11 @@ impl Channel {
             }
             let key = keys::channel_instance_key(tenant_id, claims.run_id, instance_id);
             let now = Utc::now();
-            match tx.get::<ChannelInstance>(&key).await? {
+            let processed = match tx.get::<ChannelInstance>(&key).await? {
                 Some(mut instance) => {
                     instance.connected_at = now;
                     tx.put(&instance)?;
+                    instance.processed_seq
                 }
                 None => {
                     tx.insert(&ChannelInstance {
@@ -378,8 +379,9 @@ impl Channel {
                         connected_at: now,
                     })?;
                     channel.instances += 1;
+                    0
                 }
-            }
+            };
             channel.connection_instance = Some(instance_id);
             channel.connection_started = started;
             tx.put(&channel)?;
@@ -388,9 +390,12 @@ impl Channel {
                 run_id: claims.run_id,
             });
             tx.commit().await?;
-            Ok(())
+            Ok(processed)
         })
-        .await
+        .await?;
+        let ack = json!({ "type": "ack", "runId": claims.run_id.to_string(), "seq": processed });
+        self.sender.send(connection_id, &ack).await?;
+        Ok(())
     }
 
     async fn sequenced(

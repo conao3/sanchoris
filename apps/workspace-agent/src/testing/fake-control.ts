@@ -138,9 +138,12 @@ export class FakeControl {
     ws.on("message", (data) => {
       const message = OutboundMessage.parse(JSON.parse(data.toString()));
       if (message.runId !== this.options.runId) throw new Error(`Unexpected run ${message.runId}`);
-      if (message.type === "hello" && message.instanceId !== this.instanceId) {
-        this.instanceId = message.instanceId;
-        this.lastSeq = 0;
+      if (message.type === "hello") {
+        if (message.instanceId !== this.instanceId) {
+          this.instanceId = message.instanceId;
+          this.lastSeq = 0;
+        }
+        ws.send(JSON.stringify({ type: "ack", runId: this.options.runId, seq: this.lastSeq }));
       }
       if ("seq" in message) {
         if (message.seq <= this.lastSeq) {
