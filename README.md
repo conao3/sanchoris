@@ -49,12 +49,14 @@ cargo run -p sanchoris-api --bin sanchoris -- all     # both in one process
 | --- | --- |
 | `GET /health` | Process health check |
 | `GET /api/me` | The signed-in user (Cognito ID or access token as `Authorization: Bearer`; the user is created on first use) |
+| `POST /api/graphql` | The GraphQL API of the web app (`crates/graphql`). Needs the same bearer token; requests without one get `401` |
 | `POST /api/tasks/{taskId}/replies` | A member's reply to a task (`{ "text": "..." }`), delivered to the agent and resuming a `NEEDS_YOU` task |
 | `POST /api/approvals` | Approve or reject an approval request (`{ "token": "<signed task token>", "approved": true }`) |
-| `POST /auth/github` | Starts linking the signed-in user's GitHub account; returns `{ "url": "<GitHub authorize URL>" }` |
-| `GET /auth/github/callback` | GitHub App user-to-server OAuth callback; stores `github_user_id` and `github_login` and redirects to `/settings/integrations?github=linked` (or `denied`, `in_use`) |
-| `POST /webhooks/github` | GitHub App webhook. Verifies `X-Hub-Signature-256` and records the event once per `X-GitHub-Delivery` |
-| `POST /webhooks/stripe` | Stripe webhook. Verifies `Stripe-Signature` (5 minute tolerance) and handles `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, and `invoice.payment_failed` |
+| `POST /auth/github` | Starts linking the signed-in user's GitHub account; returns `{ "url": "<GitHub authorize URL>" }` (the `connectGitHub` mutation returns the same URL) |
+| `GET /auth/github/setup` | GitHub App Setup URL. Checks the signed `state` from `Tenant.githubAppInstallUrl` and sends the user through the GitHub OAuth authorize page to prove access to the new installation |
+| `GET /auth/github/callback` | GitHub App user-to-server OAuth callback. For account linking it stores `github_user_id` and `github_login` and records `integration.github_link`; for an installation it checks the installation is in the user's `GET /user/installations`, stores it in `integrations` with its repositories, and records `integration.github_install`. Redirects to `/settings?github=<outcome>` (`linked`, `installed`, `requested`, `denied`, `in_use`, `installation_in_use`, `not_accessible`, `not_member`, `not_admin`) |
+| `POST /webhooks/github` | GitHub App webhook. Verifies `X-Hub-Signature-256`; `installation` and `installation_repositories` events update `integrations`, every other event is recorded once per `X-GitHub-Delivery` |
+| `POST /webhooks/stripe` | Stripe webhook. Verifies `Stripe-Signature` (5 minute tolerance) and handles `checkout.session.completed` (activates the tenant on `metadata.plan_id`), `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, and `invoice.payment_failed` |
 | `GET /runs/channel` | Run channel WebSocket for `workspace-agent` (bearer Run token; see `apps/workspace-agent/PROTOCOL.md`) |
 | `PUT`/`GET /records/{key}` | Signed session record upload and download when `SANCHORIS_RECORDS_STORE=local` |
 
@@ -70,26 +72,49 @@ cp .env.example .env.local
 
 | Variable | Used by | Value |
 | --- | --- | --- |
-| `DATABASE_URL` | serve, worker | Postgres; neon needs `?sslmode=require`. The role must be a member of `sanchoris_worker` (`pnpm db:apply` grants it) |
+| `DATABASE_URL` | serve, worker | Postgres, direct connection (not the neon `-pooler` host); neon needs `?sslmode=require`. The role must be a member of `sanchoris_worker` and be allowed to `SET ROLE sanchoris_app` (`pnpm db:apply` grants both) |
 | `SANCHORIS_BIND_ADDR` | serve | Listen address, e.g. `127.0.0.1:8080` (set by `pnpm dev`) |
 | `SANCHORIS_PUBLIC_URL` | serve | Public origin, e.g. `http://sanchoris.localhost:1355`; OAuth redirects and local record URLs start with it |
 | `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` | serve | aws-infra-k8s exports `dev-k8s-UserPool` and `dev-k8s-UserPoolClient` (the region is the pool-id prefix) |
 | `VITE_COGNITO_DOMAIN`, `VITE_COGNITO_CLIENT_ID` | frontend | Hosted UI domain (host only, dev `dev-auth-k8s.sancode.dev`) and the same client id |
 | `GITHUB_URL`, `GITHUB_API_URL` | serve, worker | `https://github.com` and `https://api.github.com` |
-| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | worker | GitHub App id and private key (PEM) |
-| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` | serve | GitHub App OAuth client for account linking |
+| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | serve, worker | GitHub App id and private key (PEM) |
+| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` | serve | GitHub App OAuth client for account linking and installation checks |
+| `GITHUB_APP_SLUG` | serve | The App slug in `https://github.com/apps/<slug>`; the install URL is `<GITHUB_URL>/apps/<slug>/installations/new`. Set the App's Setup URL to `<SANCHORIS_PUBLIC_URL>/auth/github/setup` |
 | `GITHUB_WEBHOOK_SECRET` | serve | GitHub App webhook secret |
+| `STRIPE_API_URL` | serve | `https://api.stripe.com` |
+| `STRIPE_SECRET_KEY` | serve | Stripe secret key (Checkout, the customer portal, subscription changes) |
 | `STRIPE_WEBHOOK_SECRET` | serve | Stripe webhook signing secret |
 | `RUN_TOKEN_SIGNING_KEY` | serve, worker | Signs Run channel tokens (32+ bytes) |
 | `TASK_TOKEN_SIGNING_KEY` | serve | Signs approval tokens (32+ bytes) |
-| `OAUTH_STATE_SIGNING_KEY` | serve | Signs the GitHub OAuth `state`, bound to the signed-in user (32+ bytes) |
+| `OAUTH_STATE_SIGNING_KEY` | serve | Signs the GitHub OAuth and installation `state`, bound to the signed-in user and tenant (32+ bytes) |
+| `SANCHORIS_CREDENTIAL_KEY` | serve | AES-256-GCM key for stored API keys: 32 bytes in base64 (`openssl rand -base64 32`) |
 | `SANCHORIS_RECORDS_STORE` | serve | `s3` or `local` |
 | `AWS_REGION`, `S3_RECORDS_BUCKET`, `KMS_KEY_PREFIX` | serve (`s3`) | Records bucket; objects are encrypted with the KMS key `<KMS_KEY_PREFIX><tenant id>` |
 | `SANCHORIS_RECORDS_DIR`, `RECORDS_SIGNING_KEY` | serve (`local`) | Record directory (set by `pnpm dev`) and the URL signing key (32+ bytes) |
-| `SANCHORIS_WORKSPACE_COMMAND` | worker | Command that starts the workspace agent (set by `pnpm dev`) |
-| `SANCHORIS_CONTROL_URL` | worker | Run channel URL given to workspaces, e.g. `ws://127.0.0.1:8080/runs/channel` (set by `pnpm dev`) |
-| `SANCHORIS_SOCKET_DIR`, `SANCHORIS_WORKSPACES_DIR` | worker | Directories for the `sanchoris` command sockets and the workspaces (set by `pnpm dev`) |
-| `SANCHORIS_GIT_URL` | worker | Base URL the workspaces clone `<owner>/<name>.git` from, e.g. `https://github.com` |
+| `SANCHORIS_WORKSPACE_COMMAND` | serve, worker | Command that starts the workspace agent (set by `pnpm dev`) |
+| `SANCHORIS_CONTROL_URL` | serve, worker | Run channel URL given to workspaces, e.g. `ws://127.0.0.1:8080/runs/channel` (set by `pnpm dev`) |
+| `SANCHORIS_SOCKET_DIR`, `SANCHORIS_WORKSPACES_DIR` | serve, worker | Directories for the `sanchoris` command sockets and the workspaces (set by `pnpm dev`) |
+| `SANCHORIS_GIT_URL` | serve, worker | Base URL the workspaces clone `<owner>/<name>.git` from, e.g. `https://github.com` |
+
+`serve` reads the worker variables too: the GraphQL API runs the trigger dispatcher and the config syncer inline (below).
+
+### GraphQL API
+
+`POST /api/graphql` runs the `crates/graphql` schema behind the Cognito JWT check. Queries and mutations use a second pool on the same `DATABASE_URL` whose connections run `SET ROLE sanchoris_app`, so row-level security limits every statement to the signed-in user's tenants; webhooks, OAuth, and the worker keep the `sanchoris_worker` pool. Because the role is set per connection, `DATABASE_URL` must be a direct connection, and `serve` refuses a neon `-pooler` host.
+
+The schema's ports are wired as follows:
+
+| Port | Implementation |
+| --- | --- |
+| Checkout | Stripe API. A paid `createTenant` opens a Checkout Session (subscription mode, `client_reference_id` = the new tenant id, `metadata.plan_id`, the plan's `stripe_price_id`) and creates the tenant suspended with `payment_pending`; `checkout.session.completed` activates it. `changePlan` swaps the price of the active subscription, cancels it for the Free plan, or opens Checkout when the tenant has no subscription. `openBillingPortal` opens a customer portal session |
+| GitHub | `connectGitHub` returns the OAuth authorize URL; `Tenant.githubAppInstallUrl` returns the App install URL with a signed `state` (see `/auth/github/setup`) |
+| Slack | Not available: `connectSlack` fails with `BAD_USER_INPUT` "Slack is not available yet" |
+| Config sync | `addConfig` and `syncConfig` run the config syncer for that config inline |
+| Config repository | `addConfig` reads the branch head through the GitHub App and validates it; `proposeTriggerFromTemplate` creates a branch, commits the trigger into `sanchoris.yaml` (Contents API), and opens a pull request |
+| Chat | `sendChatMessage` runs the trigger dispatcher for the tenant inline, so the new task is in the response |
+| Audit export | Writes `t/<tenant>/audit/<file>.jsonl` to the records store (S3 or local) and returns a signed GET URL (15 minutes) |
+| Credentials | AES-256-GCM with `SANCHORIS_CREDENTIAL_KEY`, bound to the tenant id |
 
 Read the Cognito ids with:
 
@@ -134,7 +159,7 @@ postgres://sanchoris:sanchoris@127.0.0.1:54329/sanchoris
 pnpm db:apply
 ```
 
-`db:apply` also grants `sanchoris_worker` to the connecting role, which the api and the worker need to read across tenants under row-level security.
+`db:apply` also grants `sanchoris_worker` to the connecting role, which the api and the worker need to read across tenants under row-level security, and grants `sanchoris_app` with `INHERIT FALSE, SET TRUE` so the GraphQL pool can switch to it without the worker pool picking up its policies.
 
 The schema source of truth is `db/schema.sql`. `pnpm db:schema:check` starts a temporary PostgreSQL server, applies the schema, and verifies the required MVP tables exist.
 
@@ -161,6 +186,8 @@ The test (`crates/api/tests/e2e.rs`) starts a temporary Postgres, a fake GitHub 
 - Checks that keep failing put the task in `NEEDS_YOU` (`Skill.FixesExhausted`); a member's reply resumes it and the second skill run succeeds.
 
 Run `pnpm install` first; the workspace agent runs from source with Node.
+
+`crates/api/tests/graphql.rs` (part of `cargo test --workspace`) drives `POST /api/graphql` over HTTP with a stub token verifier and runs every operation in `apps/frontend/src/graphql/*.graphql` against the real ports: the config syncer and trigger dispatcher inline, the GitHub App client against the fake GitHub, Stripe against a fake Stripe API, and local records. It fails when an operation is added to the frontend without being exercised.
 
 ## Worktrees
 
