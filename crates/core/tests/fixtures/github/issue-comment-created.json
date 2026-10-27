@@ -1,0 +1,28 @@
+{
+  "action": "created",
+  "issue": {
+    "html_url": "https://github.com/acme/shop-web/pull/52",
+    "number": 52,
+    "title": "Fix flaky checkout test",
+    "user": { "login": "sanchoris[bot]", "id": 300, "type": "Bot" },
+    "labels": [],
+    "state": "open",
+    "author_association": "NONE",
+    "pull_request": {
+      "url": "https://api.github.com/repos/acme/shop-web/pulls/52",
+      "html_url": "https://github.com/acme/shop-web/pull/52"
+    },
+    "body": null
+  },
+  "comment": {
+    "id": 9001,
+    "html_url": "https://github.com/acme/shop-web/pull/52#issuecomment-9001",
+    "user": { "login": "mika-dev", "id": 101, "type": "User" },
+    "created_at": "2026-10-20T10:00:00Z",
+    "author_association": "MEMBER",
+    "body": "@sanchoris please also update the README"
+  },
+  "repository": { "id": 500, "name": "shop-web", "full_name": "acme/shop-web" },
+  "sender": { "login": "mika-dev", "id": 101, "type": "User" },
+  "installation": { "id": 7001 }
+}

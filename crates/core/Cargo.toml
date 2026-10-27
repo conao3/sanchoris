@@ -5,9 +5,20 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+test-support = ["dep:tempfile"]
+
 [dependencies]
 sanchoris-config.workspace = true
 sanchoris-engine.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "macros", "uuid", "chrono", "json", "tls-rustls"] }
+tempfile = { version = "3", optional = true }
+
+[dev-dependencies]
+sanchoris-core = { path = ".", features = ["test-support"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
