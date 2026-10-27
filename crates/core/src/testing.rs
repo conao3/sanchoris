@@ -35,7 +35,7 @@ fn server_port() -> u16 {
             "dynamodb-local -inMemory -disableTelemetry -port {port} & child=$!; \
              while kill -0 {parent} 2>/dev/null; do sleep 1; done; kill $child"
         );
-        Command::new("sh")
+        let mut child = Command::new("sh")
             .arg("-c")
             .arg(script)
             .stdin(Stdio::null())
@@ -43,6 +43,7 @@ fn server_port() -> u16 {
             .stderr(Stdio::null())
             .spawn()
             .expect("dynamodb-local is on PATH (run inside `nix develop`)");
+        std::thread::spawn(move || child.wait());
         let deadline = Instant::now() + StdDuration::from_secs(60);
         while TcpStream::connect(("127.0.0.1", port)).is_err() {
             assert!(
@@ -102,8 +103,7 @@ impl TestDynamo {
             attempts += 1;
             match create_tables(&client, &tables).await {
                 Ok(_) => break,
-                Err(error) if attempts < 50 => {
-                    let _ = error;
+                Err(_) if attempts < 50 => {
                     tokio::time::sleep(StdDuration::from_millis(200)).await;
                 }
                 Err(error) => panic!("create test tables: {error}"),

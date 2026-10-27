@@ -107,16 +107,17 @@ impl RunTokenSigner {
         Self(Signer::from_env(RUN_TOKEN_SIGNING_KEY_ENV))
     }
 
-    pub fn sign(&self, run_id: Uuid, expires_at: DateTime<Utc>) -> String {
-        let message = format!("{run_id}.{}", expires_at.timestamp());
+    pub fn sign(&self, tenant_id: Uuid, run_id: Uuid, expires_at: DateTime<Utc>) -> String {
+        let message = format!("{tenant_id}.{run_id}.{}", expires_at.timestamp());
         let signature = self.0.mac(&message);
         format!("{message}.{signature}")
     }
 
-    pub fn verify(&self, token: &str, now: DateTime<Utc>) -> Result<Uuid, TokenError> {
+    pub fn verify(&self, token: &str, now: DateTime<Utc>) -> Result<RunClaims, TokenError> {
         let (message, signature) = token.rsplit_once('.').ok_or(TokenError::Malformed)?;
         self.0.verify(message, signature)?;
-        let (run_id, expires) = message.split_once('.').ok_or(TokenError::Malformed)?;
+        let (tenant_id, rest) = message.split_once('.').ok_or(TokenError::Malformed)?;
+        let (run_id, expires) = rest.split_once('.').ok_or(TokenError::Malformed)?;
         let expires_at = expires
             .parse::<i64>()
             .ok()
@@ -125,8 +126,17 @@ impl RunTokenSigner {
         if now >= expires_at {
             return Err(TokenError::Expired(expires_at));
         }
-        run_id.parse().map_err(|_| TokenError::Malformed)
+        Ok(RunClaims {
+            tenant_id: tenant_id.parse().map_err(|_| TokenError::Malformed)?,
+            run_id: run_id.parse().map_err(|_| TokenError::Malformed)?,
+        })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunClaims {
+    pub tenant_id: Uuid,
+    pub run_id: Uuid,
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -174,9 +184,16 @@ mod tests {
     fn run_tokens_expire() {
         let signer = RunTokenSigner::new(signer());
         let id = Uuid::new_v4();
+        let tenant_id = Uuid::new_v4();
         let now = Utc.with_ymd_and_hms(2026, 10, 27, 9, 0, 0).unwrap();
-        let token = signer.sign(id, now + Duration::hours(1));
-        assert_eq!(signer.verify(&token, now).unwrap(), id);
+        let token = signer.sign(tenant_id, id, now + Duration::hours(1));
+        assert_eq!(
+            signer.verify(&token, now).unwrap(),
+            RunClaims {
+                tenant_id,
+                run_id: id
+            }
+        );
         assert!(matches!(
             signer.verify(&token, now + Duration::hours(1)),
             Err(TokenError::Expired(_))

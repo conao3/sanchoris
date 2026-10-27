@@ -1,42 +1,43 @@
 mod common;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use common::{REPO, World, answer_execs, skill_input, worker_for};
+use common::{REPO, World, skill_input};
+use sanchoris_core::items::{OutboxItem, Run, SkillRunItem, StateEntryItem, TriggerEvent};
+use sanchoris_core::model::{SkillRunStatus, TaskStatus};
+use sanchoris_worker::driver::LocalDriver;
 use sanchoris_worker::error::WorkerError;
-use sanchoris_worker::{Loop, Worker};
-use serde_json::Value;
-use sqlx::Row;
 
-const CRASH_POINTS: [(Loop, &str); 5] = [
-    (Loop::TriggerDispatcher, "dispatcher.before_commit"),
-    (Loop::EngineTimers, "timer.before_commit"),
-    (Loop::ResourceInvocations, "invocation.before_commit"),
-    (Loop::CheckPoller, "checks.before_commit"),
-    (Loop::RunEvents, "run_event.before_commit"),
+const CRASH_POINTS: [&str; 5] = [
+    "dispatcher.before_commit",
+    "timer.before_commit",
+    "invocation.before_commit",
+    "checks.before_commit",
+    "run_event.before_commit",
 ];
 
-async fn crashy_settle(worker: &Worker) -> usize {
+async fn crashy_settle(driver: &LocalDriver) -> usize {
     let mut crashes = 0;
     loop {
         let mut progressed = 0;
-        for (which, point) in CRASH_POINTS {
-            worker.faults.arm(point);
-            match worker.tick(which).await {
-                Err(WorkerError::Injected(hit)) => {
-                    assert_eq!(hit, point);
+        for point in CRASH_POINTS {
+            driver.worker.faults.arm(point);
+        }
+        loop {
+            progressed += driver.fire_due().await.unwrap();
+            match driver.handle_next().await {
+                Ok(Some(handled)) => progressed += handled,
+                Ok(None) => break,
+                Err(WorkerError::Injected(_)) => {
                     crashes += 1;
                     progressed += 1;
                 }
-                Ok(n) => progressed += n,
                 Err(other) => panic!("{other}"),
             }
-            worker.faults.clear();
-            progressed += worker.tick(which).await.unwrap();
         }
-        for which in Loop::ALL {
-            progressed += worker.tick(which).await.unwrap();
-        }
+        driver.worker.faults.clear();
+        progressed += driver.round().await.unwrap();
         if progressed == 0 {
             return crashes;
         }
@@ -90,23 +91,18 @@ async fn scenario(crash: bool) -> (Summary, usize) {
     world.turn_end(run_id, 1).await;
     crashes += settle_with(&world, crash).await;
 
-    let skill_status: String = sqlx::query_scalar("SELECT status FROM sanchoris.skill_runs")
-        .fetch_one(&world.pool)
-        .await
-        .unwrap();
-    let path: Vec<String> =
-        sqlx::query_scalar("SELECT state_name FROM sanchoris.state_entries ORDER BY sequence")
-            .fetch_all(&world.pool)
-            .await
-            .unwrap();
+    let skill_runs = world.skill_runs().await;
+    assert_eq!(skill_runs.len(), 1);
+    let mut entries = world.dynamo.all::<StateEntryItem>().await;
+    entries.sort_by_key(|e| e.sequence);
     let task_status = world.task(&format!("{REPO}#35")).await.status;
     let messages = world.messages(run_id).await;
     let execs = world.outbox(run_id, "exec").await.len();
     let state = world.github.state.lock().unwrap();
     let summary = Summary {
         task_status,
-        skill_status,
-        path,
+        skill_status: skill_runs[0].status.as_str().to_string(),
+        path: entries.into_iter().map(|e| e.state_name).collect(),
         messages,
         execs,
         pulls: state.created_pulls.len(),
@@ -136,24 +132,14 @@ async fn crashes_between_claim_and_commit_converge_without_duplicate_side_effect
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_workers_never_process_the_same_row_twice() {
     let world = World::new("pro").await;
-    let second = Arc::new(worker_for(
-        &world.pool,
-        &world.clock,
-        &world.github,
-        &world.runner,
-    ));
-    let first = Arc::new(worker_for(
-        &world.pool,
-        &world.clock,
-        &world.github,
-        &world.runner,
-    ));
+    let first = Arc::new(world.driver_with_own_worker());
+    let second = Arc::new(world.driver_with_own_worker());
     for number in 1..=8 {
         world
             .label_issue(&format!("d-{number}"), number, "Work", "mika-dev")
             .await;
     }
-    let both = |a: &Arc<Worker>, b: &Arc<Worker>| {
+    let both = |a: &Arc<LocalDriver>, b: &Arc<LocalDriver>| {
         let (a, b) = (Arc::clone(a), Arc::clone(b));
         async move {
             let left = tokio::spawn(async move { a.settle().await.unwrap() });
@@ -163,66 +149,70 @@ async fn two_workers_never_process_the_same_row_twice() {
     };
     both(&first, &second).await;
 
-    let results: Vec<(String, i64)> =
-        sqlx::query_as("SELECT result, count(*) FROM sanchoris.trigger_events GROUP BY result")
-            .fetch_all(&world.pool)
-            .await
-            .unwrap();
-    assert_eq!(results, vec![("started".into(), 8)]);
-    let statuses: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT status, count(*) FROM sanchoris.tasks GROUP BY status ORDER BY status",
-    )
-    .fetch_all(&world.pool)
-    .await
-    .unwrap();
-    assert_eq!(statuses, vec![("PENDING".into(), 3), ("RUNNING".into(), 5)]);
+    let mut results = BTreeMap::new();
+    for event in world.dynamo.all::<TriggerEvent>().await {
+        *results.entry(event.result.unwrap()).or_insert(0) += 1;
+    }
+    assert_eq!(results, BTreeMap::from([("started".to_string(), 8)]));
+    let mut statuses = BTreeMap::new();
+    for task in world.tasks().await {
+        *statuses
+            .entry(task.status.as_str().to_string())
+            .or_insert(0) += 1;
+    }
+    assert_eq!(
+        statuses,
+        BTreeMap::from([("PENDING".to_string(), 3), ("RUNNING".to_string(), 5)])
+    );
     let started = world.runner.started.lock().unwrap().clone();
     let mut distinct = started.clone();
     distinct.sort();
     distinct.dedup();
     assert_eq!((started.len(), distinct.len()), (5, 5));
 
-    let running = sqlx::query(
-        "SELECT t.name, r.id AS run_id FROM sanchoris.tasks t JOIN sanchoris.runs r ON r.task_id = t.id \
-         WHERE t.status = 'RUNNING' ORDER BY t.name",
-    )
-    .fetch_all(&world.pool)
-    .await
-    .unwrap();
+    let runs = world.dynamo.all::<Run>().await;
+    let mut running = world
+        .tasks()
+        .await
+        .into_iter()
+        .filter(|t| t.status == TaskStatus::Running)
+        .collect::<Vec<_>>();
+    running.sort_by(|a, b| a.name.cmp(&b.name));
     world.github.script_checks(&["success"; 5]);
-    for row in &running {
-        let name: String = row.get("name");
-        let number: i64 = name.rsplit('#').next().unwrap().parse().unwrap();
-        world
-            .request_skill(row.get("run_id"), skill_input(number))
-            .await;
+    for task in &running {
+        let number: i64 = task.name.rsplit('#').next().unwrap().parse().unwrap();
+        let run = runs.iter().find(|r| r.task_id == task.id).unwrap();
+        world.request_skill(run.id, skill_input(number)).await;
     }
     loop {
         both(&first, &second).await;
-        if answer_execs(&world.pool, &world.github, true).await == 0 {
+        if world.answer_execs(true).await == 0 {
             break;
         }
     }
-    let succeeded: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM sanchoris.skill_runs WHERE status = 'SUCCEEDED'")
-            .fetch_one(&world.pool)
-            .await
-            .unwrap();
+    let succeeded = world
+        .dynamo
+        .all::<SkillRunItem>()
+        .await
+        .into_iter()
+        .filter(|s| s.status == SkillRunStatus::Succeeded)
+        .count();
     assert_eq!(succeeded, 5);
-    let duplicated_entries: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM (SELECT skill_run_id, state_name FROM sanchoris.state_entries \
-         GROUP BY skill_run_id, state_name HAVING count(*) > 1) d",
-    )
-    .fetch_one(&world.pool)
-    .await
-    .unwrap();
-    assert_eq!(duplicated_entries, 0);
-    let notifications: Vec<Value> =
-        sqlx::query_scalar("SELECT payload FROM sanchoris.run_outbox WHERE type = 'user_message'")
-            .fetch_all(&world.pool)
-            .await
-            .unwrap();
-    assert_eq!(notifications.len(), 5);
+    let mut seen = BTreeMap::new();
+    for entry in world.dynamo.all::<StateEntryItem>().await {
+        *seen
+            .entry((entry.skill_run_id, entry.state_name))
+            .or_insert(0) += 1;
+    }
+    assert!(seen.values().all(|count| *count == 1), "{seen:?}");
+    let notifications = world
+        .dynamo
+        .all::<OutboxItem>()
+        .await
+        .into_iter()
+        .filter(|o| o.kind == "user_message")
+        .count();
+    assert_eq!(notifications, 5);
     let state = world.github.state.lock().unwrap();
     assert_eq!(state.created_pulls.len(), 5);
     assert_eq!(state.created_comments.len(), 5);

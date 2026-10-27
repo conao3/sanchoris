@@ -1,13 +1,16 @@
 use chrono::{DateTime, Utc};
-use sanchoris_core::db::TenantTx;
+use sanchoris_core::db::{TenantTx, plan};
+use sanchoris_core::items::{Credential, Tenant, UsageAlert, UsageSnapshot};
+use sanchoris_core::keys;
+use sanchoris_core::store::{Index, SortKey};
+use sanchoris_core::tasks::load_task;
 use serde_json::Value;
-use sqlx::Row;
 use uuid::Uuid;
 
+use crate::Worker;
 use crate::error::{Result, WorkerError};
-use crate::{Worker, adopt};
 
-pub const ALERT_THRESHOLD_PERCENT: i32 = 80;
+pub const ALERT_THRESHOLD_PERCENT: i64 = 80;
 
 fn window(payload: &Value, name: &str) -> Result<(f64, DateTime<Utc>)> {
     let window = &payload["windows"][name];
@@ -21,37 +24,27 @@ fn window(payload: &Value, name: &str) -> Result<(f64, DateTime<Utc>)> {
     Ok(((utilization * 100.0).clamp(0.0, 999.99), resets_at))
 }
 
-async fn credential_of(tx: &mut TenantTx, task_id: Uuid) -> Result<Uuid> {
-    let row = sqlx::query(
-        "SELECT definition #>> '{Session,Definition,Worker,Credential}' AS credential, \
-                definition #>> '{Session,Definition,Worker,Agent}' AS agent, requested_by_member_id \
-         FROM sanchoris.tasks WHERE id = $1",
-    )
-    .bind(task_id)
-    .fetch_one(tx.conn())
-    .await?;
-    let name: String = row.try_get("credential")?;
-    let agent: String = row.try_get("agent")?;
-    let member: Option<Uuid> = row.try_get("requested_by_member_id")?;
-    let tenant_id = tx.tenant_id();
+async fn credential_of(tx: &mut TenantTx, task_id: Uuid) -> Result<Credential> {
+    let task = load_task(tx, task_id).await?;
+    let worker = &task.definition["Session"]["Definition"]["Worker"];
+    let name = worker["Credential"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let agent = worker["Agent"].as_str().unwrap_or_default().to_string();
+    let mut credentials = tx
+        .query::<Credential>(&keys::tenant_pk(tx.tenant_id()), "CRED#")
+        .await?;
+    credentials.sort_by(|a, b| (a.created_at, a.id).cmp(&(b.created_at, b.id)));
     let found = if name == sanchoris_config::REQUESTER {
-        sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM sanchoris.credentials WHERE tenant_id = $1 AND scope = 'personal' \
-             AND member_id = $2 AND provider = $3 ORDER BY created_at LIMIT 1",
-        )
-        .bind(tenant_id)
-        .bind(member)
-        .bind(&agent)
-        .fetch_optional(tx.conn())
-        .await?
+        credentials.into_iter().find(|c| {
+            c.scope == "personal"
+                && c.member_id.is_some()
+                && c.member_id == task.requested_by_member_id
+                && c.provider == agent
+        })
     } else {
-        sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM sanchoris.credentials WHERE tenant_id = $1 AND name = $2",
-        )
-        .bind(tenant_id)
-        .bind(&name)
-        .fetch_optional(tx.conn())
-        .await?
+        credentials.into_iter().find(|c| c.name == name)
     };
     found.ok_or_else(|| WorkerError::Invalid(format!("credential {name} does not exist")))
 }
@@ -64,85 +57,79 @@ pub async fn record_rate_limit(
     payload: &Value,
 ) -> Result<()> {
     let now = worker.now();
-    let credential_id = credential_of(tx, task_id).await?;
+    let tenant_id = tx.tenant_id();
+    let mut credential = credential_of(tx, task_id).await?;
     let (five_hour, five_hour_resets_at) = window(payload, "five_hour")?;
     let (seven_day, seven_day_resets_at) = window(payload, "seven_day")?;
-    sqlx::query(
-        "INSERT INTO sanchoris.usage_snapshots (tenant_id, credential_id, captured_at, five_hour_utilization, \
-           five_hour_resets_at, seven_day_utilization, seven_day_resets_at) \
-         SELECT $1, $2, $3, $4, $5, $6, $7 \
-         WHERE NOT EXISTS (SELECT 1 FROM sanchoris.usage_snapshots \
-           WHERE credential_id = $2 AND captured_at > $8)",
-    )
-    .bind(tx.tenant_id())
-    .bind(credential_id)
-    .bind(now)
-    .bind(five_hour)
-    .bind(five_hour_resets_at)
-    .bind(seven_day)
-    .bind(seven_day_resets_at)
-    .bind(now - worker.settings.usage_snapshot_interval)
-    .execute(tx.conn())
-    .await?;
-    sqlx::query(
-        "UPDATE sanchoris.credentials SET last_used_at = $2, updated_at = now() WHERE id = $1",
-    )
-    .bind(credential_id)
-    .bind(now)
-    .execute(tx.conn())
-    .await?;
+    let recent = tx
+        .query::<UsageSnapshot>(
+            &keys::tenant_pk(tenant_id),
+            &keys::usage_snapshot_prefix(credential.id),
+        )
+        .await?
+        .iter()
+        .any(|s| s.captured_at > now - worker.settings.usage_snapshot_interval);
+    if !recent {
+        tx.insert(&UsageSnapshot {
+            tenant_id,
+            credential_id: credential.id,
+            captured_at: now,
+            five_hour_utilization: five_hour,
+            five_hour_resets_at,
+            seven_day_utilization: seven_day,
+            seven_day_resets_at,
+        })?;
+    }
+    credential.last_used_at = Some(now);
+    credential.updated_at = Utc::now();
+    tx.put(&credential)?;
     Ok(())
 }
 
-pub async fn tick_limits_enforcer(worker: &Worker) -> Result<usize> {
-    let tenants = sqlx::query(
-        "SELECT t.id, t.period_start, t.tasks_this_period, t.workspace_seconds_this_period, \
-                p.task_limit, p.workspace_seconds_limit \
-         FROM sanchoris.tenants t JOIN sanchoris.plans p ON p.id = t.plan_id \
-         WHERE t.status = 'active'",
-    )
-    .fetch_all(&worker.pool)
-    .await?;
+pub async fn sweep_alerts(worker: &Worker) -> Result<usize> {
+    let tenants = worker
+        .store
+        .query_index::<Tenant>(Index::Gsi2, keys::TENANTS_INDEX, SortKey::All)
+        .await?;
     let mut created = 0;
-    for row in tenants {
-        let tenant_id: Uuid = row.try_get("id")?;
-        let period_start: DateTime<Utc> = row.try_get("period_start")?;
+    for tenant in tenants.into_iter().filter(|t| t.status == "active") {
+        let plan = plan(&worker.store, &tenant.plan_id).await?;
         let metrics = [
-            (
-                "tasks",
-                i64::from(row.try_get::<i32, _>("tasks_this_period")?),
-                i64::from(row.try_get::<i32, _>("task_limit")?),
-            ),
+            ("tasks", tenant.tasks_this_period, plan.task_limit),
             (
                 "workspace_seconds",
-                row.try_get::<i64, _>("workspace_seconds_this_period")?,
-                row.try_get::<i64, _>("workspace_seconds_limit")?,
+                tenant.workspace_seconds_this_period,
+                plan.workspace_seconds_limit,
             ),
         ];
         let due = metrics
             .iter()
-            .filter(|(_, used, limit)| used * 100 >= limit * i64::from(ALERT_THRESHOLD_PERCENT))
+            .filter(|(_, used, limit)| used * 100 >= limit * ALERT_THRESHOLD_PERCENT)
             .collect::<Vec<_>>();
         if due.is_empty() {
             continue;
         }
-        let tx = worker.begin().await?;
-        let mut tx = adopt(tx, tenant_id).await?;
+        let mut tx = worker.tx(tenant.id);
         for (metric, used, limit) in due {
-            let inserted = sqlx::query(
-                "INSERT INTO sanchoris.usage_alerts (tenant_id, period_start, metric, threshold_percent, used, limit_value) \
-                 VALUES ($1, $2, $3, $4, $5, $6) \
-                 ON CONFLICT (tenant_id, period_start, metric, threshold_percent) DO NOTHING",
-            )
-            .bind(tenant_id)
-            .bind(period_start)
-            .bind(metric)
-            .bind(ALERT_THRESHOLD_PERCENT)
-            .bind(used)
-            .bind(limit)
-            .execute(tx.conn())
-            .await?;
-            created += usize::try_from(inserted.rows_affected()).expect("small count");
+            let alert = UsageAlert {
+                tenant_id: tenant.id,
+                period_start: tenant.period_start,
+                metric: metric.to_string(),
+                threshold_percent: ALERT_THRESHOLD_PERCENT,
+                used: *used,
+                limit_value: *limit,
+                created_at: worker.now(),
+            };
+            let key = keys::usage_alert_key(
+                tenant.id,
+                tenant.period_start,
+                metric,
+                ALERT_THRESHOLD_PERCENT,
+            );
+            if tx.get::<UsageAlert>(&key).await?.is_none() {
+                tx.insert(&alert)?;
+                created += 1;
+            }
         }
         tx.commit().await?;
     }

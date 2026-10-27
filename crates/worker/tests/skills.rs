@@ -1,8 +1,26 @@
 mod common;
 
-use common::{REPO, World, skill_input, skill_run};
+use common::{REPO, World, skill_input};
+use sanchoris_core::items::{ApprovalWait, Output, StateEntryItem, Task, TimerItem};
+use sanchoris_core::keys;
 use serde_json::json;
-use sqlx::Row;
+use uuid::Uuid;
+
+async fn skill_run(world: &World, task_id: Uuid, number: i32) -> (String, Option<String>) {
+    common::skill_run(&world.store, world.tenant(), task_id, number).await
+}
+
+async fn entries(world: &World, skill_run_id: Uuid) -> Vec<StateEntryItem> {
+    let mut entries = world
+        .dynamo
+        .all::<StateEntryItem>()
+        .await
+        .into_iter()
+        .filter(|e| e.skill_run_id == skill_run_id)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|e| e.sequence);
+    entries
+}
 
 #[tokio::test]
 async fn skill_success_completes_the_task_after_the_turn_end() {
@@ -18,7 +36,7 @@ async fn skill_success_completes_the_task_after_the_turn_end() {
     world.drive().await;
 
     assert_eq!(
-        skill_run(&world.pool, task.id, 1).await,
+        skill_run(&world, task.id, 1).await,
         ("SUCCEEDED".into(), None)
     );
     let messages = world.messages(run_id).await;
@@ -53,34 +71,29 @@ async fn skill_success_completes_the_task_after_the_turn_end() {
         );
     }
 
-    let path: Vec<String> = sqlx::query_scalar(
-        "SELECT state_name FROM sanchoris.state_entries WHERE skill_run_id = $1 ORDER BY sequence",
-    )
-    .bind(accepted.id)
-    .fetch_all(&world.pool)
-    .await
-    .unwrap();
+    let path = entries(&world, accepted.id)
+        .await
+        .into_iter()
+        .map(|e| e.state_name)
+        .collect::<Vec<_>>();
     assert_eq!(
         path,
         ["Init", "Push", "OpenPRs", "WaitChecks", "Green", "Report"]
     );
-    let outputs: Vec<(String, i32)> = sqlx::query_as(
-        "SELECT kind, number FROM sanchoris.outputs WHERE skill_run_id = $1 ORDER BY kind",
-    )
-    .bind(accepted.id)
-    .fetch_all(&world.pool)
-    .await
-    .unwrap();
+    let mut outputs = world
+        .dynamo
+        .all::<Output>()
+        .await
+        .into_iter()
+        .filter(|o| o.skill_run_id == accepted.id)
+        .map(|o| (o.kind, o.number))
+        .collect::<Vec<_>>();
+    outputs.sort();
     assert_eq!(
         outputs,
         vec![("comment".into(), 35), ("pull_request".into(), 52)]
     );
-    let timers: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM sanchoris.due_jobs WHERE kind = 'engine_timer'")
-            .fetch_one(&world.pool)
-            .await
-            .unwrap();
-    assert_eq!(timers, 0);
+    assert!(world.dynamo.all::<TimerItem>().await.is_empty());
     world.worker.settle().await.unwrap();
     assert_eq!(*world.runner.stopped.lock().unwrap(), vec![run_id]);
 }
@@ -95,7 +108,7 @@ async fn ci_failure_hands_off_to_the_agent_and_continues_to_success() {
     world.turn_end(run_id, 1).await;
     world.drive().await;
 
-    assert_eq!(skill_run(&world.pool, task.id, 1).await.0, "WAITING_AGENT");
+    assert_eq!(skill_run(&world, task.id, 1).await.0, "WAITING_AGENT");
     let messages = world.messages(run_id).await;
     assert_eq!(
         messages,
@@ -115,7 +128,7 @@ async fn ci_failure_hands_off_to_the_agent_and_continues_to_success() {
         ("WAITING", Some("skill"))
     );
     world.drive().await;
-    assert_eq!(skill_run(&world.pool, task.id, 1).await.0, "SUCCEEDED");
+    assert_eq!(skill_run(&world, task.id, 1).await.0, "SUCCEEDED");
     assert_eq!(world.task(&format!("{REPO}#35")).await.status, "RUNNING");
     world.turn_end(run_id, 3).await;
     world.worker.settle().await.unwrap();
@@ -139,12 +152,12 @@ async fn exhausted_fixes_put_the_task_in_needs_you() {
     world.request_skill(run_id, skill_input(35)).await;
     world.drive().await;
     for _ in 0..3 {
-        assert_eq!(skill_run(&world.pool, task.id, 1).await.0, "WAITING_AGENT");
+        assert_eq!(skill_run(&world, task.id, 1).await.0, "WAITING_AGENT");
         world.continue_skill(run_id, 1).await;
         world.drive().await;
     }
     assert_eq!(
-        skill_run(&world.pool, task.id, 1).await,
+        skill_run(&world, task.id, 1).await,
         ("FAILED".into(), Some("Skill.FixesExhausted".into()))
     );
     let task = world.task(&format!("{REPO}#35")).await;
@@ -166,30 +179,17 @@ async fn skill_requests_are_validated_against_the_task() {
     let world = World::new("pro").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
-    let mut tx = sanchoris_core::db::TenantTx::begin(&world.pool, world.tenant())
+    let unknown = world
+        .try_request_skill(run_id, "deploy", json!({}))
         .await
-        .unwrap();
-    let unknown = sanchoris_core::skillrun::accept_skill_request(
-        &mut tx,
-        run_id,
-        "deploy",
-        json!({}),
-        world.clock_now(),
-    )
-    .await
-    .unwrap_err();
+        .unwrap_err();
     assert_eq!(unknown.code(), "skill_not_offered");
-    let bad_input = sanchoris_core::skillrun::accept_skill_request(
-        &mut tx,
-        run_id,
-        "open-pr-green-ci",
-        json!({ "Repos": REPO }),
-        world.clock_now(),
-    )
-    .await
-    .unwrap_err();
+    let bad_input = world
+        .try_request_skill(run_id, "open-pr-green-ci", json!({ "Repos": REPO }))
+        .await
+        .unwrap_err();
     assert_eq!(bad_input.code(), "invalid_input");
-    tx.rollback().await.unwrap();
+    assert!(world.skill_runs().await.is_empty());
 }
 
 #[tokio::test]
@@ -199,11 +199,11 @@ async fn check_run_webhooks_wake_the_wait_before_the_poll_interval() {
     let run_id = task.run_id.unwrap();
     world.request_skill(run_id, skill_input(35)).await;
     world.drive().await;
-    assert_eq!(skill_run(&world.pool, task.id, 1).await.0, "WAITING");
+    assert_eq!(skill_run(&world, task.id, 1).await.0, "WAITING");
     world.github.state.lock().unwrap().check_results.clear();
     world.github.script_checks(&["success"]);
     world.worker.settle().await.unwrap();
-    assert_eq!(skill_run(&world.pool, task.id, 1).await.0, "WAITING");
+    assert_eq!(skill_run(&world, task.id, 1).await.0, "WAITING");
 
     let sha = world
         .github
@@ -234,7 +234,7 @@ async fn check_run_webhooks_wake_the_wait_before_the_poll_interval() {
         )
         .await;
     world.drive().await;
-    assert_eq!(skill_run(&world.pool, task.id, 1).await.0, "SUCCEEDED");
+    assert_eq!(skill_run(&world, task.id, 1).await.0, "SUCCEEDED");
 }
 
 #[tokio::test]
@@ -244,12 +244,12 @@ async fn polling_completes_the_checks_wait_without_a_webhook() {
     let run_id = task.run_id.unwrap();
     world.request_skill(run_id, skill_input(35)).await;
     world.drive().await;
-    assert_eq!(skill_run(&world.pool, task.id, 1).await.0, "WAITING");
+    assert_eq!(skill_run(&world, task.id, 1).await.0, "WAITING");
     world.github.state.lock().unwrap().check_results.clear();
     world.github.script_checks(&["success"]);
     world.clock.advance(chrono::Duration::minutes(5));
     world.drive().await;
-    assert_eq!(skill_run(&world.pool, task.id, 1).await.0, "SUCCEEDED");
+    assert_eq!(skill_run(&world, task.id, 1).await.0, "SUCCEEDED");
 }
 
 #[tokio::test]
@@ -262,19 +262,16 @@ async fn failed_pushes_are_retried_by_the_engine() {
     world.worker.settle().await.unwrap();
     assert_eq!(world.answer_execs(false).await, 1);
     world.worker.settle().await.unwrap();
-    let entry = sqlx::query("SELECT status, error, cause FROM sanchoris.state_entries WHERE skill_run_id = $1 AND state_name = 'Push'")
-        .bind(accepted.id)
-        .fetch_one(&world.pool)
+    let entry = entries(&world, accepted.id)
         .await
+        .into_iter()
+        .find(|e| e.state_name == "Push")
         .unwrap();
-    assert_eq!(entry.get::<String, _>("status"), "RUNNING");
-    assert_eq!(
-        entry.get::<Option<String>, _>("error").as_deref(),
-        Some("States.TaskFailed")
-    );
+    assert_eq!(entry.status, "RUNNING");
+    assert_eq!(entry.error.as_deref(), Some("States.TaskFailed"));
     world.clock.advance(chrono::Duration::seconds(10));
     world.drive().await;
-    assert_eq!(skill_run(&world.pool, task.id, 1).await.0, "SUCCEEDED");
+    assert_eq!(skill_run(&world, task.id, 1).await.0, "SUCCEEDED");
     let execs = world.outbox(run_id, "exec").await;
     assert_eq!(execs.len(), 2);
     assert_eq!(
@@ -305,43 +302,34 @@ async fn approval_requests_wait_for_a_signed_decision() {
         definition: Some(definition),
         origin: sanchoris_config::SkillOrigin::Repository,
     };
-    sqlx::query(
-        "UPDATE sanchoris.tasks SET definition = jsonb_set(definition, '{Skills}', definition->'Skills' || $2) WHERE id = $1",
-    )
-    .bind(task.id)
-    .bind(json!([{ "Name": "ship", "Definition": skill }]))
-    .execute(&world.admin)
-    .await
-    .unwrap();
-    let mut tx = sanchoris_core::db::TenantTx::begin(&world.pool, world.tenant())
+    world
+        .dynamo
+        .modify::<Task>(&keys::task_key(world.tenant(), task.id), |stored| {
+            stored.definition["Skills"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({ "Name": "ship", "Definition": skill }));
+        })
+        .await;
+    let accepted = world
+        .try_request_skill(run_id, "ship", json!({}))
         .await
         .unwrap();
-    let accepted = sanchoris_core::skillrun::accept_skill_request(
-        &mut tx,
-        run_id,
-        "ship",
-        json!({}),
-        world.clock_now(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
     world.worker.settle().await.unwrap();
     let waiting = world.task(&format!("{REPO}#35")).await;
     assert_eq!(waiting.status, "NEEDS_YOU");
     assert_eq!(waiting.error.as_deref(), Some("Approval.Requested"));
-    let token: String = sqlx::query_scalar(
-        "SELECT task_token FROM sanchoris.approval_waits WHERE skill_run_id = $1",
-    )
-    .bind(accepted.id)
-    .fetch_one(&world.pool)
-    .await
-    .unwrap();
+    let token = world
+        .dynamo
+        .all::<ApprovalWait>()
+        .await
+        .into_iter()
+        .find(|w| w.skill_run_id == accepted.id)
+        .unwrap()
+        .task_token;
     let signer = TaskTokenSigner::new(Signer::new(&[9u8; 32]).unwrap());
     let signed = signer.sign(accepted.id, &token);
-    let mut tx = sanchoris_core::db::TenantTx::begin(&world.pool, world.tenant())
-        .await
-        .unwrap();
+    let mut tx = world.store.tx(world.tenant());
     let forged = format!("{}0", &signed[..signed.len() - 1]);
     assert!(
         sanchoris_core::skillrun::resolve_approval(
@@ -366,7 +354,7 @@ async fn approval_requests_wait_for_a_signed_decision() {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    assert_eq!(skill_run(&world.pool, task.id, 1).await.0, "SUCCEEDED");
+    assert_eq!(skill_run(&world, task.id, 1).await.0, "SUCCEEDED");
     let task = world.task(&format!("{REPO}#35")).await;
     assert_eq!(task.status, "RUNNING");
 }

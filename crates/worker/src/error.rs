@@ -1,4 +1,5 @@
 use sanchoris_core::db::DbError;
+use sanchoris_core::ports::PortError;
 use sanchoris_core::skillrun::SkillRunError;
 use thiserror::Error;
 
@@ -15,6 +16,8 @@ pub enum WorkerError {
     #[error(transparent)]
     Runner(#[from] RunnerError),
     #[error(transparent)]
+    Port(#[from] PortError),
+    #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error("{0}")]
     Invalid(String),
@@ -22,9 +25,13 @@ pub enum WorkerError {
     Injected(&'static str),
 }
 
-impl From<sqlx::Error> for WorkerError {
-    fn from(error: sqlx::Error) -> Self {
-        Self::Db(DbError::Sqlx(error))
+impl WorkerError {
+    pub fn is_conflict(&self) -> bool {
+        match self {
+            Self::Db(error) => error.is_conflict(),
+            Self::SkillRun(error) => error.is_conflict(),
+            _ => false,
+        }
     }
 }
 

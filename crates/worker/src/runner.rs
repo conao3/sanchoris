@@ -103,11 +103,17 @@ impl LocalProcessRunner {
         self.config.socket_dir.join(format!("{run_id}.sock"))
     }
 
-    pub fn environment(&self, run_id: Uuid, workspace_dir: &Path) -> Vec<(&'static str, String)> {
-        let token = self
-            .config
-            .run_tokens
-            .sign(run_id, self.clock.now() + self.config.token_ttl);
+    pub fn environment(
+        &self,
+        tenant_id: Uuid,
+        run_id: Uuid,
+        workspace_dir: &Path,
+    ) -> Vec<(&'static str, String)> {
+        let token = self.config.run_tokens.sign(
+            tenant_id,
+            run_id,
+            self.clock.now() + self.config.token_ttl,
+        );
         vec![
             ("SANCHORIS_RUN_ID", run_id.to_string()),
             ("SANCHORIS_RUN_TOKEN", token),
@@ -186,7 +192,7 @@ impl RunnerPort for LocalProcessRunner {
             .args(&self.config.args)
             .current_dir(&dir)
             .kill_on_drop(true);
-        for (name, value) in self.environment(spec.run_id, &dir) {
+        for (name, value) in self.environment(spec.tenant_id, spec.run_id, &dir) {
             command.env(name, value);
         }
         let child = match command.spawn() {
@@ -330,7 +336,10 @@ mod tests {
     fn environment_carries_a_verifiable_run_token() {
         let fixture = fixture("true", &[]);
         let run_id = Uuid::new_v4();
-        let env = fixture.runner.environment(run_id, Path::new("/w/1"));
+        let tenant_id = Uuid::new_v4();
+        let env = fixture
+            .runner
+            .environment(tenant_id, run_id, Path::new("/w/1"));
         let get = |name: &str| env.iter().find(|(k, _)| *k == name).unwrap().1.clone();
         assert_eq!(get("SANCHORIS_RUN_ID"), run_id.to_string());
         assert_eq!(
@@ -354,7 +363,7 @@ mod tests {
                 .tokens
                 .verify(&get("SANCHORIS_RUN_TOKEN"), now)
                 .unwrap(),
-            run_id
+            sanchoris_core::tokens::RunClaims { tenant_id, run_id }
         );
     }
 

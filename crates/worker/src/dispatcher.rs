@@ -3,120 +3,88 @@ use sanchoris_config::{
     Skill, SkillOrigin, Start, builtin_skill, validate::GITHUB_ACTOR_CONDITIONS,
 };
 use sanchoris_core::db::{
-    self, NewTask, NewTriggerEvent, Recorded, TenantTx, TriggerEventOutcome, claim_due_jobs,
-    complete_due_job,
+    self, NewTask, NewTriggerEvent, REF_CHECK_WAIT, REF_TRIGGER, Recorded, TenantTx,
+    TriggerEventOutcome, locate,
 };
 use sanchoris_core::github::CHECK_RUN_COMPLETED;
+use sanchoris_core::items::{
+    CheckWait, CheckWaitMarker, Config, Guard, InboundEvent, Membership, Pending, Project,
+    SessionDef, SkillDef, Task, TaskName, Trigger, uniq,
+};
+use sanchoris_core::jobs::Job;
+use sanchoris_core::keys;
 use sanchoris_core::messages::{self, OfferedSkill, StartMessage};
 use sanchoris_core::model::{NamedDefinition, TaskDefinition, TaskStatus};
 use sanchoris_core::pattern::EventPattern;
-use sanchoris_core::tasks::{latest_run, send_to_task};
+use sanchoris_core::store::{Index, SortKey};
+use sanchoris_core::tasks::{latest_run, load_task, send_to_task, store_task};
 use sanchoris_core::transform::{InputTransformer, render_instruction};
 use serde_json::{Map, Value, json};
-use sqlx::Row;
 use uuid::Uuid;
 
-use crate::config_sync::{DUE_TRIGGER_SCHEDULE, trigger_definition};
+use crate::Worker;
+use crate::config_sync::trigger_definition;
 use crate::error::{Result, WorkerError};
 use crate::schedule::next_fire;
-use crate::{Worker, adopt};
 
 pub const SCHEDULE_SOURCE: &str = "schedule";
 pub const SCHEDULED_EVENT: &str = "Scheduled Event";
 const TITLE_LIMIT: usize = 80;
+const DEPTH_LIMIT: i64 = 100;
 
-struct Inbound {
-    id: Uuid,
-    source: String,
-    key: String,
-    event: Value,
-}
-
-struct TriggerRow {
-    id: Uuid,
-    config_id: Uuid,
-    config_revision_id: Uuid,
-    name: String,
-    state: String,
-    event_pattern: Option<Value>,
-    schedule_expression: Option<String>,
-    input_transformer: Option<Value>,
-    start: Value,
-}
-
-pub async fn tick(worker: &Worker) -> Result<usize> {
+pub async fn process_inbound(worker: &Worker, tenant_id: Uuid) -> Result<usize> {
     let mut processed = 0;
-    while processed < worker.settings.batch {
-        if !dispatch_one(worker).await? {
-            break;
-        }
+    while process_next(worker, tenant_id).await? {
         processed += 1;
     }
-    Ok(usize::try_from(processed).expect("batch fits in usize"))
+    Ok(processed)
 }
 
 pub async fn dispatch_tenant(worker: &Worker, tenant_id: Uuid) -> Result<usize> {
-    let mut processed = 0;
+    let mut attempt = 0;
     loop {
-        if dispatch_next(worker, Some(tenant_id)).await? {
-            processed += 1;
-            continue;
-        }
-        let waiting = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS (SELECT 1 FROM sanchoris.inbound_events WHERE tenant_id = $1 AND processed_at IS NULL)",
-        )
-        .bind(tenant_id)
-        .fetch_one(&worker.pool)
-        .await?;
-        if !waiting {
-            return Ok(processed);
+        attempt += 1;
+        match process_inbound(worker, tenant_id).await {
+            Err(error) if error.is_conflict() && attempt < worker.settings.conflict_attempts => {}
+            other => return other,
         }
     }
 }
 
-async fn dispatch_one(worker: &Worker) -> Result<bool> {
-    dispatch_next(worker, None).await
+pub async fn dispatch(worker: &Worker, tenant_id: Uuid) -> Result<usize> {
+    let mut tx = worker.tx(tenant_id);
+    let dispatched = db::dispatch_pending_tasks(&mut tx, worker.now()).await?;
+    tx.commit().await?;
+    Ok(dispatched.len())
 }
 
-async fn dispatch_next(worker: &Worker, tenant_id: Option<Uuid>) -> Result<bool> {
-    let mut tx = worker.begin().await?;
-    let claim = match tenant_id {
-        Some(_) => {
-            "SELECT id, tenant_id, source, key, event FROM sanchoris.inbound_events \
-             WHERE processed_at IS NULL AND tenant_id = $1 ORDER BY received_at, id LIMIT 1 FOR UPDATE"
-        }
-        None => {
-            "SELECT id, tenant_id, source, key, event FROM sanchoris.inbound_events \
-             WHERE processed_at IS NULL AND $1::uuid IS NULL ORDER BY received_at, id LIMIT 1 FOR UPDATE SKIP LOCKED"
-        }
-    };
-    let Some(row) = sqlx::query(claim)
-        .bind(tenant_id)
-        .fetch_optional(&mut *tx)
-        .await?
-    else {
+async fn process_next(worker: &Worker, tenant_id: Uuid) -> Result<bool> {
+    let mut tx = worker.tx(tenant_id);
+    let markers = tx
+        .query::<Pending>(&keys::inbound_pk(tenant_id), "PEND#")
+        .await?;
+    let Some(marker) = markers.into_iter().next() else {
         return Ok(false);
     };
-    let inbound = Inbound {
-        id: row.try_get("id")?,
-        source: row.try_get("source")?,
-        key: row.try_get("key")?,
-        event: row.try_get("event")?,
+    tx.delete(&marker.key)?;
+    let Some(mut inbound) = tx
+        .get::<InboundEvent>(&marker.target)
+        .await?
+        .filter(|event| event.processed_at.is_none())
+    else {
+        tx.commit().await?;
+        return Ok(true);
     };
-    let mut tx = adopt(tx, row.try_get("tenant_id")?).await?;
     process(worker, &mut tx, &inbound).await?;
-    sqlx::query("UPDATE sanchoris.inbound_events SET processed_at = $2 WHERE id = $1")
-        .bind(inbound.id)
-        .bind(worker.now())
-        .execute(tx.conn())
-        .await?;
+    inbound.processed_at = Some(worker.now());
+    tx.put(&inbound)?;
     db::dispatch_pending_tasks(&mut tx, worker.now()).await?;
     worker.faults.check("dispatcher.before_commit")?;
     tx.commit().await?;
     Ok(true)
 }
 
-async fn process(worker: &Worker, tx: &mut TenantTx, inbound: &Inbound) -> Result<()> {
+async fn process(worker: &Worker, tx: &mut TenantTx, inbound: &InboundEvent) -> Result<()> {
     if inbound.event["detail-type"] == CHECK_RUN_COMPLETED {
         nudge_check_waits(worker, tx, &inbound.event).await?;
     }
@@ -127,9 +95,13 @@ async fn process(worker: &Worker, tx: &mut TenantTx, inbound: &Inbound) -> Resul
             .ok_or_else(|| {
                 WorkerError::Invalid("a schedule event needs detail.trigger_id".into())
             })?;
-        load_triggers(tx, Some(trigger_id)).await?
+        load_trigger(tx, trigger_id)
+            .await?
+            .filter(Trigger::is_active)
+            .into_iter()
+            .collect()
     } else {
-        load_triggers(tx, None).await?
+        event_triggers(tx).await?
     };
     for trigger in triggers {
         evaluate(worker, tx, inbound, &trigger).await?;
@@ -145,47 +117,64 @@ async fn nudge_check_waits(worker: &Worker, tx: &mut TenantTx, event: &Value) ->
     ) else {
         return Ok(());
     };
-    sqlx::query(
-        "UPDATE sanchoris.check_waits SET next_poll_at = $4 \
-         WHERE tenant_id = $1 AND status = 'waiting' AND repos ? $2 \
-           AND (head_shas->>$2 IS NULL OR head_shas->>$2 = $3)",
-    )
-    .bind(tx.tenant_id())
-    .bind(repo)
-    .bind(sha)
-    .bind(worker.now())
-    .execute(tx.conn())
-    .await?;
+    let tenant_id = tx.tenant_id();
+    let markers = tx
+        .query::<CheckWaitMarker>(&keys::tenant_pk(tenant_id), "CHECKWAIT#")
+        .await?;
+    for marker in markers
+        .into_iter()
+        .filter(|m| m.repos.iter().any(|r| r == repo))
+    {
+        let Some(location) = locate(tx, marker.wait_id, REF_CHECK_WAIT).await? else {
+            continue;
+        };
+        let Some(mut wait) = tx.get::<CheckWait>(&location.target).await? else {
+            continue;
+        };
+        let head = wait.head_shas[repo].as_str();
+        if wait.status != "waiting" || head.is_some_and(|head| head != sha) {
+            continue;
+        }
+        wait.next_poll_at = worker.now();
+        tx.put(&wait)?;
+        tx.emit(Job::CheckPoll {
+            tenant_id,
+            task_id: wait.task_id,
+            wait_id: wait.id,
+        });
+    }
     Ok(())
 }
 
-async fn load_triggers(tx: &mut TenantTx, only: Option<Uuid>) -> Result<Vec<TriggerRow>> {
-    let rows = sqlx::query(
-        "SELECT id, config_id, config_revision_id, name, state, event_pattern, schedule_expression, input_transformer, start \
-         FROM sanchoris.triggers \
-         WHERE tenant_id = $1 AND state = 'ENABLED' AND removed_at IS NULL \
-           AND (($2::uuid IS NULL AND event_pattern IS NOT NULL) OR id = $2) \
-         ORDER BY name",
-    )
-    .bind(tx.tenant_id())
-    .bind(only)
-    .fetch_all(tx.conn())
-    .await?;
-    rows.iter()
-        .map(|row| {
-            Ok(TriggerRow {
-                id: row.try_get("id")?,
-                config_id: row.try_get("config_id")?,
-                config_revision_id: row.try_get("config_revision_id")?,
-                name: row.try_get("name")?,
-                state: row.try_get("state")?,
-                event_pattern: row.try_get("event_pattern")?,
-                schedule_expression: row.try_get("schedule_expression")?,
-                input_transformer: row.try_get("input_transformer")?,
-                start: row.try_get("start")?,
-            })
-        })
-        .collect()
+pub async fn load_trigger(tx: &mut TenantTx, trigger_id: Uuid) -> Result<Option<Trigger>> {
+    let Some(location) = locate(tx, trigger_id, REF_TRIGGER).await? else {
+        return Ok(None);
+    };
+    Ok(tx.get::<Trigger>(&location.target).await?)
+}
+
+pub async fn all_triggers(tx: &mut TenantTx) -> Result<Vec<Trigger>> {
+    let tenant_id = tx.tenant_id();
+    let configs = tx
+        .query::<Config>(&keys::tenant_pk(tenant_id), "CONFIG#")
+        .await?;
+    let mut triggers = Vec::new();
+    for config in configs {
+        triggers.extend(
+            tx.query::<Trigger>(&keys::config_pk(tenant_id, config.id), "TRIGGER#")
+                .await?,
+        );
+    }
+    triggers.sort_by(|a, b| (&a.name, a.id).cmp(&(&b.name, b.id)));
+    Ok(triggers)
+}
+
+async fn event_triggers(tx: &mut TenantTx) -> Result<Vec<Trigger>> {
+    Ok(all_triggers(tx)
+        .await?
+        .into_iter()
+        .filter(|t| t.is_active() && t.event_pattern.is_some())
+        .collect())
 }
 
 fn without_actor(pattern: &Value) -> Value {
@@ -217,8 +206,8 @@ fn actor_reason(event: &Value) -> String {
 async fn evaluate(
     worker: &Worker,
     tx: &mut TenantTx,
-    inbound: &Inbound,
-    trigger: &TriggerRow,
+    inbound: &InboundEvent,
+    trigger: &Trigger,
 ) -> Result<()> {
     let pattern = match &trigger.event_pattern {
         Some(raw) => {
@@ -294,8 +283,8 @@ enum Plan {
 async fn start(
     worker: &Worker,
     tx: &mut TenantTx,
-    inbound: &Inbound,
-    trigger: &TriggerRow,
+    inbound: &InboundEvent,
+    trigger: &Trigger,
     trigger_event_id: Uuid,
 ) -> Result<TriggerEventOutcome> {
     let start: Start = serde_json::from_value(trigger.start.clone())?;
@@ -384,19 +373,17 @@ async fn start(
         instruction: &instruction,
         skills: &offered,
     });
-    sqlx::query("UPDATE sanchoris.tasks SET start_payload = $2 WHERE id = $1")
-        .bind(task_id)
-        .bind(json!({ "instruction": text, "systemPrompt": system_prompt }))
-        .execute(tx.conn())
-        .await?;
+    let mut task = load_task(tx, task_id).await?;
+    task.start_payload = Some(json!({ "instruction": text, "systemPrompt": system_prompt }));
+    tx.put(&task)?;
     Ok(TriggerEventOutcome::Started)
 }
 
 async fn place(
     worker: &Worker,
     tx: &mut TenantTx,
-    inbound: &Inbound,
-    trigger: &TriggerRow,
+    inbound: &InboundEvent,
+    trigger: &Trigger,
     start: &Start,
 ) -> Result<Plan> {
     let detail = &inbound.event["detail"];
@@ -421,39 +408,48 @@ async fn place(
 }
 
 async fn member_by_github_login(tx: &mut TenantTx, login: &str) -> Result<Option<Uuid>> {
-    Ok(sqlx::query_scalar::<_, Uuid>(
-        "SELECT m.id FROM sanchoris.members m JOIN sanchoris.users u ON u.id = m.user_id \
-         WHERE m.tenant_id = $1 AND u.github_login = $2",
-    )
-    .bind(tx.tenant_id())
-    .bind(login)
-    .fetch_optional(tx.conn())
-    .await?)
+    let key = keys::uniq_key(uniq::GITHUB_LOGIN, &login.to_lowercase());
+    let Some(guard) = tx.get::<Guard>(&key).await? else {
+        return Ok(None);
+    };
+    let membership = tx
+        .get::<Membership>(&keys::membership_key(guard.target, tx.tenant_id()))
+        .await?;
+    Ok(membership.map(|m| m.member_id))
 }
 
-async fn task_by_name(tx: &mut TenantTx, name: &str) -> Result<Option<Uuid>> {
-    Ok(sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM sanchoris.tasks WHERE tenant_id = $1 AND name = $2 \
-         ORDER BY created_at DESC, id DESC LIMIT 1",
-    )
-    .bind(tx.tenant_id())
-    .bind(name)
-    .fetch_optional(tx.conn())
-    .await?)
+async fn task_by_name(worker: &Worker, tx: &TenantTx, name: &str) -> Result<Option<Uuid>> {
+    let names = worker
+        .store
+        .query_index::<TaskName>(
+            Index::Gsi1,
+            &keys::task_name_index(tx.tenant_id(), name),
+            SortKey::All,
+        )
+        .await?;
+    Ok(names
+        .into_iter()
+        .max_by(|a, b| (a.created_at, a.task_id).cmp(&(b.created_at, b.task_id)))
+        .map(|n| n.task_id))
 }
 
 async fn depth_of(tx: &mut TenantTx, task_id: Uuid) -> Result<i64> {
-    Ok(sqlx::query_scalar::<_, i64>(
-        "WITH RECURSIVE chain(id, parent, depth) AS ( \
-           SELECT id, parent_task_id, 0::bigint FROM sanchoris.tasks WHERE id = $1 \
-           UNION ALL \
-           SELECT t.id, t.parent_task_id, c.depth + 1 FROM sanchoris.tasks t JOIN chain c ON t.id = c.parent \
-             WHERE c.depth < 100) \
-         SELECT max(depth) FROM chain",
-    )
-    .bind(task_id)
-    .fetch_one(tx.conn())
-    .await?)
+    let mut depth = 0;
+    let mut current = load_task(tx, task_id).await?;
+    while let Some(parent) = current.parent_task_id {
+        if depth >= DEPTH_LIMIT {
+            break;
+        }
+        let Some(next) = tx
+            .get::<Task>(&keys::task_key(tx.tenant_id(), parent))
+            .await?
+        else {
+            break;
+        };
+        depth += 1;
+        current = next;
+    }
+    Ok(depth)
 }
 
 async fn place_github(
@@ -496,7 +492,7 @@ async fn place_github(
         .await?;
     let mut parent_task_id = None;
     if let Some(parent) = &relations.parent
-        && let Some(parent_id) = task_by_name(tx, &parent.task_name()).await?
+        && let Some(parent_id) = task_by_name(worker, tx, &parent.task_name()).await?
     {
         let limits = start.limits.children;
         let depth = depth_of(tx, parent_id).await? + 1;
@@ -506,14 +502,14 @@ async fn place_github(
                 limits.max_depth
             ))));
         }
-        let siblings = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM sanchoris.tasks WHERE tenant_id = $1 AND parent_task_id = $2",
-        )
-        .bind(tx.tenant_id())
-        .bind(parent_id)
-        .fetch_one(tx.conn())
-        .await?;
-        if u64::try_from(siblings).expect("count is non-negative") >= limits.max_count {
+        let siblings = tx
+            .query::<sanchoris_core::items::Child>(
+                &keys::task_pk(tx.tenant_id(), parent_id),
+                "CHILD#",
+            )
+            .await?
+            .len();
+        if u64::try_from(siblings).expect("count fits") >= limits.max_count {
             return Ok(Plan::Done(skipped(format!(
                 "children limit: {} already has {siblings} child tasks (MaxCount {})",
                 parent.task_name(),
@@ -524,7 +520,7 @@ async fn place_github(
     }
     let mut blocked_by = Vec::new();
     for blocker in &relations.blocked_by {
-        if let Some(id) = task_by_name(tx, &blocker.task_name()).await?
+        if let Some(id) = task_by_name(worker, tx, &blocker.task_name()).await?
             && !blocked_by.contains(&id)
         {
             blocked_by.push(id);
@@ -543,8 +539,8 @@ async fn place_github(
 
 async fn place_chat(
     tx: &mut TenantTx,
-    inbound: &Inbound,
-    trigger: &TriggerRow,
+    inbound: &InboundEvent,
+    trigger: &Trigger,
     now: DateTime<Utc>,
 ) -> Result<Plan> {
     let detail = &inbound.event["detail"];
@@ -552,57 +548,49 @@ async fn place_chat(
         return Ok(Plan::Done(discarded("chat events need detail.thread")));
     };
     let text = detail["text"].as_str().unwrap_or("");
-    let latest = sqlx::query(
-        "SELECT id, name, status FROM sanchoris.tasks \
-         WHERE trigger_id = $1 AND starts_with(name, $2 || '/') \
-         ORDER BY created_at DESC, id DESC LIMIT 1",
-    )
-    .bind(trigger.id)
-    .bind(thread)
-    .fetch_optional(tx.conn())
-    .await?;
-    let count = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM sanchoris.tasks WHERE trigger_id = $1 AND starts_with(name, $2 || '/')",
-    )
-    .bind(trigger.id)
-    .bind(thread)
-    .fetch_one(tx.conn())
-    .await?;
+    let names = tx
+        .query::<TaskName>(
+            &keys::trigger_pk(tx.tenant_id(), trigger.id),
+            &format!("TASK#{thread}/"),
+        )
+        .await?;
+    let count = names.len();
+    let latest = names
+        .into_iter()
+        .max_by(|a, b| (a.created_at, a.task_id).cmp(&(b.created_at, b.task_id)));
     let requested_by_member_id = detail["member_id"].as_str().and_then(|id| id.parse().ok());
-    if let Some(row) = latest {
-        let task_id: Uuid = row.try_get("id")?;
-        let name: String = row.try_get("name")?;
-        let status: TaskStatus = row
-            .try_get::<String, _>("status")?
-            .parse()
-            .expect("task status is valid");
-        if !status.is_terminal() {
-            let Some(run_id) = latest_run(tx, task_id).await? else {
+    if let Some(latest) = latest {
+        let task = load_task(tx, latest.task_id).await?;
+        if !task.status.is_terminal() {
+            let Some(run_id) = latest_run(tx, task.id).await? else {
                 return Ok(Plan::Done(skipped(format!(
-                    "the thread's task {name} has not started yet"
+                    "the thread's task {} has not started yet",
+                    task.name
                 ))));
             };
             let user = detail["user"].as_str().unwrap_or("user");
             let message = messages::reply_message(user, text);
             send_to_task(
                 tx,
-                task_id,
+                task.id,
                 run_id,
                 &message,
                 &format!("chat:{}", inbound.key),
                 now,
             )
             .await?;
-            sqlx::query(
-                "UPDATE sanchoris.tasks SET status = 'RUNNING', error = NULL, cause = NULL, nudges = 0, \
-                 updated_at = $2 WHERE id = $1 AND status = 'NEEDS_YOU'",
-            )
-            .bind(task_id)
-            .bind(now)
-            .execute(tx.conn())
-            .await?;
+            let mut task = load_task(tx, task.id).await?;
+            if task.status == TaskStatus::NeedsYou {
+                task.status = TaskStatus::Running;
+                task.error = None;
+                task.cause = None;
+                task.nudges = 0;
+                task.updated_at = now;
+                store_task(tx, &task, now).await?;
+            }
             return Ok(Plan::Done(discarded(format!(
-                "delivered to the active task {name} as a message"
+                "delivered to the active task {} as a message",
+                task.name
             ))));
         }
     }
@@ -623,50 +611,39 @@ async fn load_session(
     config_id: Uuid,
     name: &str,
 ) -> Result<Option<(Value, Option<String>)>> {
-    let Some(definition) = sqlx::query_scalar::<_, Value>(
-        "SELECT definition FROM sanchoris.sessions WHERE config_id = $1 AND name = $2",
-    )
-    .bind(config_id)
-    .bind(name)
-    .fetch_optional(tx.conn())
-    .await?
+    let tenant_id = tx.tenant_id();
+    let Some(session) = tx
+        .get::<SessionDef>(&keys::session_key(tenant_id, config_id, name))
+        .await?
     else {
         return Ok(None);
     };
-    let system_prompt =
-        match definition.get("Project").and_then(Value::as_str) {
-            Some(project) => sqlx::query_scalar::<_, String>(
-                "SELECT system_prompt FROM sanchoris.projects WHERE config_id = $1 AND name = $2",
-            )
-            .bind(config_id)
-            .bind(project)
-            .fetch_optional(tx.conn())
-            .await?,
-            None => None,
-        };
-    Ok(Some((definition, system_prompt)))
+    let system_prompt = match session.definition.get("Project").and_then(Value::as_str) {
+        Some(project) => tx
+            .get::<Project>(&keys::project_key(tenant_id, config_id, project))
+            .await?
+            .map(|p| p.system_prompt),
+        None => None,
+    };
+    Ok(Some((session.definition, system_prompt)))
 }
 
 async fn load_skill(tx: &mut TenantTx, config_id: Uuid, name: &str) -> Result<Option<Skill>> {
-    let Some(row) = sqlx::query(
-        "SELECT skill_md, skill_yaml FROM sanchoris.skills WHERE config_id = $1 AND name = $2",
-    )
-    .bind(config_id)
-    .bind(name)
-    .fetch_optional(tx.conn())
-    .await?
+    let Some(stored) = tx
+        .get::<SkillDef>(&keys::skill_key(tx.tenant_id(), config_id, name))
+        .await?
     else {
         return Ok(None);
     };
-    let skill_md: String = row.try_get("skill_md")?;
-    let skill_yaml: Option<String> = row.try_get("skill_yaml")?;
     let origin = match builtin_skill(name) {
-        Some(builtin) if builtin.skill_md == skill_md && builtin.skill_yaml == skill_yaml => {
+        Some(builtin)
+            if builtin.skill_md == stored.skill_md && builtin.skill_yaml == stored.skill_yaml =>
+        {
             SkillOrigin::BuiltIn
         }
         _ => SkillOrigin::Repository,
     };
-    Skill::from_sources(&skill_md, skill_yaml.as_deref(), origin, name)
+    Skill::from_sources(&stored.skill_md, stored.skill_yaml.as_deref(), origin, name)
         .map(Some)
         .map_err(|errors| {
             WorkerError::Invalid(format!(
@@ -680,90 +657,72 @@ async fn load_skill(tx: &mut TenantTx, config_id: Uuid, name: &str) -> Result<Op
         })
 }
 
-pub async fn tick_schedules(worker: &Worker) -> Result<usize> {
-    let now = worker.now();
-    let mut tx = worker.begin().await?;
-    let unscheduled = sqlx::query(
-        "SELECT t.id, t.tenant_id, t.schedule_expression FROM sanchoris.triggers t \
-         WHERE t.schedule_expression IS NOT NULL AND t.state = 'ENABLED' AND t.removed_at IS NULL \
-           AND NOT EXISTS (SELECT 1 FROM sanchoris.due_jobs j WHERE j.kind = $1 AND j.ref_id = t.id)",
-    )
-    .bind(DUE_TRIGGER_SCHEDULE)
-    .fetch_all(&mut *tx)
-    .await?;
-    let mut progressed = 0;
-    for row in &unscheduled {
-        let expression: String = row.try_get("schedule_expression")?;
-        let due_at = next_fire(&expression, now)
-            .map_err(|error| WorkerError::Invalid(format!("{expression}: {error}")))?;
-        let inserted = sqlx::query(
-            "INSERT INTO sanchoris.due_jobs (tenant_id, kind, ref_id, due_at) VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (kind, ref_id) DO NOTHING",
-        )
-        .bind(row.try_get::<Uuid, _>("tenant_id")?)
-        .bind(DUE_TRIGGER_SCHEDULE)
-        .bind(row.try_get::<Uuid, _>("id")?)
-        .bind(due_at)
-        .execute(&mut *tx)
-        .await?;
-        progressed += usize::try_from(inserted.rows_affected()).expect("small count");
-    }
-    tx.commit().await?;
-    loop {
-        let mut tx = worker.begin().await?;
-        let Some(job) = claim_due_jobs(&mut tx, DUE_TRIGGER_SCHEDULE, now, 1)
-            .await?
-            .into_iter()
-            .next()
-        else {
-            break;
-        };
-        let mut tx = adopt(tx, job.tenant_id).await?;
-        fire_schedule(&mut tx, &job.ref_id, job.id, job.due_at).await?;
-        tx.commit().await?;
-        progressed += 1;
-    }
-    Ok(progressed)
-}
-
-async fn fire_schedule(
+pub fn schedule_trigger(
     tx: &mut TenantTx,
-    trigger_id: &Uuid,
-    job_id: Uuid,
-    due_at: DateTime<Utc>,
+    trigger: &mut Trigger,
+    after: DateTime<Utc>,
 ) -> Result<()> {
-    let trigger = sqlx::query(
-        "SELECT name, schedule_expression FROM sanchoris.triggers \
-         WHERE id = $1 AND state = 'ENABLED' AND removed_at IS NULL AND schedule_expression IS NOT NULL",
-    )
-    .bind(trigger_id)
-    .fetch_optional(tx.conn())
-    .await?;
-    let Some(trigger) = trigger else {
-        complete_due_job(tx.conn(), job_id).await?;
+    if let Some(previous) = trigger.schedule_message_id.take() {
+        tx.cancel_schedule(previous);
+    }
+    trigger.next_run_at = None;
+    let Some(expression) = trigger
+        .schedule_expression
+        .clone()
+        .filter(|_| trigger.is_active())
+    else {
         return Ok(());
     };
-    let expression: String = trigger.try_get("schedule_expression")?;
-    let name: String = trigger.try_get("name")?;
+    let due_at = next_fire(&expression, after)
+        .map_err(|error| WorkerError::Invalid(format!("{expression}: {error}")))?;
+    let message_id = tx.emit_at(
+        Job::TriggerSchedule {
+            tenant_id: tx.tenant_id(),
+            config_id: trigger.config_id,
+            trigger_id: trigger.id,
+            due_at,
+        },
+        due_at,
+    );
+    trigger.next_run_at = Some(due_at);
+    trigger.schedule_message_id = Some(message_id);
+    Ok(())
+}
+
+pub async fn fire_schedule(
+    worker: &Worker,
+    tenant_id: Uuid,
+    config_id: Uuid,
+    trigger_id: Uuid,
+    due_at: DateTime<Utc>,
+    message_id: Uuid,
+) -> Result<usize> {
+    let mut tx = worker.tx(tenant_id);
+    let Some(mut trigger) = load_trigger(&mut tx, trigger_id).await? else {
+        return Ok(0);
+    };
+    if trigger.config_id != config_id
+        || trigger.schedule_message_id != Some(message_id)
+        || !trigger.is_active()
+    {
+        return Ok(0);
+    }
     let time = due_at.to_rfc3339_opts(SecondsFormat::Secs, true);
     let event = json!({
         "source": SCHEDULE_SOURCE,
         "detail-type": SCHEDULED_EVENT,
-        "detail": { "trigger_id": trigger_id, "trigger": name, "time": time },
+        "detail": { "trigger_id": trigger_id, "trigger": trigger.name, "time": time },
     });
     sanchoris_core::channel::record_inbound_event(
-        tx,
+        &mut tx,
         SCHEDULE_SOURCE,
         &format!("{trigger_id}:{time}"),
         &event,
     )
     .await?;
-    let next = next_fire(&expression, due_at)
-        .map_err(|error| WorkerError::Invalid(format!("{expression}: {error}")))?;
-    sqlx::query("UPDATE sanchoris.due_jobs SET due_at = $2, attempts = 0 WHERE id = $1")
-        .bind(job_id)
-        .bind(next)
-        .execute(tx.conn())
-        .await?;
-    Ok(())
+    trigger.schedule_message_id = None;
+    schedule_trigger(&mut tx, &mut trigger, due_at)?;
+    tx.put(&trigger)?;
+    tx.commit().await?;
+    Ok(1)
 }

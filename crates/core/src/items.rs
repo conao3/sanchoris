@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -6,6 +6,8 @@ use crate::item::{Entity, ItemReader, ItemWriter, Key, format_time};
 use crate::keys;
 use crate::model::{SkillRunStatus, TaskStatus, WaitReason};
 use crate::store::DbError;
+
+pub const USAGE_SNAPSHOT_RETENTION_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plan {
@@ -462,7 +464,8 @@ impl Entity for UsageSnapshot {
             .f("five_hour_utilization", self.five_hour_utilization)
             .time("five_hour_resets_at", self.five_hour_resets_at)
             .f("seven_day_utilization", self.seven_day_utilization)
-            .time("seven_day_resets_at", self.seven_day_resets_at);
+            .time("seven_day_resets_at", self.seven_day_resets_at)
+            .ttl(self.captured_at + Duration::days(USAGE_SNAPSHOT_RETENTION_DAYS));
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {

@@ -1,42 +1,71 @@
 mod common;
 
 use common::{REPO, World};
-use sanchoris_worker::Loop;
-use serde_json::{Value, json};
-use sqlx::Row;
+use sanchoris_core::items::{ConfigRevision, InboundEvent, SkillDef, Task, Trigger, TriggerEvent};
+use sanchoris_core::jobs::{Envelope, Job};
+use sanchoris_core::keys;
+use sanchoris_core::model::TaskStatus;
+use sanchoris_core::store::retry;
+use serde_json::json;
 
 const START_TEXT: &str = "[sanchoris] Trigger labeled-issue started this task: Fix flaky checkout test (acme/shop-web#35).\n\
 Instruction: Resolve issue 35 in acme/shop-web: Fix flaky checkout test. Write tests for the change.\n\
 Skills: open-pr-green-ci (required). Run it with `sanchoris skill run open-pr-green-ci`.";
 
+async fn trigger(world: &World, name: &str) -> Trigger {
+    world
+        .dynamo
+        .all::<Trigger>()
+        .await
+        .into_iter()
+        .find(|t| t.name == name)
+        .unwrap()
+}
+
+async fn revision(world: &World, sha: &str) -> ConfigRevision {
+    world
+        .revisions()
+        .await
+        .into_iter()
+        .find(|r| r.commit_sha == sha)
+        .unwrap()
+}
+
+async fn active_revision(world: &World) -> Option<uuid::Uuid> {
+    world
+        .store
+        .get::<sanchoris_core::items::Config>(&keys::config_key(
+            world.tenant(),
+            world.seeded.config_id,
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .active_revision_id
+}
+
 #[tokio::test]
 async fn config_sync_resolves_project_repository_keys() {
     let world = World::new("pro").await;
-    let pattern: Value = sqlx::query_scalar(
-        "SELECT event_pattern FROM sanchoris.triggers WHERE name = 'labeled-issue'",
-    )
-    .fetch_one(&world.pool)
-    .await
-    .unwrap();
+    let pattern = trigger(&world, "labeled-issue")
+        .await
+        .event_pattern
+        .unwrap();
     assert_eq!(
         pattern["detail"]["repository"],
         json!(["acme/shop-web", "acme/shop-api"])
     );
-    let row = sqlx::query(
-        "SELECT c.active_revision_id = r.id AS active, r.validation_status, r.commit_sha \
-         FROM sanchoris.configs c JOIN sanchoris.config_revisions r ON r.config_id = c.id \
-         WHERE r.commit_sha = 'config-1'",
-    )
-    .fetch_one(&world.pool)
-    .await
-    .unwrap();
-    assert!(row.get::<bool, _>("active"));
-    assert_eq!(row.get::<String, _>("validation_status"), "valid");
-    let skills: Vec<(String, String)> =
-        sqlx::query_as("SELECT name, kind FROM sanchoris.skills ORDER BY name")
-            .fetch_all(&world.pool)
-            .await
-            .unwrap();
+    let revision = revision(&world, "config-1").await;
+    assert_eq!(active_revision(&world).await, Some(revision.id));
+    assert_eq!(revision.validation_status, "valid");
+    let mut skills = world
+        .dynamo
+        .all::<SkillDef>()
+        .await
+        .into_iter()
+        .map(|s| (s.name, s.kind))
+        .collect::<Vec<_>>();
+    skills.sort();
     assert_eq!(skills, vec![("open-pr-green-ci".into(), "reliable".into())]);
 }
 
@@ -52,37 +81,34 @@ async fn invalid_revisions_do_not_replace_the_active_one() {
         );
         state.files.insert("sanchoris.yaml".into(), broken);
     }
-    sqlx::query("UPDATE sanchoris.configs SET synced_at = NULL")
-        .execute(&world.admin)
+    world.resync_config().await;
+    let handled = world
+        .worker
+        .worker
+        .handle(&Envelope::new(Job::ConfigSync {
+            tenant_id: world.tenant(),
+            config_id: world.seeded.config_id,
+        }))
         .await
         .unwrap();
-    assert_eq!(world.worker.tick(Loop::ConfigSyncer).await.unwrap(), 1);
-    let row = sqlx::query(
-        "SELECT r.validation_status, r.validation_messages, c.active_revision_id = r.id AS active \
-         FROM sanchoris.config_revisions r JOIN sanchoris.configs c ON c.id = r.config_id \
-         WHERE r.commit_sha = 'config-2'",
-    )
-    .fetch_one(&world.pool)
-    .await
-    .unwrap();
-    assert_eq!(row.get::<String, _>("validation_status"), "invalid");
-    assert!(!row.get::<bool, _>("active"));
-    let messages: Value = row.get("validation_messages");
+    assert_eq!(handled, 1);
+    let revision = revision(&world, "config-2").await;
+    assert_eq!(revision.validation_status, "invalid");
+    assert_ne!(active_revision(&world).await, Some(revision.id));
     assert!(
-        messages
+        revision
+            .validation_messages
             .as_array()
             .unwrap()
             .iter()
             .any(|m| m["Location"] == "Triggers.labeled-issue.Start.Session"),
-        "{messages}"
+        "{}",
+        revision.validation_messages
     );
-    let session: String = sqlx::query_scalar(
-        "SELECT start->>'Session' FROM sanchoris.triggers WHERE name = 'labeled-issue'",
-    )
-    .fetch_one(&world.pool)
-    .await
-    .unwrap();
-    assert_eq!(session, "shop");
+    assert_eq!(
+        trigger(&world, "labeled-issue").await.start["Session"],
+        "shop"
+    );
 }
 
 #[tokio::test]
@@ -91,13 +117,29 @@ async fn labeled_issue_starts_a_running_task_with_the_documented_message() {
     world
         .label_issue("delivery-35", 35, "Fix flaky checkout test", "mika-dev")
         .await;
-    assert_eq!(world.worker.tick(Loop::TriggerDispatcher).await.unwrap(), 1);
+    let inbound = world
+        .queue
+        .bodies()
+        .iter()
+        .map(|body| Envelope::parse(body).unwrap().job)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        inbound,
+        vec![Job::Inbound {
+            tenant_id: world.tenant()
+        }]
+    );
+    let envelope = Envelope::new(Job::Inbound {
+        tenant_id: world.tenant(),
+    });
+    assert_eq!(world.worker.worker.handle(&envelope).await.unwrap(), 1);
     let task = world.task("acme/shop-web#35").await;
     assert_eq!(task.status, "RUNNING");
     assert_eq!(task.title, "Fix flaky checkout test (acme/shop-web#35)");
     assert_eq!(task.requested_by_member_id, Some(world.seeded.member_id));
     let run_id = task.run_id.expect("a run is created");
-    assert_eq!(world.worker.tick(Loop::Workspaces).await.unwrap(), 1);
+    assert!(world.runner.started.lock().unwrap().is_empty());
+    world.worker.settle().await.unwrap();
     let starts = world.outbox(run_id, "start").await;
     assert_eq!(starts.len(), 1);
     assert_eq!(starts[0]["instruction"], START_TEXT);
@@ -113,22 +155,13 @@ async fn labeled_issue_starts_a_running_task_with_the_documented_message() {
     );
     assert_eq!(starts[0]["heartbeatSeconds"], 900);
     assert_eq!(*world.runner.started.lock().unwrap(), vec![run_id]);
+    assert!(world.pusher.pushed.lock().unwrap().contains(&run_id));
     assert_eq!(
         world.trigger_event("delivery-35").await,
         (Some("started".into()), None)
     );
-
-    world
-        .label_issue("delivery-35", 35, "Fix flaky checkout test", "mika-dev")
-        .await;
-    world.worker.settle().await.unwrap();
-    let counts: (i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM sanchoris.inbound_events), (SELECT count(*) FROM sanchoris.trigger_events)",
-    )
-    .fetch_one(&world.pool)
-    .await
-    .unwrap();
-    assert_eq!(counts, (1, 1));
+    assert_eq!(world.dynamo.all::<InboundEvent>().await.len(), 1);
+    assert_eq!(world.dynamo.all::<TriggerEvent>().await.len(), 1);
     world
         .label_issue(
             "delivery-35-again",
@@ -145,11 +178,7 @@ async fn labeled_issue_starts_a_running_task_with_the_documented_message() {
             Some(format!("task {REPO}#35 already exists"))
         )
     );
-    let tasks: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.tasks")
-        .fetch_one(&world.pool)
-        .await
-        .unwrap();
-    assert_eq!(tasks, 1);
+    assert_eq!(world.tasks().await.len(), 1);
     assert_eq!(world.runner.started.lock().unwrap().len(), 1);
 }
 
@@ -167,11 +196,7 @@ async fn actors_outside_the_pattern_are_skipped_with_a_reason() {
             Some("the actor eve (MEMBER) is not allowed by the trigger".into())
         )
     );
-    let tasks: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.tasks")
-        .fetch_one(&world.pool)
-        .await
-        .unwrap();
-    assert_eq!(tasks, 0);
+    assert!(world.tasks().await.is_empty());
 }
 
 #[tokio::test]
@@ -183,18 +208,10 @@ async fn unrelated_events_leave_no_trigger_event() {
         .deliver("delivery-elsewhere", "issues", &payload)
         .await;
     world.worker.settle().await.unwrap();
-    let events: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.trigger_events")
-        .fetch_one(&world.pool)
-        .await
-        .unwrap();
-    assert_eq!(events, 0);
-    let processed: bool = sqlx::query_scalar(
-        "SELECT processed_at IS NOT NULL FROM sanchoris.inbound_events WHERE key = 'delivery-elsewhere'",
-    )
-    .fetch_one(&world.pool)
-    .await
-    .unwrap();
-    assert!(processed);
+    assert!(world.dynamo.all::<TriggerEvent>().await.is_empty());
+    let inbound = world.dynamo.all::<InboundEvent>().await;
+    assert_eq!(inbound.len(), 1);
+    assert!(inbound[0].processed_at.is_some());
 }
 
 #[tokio::test]
@@ -218,12 +235,13 @@ async fn children_beyond_the_limit_are_skipped() {
             Some("children limit: depth 2 exceeds MaxDepth 1".into())
         )
     );
-    let grandchild: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM sanchoris.tasks WHERE name = 'acme/shop-web#37'")
-            .fetch_one(&world.pool)
+    assert!(
+        world
+            .tasks()
             .await
-            .unwrap();
-    assert_eq!(grandchild, 0);
+            .iter()
+            .all(|t| t.name != "acme/shop-web#37")
+    );
 }
 
 #[tokio::test]
@@ -254,17 +272,17 @@ async fn chat_messages_go_to_the_active_task_of_their_thread() {
     let world = World::new("pro").await;
     let message = |key: &str, text: &str| json!({ "source": "web", "detail-type": "Message", "detail": { "scope": "all", "thread": "thread-1", "user": "Mika", "text": text, "key": key } });
     let send = |key: &'static str, text: &'static str| {
-        let pool = world.pool.clone();
+        let store = world.store.clone();
         let tenant = world.tenant();
         let event = message(key, text);
         async move {
-            let mut tx = sanchoris_core::db::TenantTx::begin(&pool, tenant)
-                .await
-                .unwrap();
-            sanchoris_core::channel::record_inbound_event(&mut tx, "web", key, &event)
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
+            retry(20, || async {
+                let mut tx = store.tx(tenant);
+                sanchoris_core::channel::record_inbound_event(&mut tx, "web", key, &event).await?;
+                tx.commit().await
+            })
+            .await
+            .unwrap();
         }
     };
     send("m1", "Plan the next release").await;
@@ -285,10 +303,13 @@ async fn chat_messages_go_to_the_active_task_of_their_thread() {
             Some("delivered to the active task thread-1/1 as a message".into())
         )
     );
-    sqlx::query("UPDATE sanchoris.tasks SET status = 'SUCCEEDED', finished_at = now() WHERE name = 'thread-1/1'")
-        .execute(&world.admin)
-        .await
-        .unwrap();
+    world
+        .dynamo
+        .modify::<Task>(&keys::task_key(world.tenant(), first.id), |task| {
+            task.status = TaskStatus::Succeeded;
+            task.finished_at = Some(chrono::Utc::now());
+        })
+        .await;
     send("m3", "One more thing").await;
     world.worker.settle().await.unwrap();
     let second = world.task("thread-1/2").await;
@@ -307,16 +328,15 @@ async fn schedules_emit_events_at_due_times() {
         );
         state.files.insert("sanchoris.yaml".into(), yaml);
     }
-    sqlx::query("UPDATE sanchoris.configs SET synced_at = NULL")
-        .execute(&world.admin)
-        .await
-        .unwrap();
+    world.resync_config().await;
     world.worker.settle().await.unwrap();
-    let tasks: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.tasks")
-        .fetch_one(&world.pool)
-        .await
-        .unwrap();
-    assert_eq!(tasks, 0);
+    assert!(world.tasks().await.is_empty());
+    let nightly = trigger(&world, "nightly").await;
+    assert_eq!(
+        nightly.next_run_at,
+        Some(common::epoch() + chrono::Duration::hours(1))
+    );
+    assert_eq!(world.scheduler.pending().len(), 1);
     world.clock.advance(chrono::Duration::hours(1));
     world.worker.settle().await.unwrap();
     let task = world.task("nightly@2026-10-27T10:00:00Z").await;
@@ -324,4 +344,8 @@ async fn schedules_emit_events_at_due_times() {
     world.clock.advance(chrono::Duration::hours(1));
     world.worker.settle().await.unwrap();
     world.task("nightly@2026-10-27T11:00:00Z").await;
+    assert_eq!(
+        trigger(&world, "nightly").await.next_run_at,
+        Some(common::epoch() + chrono::Duration::hours(3))
+    );
 }

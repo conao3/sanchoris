@@ -1,6 +1,6 @@
-pub mod clock;
 pub mod config_sync;
 pub mod dispatcher;
+pub mod driver;
 pub mod engine_worker;
 pub mod error;
 pub mod github;
@@ -11,20 +11,23 @@ pub mod schedule;
 pub mod supervisor;
 pub mod usage;
 
+pub use sanchoris_core::clock;
+
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::Duration as StdDuration;
 
 use chrono::Duration;
-use sqlx::{PgPool, Postgres, Row, Transaction};
-use uuid::Uuid;
+use sanchoris_core::db::{DbError, Store, TenantTx};
+use sanchoris_core::items::Integration;
+use sanchoris_core::jobs::{Envelope, Job};
+use sanchoris_core::keys;
 
 use crate::clock::Clock;
 use crate::error::{Result, WorkerError};
 use crate::ports::{
-    ConfigSource, GitHubClient, GitHubReader, Installation, ResourceInvoker, RunnerPort,
+    ConfigSource, GitHubClient, GitHubReader, Installation, OutboxPusher, ResourceInvoker,
+    RunnerPort,
 };
-use sanchoris_core::db::TenantTx;
 
 pub struct Deps {
     pub clock: Arc<dyn Clock>,
@@ -33,25 +36,24 @@ pub struct Deps {
     pub config_source: Arc<dyn ConfigSource>,
     pub resources: Arc<dyn ResourceInvoker>,
     pub runner: Arc<dyn RunnerPort>,
+    pub pusher: Arc<dyn OutboxPusher>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Settings {
-    pub loop_interval: StdDuration,
     pub check_poll_interval: Duration,
     pub config_poll_interval: Duration,
     pub usage_snapshot_interval: Duration,
-    pub batch: i64,
+    pub conflict_attempts: u32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            loop_interval: StdDuration::from_secs(1),
             check_poll_interval: Duration::minutes(5),
             config_poll_interval: Duration::minutes(5),
             usage_snapshot_interval: Duration::seconds(60),
-            batch: 50,
+            conflict_attempts: 20,
         }
     }
 }
@@ -79,49 +81,16 @@ impl Faults {
 }
 
 pub struct Worker {
-    pub pool: PgPool,
+    pub store: Store,
     pub deps: Deps,
     pub settings: Settings,
     pub faults: Faults,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Loop {
-    ConfigSyncer,
-    Scheduler,
-    TriggerDispatcher,
-    EngineTimers,
-    ResourceInvocations,
-    CheckPoller,
-    RunEvents,
-    TaskResumes,
-    TaskLimits,
-    Workspaces,
-    PendingDispatch,
-    LimitsEnforcer,
-}
-
-impl Loop {
-    pub const ALL: [Loop; 12] = [
-        Loop::ConfigSyncer,
-        Loop::Scheduler,
-        Loop::TriggerDispatcher,
-        Loop::EngineTimers,
-        Loop::ResourceInvocations,
-        Loop::CheckPoller,
-        Loop::RunEvents,
-        Loop::TaskResumes,
-        Loop::TaskLimits,
-        Loop::Workspaces,
-        Loop::PendingDispatch,
-        Loop::LimitsEnforcer,
-    ];
-}
-
 impl Worker {
-    pub fn new(pool: PgPool, deps: Deps, settings: Settings) -> Self {
+    pub fn new(store: Store, deps: Deps, settings: Settings) -> Self {
         Self {
-            pool,
+            store,
             deps,
             settings,
             faults: Faults::default(),
@@ -132,96 +101,135 @@ impl Worker {
         self.deps.clock.now()
     }
 
-    pub async fn tick(&self, which: Loop) -> Result<usize> {
-        match which {
-            Loop::ConfigSyncer => config_sync::tick(self).await,
-            Loop::Scheduler => dispatcher::tick_schedules(self).await,
-            Loop::TriggerDispatcher => dispatcher::tick(self).await,
-            Loop::EngineTimers => engine_worker::tick_timers(self).await,
-            Loop::ResourceInvocations => engine_worker::tick_invocations(self).await,
-            Loop::CheckPoller => engine_worker::tick_checks(self).await,
-            Loop::RunEvents => supervisor::tick_run_events(self).await,
-            Loop::TaskResumes => supervisor::tick_resumes(self).await,
-            Loop::TaskLimits => supervisor::tick_limits(self).await,
-            Loop::Workspaces => supervisor::tick_workspaces(self).await,
-            Loop::PendingDispatch => supervisor::tick_pending_dispatch(self).await,
-            Loop::LimitsEnforcer => usage::tick_limits_enforcer(self).await,
-        }
+    pub fn tx(&self, tenant_id: uuid::Uuid) -> TenantTx {
+        self.store.tx(tenant_id)
     }
 
-    pub async fn settle(&self) -> Result<usize> {
-        let mut total = 0;
+    pub async fn handle_body(&self, body: &str) -> Result<usize> {
+        let envelope = Envelope::parse(body)
+            .map_err(|e| WorkerError::Invalid(format!("unreadable message: {e}")))?;
+        self.handle(&envelope).await
+    }
+
+    pub async fn handle(&self, envelope: &Envelope) -> Result<usize> {
+        let mut attempt = 0;
         loop {
-            let mut progressed = 0;
-            for which in Loop::ALL {
-                progressed += self.tick(which).await?;
+            attempt += 1;
+            match self.handle_once(envelope).await {
+                Err(error) if error.is_conflict() && attempt < self.settings.conflict_attempts => {
+                    let jitter = u64::from(uuid::Uuid::new_v4().as_bytes()[0]) % 20;
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        5 * u64::from(attempt) + jitter,
+                    ))
+                    .await;
+                }
+                other => return other,
             }
-            if progressed == 0 {
-                return Ok(total);
-            }
-            total += progressed;
         }
     }
 
-    pub async fn run(self: Arc<Self>, shutdown: tokio::sync::watch::Receiver<bool>) {
-        let handles = Loop::ALL
-            .into_iter()
-            .map(|which| {
-                let worker = Arc::clone(&self);
-                let mut shutdown = shutdown.clone();
-                tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(worker.settings.loop_interval);
-                    loop {
-                        tokio::select! {
-                            _ = interval.tick() => {}
-                            _ = shutdown.changed() => return,
-                        }
-                        loop {
-                            match worker.tick(which).await {
-                                Ok(0) => break,
-                                Ok(_) => continue,
-                                Err(error) => {
-                                    eprintln!("sanchoris worker {which:?}: {error}");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-        for handle in handles {
-            let _ = handle.await;
+    async fn handle_once(&self, envelope: &Envelope) -> Result<usize> {
+        match &envelope.job {
+            Job::Inbound { tenant_id } => dispatcher::process_inbound(self, *tenant_id).await,
+            Job::Dispatch { tenant_id } => dispatcher::dispatch(self, *tenant_id).await,
+            Job::RunEvents {
+                tenant_id, run_id, ..
+            } => supervisor::process_run_events(self, *tenant_id, *run_id).await,
+            Job::Invoke {
+                tenant_id,
+                invocation_id,
+                ..
+            } => engine_worker::invoke(self, *tenant_id, *invocation_id).await,
+            Job::EngineTimer {
+                tenant_id,
+                task_id,
+                skill_run_id,
+                timer_id,
+            } => {
+                engine_worker::fire_timer(
+                    self,
+                    *tenant_id,
+                    *task_id,
+                    *skill_run_id,
+                    *timer_id,
+                    envelope.id,
+                )
+                .await
+            }
+            Job::TaskResume {
+                tenant_id,
+                task_id,
+                resume_at,
+            } => supervisor::resume(self, *tenant_id, *task_id, *resume_at).await,
+            Job::CheckPoll {
+                tenant_id, wait_id, ..
+            } => engine_worker::poll_check(self, *tenant_id, *wait_id).await,
+            Job::Reconcile {
+                tenant_id,
+                task_id,
+                run_id,
+            } => supervisor::reconcile(self, *tenant_id, *task_id, *run_id).await,
+            Job::DeliverOutbox { tenant_id, run_id } => {
+                self.deps.pusher.push(*tenant_id, *run_id).await?;
+                Ok(1)
+            }
+            Job::ConfigSync {
+                tenant_id,
+                config_id,
+            } => {
+                config_sync::sync_config(self, *tenant_id, *config_id).await?;
+                Ok(1)
+            }
+            Job::TriggerSchedule {
+                tenant_id,
+                config_id,
+                trigger_id,
+                due_at,
+            } => {
+                dispatcher::fire_schedule(
+                    self,
+                    *tenant_id,
+                    *config_id,
+                    *trigger_id,
+                    *due_at,
+                    envelope.id,
+                )
+                .await
+            }
+            Job::SweepConfigs => config_sync::sweep(self).await,
+            Job::SweepChecks => engine_worker::sweep_checks(self).await,
+            Job::SweepTaskLimits => supervisor::sweep_limits(self).await,
+            Job::UsageAlerts => usage::sweep_alerts(self).await,
         }
     }
-
-    pub(crate) async fn begin(&self) -> Result<Transaction<'static, Postgres>> {
-        Ok(self.pool.begin().await?)
-    }
 }
 
-pub(crate) async fn adopt(tx: Transaction<'static, Postgres>, tenant_id: Uuid) -> Result<TenantTx> {
-    Ok(TenantTx::adopt(tx, tenant_id).await?)
-}
+pub const PERIODIC_JOBS: [Job; 4] = [
+    Job::SweepConfigs,
+    Job::SweepChecks,
+    Job::SweepTaskLimits,
+    Job::UsageAlerts,
+];
 
-pub(crate) async fn installations(tx: &mut TenantTx) -> Result<Vec<Installation>> {
-    let tenant_id = tx.tenant_id();
-    let rows = sqlx::query(
-        "SELECT github_installation_id, details->>'account_login' AS login FROM sanchoris.integrations \
-         WHERE tenant_id = $1 AND kind = 'github_installation' AND status = 'connected' \
-         ORDER BY created_at, id",
-    )
-    .bind(tenant_id)
-    .fetch_all(tx.conn())
-    .await?;
-    rows.iter()
-        .map(|row| {
-            Ok(Installation {
-                id: row.try_get("github_installation_id")?,
-                account_login: row.try_get("login")?,
+pub(crate) async fn installations(
+    tx: &mut TenantTx,
+) -> std::result::Result<Vec<Installation>, DbError> {
+    let mut integrations = tx
+        .query::<Integration>(&keys::tenant_pk(tx.tenant_id()), "INTEG#")
+        .await?
+        .into_iter()
+        .filter(|i| i.kind == "github_installation" && i.status == "connected")
+        .collect::<Vec<_>>();
+    integrations.sort_by(|a, b| (a.created_at, a.id).cmp(&(b.created_at, b.id)));
+    Ok(integrations
+        .into_iter()
+        .filter_map(|i| {
+            i.github_installation_id.map(|id| Installation {
+                id,
+                account_login: i.details["account_login"].as_str().map(str::to_string),
             })
         })
-        .collect()
+        .collect())
 }
 
 pub(crate) fn installation_for(installations: &[Installation], repo: &str) -> Result<i64> {
@@ -232,7 +240,7 @@ pub async fn installation_for_repo(tx: &mut TenantTx, repo: &str) -> Result<i64>
     installation_for(&installations(tx).await?, repo)
 }
 
-pub fn deps_from_env() -> (Deps, Arc<github::GitHubApi>) {
+pub fn deps_from_env(pusher: Arc<dyn OutboxPusher>) -> (Deps, Arc<github::GitHubApi>) {
     let control = runner::LocalRunnerConfig::from_env();
     let clock: Arc<dyn Clock> = Arc::new(clock::SystemClock);
     let api = Arc::new(github::GitHubApi::from_env());
@@ -243,16 +251,7 @@ pub fn deps_from_env() -> (Deps, Arc<github::GitHubApi>) {
         config_source: api.clone(),
         resources: Arc::new(resources::GitHubResources::new(api.clone())),
         runner: Arc::new(runner::LocalProcessRunner::new(control, clock)),
+        pusher,
     };
     (deps, api)
-}
-
-pub async fn run_from_env(shutdown: tokio::sync::watch::Receiver<bool>) {
-    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let pool = PgPool::connect(&database_url)
-        .await
-        .expect("connect to DATABASE_URL");
-    let (deps, _) = deps_from_env();
-    let worker = Arc::new(Worker::new(pool, deps, Settings::default()));
-    worker.run(shutdown).await;
 }

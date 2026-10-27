@@ -1,349 +1,73 @@
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+mod fakes;
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use chrono::{DateTime, TimeZone, Utc};
-use sanchoris_config::ConfigFiles;
-use sanchoris_core::channel::{RunEventType, ingest_github_delivery, record_run_event};
-use sanchoris_core::db::{Recorded, TenantTx};
-use sanchoris_core::skillrun::{AcceptedSkillRun, accept_skill_request, continue_skill_run};
-use sanchoris_core::testing::{SeededTenant, TestPostgres};
-use sanchoris_worker::clock::FakeClock;
-use sanchoris_worker::ports::{
-    CheckRun, ConfigSource, GitHubClient, GitHubError, GitHubReader, IssueComment, IssueRelations,
-    MergeResult, NewPullRequest, PullRequest, RunnerError, RunnerPort, WorkspaceHandle,
-    WorkspaceSpec,
+use chrono::{DateTime, Utc};
+use sanchoris_core::channel::{
+    RunEventType, ingest_github_delivery, mark_outbox_delivered, record_run_event,
 };
+use sanchoris_core::db::{Recorded, Store};
+use sanchoris_core::item::Table;
+use sanchoris_core::items::{
+    Credential, Guard, Integration, OutboxItem, Run, SkillRunItem, Task, TaskName, TriggerEvent,
+    User, uniq,
+};
+use sanchoris_core::keys;
+use sanchoris_core::local::{MemoryQueue, MemoryScheduler};
+use sanchoris_core::ports::PortError;
+use sanchoris_core::skillrun::{
+    AcceptedSkillRun, SkillRunError, accept_skill_request, continue_skill_run,
+};
+use sanchoris_core::store::{Index, SortKey, retry};
+use sanchoris_core::testing::{SeededTenant, TestDynamo};
+use sanchoris_worker::clock::FakeClock;
+use sanchoris_worker::driver::LocalDriver;
+use sanchoris_worker::ports::OutboxPusher;
 use sanchoris_worker::resources::GitHubResources;
-use sanchoris_worker::{Deps, Loop, Settings, Worker};
+use sanchoris_worker::{Deps, Settings, Worker};
 use serde_json::{Value, json};
-use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-pub const CONFIG_YAML: &str = include_str!("../../../config/tests/fixtures/example.sanchoris.yaml");
-pub const INSTALLATION: i64 = 42;
-pub const REPO: &str = "acme/shop-web";
-
-pub fn epoch() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 27, 9, 0, 0).unwrap()
-}
+pub use fakes::*;
 
 #[derive(Debug, Default)]
-pub struct GitHubState {
-    pub head_sha: String,
-    pub files: ConfigFiles,
-    pub default_branch_calls: usize,
-    pub pulls: BTreeMap<(String, String), PullRequest>,
-    pub next_number: i64,
-    pub pushes: HashMap<(String, String), u32>,
-    pub comments: BTreeMap<(String, i64), Vec<IssueComment>>,
-    pub next_comment: i64,
-    pub check_script: VecDeque<&'static str>,
-    pub check_results: HashMap<(String, String), Vec<CheckRun>>,
-    pub relations: HashMap<(String, i64), IssueRelations>,
-    pub created_pulls: Vec<(String, String)>,
-    pub created_comments: Vec<(String, i64)>,
-    pub updated_comments: Vec<i64>,
-    pub merges: Vec<(String, i64)>,
-}
-
-#[derive(Debug, Default)]
-pub struct FakeGitHub {
-    pub state: Mutex<GitHubState>,
-}
-
-impl FakeGitHub {
-    pub fn new() -> Arc<Self> {
-        let fake = Arc::new(Self::default());
-        {
-            let mut state = fake.state.lock().unwrap();
-            state.head_sha = "config-1".into();
-            state
-                .files
-                .insert("sanchoris.yaml".into(), CONFIG_YAML.into());
-            state.next_number = 52;
-            state.next_comment = 9000;
-        }
-        fake
-    }
-
-    pub fn push(&self, repo: &str, branch: &str) {
-        let mut state = self.state.lock().unwrap();
-        let key = (repo.to_string(), branch.to_string());
-        let count = {
-            let entry = state.pushes.entry(key.clone()).or_default();
-            *entry += 1;
-            *entry
-        };
-        if let Some(pr) = state.pulls.get_mut(&key) {
-            pr.head_sha = format!("{branch}-sha-{count}");
-        }
-    }
-
-    pub fn script_checks(&self, results: &[&'static str]) {
-        self.state.lock().unwrap().check_script = results.iter().copied().collect();
-    }
-
-    pub fn set_parent(&self, number: i64, parent: Option<i64>) {
-        self.state.lock().unwrap().relations.insert(
-            (REPO.to_string(), number),
-            IssueRelations {
-                parent: parent.map(|n| sanchoris_worker::ports::IssueRef {
-                    repository: REPO.into(),
-                    number: n,
-                }),
-                blocked_by: Vec::new(),
-            },
-        );
-    }
+pub struct RecordingPusher {
+    pub pushed: Mutex<Vec<Uuid>>,
 }
 
 #[async_trait]
-impl GitHubClient for FakeGitHub {
-    async fn default_branch(&self, _: i64, _: &str) -> Result<String, GitHubError> {
-        self.state.lock().unwrap().default_branch_calls += 1;
-        Ok("main".into())
-    }
-
-    async fn find_open_pull_request(
-        &self,
-        _: i64,
-        repo: &str,
-        head_branch: &str,
-    ) -> Result<Option<PullRequest>, GitHubError> {
-        Ok(self
-            .state
-            .lock()
-            .unwrap()
-            .pulls
-            .get(&(repo.to_string(), head_branch.to_string()))
-            .cloned())
-    }
-
-    async fn get_pull_request(
-        &self,
-        _: i64,
-        repo: &str,
-        number: i64,
-    ) -> Result<PullRequest, GitHubError> {
-        self.state
-            .lock()
-            .unwrap()
-            .pulls
-            .iter()
-            .find(|((r, _), pr)| r == repo && pr.number == number)
-            .map(|(_, pr)| pr.clone())
-            .ok_or(GitHubError::Status {
-                status: 404,
-                body: "Not Found".into(),
-            })
-    }
-
-    async fn create_pull_request(
-        &self,
-        _: i64,
-        repo: &str,
-        new: &NewPullRequest<'_>,
-    ) -> Result<PullRequest, GitHubError> {
-        let mut state = self.state.lock().unwrap();
-        let key = (repo.to_string(), new.head.to_string());
-        let number = state.next_number;
-        state.next_number += 1;
-        let pushes = state.pushes.get(&key).copied().unwrap_or(0);
-        let pr = PullRequest {
-            number,
-            url: format!("https://github.com/{repo}/pull/{number}"),
-            head_ref: new.head.into(),
-            head_sha: format!("{}-sha-{pushes}", new.head),
-            state: "open".into(),
-            merged: false,
-        };
-        state.created_pulls.push(key.clone());
-        state.pulls.insert(key, pr.clone());
-        Ok(pr)
-    }
-
-    async fn merge_pull_request(
-        &self,
-        _: i64,
-        repo: &str,
-        number: i64,
-    ) -> Result<MergeResult, GitHubError> {
-        let mut state = self.state.lock().unwrap();
-        state.merges.push((repo.into(), number));
-        Ok(MergeResult {
-            merged: true,
-            sha: Some("merged".into()),
-        })
-    }
-
-    async fn list_issue_comments(
-        &self,
-        _: i64,
-        repo: &str,
-        number: i64,
-    ) -> Result<Vec<IssueComment>, GitHubError> {
-        Ok(self
-            .state
-            .lock()
-            .unwrap()
-            .comments
-            .get(&(repo.to_string(), number))
-            .cloned()
-            .unwrap_or_default())
-    }
-
-    async fn create_issue_comment(
-        &self,
-        _: i64,
-        repo: &str,
-        number: i64,
-        body: &str,
-    ) -> Result<IssueComment, GitHubError> {
-        let mut state = self.state.lock().unwrap();
-        let id = state.next_comment;
-        state.next_comment += 1;
-        let comment = IssueComment {
-            id,
-            body: body.into(),
-            url: format!("https://github.com/{repo}/issues/{number}#issuecomment-{id}"),
-        };
-        state.created_comments.push((repo.into(), number));
-        state
-            .comments
-            .entry((repo.to_string(), number))
-            .or_default()
-            .push(comment.clone());
-        Ok(comment)
-    }
-
-    async fn update_issue_comment(
-        &self,
-        _: i64,
-        _: &str,
-        comment_id: i64,
-        body: &str,
-    ) -> Result<IssueComment, GitHubError> {
-        let mut state = self.state.lock().unwrap();
-        state.updated_comments.push(comment_id);
-        let comment = state
-            .comments
-            .values_mut()
-            .flatten()
-            .find(|c| c.id == comment_id)
-            .expect("the comment exists");
-        comment.body = body.into();
-        Ok(comment.clone())
-    }
-
-    async fn list_check_runs(
-        &self,
-        _: i64,
-        repo: &str,
-        sha: &str,
-    ) -> Result<Vec<CheckRun>, GitHubError> {
-        let mut state = self.state.lock().unwrap();
-        let key = (repo.to_string(), sha.to_string());
-        if let Some(runs) = state.check_results.get(&key) {
-            return Ok(runs.clone());
-        }
-        let Some(result) = state.check_script.pop_front() else {
-            return Ok(vec![CheckRun {
-                name: "ci/test".into(),
-                status: "in_progress".into(),
-                conclusion: None,
-                url: "https://ci.example/1".into(),
-                summary: None,
-                text: None,
-            }]);
-        };
-        let runs = vec![CheckRun {
-            name: "ci/test".into(),
-            status: "completed".into(),
-            conclusion: Some(result.into()),
-            url: "https://ci.example/1".into(),
-            summary: (result != "success").then(|| "checkout_spec::flaky failed".to_string()),
-            text: None,
-        }];
-        state.check_results.insert(key, runs.clone());
-        Ok(runs)
-    }
-}
-
-#[async_trait]
-impl GitHubReader for FakeGitHub {
-    async fn issue_relations(
-        &self,
-        _: i64,
-        repo: &str,
-        number: i64,
-    ) -> Result<IssueRelations, GitHubError> {
-        Ok(self
-            .state
-            .lock()
-            .unwrap()
-            .relations
-            .get(&(repo.to_string(), number))
-            .cloned()
-            .unwrap_or_default())
-    }
-}
-
-#[async_trait]
-impl ConfigSource for FakeGitHub {
-    async fn head_commit(&self, _: i64, _: &str, _: &str) -> Result<String, GitHubError> {
-        Ok(self.state.lock().unwrap().head_sha.clone())
-    }
-
-    async fn fetch(&self, _: i64, _: &str, _: &str, _: &str) -> Result<ConfigFiles, GitHubError> {
-        Ok(self.state.lock().unwrap().files.clone())
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct FakeRunner {
-    pub started: Mutex<Vec<Uuid>>,
-    pub stopped: Mutex<Vec<Uuid>>,
-}
-
-#[async_trait]
-impl RunnerPort for FakeRunner {
-    async fn start_workspace(&self, spec: &WorkspaceSpec) -> Result<WorkspaceHandle, RunnerError> {
-        let mut started = self.started.lock().unwrap();
-        started.push(spec.run_id);
-        Ok(WorkspaceHandle {
-            platform: "local",
-            platform_ref: format!("fake-{}-{}", spec.run_id, started.len()),
-        })
-    }
-
-    async fn stop_workspace(&self, run_id: Uuid, _: &str) -> Result<(), RunnerError> {
-        self.stopped.lock().unwrap().push(run_id);
+impl OutboxPusher for RecordingPusher {
+    async fn push(&self, _: Uuid, run_id: Uuid) -> Result<(), PortError> {
+        self.pushed.lock().unwrap().push(run_id);
         Ok(())
     }
 }
 
 pub struct World {
-    pub pg: TestPostgres,
-    pub admin: PgPool,
-    pub pool: PgPool,
+    pub dynamo: TestDynamo,
+    pub store: Store,
+    pub queue: Arc<MemoryQueue>,
+    pub scheduler: Arc<MemoryScheduler>,
     pub seeded: SeededTenant,
     pub clock: Arc<FakeClock>,
     pub github: Arc<FakeGitHub>,
     pub runner: Arc<FakeRunner>,
-    pub worker: Worker,
+    pub pusher: Arc<RecordingPusher>,
+    pub worker: LocalDriver,
 }
 
 pub fn worker_for(
-    pool: &PgPool,
+    store: &Store,
     clock: &Arc<FakeClock>,
     github: &Arc<FakeGitHub>,
     runner: &Arc<FakeRunner>,
+    pusher: &Arc<RecordingPusher>,
 ) -> Worker {
     Worker::new(
-        pool.clone(),
+        store.clone(),
         Deps {
             clock: clock.clone(),
             github: github.clone(),
@@ -351,6 +75,7 @@ pub fn worker_for(
             config_source: github.clone(),
             resources: Arc::new(GitHubResources::new(github.clone())),
             runner: runner.clone(),
+            pusher: pusher.clone(),
         },
         Settings::default(),
     )
@@ -358,56 +83,120 @@ pub fn worker_for(
 
 impl World {
     pub async fn new(plan: &str) -> Self {
-        let pg = TestPostgres::start().await;
-        let admin = pg.admin_pool().await;
-        let pool = pg.worker_pool().await;
-        let seeded = pg.seed_tenant(&admin, plan).await;
-        sqlx::query("UPDATE sanchoris.users SET github_user_id = 1001, github_login = 'mika-dev', display_name = 'Mika' WHERE id = $1")
-            .bind(seeded.user_id)
-            .execute(&admin)
-            .await
-            .unwrap();
-        sqlx::query(
-            "INSERT INTO sanchoris.integrations (tenant_id, kind, status, github_installation_id, details) \
-             VALUES ($1, 'github_installation', 'connected', $2, '{\"account_login\": \"acme\"}')",
-        )
-        .bind(seeded.tenant_id)
-        .bind(INSTALLATION)
-        .execute(&admin)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO sanchoris.credentials (tenant_id, scope, name, provider, kind, account, status, encrypted_value, kms_key_id) \
-             VALUES ($1, 'org', 'acme-claude-team', 'claude', 'subscription', 'team@acme.test', 'connected', '\\x00', 'test-key')",
-        )
-        .bind(seeded.tenant_id)
-        .execute(&admin)
-        .await
-        .unwrap();
+        let dynamo = TestDynamo::start().await;
         let clock = Arc::new(FakeClock::new(epoch()));
+        let direct = dynamo.direct_store(clock.clone());
+        let seeded = dynamo.seed_tenant(plan).await;
+        let now = Utc::now();
+        dynamo
+            .modify::<User>(&keys::user_key(seeded.user_id), |user| {
+                user.github_user_id = Some(1001);
+                user.github_login = Some("mika-dev".into());
+                user.display_name = "Mika".into();
+            })
+            .await;
+        dynamo
+            .put(&Guard::new(
+                keys::uniq_key(uniq::GITHUB_LOGIN, "mika-dev"),
+                seeded.user_id,
+            ))
+            .await;
+        let integration_id = Uuid::new_v4();
+        dynamo
+            .put(&Integration {
+                id: integration_id,
+                tenant_id: seeded.tenant_id,
+                kind: "github_installation".into(),
+                status: "connected".into(),
+                github_installation_id: Some(INSTALLATION),
+                slack_team_id: None,
+                details: json!({ "account_login": "acme" }),
+                created_at: now,
+                updated_at: now,
+            })
+            .await;
+        dynamo
+            .put(&Guard::of_tenant(
+                keys::uniq_key(uniq::INSTALLATION, &INSTALLATION.to_string()),
+                integration_id,
+                seeded.tenant_id,
+            ))
+            .await;
+        dynamo
+            .put(&Credential {
+                id: Uuid::new_v4(),
+                tenant_id: seeded.tenant_id,
+                scope: "org".into(),
+                member_id: None,
+                name: "acme-claude-team".into(),
+                provider: "claude".into(),
+                kind: "subscription".into(),
+                account: "team@acme.test".into(),
+                status: "connected".into(),
+                subscription_plan: None,
+                rejected_at: None,
+                encrypted_value: "AA==".into(),
+                kms_key_id: "test-key".into(),
+                last_used_at: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await;
         let github = FakeGitHub::new();
         let runner = Arc::new(FakeRunner::default());
-        let worker = worker_for(&pool, &clock, &github, &runner);
+        let pusher = Arc::new(RecordingPusher::default());
+        let worker = Arc::new(worker_for(&direct.store, &clock, &github, &runner, &pusher));
+        let driver = LocalDriver::new(worker, direct.queue.clone(), direct.scheduler.clone());
         let world = Self {
-            pg,
-            admin,
-            pool,
+            dynamo,
+            store: direct.store,
+            queue: direct.queue,
+            scheduler: direct.scheduler,
             seeded,
             clock,
             github,
             runner,
-            worker,
+            pusher,
+            worker: driver,
         };
-        assert_eq!(world.worker.tick(Loop::ConfigSyncer).await.unwrap(), 1);
+        world.worker.settle().await.unwrap();
+        assert_eq!(world.revisions().await.len(), 2, "the config synced once");
         world
+    }
+
+    pub fn driver_with_own_worker(&self) -> LocalDriver {
+        LocalDriver::new(
+            Arc::new(worker_for(
+                &self.store,
+                &self.clock,
+                &self.github,
+                &self.runner,
+                &self.pusher,
+            )),
+            self.queue.clone(),
+            self.scheduler.clone(),
+        )
     }
 
     pub fn tenant(&self) -> Uuid {
         self.seeded.tenant_id
     }
 
+    pub async fn revisions(&self) -> Vec<sanchoris_core::items::ConfigRevision> {
+        self.dynamo.all().await
+    }
+
+    pub async fn resync_config(&self) {
+        self.dynamo
+            .modify::<sanchoris_core::items::Config>(
+                &keys::config_key(self.tenant(), self.seeded.config_id),
+                |config| config.synced_at = None,
+            )
+            .await;
+    }
+
     pub async fn deliver(&self, delivery: &str, event: &str, payload: &Value) -> Recorded {
-        ingest_github_delivery(&self.pool, delivery, event, payload)
+        ingest_github_delivery(&self.store, delivery, event, payload)
             .await
             .unwrap()
             .expect("the event is relevant")
@@ -419,11 +208,13 @@ impl World {
     }
 
     pub async fn run_event(&self, run_id: Uuid, kind: RunEventType, payload: Value) {
-        let mut tx = TenantTx::begin(&self.pool, self.tenant()).await.unwrap();
-        record_run_event(&mut tx, run_id, None, kind, &payload)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
+        retry(20, || async {
+            let mut tx = self.store.tx(self.tenant());
+            record_run_event(&mut tx, run_id, None, kind, &payload).await?;
+            tx.commit().await
+        })
+        .await
+        .unwrap();
     }
 
     pub async fn turn_end(&self, run_id: Uuid, turn: i64) {
@@ -435,23 +226,66 @@ impl World {
         .await;
     }
 
+    pub async fn try_request_skill(
+        &self,
+        run_id: Uuid,
+        skill: &str,
+        input: Value,
+    ) -> Result<AcceptedSkillRun, SkillRunError> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let mut tx = self.store.tx(self.tenant());
+            let result =
+                match accept_skill_request(&mut tx, run_id, skill, input.clone(), self.clock_now())
+                    .await
+                {
+                    Ok(accepted) => tx
+                        .commit()
+                        .await
+                        .map(|_| accepted)
+                        .map_err(SkillRunError::from),
+                    Err(error) => Err(error),
+                };
+            match result {
+                Err(error) if error.is_conflict() && attempt < 20 => continue,
+                other => return other,
+            }
+        }
+    }
+
     pub async fn request_skill(&self, run_id: Uuid, input: Value) -> AcceptedSkillRun {
-        let mut tx = TenantTx::begin(&self.pool, self.tenant()).await.unwrap();
-        let accepted =
-            accept_skill_request(&mut tx, run_id, "open-pr-green-ci", input, self.clock_now())
-                .await
-                .unwrap();
-        tx.commit().await.unwrap();
-        accepted
+        self.try_request_skill(run_id, "open-pr-green-ci", input)
+            .await
+            .unwrap()
     }
 
     pub async fn continue_skill(&self, run_id: Uuid, number: i32) -> Value {
-        let mut tx = TenantTx::begin(&self.pool, self.tenant()).await.unwrap();
-        let status = continue_skill_run(&mut tx, run_id, number, json!({}), self.clock_now())
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let mut tx = self.store.tx(self.tenant());
+            let result = match continue_skill_run(
+                &mut tx,
+                run_id,
+                number,
+                json!({}),
+                self.clock_now(),
+            )
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        status
+            {
+                Ok(status) => tx
+                    .commit()
+                    .await
+                    .map(|_| status)
+                    .map_err(SkillRunError::from),
+                Err(error) => Err(error),
+            };
+            match result {
+                Err(error) if error.is_conflict() && attempt < 20 => continue,
+                other => return other.unwrap(),
+            }
+        }
     }
 
     pub fn clock_now(&self) -> DateTime<Utc> {
@@ -460,26 +294,26 @@ impl World {
     }
 
     pub async fn answer_execs(&self, ok: bool) -> usize {
-        answer_execs(&self.pool, &self.github, ok).await
+        answer_execs(&self.dynamo, &self.store, &self.github, ok).await
     }
 
     pub async fn drive(&self) {
-        drive(&self.worker, &self.pool, &self.github).await;
+        drive(&self.worker, &self.dynamo, &self.store, &self.github).await;
     }
 
     pub async fn task(&self, name: &str) -> TaskView {
-        task_view(&self.pool, name).await
+        task_view(&self.store, self.tenant(), name).await
     }
 
     pub async fn outbox(&self, run_id: Uuid, kind: &str) -> Vec<Value> {
-        sqlx::query_scalar::<_, Value>(
-            "SELECT payload FROM sanchoris.run_outbox WHERE run_id = $1 AND type = $2 ORDER BY seq",
-        )
-        .bind(run_id)
-        .bind(kind)
-        .fetch_all(&self.pool)
-        .await
-        .unwrap()
+        self.store
+            .query::<OutboxItem>(&keys::run_pk(self.tenant(), run_id), "OUT#")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|item| item.kind == kind)
+            .map(|item| item.payload)
+            .collect()
     }
 
     pub async fn messages(&self, run_id: Uuid) -> Vec<String> {
@@ -491,12 +325,22 @@ impl World {
     }
 
     pub async fn trigger_event(&self, key: &str) -> (Option<String>, Option<String>) {
-        let row = sqlx::query("SELECT result, reason FROM sanchoris.trigger_events WHERE key = $1")
-            .bind(key)
-            .fetch_one(&self.pool)
+        let event = self
+            .dynamo
+            .all::<TriggerEvent>()
             .await
-            .unwrap();
-        (row.get("result"), row.get("reason"))
+            .into_iter()
+            .find(|e| e.key == key)
+            .expect("the trigger event exists");
+        (event.result, event.reason)
+    }
+
+    pub async fn tasks(&self) -> Vec<Task> {
+        self.dynamo.all::<Task>().await
+    }
+
+    pub async fn skill_runs(&self) -> Vec<SkillRunItem> {
+        self.dynamo.all::<SkillRunItem>().await
     }
 
     pub async fn started_task(&self, number: i64) -> TaskView {
@@ -563,7 +407,7 @@ pub struct TaskView {
     pub id: Uuid,
     pub status: String,
     pub wait_reason: Option<String>,
-    pub nudges: i32,
+    pub nudges: i64,
     pub error: Option<String>,
     pub cause: Option<String>,
     pub resume_at: Option<DateTime<Utc>>,
@@ -573,46 +417,68 @@ pub struct TaskView {
     pub run_id: Option<Uuid>,
 }
 
-pub async fn task_view(pool: &PgPool, name: &str) -> TaskView {
-    let row = sqlx::query(
-        "SELECT t.id, t.status, t.wait_reason, t.nudges, t.error, t.cause, t.resume_at, t.title, \
-                t.parent_task_id, t.requested_by_member_id, \
-                (SELECT r.id FROM sanchoris.runs r WHERE r.task_id = t.id ORDER BY r.started_at DESC LIMIT 1) AS run_id \
-         FROM sanchoris.tasks t WHERE t.name = $1",
-    )
-    .bind(name)
-    .fetch_one(pool)
-    .await
-    .unwrap();
+pub async fn task_id_by_name(store: &Store, tenant_id: Uuid, name: &str) -> Option<Uuid> {
+    store
+        .query_index::<TaskName>(
+            Index::Gsi1,
+            &keys::task_name_index(tenant_id, name),
+            SortKey::All,
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .max_by(|a, b| (a.created_at, a.task_id).cmp(&(b.created_at, b.task_id)))
+        .map(|n| n.task_id)
+}
+
+pub async fn task_view(store: &Store, tenant_id: Uuid, name: &str) -> TaskView {
+    let id = task_id_by_name(store, tenant_id, name)
+        .await
+        .unwrap_or_else(|| panic!("task {name} exists"));
+    let task = store
+        .get::<Task>(&keys::task_key(tenant_id, id))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut runs = store
+        .query::<Run>(&keys::task_pk(tenant_id, id), "RUN#")
+        .await
+        .unwrap();
+    runs.sort_by(|a, b| (a.started_at, a.id).cmp(&(b.started_at, b.id)));
     TaskView {
-        id: row.get("id"),
-        status: row.get("status"),
-        wait_reason: row.get("wait_reason"),
-        nudges: row.get("nudges"),
-        error: row.get("error"),
-        cause: row.get("cause"),
-        resume_at: row.get("resume_at"),
-        title: row.get("title"),
-        parent_task_id: row.get("parent_task_id"),
-        requested_by_member_id: row.get("requested_by_member_id"),
-        run_id: row.get("run_id"),
+        id,
+        status: task.status.as_str().to_string(),
+        wait_reason: task.wait_reason.map(|w| w.as_str().to_string()),
+        nudges: task.nudges,
+        error: task.error,
+        cause: task.cause,
+        resume_at: task.resume_at,
+        title: task.title,
+        parent_task_id: task.parent_task_id,
+        requested_by_member_id: task.requested_by_member_id,
+        run_id: runs.last().map(|r| r.id),
     }
 }
 
-pub async fn answer_execs(pool: &PgPool, github: &FakeGitHub, ok: bool) -> usize {
-    let rows = sqlx::query(
-        "SELECT o.id, o.run_id, o.payload, r.tenant_id, r.task_id FROM sanchoris.run_outbox o \
-         JOIN sanchoris.runs r ON r.id = o.run_id \
-         WHERE o.type = 'exec' AND o.delivered_at IS NULL ORDER BY o.seq",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap();
-    for row in &rows {
-        let payload: Value = row.get("payload");
-        let task_id: Uuid = row.get("task_id");
+pub async fn answer_execs(
+    dynamo: &TestDynamo,
+    store: &Store,
+    github: &FakeGitHub,
+    ok: bool,
+) -> usize {
+    let mut execs = dynamo
+        .all::<OutboxItem>()
+        .await
+        .into_iter()
+        .filter(|item| item.kind == "exec" && item.delivered_at.is_none())
+        .collect::<Vec<_>>();
+    execs.sort_by(|a, b| (a.created_at, a.seq).cmp(&(b.created_at, b.seq)));
+    let runs = dynamo.all::<Run>().await;
+    for item in &execs {
+        let run = runs.iter().find(|r| r.id == item.run_id).unwrap();
+        let payload = &item.payload;
         if ok && payload["purpose"] == "git_push" {
-            github.push(REPO, &format!("sanchoris/{task_id}"));
+            github.push(REPO, &format!("sanchoris/{}", run.task_id));
         }
         let results = payload["commands"]
             .as_array()
@@ -620,43 +486,42 @@ pub async fn answer_execs(pool: &PgPool, github: &FakeGitHub, ok: bool) -> usize
             .iter()
             .map(|c| json!({ "command": c, "exitCode": if ok { 0 } else { 1 }, "stdout": "", "stderr": if ok { "" } else { "rejected" } }))
             .collect::<Vec<_>>();
-        let mut tx = TenantTx::begin(pool, row.get("tenant_id")).await.unwrap();
-        sqlx::query("UPDATE sanchoris.run_outbox SET delivered_at = now() WHERE id = $1")
-            .bind(row.get::<Uuid, _>("id"))
-            .execute(tx.conn())
-            .await
-            .unwrap();
-        record_run_event(
-            &mut tx,
-            row.get("run_id"),
-            None,
-            RunEventType::ExecResult,
-            &json!({ "requestId": payload["requestId"], "ok": ok, "results": results }),
-        )
+        let result = json!({ "requestId": payload["requestId"], "ok": ok, "results": results });
+        retry(20, || async {
+            let mut tx = store.tx(run.tenant_id);
+            mark_outbox_delivered(&mut tx, run.id, &[item.seq], Utc::now()).await?;
+            record_run_event(&mut tx, run.id, None, RunEventType::ExecResult, &result).await?;
+            tx.commit().await
+        })
         .await
         .unwrap();
-        tx.commit().await.unwrap();
     }
-    rows.len()
+    execs.len()
 }
 
-pub async fn drive(worker: &Worker, pool: &PgPool, github: &FakeGitHub) {
+pub async fn drive(driver: &LocalDriver, dynamo: &TestDynamo, store: &Store, github: &FakeGitHub) {
     loop {
-        worker.settle().await.unwrap();
-        if answer_execs(pool, github, true).await == 0 {
+        driver.settle().await.unwrap();
+        if answer_execs(dynamo, store, github, true).await == 0 {
             return;
         }
     }
 }
 
-pub async fn skill_run(pool: &PgPool, task_id: Uuid, number: i32) -> (String, Option<String>) {
-    let row = sqlx::query(
-        "SELECT status, error FROM sanchoris.skill_runs WHERE task_id = $1 AND number = $2",
-    )
-    .bind(task_id)
-    .bind(number)
-    .fetch_one(pool)
-    .await
-    .unwrap();
-    (row.get("status"), row.get("error"))
+pub async fn skill_run(
+    store: &Store,
+    tenant_id: Uuid,
+    task_id: Uuid,
+    number: i32,
+) -> (String, Option<String>) {
+    let item = store
+        .get::<SkillRunItem>(&keys::skill_run_key(tenant_id, task_id, number))
+        .await
+        .unwrap()
+        .unwrap();
+    (item.status.as_str().to_string(), item.error)
+}
+
+pub async fn scan_messages(dynamo: &TestDynamo) -> usize {
+    dynamo.scan(Table::Main, "msg").await.len()
 }

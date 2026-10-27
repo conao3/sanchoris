@@ -242,3 +242,12 @@ pub trait RunnerPort: Send + Sync {
     async fn start_workspace(&self, spec: &WorkspaceSpec) -> Result<WorkspaceHandle, RunnerError>;
     async fn stop_workspace(&self, run_id: Uuid, platform_ref: &str) -> Result<(), RunnerError>;
 }
+
+#[async_trait]
+pub trait OutboxPusher: Send + Sync {
+    async fn push(
+        &self,
+        tenant_id: Uuid,
+        run_id: Uuid,
+    ) -> Result<(), sanchoris_core::ports::PortError>;
+}

@@ -3,7 +3,18 @@ mod common;
 use chrono::Duration;
 use common::{REPO, World, turn_end_payload};
 use sanchoris_core::channel::RunEventType;
+use sanchoris_core::items::{Tenant, UsageAlert, UsageSnapshot};
+use sanchoris_core::keys;
 use serde_json::json;
+
+async fn tenant(world: &World) -> Tenant {
+    world
+        .store
+        .get::<Tenant>(&keys::tenant_key(world.tenant()))
+        .await
+        .unwrap()
+        .unwrap()
+}
 
 #[tokio::test]
 async fn missing_required_skills_are_nudged_until_needs_you_and_a_reply_resumes() {
@@ -96,10 +107,7 @@ async fn manual_usage_limits_need_you() {
         state.head_sha = "config-2".into();
         state.files.insert("sanchoris.yaml".into(), yaml);
     }
-    sqlx::query("UPDATE sanchoris.configs SET synced_at = NULL")
-        .execute(&world.admin)
-        .await
-        .unwrap();
+    world.resync_config().await;
     world.worker.settle().await.unwrap();
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
@@ -148,12 +156,7 @@ async fn idle_workspaces_stop_and_restart_for_the_next_message() {
     world.clock.advance(Duration::seconds(1));
     world.worker.settle().await.unwrap();
     assert_eq!(*world.runner.stopped.lock().unwrap(), vec![run_id]);
-    let seconds: i64 =
-        sqlx::query_scalar("SELECT workspace_seconds_this_period FROM sanchoris.tenants")
-            .fetch_one(&world.pool)
-            .await
-            .unwrap();
-    assert_eq!(seconds, 900);
+    assert_eq!(tenant(&world).await.workspace_seconds_this_period, 900);
 
     world.github.state.lock().unwrap().check_results.clear();
     world.github.script_checks(&["success"]);
@@ -178,10 +181,7 @@ async fn turn_limits_need_you_and_interrupt_the_session() {
         state.head_sha = "config-2".into();
         state.files.insert("sanchoris.yaml".into(), yaml);
     }
-    sqlx::query("UPDATE sanchoris.configs SET synced_at = NULL")
-        .execute(&world.admin)
-        .await
-        .unwrap();
+    world.resync_config().await;
     world.worker.settle().await.unwrap();
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
@@ -240,30 +240,32 @@ async fn rate_limits_record_usage_snapshots_and_alerts_fire_at_eighty_percent() 
         .run_event(run_id, RunEventType::RateLimit, windows(0.5))
         .await;
     world.worker.settle().await.unwrap();
-    let snapshots: Vec<f64> = sqlx::query_scalar(
-        "SELECT five_hour_utilization::float8 FROM sanchoris.usage_snapshots ORDER BY captured_at",
-    )
-    .fetch_all(&world.pool)
-    .await
-    .unwrap();
-    assert_eq!(snapshots, vec![42.0, 50.0]);
+    let mut snapshots = world.dynamo.all::<UsageSnapshot>().await;
+    snapshots.sort_by_key(|s| s.captured_at);
+    assert_eq!(
+        snapshots
+            .iter()
+            .map(|s| s.five_hour_utilization)
+            .collect::<Vec<_>>(),
+        vec![42.0, 50.0]
+    );
 
-    let alerts: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.usage_alerts")
-        .fetch_one(&world.pool)
-        .await
-        .unwrap();
-    assert_eq!(alerts, 0);
-    sqlx::query("UPDATE sanchoris.tenants SET tasks_this_period = 4")
-        .execute(&world.admin)
-        .await
-        .unwrap();
+    assert!(world.dynamo.all::<UsageAlert>().await.is_empty());
+    world
+        .dynamo
+        .modify::<Tenant>(&keys::tenant_key(world.tenant()), |t| {
+            t.tasks_this_period = 4
+        })
+        .await;
     world.worker.settle().await.unwrap();
     world.worker.settle().await.unwrap();
-    let alerts: Vec<(String, i64, i64)> =
-        sqlx::query_as("SELECT metric, used, limit_value FROM sanchoris.usage_alerts")
-            .fetch_all(&world.pool)
-            .await
-            .unwrap();
+    let alerts = world
+        .dynamo
+        .all::<UsageAlert>()
+        .await
+        .into_iter()
+        .map(|a| (a.metric, a.used, a.limit_value))
+        .collect::<Vec<_>>();
     assert_eq!(alerts, vec![("tasks".into(), 4, 5)]);
 }
 

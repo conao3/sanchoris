@@ -1,129 +1,94 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
+use chrono::{DateTime, Utc};
 use sanchoris_config::{
-    Checkout, Compute, Config, ConfigRepository, PlanLimits, Trigger, TriggerSource, TriggerState,
-    ValidationContext, parse_repository, validate,
+    Checkout, Compute, Config as RepoConfig, ConfigRepository, PlanLimits, Trigger as RepoTrigger,
+    TriggerSource, TriggerState, ValidationContext, parse_repository, validate,
 };
+use sanchoris_core::db::{REF_CONFIG_REVISION, REF_TRIGGER, TenantTx, insert_ref, tenant_plan};
+use sanchoris_core::item::{Entity, format_time};
+use sanchoris_core::items::{
+    Config, ConfigRevision, Credential, Guard, Project, Repository, SessionDef, SkillDef, Trigger,
+};
+use sanchoris_core::jobs::Job;
+use sanchoris_core::keys;
+use sanchoris_core::store::{Index, SortKey};
 use serde_json::{Value, json};
-use sqlx::Row;
 use uuid::Uuid;
 
-use crate::error::Result;
-use crate::{Worker, adopt, installation_for, installations};
-use sanchoris_core::db::TenantTx;
+use crate::dispatcher::schedule_trigger;
+use crate::error::{Result, WorkerError};
+use crate::{Worker, installation_for, installations};
 
-pub const DUE_TRIGGER_SCHEDULE: &str = "trigger_schedule";
-
-pub async fn tick(worker: &Worker) -> Result<usize> {
-    let mut processed = 0;
-    while processed < worker.settings.batch {
-        if !sync_one(worker).await? {
-            break;
-        }
-        processed += 1;
+pub async fn sweep(worker: &Worker) -> Result<usize> {
+    let cutoff = worker.now() - worker.settings.config_poll_interval;
+    let due = worker
+        .store
+        .query_index::<Config>(
+            Index::Gsi2,
+            keys::SWEEP_CONFIGS,
+            SortKey::AtMost(format!("{}#~", format_time(cutoff))),
+        )
+        .await?;
+    for config in &due {
+        let mut tx = worker.tx(config.tenant_id);
+        tx.emit(Job::ConfigSync {
+            tenant_id: config.tenant_id,
+            config_id: config.id,
+        });
+        tx.commit().await?;
     }
-    Ok(usize::try_from(processed).expect("batch fits in usize"))
-}
-
-async fn sync_one(worker: &Worker) -> Result<bool> {
-    let mut tx = worker.begin().await?;
-    let Some(row) = sqlx::query(
-        "SELECT id, tenant_id, repository, root_path, branch FROM sanchoris.configs \
-         WHERE synced_at IS NULL OR synced_at <= $1 \
-         ORDER BY synced_at NULLS FIRST, id LIMIT 1 FOR UPDATE SKIP LOCKED",
-    )
-    .bind(worker.now() - worker.settings.config_poll_interval)
-    .fetch_optional(&mut *tx)
-    .await?
-    else {
-        return Ok(false);
-    };
-    sync_locked(worker, tx, &row).await?;
-    Ok(true)
+    Ok(due.len())
 }
 
 pub async fn sync_config(worker: &Worker, tenant_id: Uuid, config_id: Uuid) -> Result<()> {
-    let mut tx = worker.begin().await?;
-    let row = sqlx::query(
-        "SELECT id, tenant_id, repository, root_path, branch FROM sanchoris.configs \
-         WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
-    )
-    .bind(config_id)
-    .bind(tenant_id)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| {
-        crate::error::WorkerError::Invalid(format!(
-            "config {config_id} of tenant {tenant_id} does not exist"
-        ))
-    })?;
-    sync_locked(worker, tx, &row).await
-}
-
-async fn sync_locked(
-    worker: &Worker,
-    tx: sqlx::Transaction<'static, sqlx::Postgres>,
-    row: &sqlx::postgres::PgRow,
-) -> Result<()> {
     let now = worker.now();
-    let config_id: Uuid = row.try_get("id")?;
-    let repository: String = row.try_get("repository")?;
-    let root_path: String = row.try_get("root_path")?;
-    let branch: String = row.try_get("branch")?;
-    let mut tx = adopt(tx, row.try_get("tenant_id")?).await?;
-    let installation = installation_for(&installations(&mut tx).await?, &repository)?;
+    let mut tx = worker.tx(tenant_id);
+    let mut config = tx
+        .get::<Config>(&keys::config_key(tenant_id, config_id))
+        .await?
+        .ok_or_else(|| {
+            WorkerError::Invalid(format!(
+                "config {config_id} of tenant {tenant_id} does not exist"
+            ))
+        })?;
+    let installation = installation_for(&installations(&mut tx).await?, &config.repository)?;
     let sha = worker
         .deps
         .config_source
-        .head_commit(installation, &repository, &branch)
+        .head_commit(installation, &config.repository, &config.branch)
         .await?;
-    let known = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM sanchoris.config_revisions WHERE config_id = $1 AND commit_sha = $2",
-    )
-    .bind(config_id)
-    .bind(&sha)
-    .fetch_optional(tx.conn())
-    .await?;
+    let known = tx
+        .get::<Guard>(&keys::revision_sha_key(tenant_id, config_id, &sha))
+        .await?;
     if known.is_none() {
         let files = worker
             .deps
             .config_source
-            .fetch(installation, &repository, &root_path, &sha)
+            .fetch(installation, &config.repository, &config.root_path, &sha)
             .await?;
         let context = validation_context(&mut tx).await?;
-        store_revision(&mut tx, config_id, &sha, &files, &context).await?;
+        store_revision(&mut tx, &mut config, &sha, &files, &context, now).await?;
     }
-    sqlx::query("UPDATE sanchoris.configs SET synced_at = $2, updated_at = now() WHERE id = $1")
-        .bind(config_id)
-        .bind(now)
-        .execute(tx.conn())
-        .await?;
+    config.synced_at = Some(now);
+    config.updated_at = now;
+    tx.put(&config)?;
     worker.faults.check("config_sync.before_commit")?;
     tx.commit().await?;
     Ok(())
 }
 
 pub async fn validation_context(tx: &mut TenantTx) -> Result<ValidationContext> {
-    let tenant_id = tx.tenant_id();
-    let credentials = sqlx::query_scalar::<_, String>(
-        "SELECT name FROM sanchoris.credentials WHERE tenant_id = $1",
-    )
-    .bind(tenant_id)
-    .fetch_all(tx.conn())
-    .await?
-    .into_iter()
-    .collect::<BTreeSet<_>>();
-    let plan = sqlx::query(
-        "SELECT p.max_task_turns, p.max_task_cost_usd::float8 AS max_task_cost_usd, p.max_task_timeout_seconds, \
-                p.max_idle_seconds, p.max_children_depth, p.max_children_count, p.computes \
-         FROM sanchoris.tenants t JOIN sanchoris.plans p ON p.id = t.plan_id WHERE t.id = $1",
-    )
-    .bind(tenant_id)
-    .fetch_one(tx.conn())
-    .await?;
+    let credentials = tx
+        .query::<Credential>(&keys::tenant_pk(tx.tenant_id()), "CRED#")
+        .await?
+        .into_iter()
+        .map(|c| c.name)
+        .collect::<BTreeSet<_>>();
+    let (_, plan) = tenant_plan(tx).await?;
     let unsigned = |value: i64| u64::try_from(value).expect("plan limits are non-negative");
     let computes = plan
-        .try_get::<Vec<String>, _>("computes")?
+        .computes
         .iter()
         .map(|c| match c.as_str() {
             "standard" => Compute::Standard,
@@ -134,12 +99,12 @@ pub async fn validation_context(tx: &mut TenantTx) -> Result<ValidationContext> 
     Ok(ValidationContext {
         credentials,
         plan: PlanLimits {
-            max_turns: unsigned(i64::from(plan.try_get::<i32, _>("max_task_turns")?)),
-            max_cost_usd: plan.try_get("max_task_cost_usd")?,
-            max_timeout_seconds: unsigned(plan.try_get("max_task_timeout_seconds")?),
-            max_idle_seconds: unsigned(plan.try_get("max_idle_seconds")?),
-            max_children_depth: unsigned(i64::from(plan.try_get::<i32, _>("max_children_depth")?)),
-            max_children_count: unsigned(i64::from(plan.try_get::<i32, _>("max_children_count")?)),
+            max_turns: unsigned(plan.max_task_turns),
+            max_cost_usd: plan.max_task_cost_usd,
+            max_timeout_seconds: unsigned(plan.max_task_timeout_seconds),
+            max_idle_seconds: unsigned(plan.max_idle_seconds),
+            max_children_depth: unsigned(plan.max_children_depth),
+            max_children_count: unsigned(plan.max_children_count),
             computes,
         },
     })
@@ -147,10 +112,11 @@ pub async fn validation_context(tx: &mut TenantTx) -> Result<ValidationContext> 
 
 async fn store_revision(
     tx: &mut TenantTx,
-    config_id: Uuid,
+    config: &mut Config,
     sha: &str,
     files: &sanchoris_config::ConfigFiles,
     context: &ValidationContext,
+    now: DateTime<Utc>,
 ) -> Result<()> {
     let tenant_id = tx.tenant_id();
     let parsed = parse_repository(files);
@@ -164,25 +130,42 @@ async fn store_revision(
     let status = if errors.is_some() { "invalid" } else { "valid" };
     let parsed_json = repository.as_ref().map(serde_json::to_value).transpose()?;
     let messages = serde_json::to_value(errors.map(|e| e.0).unwrap_or_default())?;
-    let revision_id = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO sanchoris.config_revisions (tenant_id, config_id, commit_sha, parsed, validation_status, validation_messages) \
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
-    )
-    .bind(tenant_id)
-    .bind(config_id)
-    .bind(sha)
-    .bind(parsed_json)
-    .bind(status)
-    .bind(messages)
-    .fetch_one(tx.conn())
-    .await?;
+    config.revisions += 1;
+    let revision = ConfigRevision {
+        id: Uuid::new_v4(),
+        tenant_id,
+        config_id: config.id,
+        number: config.revisions,
+        commit_sha: sha.to_string(),
+        parsed: parsed_json,
+        validation_status: status.to_string(),
+        validation_messages: messages,
+        created_at: now,
+    };
+    tx.insert(&revision)?;
+    tx.insert(&Guard::new(
+        keys::revision_sha_key(tenant_id, config.id, sha),
+        revision.id,
+    ))?;
+    insert_ref(
+        tx,
+        revision.id,
+        REF_CONFIG_REVISION,
+        revision.key(),
+        Some(config.id),
+    )?;
     if let (Some(repository), "valid") = (repository, status) {
-        activate(tx, config_id, revision_id, &repository).await?;
+        activate(tx, config.id, revision.id, &repository, now).await?;
+        config.active_revision_id = Some(revision.id);
     }
     Ok(())
 }
 
-pub fn resolve_repository_key(config: &Config, trigger: &Trigger, key: &str) -> Option<String> {
+pub fn resolve_repository_key(
+    config: &RepoConfig,
+    trigger: &RepoTrigger,
+    key: &str,
+) -> Option<String> {
     if key.contains('/') {
         return Some(key.to_string());
     }
@@ -199,7 +182,7 @@ pub fn resolve_repository_key(config: &Config, trigger: &Trigger, key: &str) -> 
         .map(str::to_string)
 }
 
-pub fn rewrite_event_pattern(config: &Config, trigger: &Trigger, pattern: &Value) -> Value {
+pub fn rewrite_event_pattern(config: &RepoConfig, trigger: &RepoTrigger, pattern: &Value) -> Value {
     let mut pattern = pattern.clone();
     if let Some(Value::Array(items)) = pattern.pointer_mut("/detail/repository") {
         for item in items.iter_mut() {
@@ -214,179 +197,147 @@ pub fn rewrite_event_pattern(config: &Config, trigger: &Trigger, pattern: &Value
     pattern
 }
 
+async fn upsert<E: Entity>(tx: &mut TenantTx, entity: &E) -> Result<()> {
+    tx.get::<E>(&entity.key()).await?;
+    tx.put(entity)?;
+    Ok(())
+}
+
 async fn activate(
     tx: &mut TenantTx,
     config_id: Uuid,
     revision_id: Uuid,
     repository: &ConfigRepository,
+    now: DateTime<Utc>,
 ) -> Result<()> {
     let tenant_id = tx.tenant_id();
+    let pk = keys::config_pk(tenant_id, config_id);
     let config = &repository.config;
 
-    let names = config.projects.keys().cloned().collect::<Vec<_>>();
-    sqlx::query("DELETE FROM sanchoris.projects WHERE config_id = $1 AND NOT (name = ANY($2))")
-        .bind(config_id)
-        .bind(&names)
-        .execute(tx.conn())
-        .await?;
+    for project in tx.query::<Project>(&pk, "PROJECT#").await? {
+        if !config.projects.contains_key(&project.name) {
+            tx.delete(&project.key())?;
+        }
+    }
+    for repo in tx.query::<Repository>(&pk, "PROJECT#").await? {
+        let keep = config
+            .projects
+            .get(&repo.project)
+            .is_some_and(|p| p.repos.contains_key(&repo.name));
+        if !keep {
+            tx.delete(&repo.key())?;
+        }
+    }
     for (name, project) in &config.projects {
-        let project_id = sqlx::query_scalar::<_, Uuid>(
-            "INSERT INTO sanchoris.projects (tenant_id, config_id, config_revision_id, name, system_prompt, source_path) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
-             ON CONFLICT (config_id, name) DO UPDATE SET config_revision_id = EXCLUDED.config_revision_id, \
-             system_prompt = EXCLUDED.system_prompt, source_path = EXCLUDED.source_path \
-             RETURNING id",
+        upsert(
+            tx,
+            &Project {
+                id: keys::config_entity_id(config_id, "project", name),
+                tenant_id,
+                config_id,
+                config_revision_id: revision_id,
+                name: name.clone(),
+                system_prompt: project.system_prompt.clone(),
+                source_path: sanchoris_config::CONFIG_FILE.to_string(),
+            },
         )
-        .bind(tenant_id)
-        .bind(config_id)
-        .bind(revision_id)
-        .bind(name)
-        .bind(&project.system_prompt)
-        .bind(sanchoris_config::CONFIG_FILE)
-        .fetch_one(tx.conn())
-        .await?;
-        let repo_names = project.repos.keys().cloned().collect::<Vec<_>>();
-        sqlx::query(
-            "DELETE FROM sanchoris.repositories WHERE project_id = $1 AND NOT (name = ANY($2))",
-        )
-        .bind(project_id)
-        .bind(&repo_names)
-        .execute(tx.conn())
         .await?;
         for (repo_name, repo) in &project.repos {
-            sqlx::query(
-                "INSERT INTO sanchoris.repositories (tenant_id, project_id, name, url, warm_hook, start_hook) \
-                 VALUES ($1, $2, $3, $4, $5, $6) \
-                 ON CONFLICT (project_id, name) DO UPDATE SET url = EXCLUDED.url, \
-                 warm_hook = EXCLUDED.warm_hook, start_hook = EXCLUDED.start_hook",
+            upsert(
+                tx,
+                &Repository {
+                    id: keys::config_entity_id(
+                        config_id,
+                        "repository",
+                        &format!("{name}/{repo_name}"),
+                    ),
+                    tenant_id,
+                    config_id,
+                    project: name.clone(),
+                    name: repo_name.clone(),
+                    url: repo.repo.clone(),
+                    warm_hook: repo
+                        .warm_hook
+                        .as_ref()
+                        .map(serde_json::to_value)
+                        .transpose()?,
+                    start_hook: repo
+                        .start_hook
+                        .as_ref()
+                        .map(serde_json::to_value)
+                        .transpose()?,
+                },
             )
-            .bind(tenant_id)
-            .bind(project_id)
-            .bind(repo_name)
-            .bind(&repo.repo)
-            .bind(repo.warm_hook.as_ref().map(serde_json::to_value).transpose()?)
-            .bind(repo.start_hook.as_ref().map(serde_json::to_value).transpose()?)
-            .execute(tx.conn())
             .await?;
         }
     }
 
-    let names = config.sessions.keys().cloned().collect::<Vec<_>>();
-    sqlx::query("DELETE FROM sanchoris.sessions WHERE config_id = $1 AND NOT (name = ANY($2))")
-        .bind(config_id)
-        .bind(&names)
-        .execute(tx.conn())
-        .await?;
-    for (name, session) in &config.sessions {
-        sqlx::query(
-            "INSERT INTO sanchoris.sessions (tenant_id, config_id, config_revision_id, name, definition) \
-             VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (config_id, name) DO UPDATE SET config_revision_id = EXCLUDED.config_revision_id, \
-             definition = EXCLUDED.definition",
-        )
-        .bind(tenant_id)
-        .bind(config_id)
-        .bind(revision_id)
-        .bind(name)
-        .bind(serde_json::to_value(session)?)
-        .execute(tx.conn())
-        .await?;
-    }
-
-    let names = repository.skills.keys().cloned().collect::<Vec<_>>();
-    sqlx::query("DELETE FROM sanchoris.skills WHERE config_id = $1 AND NOT (name = ANY($2))")
-        .bind(config_id)
-        .bind(&names)
-        .execute(tx.conn())
-        .await?;
-    for (name, skill) in &repository.skills {
-        let definition = skill
-            .definition
-            .as_ref()
-            .map(serde_json::to_value)
-            .transpose()?;
-        let layout = skill
-            .definition
-            .as_ref()
-            .and_then(|d| d.layout.as_ref())
-            .map(serde_json::to_value)
-            .transpose()?;
-        sqlx::query(
-            "INSERT INTO sanchoris.skills (tenant_id, config_id, config_revision_id, name, kind, description, skill_md, skill_yaml, definition, layout) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
-             ON CONFLICT (config_id, name) DO UPDATE SET config_revision_id = EXCLUDED.config_revision_id, \
-             kind = EXCLUDED.kind, description = EXCLUDED.description, skill_md = EXCLUDED.skill_md, \
-             skill_yaml = EXCLUDED.skill_yaml, definition = EXCLUDED.definition, layout = EXCLUDED.layout",
-        )
-        .bind(tenant_id)
-        .bind(config_id)
-        .bind(revision_id)
-        .bind(name)
-        .bind(if skill.is_reliable() { "reliable" } else { "regular" })
-        .bind(&skill.description)
-        .bind(&skill.skill_md)
-        .bind(&skill.skill_yaml)
-        .bind(definition)
-        .bind(layout)
-        .execute(tx.conn())
-        .await?;
-    }
-
-    let previous = sqlx::query(
-        "SELECT id, name, state, schedule_expression, removed_at IS NOT NULL AS removed \
-         FROM sanchoris.triggers WHERE config_id = $1",
-    )
-    .bind(config_id)
-    .fetch_all(tx.conn())
-    .await?
-    .iter()
-    .map(|row| {
-        Ok((
-            row.try_get::<String, _>("name")?,
-            (
-                row.try_get::<Uuid, _>("id")?,
-                row.try_get::<String, _>("state")?,
-                row.try_get::<Option<String>, _>("schedule_expression")?,
-                row.try_get::<bool, _>("removed")?,
-            ),
-        ))
-    })
-    .collect::<std::result::Result<BTreeMap<_, _>, sqlx::Error>>()?;
-    let mut stale_schedules = Vec::new();
-    for (name, (id, state, schedule, removed)) in &previous {
-        let current = config.triggers.get(name);
-        let same = current.is_some_and(|t| {
-            let expression = match &t.source {
-                TriggerSource::ScheduleExpression(s) => Some(s),
-                TriggerSource::EventPattern(_) => None,
-            };
-            !removed
-                && expression == schedule.as_ref()
-                && state
-                    == if t.state == TriggerState::Enabled {
-                        "ENABLED"
-                    } else {
-                        "DISABLED"
-                    }
-        });
-        if !same && schedule.is_some() {
-            stale_schedules.push(*id);
+    for session in tx.query::<SessionDef>(&pk, "SESSION#").await? {
+        if !config.sessions.contains_key(&session.name) {
+            tx.delete(&session.key())?;
         }
     }
-    sqlx::query("DELETE FROM sanchoris.due_jobs WHERE kind = $1 AND ref_id = ANY($2)")
-        .bind(DUE_TRIGGER_SCHEDULE)
-        .bind(&stale_schedules)
-        .execute(tx.conn())
+    for (name, session) in &config.sessions {
+        upsert(
+            tx,
+            &SessionDef {
+                id: keys::config_entity_id(config_id, "session", name),
+                tenant_id,
+                config_id,
+                config_revision_id: revision_id,
+                name: name.clone(),
+                definition: serde_json::to_value(session)?,
+            },
+        )
         .await?;
-    let names = config.triggers.keys().cloned().collect::<Vec<_>>();
-    sqlx::query(
-        "UPDATE sanchoris.triggers SET removed_at = now() \
-         WHERE config_id = $1 AND NOT (name = ANY($2)) AND removed_at IS NULL",
-    )
-    .bind(config_id)
-    .bind(&names)
-    .execute(tx.conn())
-    .await?;
+    }
+
+    for skill in tx.query::<SkillDef>(&pk, "SKILL#").await? {
+        if !repository.skills.contains_key(&skill.name) {
+            tx.delete(&skill.key())?;
+        }
+    }
+    for (name, skill) in &repository.skills {
+        upsert(
+            tx,
+            &SkillDef {
+                id: keys::config_entity_id(config_id, "skill", name),
+                tenant_id,
+                config_id,
+                config_revision_id: revision_id,
+                name: name.clone(),
+                kind: if skill.is_reliable() {
+                    "reliable"
+                } else {
+                    "regular"
+                }
+                .to_string(),
+                description: skill.description.clone(),
+                skill_md: skill.skill_md.clone(),
+                skill_yaml: skill.skill_yaml.clone(),
+                definition: skill
+                    .definition
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()?,
+                layout: skill
+                    .definition
+                    .as_ref()
+                    .and_then(|d| d.layout.as_ref())
+                    .map(serde_json::to_value)
+                    .transpose()?,
+            },
+        )
+        .await?;
+    }
+
+    for mut previous in tx.query::<Trigger>(&pk, "TRIGGER#").await? {
+        if !config.triggers.contains_key(&previous.name) && previous.removed_at.is_none() {
+            previous.removed_at = Some(now);
+            schedule_trigger(tx, &mut previous, now)?;
+            tx.put(&previous)?;
+        }
+    }
     for (name, trigger) in &config.triggers {
         let (event_pattern, schedule_expression) = match &trigger.source {
             TriggerSource::EventPattern(pattern) => {
@@ -394,34 +345,54 @@ async fn activate(
             }
             TriggerSource::ScheduleExpression(expression) => (None, Some(expression.clone())),
         };
-        sqlx::query(
-            "INSERT INTO sanchoris.triggers (tenant_id, config_id, config_revision_id, name, state, event_pattern, schedule_expression, input_transformer, start) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-             ON CONFLICT (config_id, name) DO UPDATE SET config_revision_id = EXCLUDED.config_revision_id, \
-             state = EXCLUDED.state, event_pattern = EXCLUDED.event_pattern, \
-             schedule_expression = EXCLUDED.schedule_expression, input_transformer = EXCLUDED.input_transformer, \
-             start = EXCLUDED.start, removed_at = NULL",
-        )
-        .bind(tenant_id)
-        .bind(config_id)
-        .bind(revision_id)
-        .bind(name)
-        .bind(if trigger.state == TriggerState::Enabled { "ENABLED" } else { "DISABLED" })
-        .bind(event_pattern)
-        .bind(schedule_expression)
-        .bind(trigger.input_transformer.as_ref().map(serde_json::to_value).transpose()?)
-        .bind(serde_json::to_value(&trigger.start)?)
-        .execute(tx.conn())
-        .await?;
+        let key = keys::trigger_key(tenant_id, config_id, name);
+        let existing = tx.get::<Trigger>(&key).await?;
+        let state = if trigger.state == TriggerState::Enabled {
+            "ENABLED"
+        } else {
+            "DISABLED"
+        };
+        let id = keys::trigger_id(config_id, name);
+        let mut next = Trigger {
+            id,
+            tenant_id,
+            config_id,
+            config_revision_id: revision_id,
+            name: name.clone(),
+            state: state.to_string(),
+            event_pattern,
+            schedule_expression,
+            input_transformer: trigger
+                .input_transformer
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()?,
+            start: serde_json::to_value(&trigger.start)?,
+            removed_at: None,
+            next_run_at: existing.as_ref().and_then(|t| t.next_run_at),
+            schedule_message_id: existing.as_ref().and_then(|t| t.schedule_message_id),
+        };
+        let reschedule = match &existing {
+            None => true,
+            Some(previous) => {
+                previous.is_active() != next.is_active()
+                    || previous.schedule_expression != next.schedule_expression
+                    || (next.is_active()
+                        && next.schedule_expression.is_some()
+                        && next.schedule_message_id.is_none())
+            }
+        };
+        if reschedule {
+            schedule_trigger(tx, &mut next, now)?;
+        }
+        match existing {
+            Some(_) => tx.put(&next)?,
+            None => {
+                tx.insert(&next)?;
+                insert_ref(tx, id, REF_TRIGGER, key, Some(config_id))?;
+            }
+        }
     }
-
-    sqlx::query(
-        "UPDATE sanchoris.configs SET active_revision_id = $2, updated_at = now() WHERE id = $1",
-    )
-    .bind(config_id)
-    .bind(revision_id)
-    .execute(tx.conn())
-    .await?;
     Ok(())
 }
 
