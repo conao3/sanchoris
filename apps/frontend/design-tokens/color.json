@@ -1,127 +1,28 @@
 {
   "$schema": "https://schemas.tokens.studio/latest/tokens-schema.json",
   "color": {
-    "canvas": {
-      "$type": "color",
-      "$value": "#FAF9F5"
-    },
-    "surface": {
-      "soft": {
-        "$type": "color",
-        "$value": "#F5F0E8"
-      },
-      "card": {
-        "$type": "color",
-        "$value": "#EFE9DE"
-      },
-      "cream-strong": {
-        "$type": "color",
-        "$value": "#E8E0D2"
-      },
-      "dark": {
-        "base": {
-          "$type": "color",
-          "$value": "#181715"
-        },
-        "elevated": {
-          "$type": "color",
-          "$value": "#252320"
-        },
-        "soft": {
-          "$type": "color",
-          "$value": "#1F1E1B"
-        }
-      }
-    },
-    "hairline": {
-      "base": {
-        "$type": "color",
-        "$value": "#E6DFD8"
-      },
-      "soft": {
-        "$type": "color",
-        "$value": "#EBE6DF"
-      }
-    },
-    "text": {
-      "ink": {
-        "$type": "color",
-        "$value": "#141413"
-      },
-      "body": {
-        "base": {
-          "$type": "color",
-          "$value": "#3D3D3A"
-        },
-        "strong": {
-          "$type": "color",
-          "$value": "#252523"
-        }
-      },
-      "muted": {
-        "base": {
-          "$type": "color",
-          "$value": "#6C6A64"
-        },
-        "soft": {
-          "$type": "color",
-          "$value": "#8E8B82"
-        }
-      },
-      "on-dark": {
-        "base": {
-          "$type": "color",
-          "$value": "#FAF9F5"
-        },
-        "soft": {
-          "$type": "color",
-          "$value": "#A09D96"
-        }
-      },
-      "on-primary": {
-        "$type": "color",
-        "$value": "#FFFFFF"
-      }
-    },
-    "brand": {
-      "primary": {
-        "base": {
-          "$type": "color",
-          "$value": "#CC785C"
-        },
-        "active": {
-          "$type": "color",
-          "$value": "#A9583E"
-        },
-        "disabled": {
-          "$type": "color",
-          "$value": "{color.hairline.base}"
-        }
-      }
-    },
-    "accent": {
-      "teal": {
-        "$type": "color",
-        "$value": "#5DB8A6"
-      },
-      "amber": {
-        "$type": "color",
-        "$value": "#E8A55A"
-      }
-    },
-    "semantic": {
-      "success": {
-        "$type": "color",
-        "$value": "#5DB872"
-      },
-      "warning": {
-        "$type": "color",
-        "$value": "#D4A017"
-      },
-      "error": {
-        "$type": "color",
-        "$value": "#C64545"
-      }
+    "bg": { "$type": "color", "$value": "#ffffff" },
+    "sub": { "$type": "color", "$value": "#fafafa" },
+    "hover": { "$type": "color", "$value": "#f4f4f5" },
+    "line": { "$type": "color", "$value": "#e4e4e7" },
+    "line2": { "$type": "color", "$value": "#d4d4d8" },
+    "faint": { "$type": "color", "$value": "#a1a1aa" },
+    "muted": { "$type": "color", "$value": "#71717a" },
+    "body": { "$type": "color", "$value": "#3f3f46" },
+    "ink": { "$type": "color", "$value": "#18181b" },
+    "run": { "$type": "color", "$value": "#2457c5" },
+    "ok": { "$type": "color", "$value": "#1a7f4b" },
+    "warn": { "$type": "color", "$value": "#a85a00" },
+    "err": { "$type": "color", "$value": "#c13030" },
+    "term": {
+      "bg": { "$type": "color", "$value": "#15171a" },
+      "fg": { "$type": "color", "$value": "#d4d4d8" },
+      "line": { "$type": "color", "$value": "#2a2d33" },
+      "instruction-bg": { "$type": "color", "$value": "#1d2026" },
+      "instruction": { "$type": "color", "$value": "#cfe0ff" },
+      "event": { "$type": "color", "$value": "#e0b36a" },
+      "error": { "$type": "color", "$value": "#f08a8a" },
+      "user": { "$type": "color", "$value": "#8fb4ff" }
     }
   }
 }

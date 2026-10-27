@@ -1,0 +1,128 @@
+query Home($tenant: String!) {
+  tenant(slug: $tenant) {
+    id
+    name
+    githubAppInstallUrl
+    setup {
+      githubLinked
+      appInstalled
+      configAdded
+      credentialConnected
+      triggerEnabled
+      firstTaskStarted
+      projectCreated
+      slackConnected
+      complete
+    }
+    plan {
+      id
+      name
+      taskLimit
+      workspaceHourLimit
+      concurrencyLimit
+      limitPeriod
+    }
+    usage {
+      periodStart
+      periodEnd
+      tasksThisPeriod
+      workspaceSecondsThisPeriod
+      runningRuns
+    }
+    activity {
+      runningTasks
+      runsToday
+      costTodayUsd
+      pullRequestsOpenedToday
+      runsLast24h
+    }
+    viewerMember {
+      id
+    }
+    tasks(filter: { active: true }) {
+      ...TaskRow
+    }
+    credentials {
+      id
+      name
+      provider
+      status
+      scope
+      rejectedAt
+      owner {
+        id
+        user {
+          id
+          name
+        }
+      }
+      usage {
+        sevenDay {
+          utilization
+          resetsAt
+        }
+      }
+    }
+    changeRequests(state: OPEN) {
+      id
+      number
+      title
+      url
+      config {
+        id
+        repository
+      }
+      validation {
+        valid
+      }
+      openedFromTask {
+        id
+      }
+    }
+    triggers {
+      id
+      name
+      state
+      activeTasks
+    }
+    integrations {
+      id
+      kind
+      status
+      account
+      repositories
+    }
+    configs {
+      id
+      repository
+    }
+  }
+}
+
+mutation SetTriggerState($triggerId: ID!, $state: TriggerState!) {
+  setTriggerState(triggerId: $triggerId, state: $state) {
+    id
+    state
+  }
+}
+
+mutation SnoozeTask($taskId: ID!, $until: DateTime!) {
+  snoozeTask(taskId: $taskId, until: $until) {
+    id
+    snoozedUntil
+    updatedAt
+  }
+}
+
+mutation ConnectGitHub {
+  connectGitHub {
+    url
+  }
+}
+
+mutation AddCredential($input: AddCredentialInput!) {
+  addCredential(input: $input) {
+    id
+    name
+  }
+}

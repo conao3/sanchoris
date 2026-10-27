@@ -11,10 +11,11 @@
     "portless"
   ],
   "ignoreDependencies": [
-    "tailwindcss"
+    "tailwindcss",
+    "@fontsource/ibm-plex-sans",
+    "@fontsource/ibm-plex-mono"
   ],
   "entry": [
-    "src/components/shell/**/*.tsx",
     "src/lib/cognito.ts"
   ]
 }

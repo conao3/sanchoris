@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Wordmark } from '../components/Wordmark';
+import { Dim } from '../components/ui';
+import { t } from '../i18n';
 import { exchangeCodeForTokens, saveTokens } from '../lib/cognito';
+import { AuthLayout } from './CreateTenantPage';
 
 export function AuthCallbackPage() {
   // Guard so the one-shot code exchange runs once even under StrictMode double-mount.
@@ -23,19 +25,14 @@ export function AuthCallbackPage() {
         window.location.replace('/');
       })
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : 'sign-in failed');
+        setError(err instanceof Error ? err.message : t('login.failedUnknown'));
         window.setTimeout(() => window.location.replace('/login'), 2000);
       });
   }, []);
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-6 bg-surface-soft px-6 text-center">
-      <Wordmark size="md" />
-      {error ? (
-        <p className="text-md text-body">Sign-in failed: {error}. Redirecting…</p>
-      ) : (
-        <p className="text-md text-body">Signing you in…</p>
-      )}
-    </main>
+    <AuthLayout>
+      <Dim>{error ? t('login.failed', { error }) : t('login.signingIn')}</Dim>
+    </AuthLayout>
   );
 }

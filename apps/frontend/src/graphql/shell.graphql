@@ -1,0 +1,88 @@
+query Shell {
+  viewer {
+    isOperator
+    user {
+      id
+      name
+      email
+      githubLogin
+    }
+    memberships {
+      id
+      role
+      tenant {
+        id
+        slug
+        name
+      }
+    }
+  }
+}
+
+fragment TaskRow on Task {
+  id
+  title
+  status
+  waitReason
+  pendingReason
+  needsYouReason
+  resumeAt
+  autoResume
+  snoozedUntil
+  updatedAt
+  turns
+  costUsd
+  error
+  cause
+  issue {
+    repository
+    number
+    url
+  }
+  channel {
+    kind
+    scope
+  }
+  trigger {
+    id
+    name
+  }
+  session {
+    id
+    name
+    agent
+  }
+  parent {
+    id
+    title
+    issue {
+      repository
+      number
+    }
+  }
+  blockedBy {
+    id
+    title
+    issue {
+      repository
+      number
+    }
+  }
+  limits {
+    turns
+    costUsd
+  }
+  requiredSkills {
+    state
+    skill {
+      id
+      name
+    }
+    latestRun {
+      id
+      status
+      currentState
+      handoffs
+    }
+  }
+}

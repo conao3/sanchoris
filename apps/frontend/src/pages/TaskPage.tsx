@@ -1,0 +1,408 @@
+import { useMutation } from '@apollo/client/react';
+import { useNavigate, useParams } from '@tanstack/react-router';
+import clsx from 'clsx';
+import type { LucideIcon } from 'lucide-react';
+import { Bot, ChevronRight, Circle, CircleCheck, CircleDashed, CircleX, Play, Puzzle, Square, Zap } from 'lucide-react';
+import { type ReactNode, useState } from 'react';
+import { Button } from '../components/Button';
+import { Cols, Page } from '../components/Shell';
+import { SkillRunState, StateEntryState, TaskState } from '../components/status';
+import { Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Kv, Lk, Meter, Row, Section, Skeleton, State, Sub, Th, Title, type Tone } from '../components/ui';
+import { ResumeTaskDocument, StopTaskDocument, type TaskQuery, TaskDocument } from '../graphql/generated/graphql';
+import { type MessageKey, t } from '../i18n';
+import { between, clock, duration, issueLabel, usd, usdWhole } from '../lib/format';
+import { useKeys } from '../lib/keys';
+import { useData } from '../lib/query';
+import { needsYouText, skillProgress } from '../lib/taskText';
+import { useTenant } from '../lib/tenant';
+
+type Task = NonNullable<NonNullable<TaskQuery['tenant']>['task']>;
+
+const stateTypeLabels: Record<string, MessageKey> = {
+  TASK: 'stateType.action',
+  PASS: 'stateType.pass',
+  CHOICE: 'stateType.choice',
+  WAIT: 'stateType.wait',
+  SUCCEED: 'stateType.succeed',
+  FAIL: 'stateType.fail',
+};
+
+const runStatusLabels: Record<string, MessageKey> = {
+  CREATING: 'status.starting',
+  RUNNING: 'status.running',
+  IDLE: 'status.idle',
+  COMPLETED: 'status.completed',
+  FAILED: 'status.failed',
+};
+
+const finished = ['SUCCEEDED', 'FAILED', 'ABORTED'];
+
+function Step({ kind, icon, tone, stateIcon, children, current, todo }: {
+  kind: string;
+  icon: LucideIcon;
+  tone: Tone;
+  stateIcon: LucideIcon;
+  children: ReactNode;
+  current?: boolean;
+  todo?: boolean;
+}) {
+  return (
+    <div
+      className={clsx(
+        'min-w-0 flex-1 rounded-ui border px-[11px] py-2',
+        current ? 'border-ink shadow-[0_0_0_1px_var(--color-ink)]' : 'border-line2',
+        todo ? 'border-dashed bg-sub' : 'bg-bg',
+      )}
+    >
+      <div className="flex items-center gap-1.5 font-mono text-2xs font-medium text-muted">
+        <Icon icon={icon} className="size-[13px]" />
+        {kind}
+      </div>
+      <State tone={tone} icon={stateIcon} className="mt-[3px]" wrap>
+        {children}
+      </State>
+    </div>
+  );
+}
+
+function Arrow() {
+  return (
+    <span className="flex w-[26px] items-center justify-center text-faint">
+      <Icon icon={ChevronRight} className="size-3.5" />
+    </span>
+  );
+}
+
+function StepStrip({ task }: { task: Task }) {
+  const required = task.requiredSkills[0];
+  const skillRun = required?.latestRun ? task.skillRuns.find((run) => run.id === required.latestRun?.id) : undefined;
+  const done = task.status === 'SUCCEEDED';
+  const agentWorking = task.status === 'RUNNING' && !skillRun;
+  return (
+    <div className="mb-1 mt-0.5 flex items-stretch">
+      <Step kind={t('task.stepTrigger', { name: task.trigger.name })} icon={Zap} tone="ok" stateIcon={CircleCheck}>
+        {task.startedAt ? t('task.startedAt', { at: clock(task.startedAt) }) : t('task.notStarted')}
+      </Step>
+      <Arrow />
+      <Step
+        kind={t('task.stepAgent', { session: task.session.name })}
+        icon={Bot}
+        tone={agentWorking ? 'run' : task.startedAt ? 'ok' : 'wait'}
+        stateIcon={agentWorking ? CircleDashed : task.startedAt ? CircleCheck : Circle}
+        current={agentWorking}
+        todo={!task.startedAt}
+      >
+        {!task.startedAt
+          ? t('task.notStarted')
+          : skillRun
+            ? t('task.worked', { from: clock(task.startedAt), to: clock(skillRun.startedAt) })
+            : t('task.workingSince', { from: clock(task.startedAt) })}
+      </Step>
+      {required ? (
+        <>
+          <Arrow />
+          <Step
+            kind={t('task.stepSkill', { name: required.skill.name })}
+            icon={Puzzle}
+            tone={required.state === 'FAILED' ? 'err' : required.state === 'SUCCEEDED' ? 'ok' : required.state === 'RUNNING' ? 'run' : 'wait'}
+            stateIcon={required.state === 'FAILED' ? CircleX : required.state === 'SUCCEEDED' ? CircleCheck : required.state === 'RUNNING' ? CircleDashed : Circle}
+            current={!!skillRun && !done}
+            todo={!skillRun}
+          >
+            {required.state === 'FAILED'
+              ? t('task.skillFailed', { error: skillRun?.error ?? '' })
+              : required.state === 'SUCCEEDED'
+                ? t('status.succeeded')
+                : required.state === 'RUNNING'
+                  ? t('task.atState', { state: skillRun?.currentState ?? '' })
+                  : t('task.notRun')}
+          </Step>
+        </>
+      ) : null}
+      <Arrow />
+      <Step kind={t('task.stepTask')} icon={CircleCheck} tone={done ? 'ok' : 'wait'} stateIcon={done ? CircleCheck : Circle} todo={!done} current={done}>
+        {done ? t('status.completed') : t('task.notCompleted')}
+      </Step>
+    </div>
+  );
+}
+
+export function TaskPage() {
+  const { task: taskId } = useParams({ from: '/app/tasks/$task' });
+  const { slug } = useTenant();
+  const navigate = useNavigate();
+  const { data, error, refetch } = useData(TaskDocument, { tenant: slug, id: taskId });
+  const [message, setMessage] = useState('');
+  const [resume, resumeState] = useMutation(ResumeTaskDocument);
+  const [stop, stopState] = useMutation(StopTaskDocument);
+  const task = data?.tenant?.task;
+  const needsYou = task?.status === 'NEEDS_YOU';
+  const active = task ? !finished.includes(task.status) : false;
+
+  function doResume() {
+    if (task && needsYou && message.trim()) {
+      void resume({ variables: { input: { taskId: task.id, message: message.trim() } } }).then(() => {
+        setMessage('');
+        refetch();
+      });
+    }
+  }
+
+  function doStop() {
+    if (task && active) {
+      void stop({ variables: { taskId: task.id } });
+    }
+  }
+
+  useKeys({
+    'mod+Enter': doResume,
+    s: doStop,
+    o: () => {
+      const run = task?.runs[task.runs.length - 1];
+      if (task && run) {
+        void navigate({ to: '/tasks/$task/runs/$n', params: { task: task.id, n: String(run.number) } });
+      }
+    },
+    Escape: () => void navigate({ to: '/tasks' }),
+  });
+
+  let body;
+  if (error) {
+    body = (
+      <div className="p-6">
+        <ErrorNote message={error.message} onRetry={refetch} />
+      </div>
+    );
+  } else if (!data) {
+    body = (
+      <div className="p-6">
+        <Skeleton rows={6} />
+      </div>
+    );
+  } else if (!task) {
+    body = (
+      <div className="p-6">
+        <Empty>{t('task.notFound')}</Empty>
+      </div>
+    );
+  } else {
+    const latestSkillRun = task.skillRuns[task.skillRuns.length - 1];
+    const runCols = '24px 150px 96px 72px 56px 72px minmax(0,1fr)';
+    const stepCols = '28px 110px 64px 100px 56px 60px minmax(0,1fr)';
+    const pr = task.outputs.filter((output) => output.kind === 'PULL_REQUEST');
+    const relations: [ReactNode, ReactNode][] = [
+      [t('col.trigger'), <Lk to="/triggers">{task.trigger.name}</Lk>],
+    ];
+    if (task.triggerEvent) {
+      relations.push([
+        t('task.startedBy'),
+        task.issue && task.triggerEvent.senderLogin
+          ? t('task.issueLabeledBy', { login: task.triggerEvent.senderLogin, at: clock(task.triggerEvent.receivedAt) })
+          : t('task.messageAt', { at: clock(task.triggerEvent.receivedAt) }),
+      ]);
+    }
+    if (task.requester) {
+      relations.push([
+        t('task.requestedBy'),
+        task.requester.kind === 'AGENT' && task.requester.task ? (
+          <Lk to="/tasks/$task" params={{ task: task.requester.task.id }}>
+            {t('task.agentOf', { title: task.requester.task.title })}
+          </Lk>
+        ) : task.requester.viaChat ? (
+          t('task.inChat', { name: task.requester.member?.user.name ?? '' })
+        ) : (
+          (task.requester.member?.user.name ?? '')
+        ),
+      ]);
+    }
+    if (task.parent) {
+      relations.push([t('task.parent'), <Lk to="/tasks/$task" params={{ task: task.parent.id }}>{task.parent.issue ? `#${task.parent.issue.number}` : task.parent.title}</Lk>]);
+    }
+    if (task.children.length > 0) {
+      relations.push([
+        t('task.children'),
+        task.children.map((child, index) => (
+          <span key={child.id}>
+            {index > 0 ? ', ' : null}
+            <Lk to="/tasks/$task" params={{ task: child.id }}>{child.issue ? `#${child.issue.number}` : child.title}</Lk>
+          </span>
+        )),
+      ]);
+    }
+    if (task.blockedBy.length > 0) {
+      relations.push([t('task.blockedByLabel'), task.blockedBy.map((blocker) => `#${blocker.issue?.number ?? ''}`).join(', ')]);
+    }
+    relations.push(
+      [t('col.session'), <><span className="font-mono text-sm">{task.session.name}</span> · {t(task.session.agent === 'CODEX' ? 'provider.codex' : 'provider.claude')}</>],
+      [t('task.nudges'), t('task.nudgesOf', { n: task.nudges, total: task.maxNudges })],
+      [t('task.version'), <span className="font-mono text-sm">{t('task.pinned', { rev: task.configRevision })}</span>],
+    );
+
+    const main = (
+      <>
+        <Title>{task.title}</Title>
+        <Sub>
+          <TaskState status={task.status} waitReason={task.waitReason} />{' '}
+          {task.issue ? <span className="ml-2"><Id>{task.issue.repository}#{task.issue.number}</Id></span> : null} ·{' '}
+          {needsYou ? needsYouText(task) : `${skillProgress(task)} · ${t('task.spent', { cost: usd(task.costUsd) })}`}
+        </Sub>
+        <Section count={t('task.fromTrigger', { name: task.trigger.name })} first>
+          {task.requiredSkills.length > 0 ? t('task.requiredSkill') : t('task.progress')}
+        </Section>
+        <StepStrip task={task} />
+
+        {needsYou ? (
+          <>
+            <Section>{t('status.needsYou')}</Section>
+            <Dim>
+              {task.cause ?? task.error} {t('task.messageGoes')}
+            </Dim>
+            <label htmlFor="resume-message" className="mb-1 mt-3 block text-sm text-muted">
+              {t('task.messageToAgent')}
+            </label>
+            <textarea
+              id="resume-message"
+              value={message}
+              onChange={(event) => setMessage(event.target.value)}
+              placeholder={t('task.messagePlaceholder')}
+              className="block h-16 w-full resize-y rounded-ui border border-line2 bg-bg px-2.5 py-[7px] outline-none focus:border-ink"
+            />
+            {resumeState.error ? <Dim className="mt-2 text-err">{resumeState.error.message}</Dim> : null}
+            <div className="mt-2.5 flex gap-2">
+              <Button variant="primary" icon={Play} kbd="⌘↵" onPress={doResume} isDisabled={!message.trim() || resumeState.loading}>
+                {t('task.resume')}
+              </Button>
+              <Button variant="danger" icon={Square} kbd="s" onPress={doStop} isDisabled={stopState.loading}>
+                {t('task.stop')}
+              </Button>
+            </div>
+          </>
+        ) : null}
+
+        <Section count={task.skillRuns.length}>{t('task.skillRuns')}</Section>
+        {task.skillRuns.length === 0 ? <Dim>{t('task.noSkillRuns')}</Dim> : null}
+        {task.skillRuns.length > 0 ? (
+          <>
+            <Th cols={runCols}>
+              <span>#</span>
+              <span>{t('col.skill')}</span>
+              <span>{t('col.status')}</span>
+              <span className="text-right">{t('col.fixRounds')}</span>
+              <span>{t('col.started')}</span>
+              <span className="text-right">{t('col.duration')}</span>
+              <span>{t('col.error')}</span>
+            </Th>
+            {task.skillRuns.map((run) => (
+              <Row key={run.id} cols={runCols} selected={run.id === latestSkillRun?.id}>
+                <span className="text-right font-mono text-sm">{run.number}</span>
+                <span className="font-mono font-medium">{run.skill.name}</span>
+                <SkillRunState status={run.status} />
+                <span className="text-right font-mono text-sm">{run.handoffs}</span>
+                <span className="font-mono text-sm">{clock(run.startedAt)}</span>
+                <span className="text-right font-mono text-sm">{run.endedAt ? duration(between(run.startedAt, run.endedAt)) : '—'}</span>
+                <span className="text-muted">{run.error ? [run.error, run.cause].filter(Boolean).join(' · ') : '—'}</span>
+              </Row>
+            ))}
+          </>
+        ) : null}
+
+        {latestSkillRun && latestSkillRun.stateEntries.length > 0 ? (
+          <>
+            <Section count={t('task.lastOf', { n: latestSkillRun.stateEntries.length, total: latestSkillRun.stateEntryCount })}>
+              {t('task.stepsOfRun', { n: latestSkillRun.number })}
+            </Section>
+            <Th cols={stepCols}>
+              <span>#</span>
+              <span>{t('col.state')}</span>
+              <span>{t('col.type')}</span>
+              <span>{t('col.status')}</span>
+              <span>{t('col.entered')}</span>
+              <span className="text-right">{t('col.attempts')}</span>
+              <span>{t('col.result')}</span>
+            </Th>
+            {latestSkillRun.stateEntries.map((entry) => (
+              <Row key={entry.id} cols={stepCols}>
+                <span className="text-right font-mono text-sm">{entry.sequence}</span>
+                <span className="font-medium">{entry.stateName}</span>
+                <span>{t(stateTypeLabels[entry.stateType])}</span>
+                <StateEntryState status={entry.status} />
+                <span className="font-mono text-sm">{clock(entry.enteredAt)}</span>
+                <span className="text-right font-mono text-sm">{entry.attempts}</span>
+                <span className="text-muted">{entry.result ?? '—'}</span>
+              </Row>
+            ))}
+          </>
+        ) : null}
+      </>
+    );
+
+    const aside = (
+      <>
+        <Section first>{t('task.relations')}</Section>
+        <Kv items={relations} />
+        <Section count={task.runs.length}>{t('task.runs')}</Section>
+        {task.runs.map((run) => (
+          <Row key={run.id} cols="44px 1fr">
+            <Lk to="/tasks/$task/runs/$n" params={{ task: task.id, n: String(run.number) }} className="font-mono text-sm">
+              {t('run.title', { n: run.number })}
+            </Lk>
+            <span>
+              <span className="font-mono text-sm">{run.sessionName}</span> · {t(run.agent === 'CODEX' ? 'provider.codex' : 'provider.claude')} ·{' '}
+              {t(runStatusLabels[run.status]).toLowerCase()}
+            </span>
+          </Row>
+        ))}
+        <Section>{t('task.outputs')}</Section>
+        {pr.length === 0 ? <Dim>—</Dim> : null}
+        {pr.length > 0 ? (
+          <Kv
+            items={pr.map((output) => [
+              t('task.pr'),
+              <>
+                <ExternalLk href={output.url}>{output.repository}#{output.number}</ExternalLk>, {t(`output.${output.state.toLowerCase()}` as MessageKey)}
+              </>,
+            ])}
+          />
+        ) : null}
+        <Section>{t('task.budget')}</Section>
+        <div className="mt-2.5">
+          <Meter value={Math.max(task.costUsd / task.limits.costUsd, task.turns / task.limits.turns)} />
+        </div>
+        <Dim className="mt-1.5">
+          {t('task.budgetOf', { cost: usd(task.costUsd), limit: usdWhole(task.limits.costUsd), turns: task.turns, maxTurns: task.limits.turns })}
+        </Dim>
+      </>
+    );
+    body = <Cols main={main} aside={aside} />;
+  }
+
+  return (
+    <Page
+      crumbs={[{ label: t('nav.tasks'), to: '/tasks' }, { label: task?.title ?? '…' }]}
+      actions={
+        task ? (
+          <>
+            {active ? (
+              <Button variant="danger" icon={Square} kbd="s" onPress={doStop} isDisabled={stopState.loading}>
+                {t('task.stop')}
+              </Button>
+            ) : null}
+            {needsYou ? (
+              <Button variant="primary" icon={Play} kbd="⌘↵" onPress={doResume} isDisabled={!message.trim()}>
+                {t('task.resume')}
+              </Button>
+            ) : null}
+          </>
+        ) : null
+      }
+      keys={[
+        ['⌘↵', 'task.resume'],
+        ['s', 'task.stop'],
+        ['o', 'keys.openRun'],
+        ['Esc', 'keys.back'],
+      ]}
+    >
+      {body}
+    </Page>
+  );
+}
