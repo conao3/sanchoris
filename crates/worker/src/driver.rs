@@ -61,10 +61,31 @@ impl LocalDriver {
 
     pub async fn drain(&self) -> Result<usize> {
         let mut handled = 0;
-        while let Some(progressed) = self.handle_next().await? {
-            handled += progressed;
+        let mut failure = None;
+        loop {
+            let messages = self.queue.receive(usize::MAX).await?;
+            let mut progressed = false;
+            for message in messages {
+                match self.worker.handle_body(&message.body).await {
+                    Ok(count) => {
+                        self.queue.delete(&message.receipt).await?;
+                        handled += count.max(1);
+                        progressed = true;
+                    }
+                    Err(error) => {
+                        self.queue.release(&message.receipt).await?;
+                        failure.get_or_insert(error);
+                    }
+                }
+            }
+            if !progressed {
+                break;
+            }
         }
-        Ok(handled)
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(handled),
+        }
     }
 
     pub async fn round(&self) -> Result<usize> {

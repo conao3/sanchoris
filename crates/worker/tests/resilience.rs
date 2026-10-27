@@ -5,9 +5,12 @@ use std::sync::Arc;
 
 use common::{REPO, World, skill_input};
 use sanchoris_core::items::{OutboxItem, Run, SkillRunItem, StateEntryItem, TriggerEvent};
+use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::model::{SkillRunStatus, TaskStatus};
+use sanchoris_core::ports::{OutgoingMessage, Queue};
 use sanchoris_worker::driver::LocalDriver;
 use sanchoris_worker::error::WorkerError;
+use uuid::Uuid;
 
 const CRASH_POINTS: [&str; 5] = [
     "dispatcher.before_commit",
@@ -217,4 +220,40 @@ async fn two_workers_never_process_the_same_row_twice() {
     assert_eq!(state.created_pulls.len(), 5);
     assert_eq!(state.created_comments.len(), 5);
     assert!(state.updated_comments.is_empty());
+}
+
+#[tokio::test]
+async fn a_failing_message_does_not_hold_back_the_other_groups() {
+    let world = World::new("pro").await;
+    world
+        .queue
+        .send(&OutgoingMessage {
+            body: "not a job".into(),
+            group: "broken".into(),
+            dedupe_id: "broken".into(),
+            delay: None,
+        })
+        .await
+        .unwrap();
+    let run_id = Uuid::new_v4();
+    let envelope = Envelope::new(Job::DeliverOutbox {
+        tenant_id: world.tenant(),
+        run_id,
+    });
+    world
+        .queue
+        .send(&OutgoingMessage {
+            body: envelope.body(),
+            group: envelope.job.group(),
+            dedupe_id: envelope.id.to_string(),
+            delay: None,
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        world.worker.drain().await,
+        Err(WorkerError::Invalid(_))
+    ));
+    assert_eq!(*world.pusher.pushed.lock().unwrap(), vec![run_id]);
+    assert_eq!(world.queue.len(), 1);
 }
