@@ -350,6 +350,9 @@ pub async fn dispatch_pending_tasks(
             task_id: task.id,
             next_outbox_seq: 1,
             instances: 0,
+            connection_id: None,
+            connection_instance: None,
+            connection_started: false,
         })?;
         insert_ref(tx, run_id, REF_RUN, run.key(), Some(task.id))?;
         tx.emit(Job::Reconcile {

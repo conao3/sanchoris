@@ -1978,6 +1978,9 @@ pub struct RunChannel {
     pub task_id: Uuid,
     pub next_outbox_seq: i64,
     pub instances: i64,
+    pub connection_id: Option<String>,
+    pub connection_instance: Option<Uuid>,
+    pub connection_started: bool,
 }
 
 impl Entity for RunChannel {
@@ -1992,7 +1995,10 @@ impl Entity for RunChannel {
             .uuid("run_id", self.run_id)
             .uuid("task_id", self.task_id)
             .n("next_outbox_seq", self.next_outbox_seq)
-            .n("instances", self.instances);
+            .n("instances", self.instances)
+            .opt_s("connection_id", self.connection_id.as_ref())
+            .opt_uuid("connection_instance", self.connection_instance)
+            .b("connection_started", self.connection_started);
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -2002,6 +2008,142 @@ impl Entity for RunChannel {
             task_id: r.uuid("task_id")?,
             next_outbox_seq: r.n("next_outbox_seq")?,
             instances: r.n("instances")?,
+            connection_id: r.opt_s("connection_id")?,
+            connection_instance: r.opt_uuid("connection_instance")?,
+            connection_started: r.b("connection_started")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelInstance {
+    pub tenant_id: Uuid,
+    pub run_id: Uuid,
+    pub instance_id: Uuid,
+    pub seq_offset: i64,
+    pub processed_seq: i64,
+    pub start_outbox_seq: Option<i64>,
+    pub connected_at: DateTime<Utc>,
+}
+
+impl Entity for ChannelInstance {
+    const KIND: &'static str = "channel_instance";
+
+    fn key(&self) -> Key {
+        keys::channel_instance_key(self.tenant_id, self.run_id, self.instance_id)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .uuid("run_id", self.run_id)
+            .uuid("instance_id", self.instance_id)
+            .n("seq_offset", self.seq_offset)
+            .n("processed_seq", self.processed_seq)
+            .opt_n("start_outbox_seq", self.start_outbox_seq)
+            .time("connected_at", self.connected_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            run_id: r.uuid("run_id")?,
+            instance_id: r.uuid("instance_id")?,
+            seq_offset: r.n("seq_offset")?,
+            processed_seq: r.n("processed_seq")?,
+            start_outbox_seq: r.opt_n("start_outbox_seq")?,
+            connected_at: r.time("connected_at")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunLogEntry {
+    pub tenant_id: Uuid,
+    pub run_id: Uuid,
+    pub seq: i64,
+    pub turn: i64,
+    pub kind: String,
+    pub data: Value,
+    pub at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl Entity for RunLogEntry {
+    const KIND: &'static str = "run_log_entry";
+
+    fn key(&self) -> Key {
+        keys::run_log_key(self.tenant_id, self.run_id, self.seq)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .uuid("run_id", self.run_id)
+            .n("seq", self.seq)
+            .n("turn", self.turn)
+            .s("log_kind", &self.kind)
+            .json("data", &self.data)
+            .time("at", self.at)
+            .ttl(self.expires_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            run_id: r.uuid("run_id")?,
+            seq: r.n("seq")?,
+            turn: r.n("turn")?,
+            kind: r.s("log_kind")?,
+            data: r.json("data")?,
+            at: r.time("at")?,
+            expires_at: DateTime::from_timestamp(r.n(crate::item::TTL)?, 0)
+                .ok_or_else(|| DbError::Decode("run log expires_at".into()))?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatMessage {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub task_id: Uuid,
+    pub run_id: Option<Uuid>,
+    pub outbox_id: Option<Uuid>,
+    pub channel: Option<Value>,
+    pub author_kind: String,
+    pub text: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl Entity for ChatMessage {
+    const KIND: &'static str = "chat_message";
+
+    fn key(&self) -> Key {
+        keys::chat_message_key(self.tenant_id, self.task_id, self.created_at, self.id)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("id", self.id)
+            .uuid("tenant_id", self.tenant_id)
+            .uuid("task_id", self.task_id)
+            .opt_uuid("run_id", self.run_id)
+            .opt_uuid("outbox_id", self.outbox_id)
+            .opt_json("channel", self.channel.as_ref())
+            .s("author_kind", &self.author_kind)
+            .s("text", &self.text)
+            .time("created_at", self.created_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            id: r.uuid("id")?,
+            tenant_id: r.uuid("tenant_id")?,
+            task_id: r.uuid("task_id")?,
+            run_id: r.opt_uuid("run_id")?,
+            outbox_id: r.opt_uuid("outbox_id")?,
+            channel: r.opt_json("channel")?,
+            author_kind: r.s("author_kind")?,
+            text: r.s("text")?,
+            created_at: r.time("created_at")?,
         })
     }
 }

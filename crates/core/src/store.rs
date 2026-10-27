@@ -236,6 +236,10 @@ impl Store {
         TenantTx::begin(self, tenant_id)
     }
 
+    pub fn global_tx(&self) -> TenantTx {
+        TenantTx::begin(self, Uuid::nil())
+    }
+
     async fn hydrate(&self, mut item: Item) -> Result<Item, DbError> {
         let blobs = item
             .iter()
