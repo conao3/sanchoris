@@ -1,10 +1,11 @@
 use std::net::IpAddr;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
-use crate::db::{DbError, TenantTx};
+use crate::db::{DbError, TenantTx, tenant_plan};
+use crate::items::AuditEvent;
 use crate::model::{ActorKind, AuditOrigin};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,23 +24,32 @@ pub struct AuditEntry<'a> {
 
 pub async fn record_audit(tx: &mut TenantTx, entry: &AuditEntry<'_>) -> Result<Uuid, DbError> {
     let tenant_id = tx.tenant_id();
+    let (_, plan) = tenant_plan(tx).await?;
     let mut metadata = entry.metadata.clone();
     metadata.insert("origin".into(), json!(entry.origin.as_str()));
-    Ok(sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO sanchoris.audit_events \
-         (tenant_id, at, actor_kind, actor_ref, action, target_kind, target_ref, summary, source_ip, metadata) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::inet, $10) RETURNING id",
-    )
-    .bind(tenant_id)
-    .bind(entry.at)
-    .bind(entry.actor_kind.as_str())
-    .bind(entry.actor_ref)
-    .bind(entry.action)
-    .bind(entry.target_kind)
-    .bind(entry.target_ref)
-    .bind(entry.summary)
-    .bind(entry.source_ip.map(|ip| ip.to_string()))
-    .bind(Value::Object(metadata))
-    .fetch_one(tx.conn())
-    .await?)
+    let id = Uuid::new_v4();
+    tx.insert(&AuditEvent {
+        id,
+        tenant_id,
+        at: entry.at,
+        actor_kind: entry.actor_kind.as_str().to_string(),
+        actor_ref: entry.actor_ref.to_string(),
+        action: entry.action.to_string(),
+        target_kind: entry.target_kind.to_string(),
+        target_ref: entry.target_ref.to_string(),
+        summary: entry.summary.to_string(),
+        source_ip: entry.source_ip.map(|ip| ip.to_string()),
+        metadata: Value::Object(metadata),
+        expires_at: entry.at + Duration::days(plan.audit_retention_days),
+    })?;
+    Ok(id)
+}
+
+pub async fn audit_events(tx: &mut TenantTx) -> Result<Vec<AuditEvent>, DbError> {
+    let pk = crate::keys::tenant_pk(tx.tenant_id());
+    let items = tx.query_items(crate::item::Table::Audit, &pk, "").await?;
+    items
+        .iter()
+        .map(<AuditEvent as crate::item::Entity>::from_item)
+        .collect()
 }

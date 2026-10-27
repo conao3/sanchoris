@@ -1,193 +1,75 @@
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::net::{TcpListener, TcpStream};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration as StdDuration, Instant};
 
-use sqlx::PgPool;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use tempfile::TempDir;
+use aws_sdk_dynamodb::config::{BehaviorVersion, Credentials, Region};
+use aws_sdk_dynamodb::types::AttributeValue;
+use chrono::Utc;
+use serde_json::json;
 use uuid::Uuid;
 
-pub const SCHEMA_SQL: &str = include_str!("../../../db/schema.sql");
-pub const APP_ROLE: &str = "sanchoris_test_app";
-pub const WORKER_ROLE: &str = "sanchoris_test_worker";
-pub const ADMIN_ROLE: &str = "postgres";
+use crate::clock::Clock;
+use crate::db::{REF_CONFIG_REVISION, REF_TRIGGER, insert_ref};
+use crate::item::{Entity, Item, KIND, Table};
+use crate::items::{Config, ConfigRevision, Member, Membership, Tenant, Trigger, User};
+use crate::keys;
+use crate::local::{MemoryBlobStore, MemoryQueue, MemoryScheduler};
+use crate::schema::{create_tables, drop_tables, plans, seed_plans};
+use crate::store::{Relay, Store, Tables};
 
-pub struct TestPostgres {
-    dir: TempDir,
-    port: u16,
+static SERVER: OnceLock<u16> = OnceLock::new();
+
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .map(|addr| addr.port())
+        .expect("reserve a local port")
 }
 
-impl TestPostgres {
-    pub async fn start() -> Self {
-        let postgres = Self::start_cluster();
-        let admin = postgres.pool(ADMIN_ROLE).await;
-        sqlx::raw_sql(SCHEMA_SQL)
-            .execute(&admin)
-            .await
-            .expect("apply db/schema.sql");
-        sqlx::raw_sql(
-            "CREATE ROLE sanchoris_test_app LOGIN IN ROLE sanchoris_app; \
-             CREATE ROLE sanchoris_test_worker LOGIN IN ROLE sanchoris_worker; \
-             GRANT sanchoris_app TO sanchoris_test_worker WITH INHERIT FALSE, SET TRUE;",
-        )
-        .execute(&admin)
-        .await
-        .expect("create test login roles");
-        admin.close().await;
-        postgres
-    }
-
-    pub fn start_cluster() -> Self {
-        let dir = tempfile::Builder::new()
-            .prefix("sanchoris-test-postgres-")
-            .tempdir()
-            .expect("create a temporary directory");
-        run(Command::new("initdb")
-            .arg("--pgdata")
-            .arg(data_dir(dir.path()))
-            .args([
-                "--username",
-                ADMIN_ROLE,
-                "--auth",
-                "trust",
-                "--encoding",
-                "UTF8",
-                "--locale",
-                "C",
-                "--no-sync",
-            ]));
-        std::fs::create_dir(socket_dir(dir.path())).expect("create the socket directory");
-        let mut last_error = String::new();
-        for _ in 0..5 {
-            let port = free_port();
-            let options = format!(
-                "-p {port} -k {} -c listen_addresses=127.0.0.1 -c fsync=off -c synchronous_commit=off -c full_page_writes=off",
-                socket_dir(dir.path()).display()
+fn server_port() -> u16 {
+    *SERVER.get_or_init(|| {
+        let port = free_port();
+        let parent = std::process::id();
+        let script = format!(
+            "dynamodb-local -inMemory -disableTelemetry -port {port} & child=$!; \
+             while kill -0 {parent} 2>/dev/null; do sleep 1; done; kill $child"
+        );
+        Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("dynamodb-local is on PATH (run inside `nix develop`)");
+        let deadline = Instant::now() + StdDuration::from_secs(60);
+        while TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "DynamoDB Local did not listen on port {port}"
             );
-            let output = Command::new("pg_ctl")
-                .arg("--pgdata")
-                .arg(data_dir(dir.path()))
-                .arg("--log")
-                .arg(dir.path().join("postgres.log"))
-                .args(["--wait", "--options", &options, "start"])
-                .output()
-                .expect("pg_ctl is on PATH (run inside `nix develop`)");
-            if output.status.success() {
-                return Self { dir, port };
-            }
-            last_error = String::from_utf8_lossy(&output.stderr).into_owned();
+            std::thread::sleep(StdDuration::from_millis(100));
         }
-        panic!("pg_ctl start failed: {last_error}");
-    }
-
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-
-    pub fn url(&self, role: &str) -> String {
-        format!("postgres://{role}@127.0.0.1:{}/postgres", self.port)
-    }
-
-    pub fn connect_options(&self, role: &str) -> PgConnectOptions {
-        PgConnectOptions::new()
-            .host("127.0.0.1")
-            .port(self.port)
-            .username(role)
-            .database("postgres")
-    }
-
-    pub async fn pool(&self, role: &str) -> PgPool {
-        PgPoolOptions::new()
-            .max_connections(8)
-            .connect_with(self.connect_options(role))
-            .await
-            .expect("connect to the test cluster")
-    }
-
-    pub async fn admin_pool(&self) -> PgPool {
-        self.pool(ADMIN_ROLE).await
-    }
-
-    pub async fn app_pool(&self) -> PgPool {
-        self.pool(APP_ROLE).await
-    }
-
-    pub async fn worker_pool(&self) -> PgPool {
-        self.pool(WORKER_ROLE).await
-    }
-
-    pub async fn seed_tenant(&self, admin: &PgPool, plan_id: &str) -> SeededTenant {
-        let user_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO sanchoris.users (id, cognito_subject, email, display_name) VALUES ($1, $2, $3, 'Test User')")
-            .bind(user_id)
-            .bind(format!("subject-{user_id}"))
-            .bind(format!("{user_id}@example.com"))
-            .execute(admin)
-            .await
-            .expect("insert user");
-        let tenant_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO sanchoris.tenants (slug, name, plan_id, period_start, status, created_by_user_id) \
-             VALUES ($1, 'Test tenant', $2, now(), 'active', $3) RETURNING id",
-        )
-        .bind(format!("tenant-{}", user_id.simple()))
-        .bind(plan_id)
-        .bind(user_id)
-        .fetch_one(admin)
-        .await
-        .expect("insert tenant");
-        let member_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO sanchoris.members (tenant_id, user_id, role) VALUES ($1, $2, 'owner') RETURNING id",
-        )
-        .bind(tenant_id)
-        .bind(user_id)
-        .fetch_one(admin)
-        .await
-        .expect("insert member");
-        let config_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO sanchoris.configs (tenant_id, repository, root_path, branch) VALUES ($1, 'acme/sanchoris-config', '/', 'main') RETURNING id",
-        )
-        .bind(tenant_id)
-        .fetch_one(admin)
-        .await
-        .expect("insert config");
-        let config_revision_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO sanchoris.config_revisions (tenant_id, config_id, commit_sha, parsed, validation_status) \
-             VALUES ($1, $2, 'deadbeef', '{}'::jsonb, 'valid') RETURNING id",
-        )
-        .bind(tenant_id)
-        .bind(config_id)
-        .fetch_one(admin)
-        .await
-        .expect("insert config revision");
-        let trigger_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO sanchoris.triggers (tenant_id, config_id, config_revision_id, name, state, event_pattern, start) \
-             VALUES ($1, $2, $3, 'labeled-issue', 'ENABLED', '{\"source\": [\"github\"]}'::jsonb, '{}'::jsonb) RETURNING id",
-        )
-        .bind(tenant_id)
-        .bind(config_id)
-        .bind(config_revision_id)
-        .fetch_one(admin)
-        .await
-        .expect("insert trigger");
-        SeededTenant {
-            tenant_id,
-            user_id,
-            member_id,
-            config_id,
-            config_revision_id,
-            trigger_id,
-        }
-    }
+        port
+    })
 }
 
-impl Drop for TestPostgres {
-    fn drop(&mut self) {
-        let _ = Command::new("pg_ctl")
-            .arg("--pgdata")
-            .arg(data_dir(self.dir.path()))
-            .args(["--mode", "immediate", "stop"])
-            .output();
-    }
+pub fn local_client(port: u16) -> aws_sdk_dynamodb::Client {
+    let config = aws_sdk_dynamodb::Config::builder()
+        .behavior_version(BehaviorVersion::latest())
+        .region(Region::new("us-east-1"))
+        .endpoint_url(format!("http://127.0.0.1:{port}"))
+        .credentials_provider(Credentials::new("test", "test", None, None, "test"))
+        .build();
+    aws_sdk_dynamodb::Client::from_conf(config)
+}
+
+pub struct TestDynamo {
+    port: u16,
+    client: aws_sdk_dynamodb::Client,
+    tables: Tables,
+    blobs: Arc<MemoryBlobStore>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,28 +82,307 @@ pub struct SeededTenant {
     pub trigger_id: Uuid,
 }
 
-fn data_dir(root: &Path) -> PathBuf {
-    root.join("data")
+pub struct DirectStore {
+    pub store: Store,
+    pub queue: Arc<MemoryQueue>,
+    pub scheduler: Arc<MemoryScheduler>,
 }
 
-fn socket_dir(root: &Path) -> PathBuf {
-    root.join("socket")
+impl TestDynamo {
+    pub async fn start() -> Self {
+        let port = server_port();
+        let client = local_client(port);
+        let suffix = Uuid::new_v4().simple().to_string();
+        let tables = Tables {
+            main: format!("sanchoris-test-{suffix}-main"),
+            audit: format!("sanchoris-test-{suffix}-audit"),
+        };
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            match create_tables(&client, &tables).await {
+                Ok(_) => break,
+                Err(error) if attempts < 50 => {
+                    let _ = error;
+                    tokio::time::sleep(StdDuration::from_millis(200)).await;
+                }
+                Err(error) => panic!("create test tables: {error}"),
+            }
+        }
+        seed_plans(&client, &tables, &plans())
+            .await
+            .expect("seed plans");
+        Self {
+            port,
+            client,
+            tables,
+            blobs: Arc::new(MemoryBlobStore::new()),
+        }
+    }
+
+    pub fn client(&self) -> &aws_sdk_dynamodb::Client {
+        &self.client
+    }
+
+    pub fn tables(&self) -> &Tables {
+        &self.tables
+    }
+
+    pub fn blobs(&self) -> &Arc<MemoryBlobStore> {
+        &self.blobs
+    }
+
+    pub fn store(&self, relay: Relay) -> Store {
+        Store::new(
+            self.client.clone(),
+            self.tables.clone(),
+            self.blobs.clone(),
+            relay,
+        )
+    }
+
+    pub fn direct_store(&self, clock: Arc<dyn Clock>) -> DirectStore {
+        let queue = Arc::new(MemoryQueue::new(clock.clone()));
+        let scheduler = Arc::new(MemoryScheduler::new());
+        let store = self.store(Relay::Direct {
+            queue: queue.clone(),
+            scheduler: scheduler.clone(),
+            clock,
+        });
+        DirectStore {
+            store,
+            queue,
+            scheduler,
+        }
+    }
+
+    pub async fn set_stripe_price(&self, plan_id: &str, price_id: &str) {
+        self.client
+            .update_item()
+            .table_name(&self.tables.main)
+            .key("pk", AttributeValue::S(keys::plans_pk().into()))
+            .key("sk", AttributeValue::S(plan_id.into()))
+            .update_expression("SET stripe_price_id = :p")
+            .expression_attribute_values(":p", AttributeValue::S(price_id.into()))
+            .send()
+            .await
+            .expect("set the Stripe price");
+    }
+
+    pub async fn scan(&self, table: Table, kind: &str) -> Vec<Item> {
+        let name = self.tables.name(table).to_string();
+        let mut items = Vec::new();
+        let mut start = None;
+        loop {
+            let output = self
+                .client
+                .scan()
+                .table_name(&name)
+                .filter_expression("#k = :k")
+                .expression_attribute_names("#k", KIND)
+                .expression_attribute_values(":k", AttributeValue::S(kind.into()))
+                .consistent_read(true)
+                .set_exclusive_start_key(start.take())
+                .send()
+                .await
+                .expect("scan the test table");
+            items.extend(output.items.unwrap_or_default());
+            match output.last_evaluated_key {
+                Some(key) if !key.is_empty() => start = Some(key),
+                _ => return items,
+            }
+        }
+    }
+
+    pub async fn all<E: Entity>(&self) -> Vec<E> {
+        let table = if E::KIND == "audit_event" {
+            Table::Audit
+        } else {
+            Table::Main
+        };
+        self.scan(table, E::KIND)
+            .await
+            .iter()
+            .map(|item| E::from_item(item).expect("test items decode"))
+            .collect()
+    }
+
+    pub async fn put<E: Entity>(&self, entity: &E) {
+        let mut item = entity.to_item();
+        item.insert(crate::item::VERSION.into(), AttributeValue::N("1".into()));
+        self.client
+            .put_item()
+            .table_name(&self.tables.main)
+            .set_item(Some(item))
+            .send()
+            .await
+            .expect("put a test item");
+    }
+
+    pub async fn modify<E: Entity>(&self, key: &crate::item::Key, change: impl FnOnce(&mut E)) {
+        let store = self.store(Relay::Stream);
+        let item = store
+            .get_item(key)
+            .await
+            .expect("read a test item")
+            .expect("the test item exists");
+        let version = item
+            .get(crate::item::VERSION)
+            .and_then(|v| v.as_n().ok())
+            .and_then(|n| n.parse::<i64>().ok())
+            .unwrap_or(0);
+        let mut entity = E::from_item(&item).expect("test items decode");
+        change(&mut entity);
+        let mut item = entity.to_item();
+        item.insert(
+            crate::item::VERSION.into(),
+            AttributeValue::N((version + 1).to_string()),
+        );
+        self.client
+            .put_item()
+            .table_name(self.tables.name(key.table))
+            .set_item(Some(item))
+            .send()
+            .await
+            .expect("replace a test item");
+    }
+
+    pub async fn seed_tenant(&self, plan_id: &str) -> SeededTenant {
+        let store = self.store(Relay::Stream);
+        let now = Utc::now();
+        let user_id = Uuid::new_v4();
+        let tenant_id = Uuid::new_v4();
+        let member_id = Uuid::new_v4();
+        let config_id = Uuid::new_v4();
+        let config_revision_id = Uuid::new_v4();
+        let trigger_id = keys::trigger_id(config_id, "labeled-issue");
+        let mut tx = store.tx(tenant_id);
+        tx.insert(&User {
+            id: user_id,
+            cognito_subject: format!("subject-{user_id}"),
+            email: format!("{user_id}@example.com"),
+            display_name: "Test User".into(),
+            github_user_id: None,
+            github_login: None,
+            is_operator: false,
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("seed user");
+        tx.insert(&Tenant {
+            id: tenant_id,
+            slug: format!("tenant-{}", user_id.simple()),
+            name: "Test tenant".into(),
+            plan_id: plan_id.into(),
+            period_start: now,
+            tasks_this_period: 0,
+            workspace_seconds_this_period: 0,
+            running_tasks: 0,
+            status: "active".into(),
+            suspended_reason: None,
+            stripe_customer_id: None,
+            created_by_user_id: user_id,
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("seed tenant");
+        tx.insert(&Member {
+            id: member_id,
+            tenant_id,
+            user_id,
+            role: "owner".into(),
+            joined_at: now,
+            last_active_at: None,
+        })
+        .expect("seed member");
+        tx.insert(&Membership {
+            user_id,
+            tenant_id,
+            member_id,
+        })
+        .expect("seed membership");
+        tx.insert(&Config {
+            id: config_id,
+            tenant_id,
+            repository: "acme/sanchoris-config".into(),
+            root_path: "/".into(),
+            branch: "main".into(),
+            active_revision_id: Some(config_revision_id),
+            revisions: 1,
+            synced_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("seed config");
+        let revision = ConfigRevision {
+            id: config_revision_id,
+            tenant_id,
+            config_id,
+            number: 1,
+            commit_sha: "deadbeef".into(),
+            parsed: Some(json!({})),
+            validation_status: "valid".into(),
+            validation_messages: json!([]),
+            created_at: now,
+        };
+        tx.insert(&revision).expect("seed revision");
+        insert_ref(
+            &mut tx,
+            config_revision_id,
+            REF_CONFIG_REVISION,
+            revision.key(),
+            Some(config_id),
+        )
+        .expect("seed revision ref");
+        let trigger = Trigger {
+            id: trigger_id,
+            tenant_id,
+            config_id,
+            config_revision_id,
+            name: "labeled-issue".into(),
+            state: "ENABLED".into(),
+            event_pattern: Some(json!({ "source": ["github"] })),
+            schedule_expression: None,
+            input_transformer: None,
+            start: json!({}),
+            removed_at: None,
+            next_run_at: None,
+            schedule_message_id: None,
+        };
+        tx.insert(&trigger).expect("seed trigger");
+        insert_ref(
+            &mut tx,
+            trigger_id,
+            REF_TRIGGER,
+            trigger.key(),
+            Some(config_id),
+        )
+        .expect("seed trigger ref");
+        tx.commit().await.expect("seed the tenant");
+        SeededTenant {
+            tenant_id,
+            user_id,
+            member_id,
+            config_id,
+            config_revision_id,
+            trigger_id,
+        }
+    }
 }
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|listener| listener.local_addr())
-        .map(|addr| addr.port())
-        .expect("reserve a local port")
-}
-
-fn run(command: &mut Command) {
-    let output = command.output().unwrap_or_else(|error| {
-        panic!("{command:?} failed to start (run inside `nix develop`): {error}")
-    });
-    assert!(
-        output.status.success(),
-        "{command:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+impl Drop for TestDynamo {
+    fn drop(&mut self) {
+        let port = self.port;
+        let tables = self.tables.clone();
+        let _ = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build a runtime to drop test tables");
+            runtime.block_on(async {
+                let _ = drop_tables(&local_client(port), &tables).await;
+            });
+        })
+        .join();
+    }
 }

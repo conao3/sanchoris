@@ -6,17 +6,18 @@ use sanchoris_engine::{
     Step, Timer,
 };
 use serde_json::{Value, json};
-use sqlx::Row;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::db::{DbError, TenantTx};
+use crate::db::{DbError, REF_INVOCATION, REF_RUN, REF_SKILL_RUN, TenantTx, insert_ref, locate};
+use crate::item::Entity;
+use crate::items::{ApprovalWait, Invocation, SkillRunItem, StateEntryItem, Task, TimerItem};
+use crate::jobs::Job;
+use crate::keys;
 use crate::lifecycle::decide_skill_run_finished;
-use crate::model::{SkillRunStatus, TaskDefinition, TaskStatus};
-use crate::tasks::{ERROR_APPROVAL_REQUESTED, apply_decision, send_to_task};
+use crate::model::{SkillRunStatus, TaskDefinition, TaskStatus, WaitReason};
+use crate::tasks::{ERROR_APPROVAL_REQUESTED, apply_decision, load_task, send_to_task, store_task};
 use crate::tokens::{TaskTokenSigner, TokenError};
-
-pub const DUE_ENGINE_TIMER: &str = "engine_timer";
 
 #[derive(Debug, Error)]
 pub enum SkillRunError {
@@ -46,12 +47,6 @@ pub enum SkillRunError {
     Engine(EngineError),
 }
 
-impl From<sqlx::Error> for SkillRunError {
-    fn from(error: sqlx::Error) -> Self {
-        Self::Db(DbError::Sqlx(error))
-    }
-}
-
 impl SkillRunError {
     pub fn code(&self) -> &'static str {
         match self {
@@ -65,6 +60,10 @@ impl SkillRunError {
             Self::Token(_) => "invalid_token",
             Self::Db(_) | Self::Json(_) | Self::Engine(_) => "internal",
         }
+    }
+
+    pub fn is_conflict(&self) -> bool {
+        matches!(self, Self::Db(DbError::Conflict))
     }
 }
 
@@ -100,28 +99,33 @@ pub fn parse_task_token(token: &str) -> Option<i32> {
     number.parse().ok()
 }
 
+pub async fn skill_run_item(
+    tx: &mut TenantTx,
+    skill_run_id: Uuid,
+) -> Result<Option<SkillRunItem>, DbError> {
+    let Some(location) = locate(tx, skill_run_id, REF_SKILL_RUN).await? else {
+        return Ok(None);
+    };
+    tx.get::<SkillRunItem>(&location.target).await
+}
+
 pub async fn lock_skill_run(
     tx: &mut TenantTx,
     skill_run_id: Uuid,
 ) -> Result<LockedSkillRun, SkillRunError> {
-    let row = sqlx::query(
-        "SELECT id, task_id, run_id, number, skill_name, definition, state \
-         FROM sanchoris.skill_runs WHERE id = $1 FOR UPDATE",
-    )
-    .bind(skill_run_id)
-    .fetch_optional(tx.conn())
-    .await?
-    .ok_or_else(|| SkillRunError::NotFound(skill_run_id.to_string()))?;
+    let item = skill_run_item(tx, skill_run_id)
+        .await?
+        .ok_or_else(|| SkillRunError::NotFound(skill_run_id.to_string()))?;
     Ok(LockedSkillRun {
         meta: SkillRunMeta {
-            id: row.try_get("id")?,
-            task_id: row.try_get("task_id")?,
-            run_id: row.try_get("run_id")?,
-            number: row.try_get("number")?,
-            skill_name: row.try_get("skill_name")?,
+            id: item.id,
+            task_id: item.task_id,
+            run_id: item.run_id,
+            number: item.number,
+            skill_name: item.skill_name.clone(),
         },
-        definition: serde_json::from_value(row.try_get("definition")?)?,
-        run: serde_json::from_value(row.try_get("state")?)?,
+        definition: serde_json::from_value(item.definition)?,
+        run: serde_json::from_value(item.state)?,
     })
 }
 
@@ -145,6 +149,21 @@ pub fn timer_job_id(skill_run_id: Uuid, timer: &Timer) -> Uuid {
     Uuid::new_v5(&skill_run_id, &name)
 }
 
+fn timer_sequence(timer: &Timer) -> i64 {
+    timer
+        .sequence()
+        .map(|s| i64::try_from(s).expect("sequence fits in i64"))
+        .unwrap_or(-1)
+}
+
+async fn timers(tx: &mut TenantTx, meta: &SkillRunMeta) -> Result<Vec<TimerItem>, DbError> {
+    tx.query::<TimerItem>(
+        &keys::task_pk(tx.tenant_id(), meta.task_id),
+        &keys::timer_prefix(meta.number),
+    )
+    .await
+}
+
 pub async fn persist_step(
     tx: &mut TenantTx,
     meta: &SkillRunMeta,
@@ -153,73 +172,104 @@ pub async fn persist_step(
 ) -> Result<(), SkillRunError> {
     let tenant_id = tx.tenant_id();
     let run = &step.run;
-    sqlx::query(
-        "UPDATE sanchoris.skill_runs SET status = $2, current_state = $3, state = $4, output = $5, \
-         error = $6, cause = $7, finished_at = $8, updated_at = now() WHERE id = $1",
-    )
-    .bind(meta.id)
-    .bind(run.status.as_str())
-    .bind(run.current.as_ref().map(|c| c.state_name.as_str()))
-    .bind(serde_json::to_value(run)?)
-    .bind(&run.output)
-    .bind(&run.error)
-    .bind(&run.cause)
-    .bind(run.finished_at)
-    .execute(tx.conn())
-    .await?;
+    let key = keys::skill_run_key(tenant_id, meta.task_id, meta.number);
+    let mut item = tx
+        .get::<SkillRunItem>(&key)
+        .await?
+        .ok_or_else(|| SkillRunError::NotFound(meta.id.to_string()))?;
+    item.status = engine_status(run.status);
+    item.current_state = run.current.as_ref().map(|c| c.state_name.clone());
+    item.state = serde_json::to_value(run)?;
+    item.output = run.output.clone();
+    item.error = run.error.clone();
+    item.cause = run.cause.clone();
+    item.finished_at = run.finished_at;
+    item.updated_at = now;
+    tx.put(&item)?;
     for entry in &step.entries {
-        upsert_entry(tx, meta.id, entry).await?;
+        upsert_entry(tx, meta, entry).await?;
     }
     for effect in &step.effects {
         match effect {
             Effect::InvokeResource(invocation) => {
-                sqlx::query(
-                    "INSERT INTO sanchoris.resource_invocations \
-                     (tenant_id, skill_run_id, idempotency_key, resource, invocation, status) \
-                     VALUES ($1, $2, $3, $4, $5, 'pending') \
-                     ON CONFLICT (skill_run_id, idempotency_key) DO NOTHING",
-                )
-                .bind(tenant_id)
-                .bind(meta.id)
-                .bind(invocation.idempotency_key.to_string())
-                .bind(invocation.resource.name())
-                .bind(serde_json::to_value(invocation)?)
-                .execute(tx.conn())
-                .await?;
+                let key = keys::invocation_key(
+                    tenant_id,
+                    meta.task_id,
+                    meta.number,
+                    &invocation.idempotency_key.to_string(),
+                );
+                if tx.get::<Invocation>(&key).await?.is_none() {
+                    let id = Uuid::new_v4();
+                    tx.insert(&Invocation {
+                        id,
+                        tenant_id,
+                        task_id: meta.task_id,
+                        skill_run_id: meta.id,
+                        skill_run_number: meta.number,
+                        idempotency_key: invocation.idempotency_key.to_string(),
+                        resource: invocation.resource.name(),
+                        invocation: serde_json::to_value(invocation)?,
+                        status: "pending".into(),
+                        result: None,
+                        attempts: 0,
+                        created_at: now,
+                        completed_at: None,
+                    })?;
+                    insert_ref(tx, id, REF_INVOCATION, key, Some(meta.task_id))?;
+                    tx.emit(Job::Invoke {
+                        tenant_id,
+                        task_id: meta.task_id,
+                        invocation_id: id,
+                    });
+                }
             }
             Effect::ScheduleTimer { timer, due_at } => {
-                sqlx::query(
-                    "INSERT INTO sanchoris.due_jobs (tenant_id, kind, ref_id, due_at, payload) \
-                     VALUES ($1, $2, $3, $4, $5) \
-                     ON CONFLICT (kind, ref_id) DO UPDATE SET due_at = EXCLUDED.due_at, attempts = 0, payload = EXCLUDED.payload",
-                )
-                .bind(tenant_id)
-                .bind(DUE_ENGINE_TIMER)
-                .bind(timer_job_id(meta.id, timer))
-                .bind(due_at)
-                .bind(json!({ "skill_run_id": meta.id, "timer": timer }))
-                .execute(tx.conn())
-                .await?;
+                let id = timer_job_id(meta.id, timer);
+                let key = keys::timer_key(tenant_id, meta.task_id, meta.number, id);
+                let existing = tx.get::<TimerItem>(&key).await?;
+                if let Some(existing) = &existing {
+                    tx.cancel_schedule(existing.message_id);
+                }
+                let message_id = tx.emit_at(
+                    Job::EngineTimer {
+                        tenant_id,
+                        task_id: meta.task_id,
+                        skill_run_id: meta.id,
+                        timer_id: id,
+                    },
+                    *due_at,
+                );
+                let timer_item = TimerItem {
+                    id,
+                    tenant_id,
+                    task_id: meta.task_id,
+                    skill_run_id: meta.id,
+                    skill_run_number: meta.number,
+                    sequence: timer_sequence(timer),
+                    timer: serde_json::to_value(timer)?,
+                    due_at: *due_at,
+                    message_id,
+                };
+                if existing.is_some() {
+                    tx.put(&timer_item)?;
+                } else {
+                    tx.insert(&timer_item)?;
+                }
             }
             Effect::CancelTimers { sequence } => {
-                sqlx::query(
-                    "DELETE FROM sanchoris.due_jobs WHERE kind = $1 \
-                     AND payload->>'skill_run_id' = $2 AND (payload->'timer'->>'sequence')::bigint = $3",
-                )
-                .bind(DUE_ENGINE_TIMER)
-                .bind(meta.id.to_string())
-                .bind(i64::try_from(*sequence).expect("sequence fits in i64"))
-                .execute(tx.conn())
-                .await?;
+                let sequence = i64::try_from(*sequence).expect("sequence fits in i64");
+                for timer in timers(tx, meta).await? {
+                    if timer.sequence == sequence {
+                        tx.cancel_schedule(timer.message_id);
+                        tx.delete(&timer.key())?;
+                    }
+                }
             }
             Effect::CancelAllTimers => {
-                sqlx::query(
-                    "DELETE FROM sanchoris.due_jobs WHERE kind = $1 AND payload->>'skill_run_id' = $2",
-                )
-                .bind(DUE_ENGINE_TIMER)
-                .bind(meta.id.to_string())
-                .execute(tx.conn())
-                .await?;
+                for timer in timers(tx, meta).await? {
+                    tx.cancel_schedule(timer.message_id);
+                    tx.delete(&timer.key())?;
+                }
             }
             Effect::Notify(notification) => {
                 if let Some(run_id) = meta.run_id {
@@ -243,34 +293,45 @@ pub async fn persist_step(
 
 async fn upsert_entry(
     tx: &mut TenantTx,
-    skill_run_id: Uuid,
+    meta: &SkillRunMeta,
     entry: &StateEntry,
 ) -> Result<(), SkillRunError> {
     let tenant_id = tx.tenant_id();
-    sqlx::query(
-        "INSERT INTO sanchoris.state_entries \
-         (tenant_id, skill_run_id, sequence, state_name, state_type, status, entered_at, exited_at, input, output, error, cause, attempts, next_state) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
-         ON CONFLICT (skill_run_id, sequence) DO UPDATE SET status = EXCLUDED.status, exited_at = EXCLUDED.exited_at, \
-         output = EXCLUDED.output, error = EXCLUDED.error, cause = EXCLUDED.cause, attempts = EXCLUDED.attempts, \
-         next_state = EXCLUDED.next_state",
-    )
-    .bind(tenant_id)
-    .bind(skill_run_id)
-    .bind(i32::try_from(entry.sequence).expect("sequence fits in i32"))
-    .bind(&entry.state_name)
-    .bind(&entry.state_type)
-    .bind(entry.status.as_str())
-    .bind(entry.entered_at)
-    .bind(entry.exited_at)
-    .bind(&entry.input)
-    .bind(&entry.output)
-    .bind(&entry.error)
-    .bind(&entry.cause)
-    .bind(i32::try_from(entry.attempts.max(1)).expect("attempts fit in i32"))
-    .bind(&entry.next_state)
-    .execute(tx.conn())
-    .await?;
+    let sequence = i64::try_from(entry.sequence).expect("sequence fits in i64");
+    let key = keys::state_entry_key(tenant_id, meta.task_id, meta.number, sequence);
+    let existing = tx.get::<StateEntryItem>(&key).await?;
+    let attempts = i64::from(entry.attempts.max(1));
+    let item = match existing {
+        Some(mut item) => {
+            item.status = entry.status.as_str().to_string();
+            item.exited_at = entry.exited_at;
+            item.output = entry.output.clone();
+            item.error = entry.error.clone();
+            item.cause = entry.cause.clone();
+            item.attempts = attempts;
+            item.next_state = entry.next_state.clone();
+            item
+        }
+        None => StateEntryItem {
+            tenant_id,
+            task_id: meta.task_id,
+            skill_run_id: meta.id,
+            skill_run_number: meta.number,
+            sequence,
+            state_name: entry.state_name.clone(),
+            state_type: entry.state_type.clone(),
+            status: entry.status.as_str().to_string(),
+            entered_at: entry.entered_at,
+            exited_at: entry.exited_at,
+            input: entry.input.clone(),
+            output: entry.output.clone(),
+            error: entry.error.clone(),
+            cause: entry.cause.clone(),
+            attempts,
+            next_state: entry.next_state.clone(),
+        },
+    };
+    tx.put(&item)?;
     Ok(())
 }
 
@@ -280,19 +341,11 @@ async fn on_finished(
     run: &SkillRun,
     now: DateTime<Utc>,
 ) -> Result<(), SkillRunError> {
-    let row =
-        sqlx::query("SELECT status, definition FROM sanchoris.tasks WHERE id = $1 FOR UPDATE")
-            .bind(meta.task_id)
-            .fetch_one(tx.conn())
-            .await?;
-    let status: TaskStatus = row
-        .try_get::<String, _>("status")?
-        .parse()
-        .expect("task status is valid");
-    if status.is_terminal() {
+    let task = load_task(tx, meta.task_id).await?;
+    if task.status.is_terminal() {
         return Ok(());
     }
-    let definition: TaskDefinition = serde_json::from_value(row.try_get("definition")?)?;
+    let definition: TaskDefinition = serde_json::from_value(task.definition.clone())?;
     let required = required_skills(&definition);
     let required = required.iter().map(String::as_str).collect::<Vec<_>>();
     let decision = decide_skill_run_finished(
@@ -342,27 +395,14 @@ impl AcceptedSkillRun {
     }
 }
 
-async fn task_of_run(
-    tx: &mut TenantTx,
-    run_id: Uuid,
-) -> Result<(Uuid, TaskStatus, TaskDefinition), SkillRunError> {
-    let row = sqlx::query(
-        "SELECT t.id, t.status, t.definition FROM sanchoris.runs r \
-         JOIN sanchoris.tasks t ON t.id = r.task_id WHERE r.id = $1 FOR UPDATE OF t",
-    )
-    .bind(run_id)
-    .fetch_optional(tx.conn())
-    .await?
-    .ok_or(SkillRunError::RunNotFound(run_id))?;
-    let status: TaskStatus = row
-        .try_get::<String, _>("status")?
-        .parse()
-        .expect("task status is valid");
-    Ok((
-        row.try_get("id")?,
-        status,
-        serde_json::from_value(row.try_get("definition")?)?,
-    ))
+async fn task_of_run(tx: &mut TenantTx, run_id: Uuid) -> Result<Task, SkillRunError> {
+    let location = locate(tx, run_id, REF_RUN)
+        .await?
+        .ok_or(SkillRunError::RunNotFound(run_id))?;
+    let task_id = location
+        .parent_id
+        .ok_or(SkillRunError::RunNotFound(run_id))?;
+    Ok(load_task(tx, task_id).await?)
 }
 
 pub async fn accept_skill_request(
@@ -372,10 +412,11 @@ pub async fn accept_skill_request(
     input: Value,
     now: DateTime<Utc>,
 ) -> Result<AcceptedSkillRun, SkillRunError> {
-    let (task_id, status, definition) = task_of_run(tx, run_id).await?;
-    if status.is_terminal() {
-        return Err(SkillRunError::TaskFinished(status));
+    let mut task = task_of_run(tx, run_id).await?;
+    if task.status.is_terminal() {
+        return Err(SkillRunError::TaskFinished(task.status));
     }
+    let definition: TaskDefinition = serde_json::from_value(task.definition.clone())?;
     let offered = definition
         .skills
         .iter()
@@ -385,12 +426,7 @@ pub async fn accept_skill_request(
     let skill_definition = skill
         .definition
         .ok_or_else(|| SkillRunError::NotReliable(skill_name.to_string()))?;
-    let number = sqlx::query_scalar::<_, i32>(
-        "SELECT coalesce(max(number), 0) + 1 FROM sanchoris.skill_runs WHERE task_id = $1",
-    )
-    .bind(task_id)
-    .fetch_one(tx.conn())
-    .await?;
+    let number = i32::try_from(task.skill_runs + 1).expect("skill run numbers fit in i32");
     let step = sanchoris_engine::start(
         &skill_definition,
         StartRequest {
@@ -404,26 +440,34 @@ pub async fn accept_skill_request(
         EngineError::InvalidInput(message) => SkillRunError::InvalidInput(message),
         other => SkillRunError::Engine(other),
     })?;
+    task.skill_runs += 1;
+    tx.put(&task)?;
     let tenant_id = tx.tenant_id();
-    let id = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO sanchoris.skill_runs \
-         (tenant_id, task_id, run_id, number, skill_name, definition, input, status, state, started_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'RUNNING', $8, $9) RETURNING id",
-    )
-    .bind(tenant_id)
-    .bind(task_id)
-    .bind(run_id)
-    .bind(number)
-    .bind(skill_name)
-    .bind(serde_json::to_value(&skill_definition)?)
-    .bind(&input)
-    .bind(serde_json::to_value(&step.run)?)
-    .bind(now)
-    .fetch_one(tx.conn())
-    .await?;
+    let id = Uuid::new_v4();
+    let item = SkillRunItem {
+        id,
+        tenant_id,
+        task_id: task.id,
+        run_id: Some(run_id),
+        number,
+        skill_name: skill_name.to_string(),
+        definition: serde_json::to_value(&skill_definition)?,
+        input,
+        output: None,
+        status: SkillRunStatus::Running,
+        current_state: None,
+        state: serde_json::to_value(&step.run)?,
+        error: None,
+        cause: None,
+        started_at: now,
+        finished_at: None,
+        updated_at: now,
+    };
+    tx.insert(&item)?;
+    insert_ref(tx, id, REF_SKILL_RUN, item.key(), Some(task.id))?;
     let meta = SkillRunMeta {
         id,
-        task_id,
+        task_id: task.id,
         run_id: Some(run_id),
         number,
         skill_name: skill_name.to_string(),
@@ -440,16 +484,12 @@ async fn skill_run_by_number(
     tx: &mut TenantTx,
     run_id: Uuid,
     number: i32,
-) -> Result<Uuid, SkillRunError> {
-    sqlx::query_scalar::<_, Uuid>(
-        "SELECT s.id FROM sanchoris.runs r JOIN sanchoris.skill_runs s ON s.task_id = r.task_id \
-         WHERE r.id = $1 AND s.number = $2",
-    )
-    .bind(run_id)
-    .bind(number)
-    .fetch_optional(tx.conn())
-    .await?
-    .ok_or_else(|| SkillRunError::NotFound(number.to_string()))
+) -> Result<SkillRunItem, SkillRunError> {
+    let task = task_of_run(tx, run_id).await?;
+    let key = keys::skill_run_key(tx.tenant_id(), task.id, number);
+    tx.get::<SkillRunItem>(&key)
+        .await?
+        .ok_or_else(|| SkillRunError::NotFound(number.to_string()))
 }
 
 pub async fn continue_skill_run(
@@ -459,7 +499,7 @@ pub async fn continue_skill_run(
     output: Value,
     now: DateTime<Utc>,
 ) -> Result<Value, SkillRunError> {
-    let id = skill_run_by_number(tx, run_id, number).await?;
+    let id = skill_run_by_number(tx, run_id, number).await?.id;
     let locked = lock_skill_run(tx, id).await?;
     let token = match (locked.run.status, locked.run.waiting_task_token()) {
         (sanchoris_engine::SkillRunStatus::WaitingAgent, Some(token)) => token.to_string(),
@@ -484,18 +524,13 @@ pub async fn skill_run_status(
     run_id: Uuid,
     number: i32,
 ) -> Result<Value, SkillRunError> {
-    let id = skill_run_by_number(tx, run_id, number).await?;
-    let row =
-        sqlx::query("SELECT status, output, error, cause FROM sanchoris.skill_runs WHERE id = $1")
-            .bind(id)
-            .fetch_one(tx.conn())
-            .await?;
+    let item = skill_run_by_number(tx, run_id, number).await?;
     Ok(json!({
         "RunId": number,
-        "Status": row.try_get::<String, _>("status")?,
-        "Output": row.try_get::<Option<Value>, _>("output")?,
-        "Error": row.try_get::<Option<String>, _>("error")?,
-        "Cause": row.try_get::<Option<String>, _>("cause")?,
+        "Status": item.status.as_str(),
+        "Output": item.output,
+        "Error": item.error,
+        "Cause": item.cause,
     }))
 }
 
@@ -508,27 +543,34 @@ pub async fn resolve_approval(
     now: DateTime<Utc>,
 ) -> Result<Disposition, SkillRunError> {
     let verified = signer.verify(signed_token)?;
-    let row = sqlx::query(
-        "UPDATE sanchoris.approval_waits SET status = $3, resolved_at = $4 \
-         WHERE skill_run_id = $1 AND task_token = $2 AND status = 'waiting' RETURNING task_id",
-    )
-    .bind(verified.skill_run_id)
-    .bind(&verified.task_token)
-    .bind(if approved { "approved" } else { "rejected" })
-    .bind(now)
-    .fetch_optional(tx.conn())
-    .await?
-    .ok_or(SkillRunError::ApprovalNotWaiting)?;
-    let task_id: Uuid = row.try_get("task_id")?;
-    sqlx::query(
-        "UPDATE sanchoris.tasks SET status = 'WAITING', wait_reason = 'skill', error = NULL, cause = NULL, \
-         updated_at = $3 WHERE id = $1 AND status = 'NEEDS_YOU' AND error = $2",
-    )
-    .bind(task_id)
-    .bind(ERROR_APPROVAL_REQUESTED)
-    .bind(now)
-    .execute(tx.conn())
-    .await?;
+    let skill_run = skill_run_item(tx, verified.skill_run_id)
+        .await?
+        .ok_or(SkillRunError::ApprovalNotWaiting)?;
+    let key = keys::approval_wait_key(
+        tx.tenant_id(),
+        skill_run.task_id,
+        skill_run.number,
+        &verified.task_token,
+    );
+    let mut wait = tx
+        .get::<ApprovalWait>(&key)
+        .await?
+        .filter(|w| w.status == "waiting")
+        .ok_or(SkillRunError::ApprovalNotWaiting)?;
+    wait.status = if approved { "approved" } else { "rejected" }.to_string();
+    wait.resolved_at = Some(now);
+    tx.put(&wait)?;
+    let mut task = load_task(tx, wait.task_id).await?;
+    if task.status == TaskStatus::NeedsYou
+        && task.error.as_deref() == Some(ERROR_APPROVAL_REQUESTED)
+    {
+        task.status = TaskStatus::Waiting;
+        task.wait_reason = Some(WaitReason::Skill);
+        task.error = None;
+        task.cause = None;
+        task.updated_at = now;
+        store_task(tx, &task, now).await?;
+    }
     let event = if approved {
         Event::TaskSuccess {
             task_token: verified.task_token,

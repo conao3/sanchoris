@@ -11,7 +11,10 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfreePredicate = pkg: (nixpkgs.lib.getName pkg) == "dynamodb-local";
+        };
       in
       {
         devShells.default = pkgs.mkShell {
@@ -23,18 +26,17 @@
             rust-analyzer
             cargo-watch
             clippy
-            docker-compose
+            dynamodb-local
+            jre_headless
             gh
             jq
             openssl
-            postgresql_17
             rustfmt
             worktrunk
           ];
 
           shellHook = ''
             export RUST_BACKTRACE=1
-            export DATABASE_URL="''${DATABASE_URL:-postgres://sanchoris:sanchoris@127.0.0.1:54329/sanchoris}"
           '';
         };
       }

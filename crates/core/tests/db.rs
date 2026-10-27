@@ -1,11 +1,20 @@
-use chrono::{Duration, Utc};
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use chrono::{Duration, TimeZone, Utc};
+use sanchoris_core::audit::{AuditEntry, audit_events, record_audit};
+use sanchoris_core::clock::FakeClock;
 use sanchoris_core::db::{
-    self, DbError, NewTask, NewTriggerEvent, Recorded, TenantTx, TriggerEventOutcome,
+    self, DbError, NewTask, NewTriggerEvent, Recorded, Store, TriggerEventOutcome,
 };
-use sanchoris_core::model::{NamedDefinition, TaskDefinition};
-use sanchoris_core::testing::{APP_ROLE, SeededTenant, TestPostgres};
-use serde_json::json;
-use sqlx::{Connection, PgPool};
+use sanchoris_core::item::{Entity, Key};
+use sanchoris_core::items::{AuditEvent, Plan, Run, Task, Tenant, TriggerEvent};
+use sanchoris_core::jobs::{Envelope, Job};
+use sanchoris_core::keys;
+use sanchoris_core::model::{ActorKind, AuditOrigin, NamedDefinition, TaskDefinition, TaskStatus};
+use sanchoris_core::store::{Relay, Update, retry};
+use sanchoris_core::testing::{SeededTenant, TestDynamo};
+use serde_json::{Map, json};
 use uuid::Uuid;
 
 fn definition() -> TaskDefinition {
@@ -26,59 +35,77 @@ fn definition() -> TaskDefinition {
 }
 
 async fn create_task(
-    pool: &PgPool,
+    store: &Store,
     seeded: &SeededTenant,
     name: &str,
     blocked_by: &[Uuid],
 ) -> Recorded {
     let definition = definition();
-    let mut tx = TenantTx::begin(pool, seeded.tenant_id).await.unwrap();
-    let recorded = db::create_task(
-        &mut tx,
-        &NewTask {
-            trigger_id: seeded.trigger_id,
-            trigger_event_id: None,
-            config_revision_id: seeded.config_revision_id,
-            name,
-            title: name,
-            definition: &definition,
-            parent_task_id: None,
-            channel: None,
-            requested_by_member_id: None,
-            blocked_by,
-        },
-    )
+    retry(8, || async {
+        let mut tx = store.tx(seeded.tenant_id);
+        let recorded = db::create_task(
+            &mut tx,
+            &NewTask {
+                trigger_id: seeded.trigger_id,
+                trigger_event_id: None,
+                config_revision_id: seeded.config_revision_id,
+                name,
+                title: name,
+                definition: &definition,
+                parent_task_id: None,
+                channel: None,
+                requested_by_member_id: None,
+                blocked_by,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(recorded)
+    })
     .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    recorded
+    .unwrap()
 }
 
-async fn dispatch(pool: &PgPool, tenant_id: Uuid) -> Vec<db::DispatchedTask> {
-    let mut tx = TenantTx::begin(pool, tenant_id).await.unwrap();
-    let dispatched = db::dispatch_pending_tasks(&mut tx, Utc::now())
+async fn dispatch(store: &Store, tenant_id: Uuid) -> Vec<db::DispatchedTask> {
+    retry(50, || async {
+        let mut tx = store.tx(tenant_id);
+        let dispatched = db::dispatch_pending_tasks(&mut tx, Utc::now()).await?;
+        tx.commit().await?;
+        Ok(dispatched)
+    })
+    .await
+    .unwrap()
+}
+
+async fn finish_task(dynamo: &TestDynamo, tenant_id: Uuid, task_id: Uuid) {
+    let store = dynamo.store(Relay::Stream);
+    let mut tx = store.tx(tenant_id);
+    let mut task = tx
+        .get::<Task>(&keys::task_key(tenant_id, task_id))
+        .await
+        .unwrap()
+        .unwrap();
+    task.status = TaskStatus::Succeeded;
+    task.finished_at = Some(Utc::now());
+    sanchoris_core::tasks::store_task(&mut tx, &task, Utc::now())
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    dispatched
 }
 
-async fn finish_task(admin: &PgPool, task_id: Uuid) {
-    sqlx::query(
-        "UPDATE sanchoris.tasks SET status = 'SUCCEEDED', finished_at = now() WHERE id = $1",
-    )
-    .bind(task_id)
-    .execute(admin)
-    .await
-    .unwrap();
+async fn tenant(store: &Store, tenant_id: Uuid) -> Tenant {
+    store
+        .get::<Tenant>(&keys::tenant_key(tenant_id))
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 #[tokio::test]
 async fn duplicate_trigger_events_are_recorded_once() {
-    let pg = TestPostgres::start().await;
-    let admin = pg.admin_pool().await;
-    let app = pg.app_pool().await;
-    let seeded = pg.seed_tenant(&admin, "pro").await;
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("pro").await;
     let event = json!({ "source": "github", "detail-type": "Issue Labeled", "detail": {} });
     let new_event = NewTriggerEvent {
         trigger_id: seeded.trigger_id,
@@ -86,22 +113,18 @@ async fn duplicate_trigger_events_are_recorded_once() {
         event: &event,
     };
 
-    let mut tx = TenantTx::begin(&app, seeded.tenant_id).await.unwrap();
+    let mut tx = store.tx(seeded.tenant_id);
     let first = db::record_trigger_event(&mut tx, &new_event).await.unwrap();
     tx.commit().await.unwrap();
-    let mut tx = TenantTx::begin(&app, seeded.tenant_id).await.unwrap();
+    let mut tx = store.tx(seeded.tenant_id);
     let second = db::record_trigger_event(&mut tx, &new_event).await.unwrap();
     tx.commit().await.unwrap();
 
     assert!(matches!(first, Recorded::New(_)));
     assert_eq!(second, Recorded::Duplicate(first.id()));
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.trigger_events")
-        .fetch_one(&admin)
-        .await
-        .unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(dynamo.all::<TriggerEvent>().await.len(), 1);
 
-    let mut tx = TenantTx::begin(&app, seeded.tenant_id).await.unwrap();
+    let mut tx = store.tx(seeded.tenant_id);
     db::set_trigger_event_outcome(
         &mut tx,
         first.id(),
@@ -116,43 +139,40 @@ async fn duplicate_trigger_events_are_recorded_once() {
     assert!(matches!(again, Err(DbError::TriggerEventNotPending(id)) if id == first.id()));
     tx.commit().await.unwrap();
 
-    let (result, reason): (String, String) =
-        sqlx::query_as("SELECT result, reason FROM sanchoris.trigger_events WHERE id = $1")
-            .bind(first.id())
-            .fetch_one(&admin)
-            .await
-            .unwrap();
+    let stored = dynamo.all::<TriggerEvent>().await.remove(0);
     assert_eq!(
-        (result.as_str(), reason.as_str()),
-        ("skipped", "children limit")
+        (stored.result.as_deref(), stored.reason.as_deref()),
+        (Some("skipped"), Some("children limit"))
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_duplicate_deliveries_insert_one_event() {
-    let pg = TestPostgres::start().await;
-    let admin = pg.admin_pool().await;
-    let app = pg.app_pool().await;
-    let seeded = pg.seed_tenant(&admin, "pro").await;
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("pro").await;
     let event = json!({ "source": "github" });
 
     let attempts = (0..8).map(|_| {
-        let app = app.clone();
+        let store = store.clone();
         let event = event.clone();
         tokio::spawn(async move {
-            let mut tx = TenantTx::begin(&app, seeded.tenant_id).await.unwrap();
-            let recorded = db::record_trigger_event(
-                &mut tx,
-                &NewTriggerEvent {
-                    trigger_id: seeded.trigger_id,
-                    key: "delivery-race",
-                    event: &event,
-                },
-            )
+            retry(8, || async {
+                let mut tx = store.tx(seeded.tenant_id);
+                let recorded = db::record_trigger_event(
+                    &mut tx,
+                    &NewTriggerEvent {
+                        trigger_id: seeded.trigger_id,
+                        key: "delivery-race",
+                        event: &event,
+                    },
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(recorded)
+            })
             .await
-            .unwrap();
-            tx.commit().await.unwrap();
-            recorded
+            .unwrap()
         })
     });
     let mut results = Vec::new();
@@ -166,107 +186,95 @@ async fn concurrent_duplicate_deliveries_insert_one_event() {
             .count(),
         1
     );
-    let ids = results
-        .iter()
-        .map(|r| r.id())
-        .collect::<std::collections::HashSet<_>>();
+    let ids = results.iter().map(|r| r.id()).collect::<HashSet<_>>();
     assert_eq!(ids.len(), 1);
+    assert_eq!(dynamo.all::<TriggerEvent>().await.len(), 1);
 }
 
 #[tokio::test]
 async fn tasks_are_idempotent_by_trigger_and_name() {
-    let pg = TestPostgres::start().await;
-    let admin = pg.admin_pool().await;
-    let app = pg.app_pool().await;
-    let seeded = pg.seed_tenant(&admin, "pro").await;
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("pro").await;
 
-    let first = create_task(&app, &seeded, "acme/shop-web#35", &[]).await;
-    let second = create_task(&app, &seeded, "acme/shop-web#35", &[]).await;
-    let other = create_task(&app, &seeded, "acme/shop-web#36", &[]).await;
+    let first = create_task(&store, &seeded, "acme/shop-web#35", &[]).await;
+    let second = create_task(&store, &seeded, "acme/shop-web#35", &[]).await;
+    let other = create_task(&store, &seeded, "acme/shop-web#36", &[]).await;
 
     assert!(matches!(first, Recorded::New(_)));
     assert_eq!(second, Recorded::Duplicate(first.id()));
     assert!(matches!(other, Recorded::New(id) if id != first.id()));
 
-    let (status, definition): (String, serde_json::Value) =
-        sqlx::query_as("SELECT status, definition FROM sanchoris.tasks WHERE id = $1")
-            .bind(first.id())
-            .fetch_one(&admin)
-            .await
-            .unwrap();
-    assert_eq!(status, "PENDING");
-    assert_eq!(definition["Session"]["Name"], "shop");
+    let task = store
+        .get::<Task>(&keys::task_key(seeded.tenant_id, first.id()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.status, TaskStatus::Pending);
+    assert_eq!(task.definition["Session"]["Name"], "shop");
+    assert_eq!(dynamo.all::<Task>().await.len(), 2);
 }
 
 #[tokio::test]
 async fn dispatch_respects_the_plan_concurrency() {
-    let pg = TestPostgres::start().await;
-    let admin = pg.admin_pool().await;
-    let app = pg.app_pool().await;
-    let seeded = pg.seed_tenant(&admin, "starter").await;
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("starter").await;
     let mut tasks = Vec::new();
     for n in 0..3 {
         tasks.push(
-            create_task(&app, &seeded, &format!("task-{n}"), &[])
+            create_task(&store, &seeded, &format!("task-{n}"), &[])
                 .await
                 .id(),
         );
     }
 
-    let first = dispatch(&app, seeded.tenant_id).await;
+    let first = dispatch(&store, seeded.tenant_id).await;
     assert_eq!(
         first.iter().map(|d| d.task_id).collect::<Vec<_>>(),
         tasks[..2]
     );
-    assert!(dispatch(&app, seeded.tenant_id).await.is_empty());
+    assert!(dispatch(&store, seeded.tenant_id).await.is_empty());
 
-    let (session_name, worker, model, status): (String, String, String, String) = sqlx::query_as(
-        "SELECT session_name, worker, model, status FROM sanchoris.runs WHERE id = $1",
-    )
-    .bind(first[0].run_id)
-    .fetch_one(&admin)
-    .await
-    .unwrap();
+    let run = dynamo
+        .all::<Run>()
+        .await
+        .into_iter()
+        .find(|r| r.id == first[0].run_id)
+        .unwrap();
     assert_eq!(
         (
-            session_name.as_str(),
-            worker.as_str(),
-            model.as_str(),
-            status.as_str()
+            run.session_name.as_str(),
+            run.worker.as_str(),
+            run.model.as_str(),
+            run.status.as_str()
         ),
         ("shop", "claude", "claude-sonnet-5-5", "creating")
     );
 
-    finish_task(&admin, tasks[0]).await;
-    let next = dispatch(&app, seeded.tenant_id).await;
+    finish_task(&dynamo, seeded.tenant_id, tasks[0]).await;
+    let next = dispatch(&store, seeded.tenant_id).await;
     assert_eq!(
         next.iter().map(|d| d.task_id).collect::<Vec<_>>(),
         vec![tasks[2]]
     );
-
-    let tasks_this_period: i32 =
-        sqlx::query_scalar("SELECT tasks_this_period FROM sanchoris.tenants WHERE id = $1")
-            .bind(seeded.tenant_id)
-            .fetch_one(&admin)
-            .await
-            .unwrap();
-    assert_eq!(tasks_this_period, 3);
+    let tenant = tenant(&store, seeded.tenant_id).await;
+    assert_eq!((tenant.tasks_this_period, tenant.running_tasks), (3, 2));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn concurrent_dispatchers_never_exceed_the_cap() {
-    let pg = TestPostgres::start().await;
-    let admin = pg.admin_pool().await;
-    let app = pg.app_pool().await;
-    let seeded = pg.seed_tenant(&admin, "pro").await;
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("pro").await;
     for n in 0..12 {
-        create_task(&app, &seeded, &format!("task-{n}"), &[]).await;
+        create_task(&store, &seeded, &format!("task-{n}"), &[]).await;
     }
 
     let handles = (0..6)
         .map(|_| {
-            let app = app.clone();
-            tokio::spawn(async move { dispatch(&app, seeded.tenant_id).await })
+            let store = store.clone();
+            tokio::spawn(async move { dispatch(&store, seeded.tenant_id).await })
         })
         .collect::<Vec<_>>();
     let mut dispatched = Vec::new();
@@ -275,37 +283,36 @@ async fn concurrent_dispatchers_never_exceed_the_cap() {
     }
 
     assert_eq!(dispatched.len(), 5);
-    let running: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM sanchoris.tasks WHERE status = 'RUNNING'")
-            .fetch_one(&admin)
-            .await
-            .unwrap();
-    assert_eq!(running, 5);
-    let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.runs")
-        .fetch_one(&admin)
+    let running = dynamo
+        .all::<Task>()
         .await
-        .unwrap();
-    assert_eq!(runs, 5);
+        .into_iter()
+        .filter(|t| t.status == TaskStatus::Running)
+        .count();
+    assert_eq!(running, 5);
+    assert_eq!(dynamo.all::<Run>().await.len(), 5);
+    assert_eq!(tenant(&store, seeded.tenant_id).await.running_tasks, 5);
 }
 
 #[tokio::test]
 async fn dispatch_waits_for_blocking_tasks() {
-    let pg = TestPostgres::start().await;
-    let admin = pg.admin_pool().await;
-    let app = pg.app_pool().await;
-    let seeded = pg.seed_tenant(&admin, "max").await;
-    let blocker = create_task(&app, &seeded, "blocker", &[]).await.id();
-    let blocked = create_task(&app, &seeded, "blocked", &[blocker]).await.id();
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("max").await;
+    let blocker = create_task(&store, &seeded, "blocker", &[]).await.id();
+    let blocked = create_task(&store, &seeded, "blocked", &[blocker])
+        .await
+        .id();
 
-    let first = dispatch(&app, seeded.tenant_id).await;
+    let first = dispatch(&store, seeded.tenant_id).await;
     assert_eq!(
         first.iter().map(|d| d.task_id).collect::<Vec<_>>(),
         vec![blocker]
     );
-    assert!(dispatch(&app, seeded.tenant_id).await.is_empty());
+    assert!(dispatch(&store, seeded.tenant_id).await.is_empty());
 
-    finish_task(&admin, blocker).await;
-    let next = dispatch(&app, seeded.tenant_id).await;
+    finish_task(&dynamo, seeded.tenant_id, blocker).await;
+    let next = dispatch(&store, seeded.tenant_id).await;
     assert_eq!(
         next.iter().map(|d| d.task_id).collect::<Vec<_>>(),
         vec![blocked]
@@ -314,257 +321,264 @@ async fn dispatch_waits_for_blocking_tasks() {
 
 #[tokio::test]
 async fn dispatch_stops_at_the_plan_task_limit_and_for_suspended_tenants() {
-    let pg = TestPostgres::start().await;
-    let admin = pg.admin_pool().await;
-    let app = pg.app_pool().await;
-    let free = pg.seed_tenant(&admin, "free").await;
-    sqlx::query("UPDATE sanchoris.tenants SET tasks_this_period = 5 WHERE id = $1")
-        .bind(free.tenant_id)
-        .execute(&admin)
-        .await
-        .unwrap();
-    create_task(&app, &free, "over-limit", &[]).await;
-    assert!(dispatch(&app, free.tenant_id).await.is_empty());
+    let dynamo = TestDynamo::start().await;
+    let clock = Arc::new(FakeClock::new(Utc::now()));
+    let direct = dynamo.direct_store(clock);
+    let store = direct.store.clone();
+    let free = dynamo.seed_tenant("free").await;
+    dynamo
+        .modify::<Tenant>(&keys::tenant_key(free.tenant_id), |t| {
+            t.tasks_this_period = 5
+        })
+        .await;
+    create_task(&store, &free, "over-limit", &[]).await;
+    assert!(dispatch(&store, free.tenant_id).await.is_empty());
 
-    let suspended = pg.seed_tenant(&admin, "pro").await;
-    sqlx::query("UPDATE sanchoris.tenants SET status = 'suspended', suspended_reason = 'abuse' WHERE id = $1")
-        .bind(suspended.tenant_id)
-        .execute(&admin)
-        .await
-        .unwrap();
-    create_task(&app, &suspended, "suspended", &[]).await;
-    assert!(dispatch(&app, suspended.tenant_id).await.is_empty());
+    let suspended = dynamo.seed_tenant("pro").await;
+    dynamo
+        .modify::<Tenant>(&keys::tenant_key(suspended.tenant_id), |t| {
+            t.status = "suspended".into();
+            t.suspended_reason = Some("abuse".into());
+        })
+        .await;
+    create_task(&store, &suspended, "suspended", &[]).await;
+    assert!(dispatch(&store, suspended.tenant_id).await.is_empty());
 
-    let worker = pg.worker_pool().await;
-    let mut conn = worker.acquire().await.unwrap();
-    let mut pending = db::tenants_with_pending_tasks(&mut conn).await.unwrap();
-    pending.sort();
-    let mut expected = vec![free.tenant_id, suspended.tenant_id];
-    expected.sort();
-    assert_eq!(pending, expected);
+    let mut doorbells = direct
+        .queue
+        .bodies()
+        .iter()
+        .map(|body| Envelope::parse(body).unwrap().job)
+        .collect::<Vec<_>>();
+    doorbells.sort_by_key(|job| job.group());
+    let mut expected = vec![
+        Job::Dispatch {
+            tenant_id: free.tenant_id,
+        },
+        Job::Dispatch {
+            tenant_id: suspended.tenant_id,
+        },
+    ];
+    expected.sort_by_key(|job| job.group());
+    assert_eq!(doorbells, expected);
 }
 
 #[tokio::test]
-async fn due_jobs_are_claimed_with_skip_locked() {
-    let pg = TestPostgres::start().await;
-    let admin = pg.admin_pool().await;
-    let app = pg.app_pool().await;
-    let worker = pg.worker_pool().await;
-    let seeded = pg.seed_tenant(&admin, "pro").await;
-    let now = Utc::now();
-    let mut tx = TenantTx::begin(&app, seeded.tenant_id).await.unwrap();
-    let mut job_refs = Vec::new();
-    for offset in [30, 20, 10] {
-        let ref_id = Uuid::new_v4();
-        db::schedule_due_job(
-            &mut tx,
-            "skill_run",
-            ref_id,
-            now - Duration::seconds(offset),
-        )
-        .await
-        .unwrap();
-        job_refs.push(ref_id);
-    }
-    db::schedule_due_job(
-        &mut tx,
-        "skill_run",
-        Uuid::new_v4(),
-        now + Duration::hours(1),
-    )
-    .await
-    .unwrap();
-    db::schedule_due_job(
-        &mut tx,
-        "task_resume",
-        Uuid::new_v4(),
-        now - Duration::seconds(5),
-    )
-    .await
-    .unwrap();
+async fn timers_are_scheduled_after_commit_and_cancelled_by_name() {
+    let dynamo = TestDynamo::start().await;
+    let now = Utc.with_ymd_and_hms(2026, 10, 27, 9, 0, 0).unwrap();
+    let clock = Arc::new(FakeClock::new(now));
+    let direct = dynamo.direct_store(clock.clone());
+    let seeded = dynamo.seed_tenant("pro").await;
+    let job = |offset: i64| Job::TaskResume {
+        tenant_id: seeded.tenant_id,
+        task_id: Uuid::new_v4(),
+        resume_at: now + Duration::seconds(offset),
+    };
+
+    let mut tx = direct.store.tx(seeded.tenant_id);
+    let later = tx.emit_at(job(30), now + Duration::seconds(30));
+    tx.emit_at(job(10), now + Duration::seconds(10));
+    tx.emit_at(job(-5), now - Duration::seconds(5));
+    assert!(direct.scheduler.pending().is_empty());
     tx.commit().await.unwrap();
 
-    let mut first = worker.begin().await.unwrap();
-    let claimed_first = db::claim_due_jobs(&mut first, "skill_run", now, 1)
-        .await
-        .unwrap();
-    assert_eq!(claimed_first.len(), 1);
-    assert_eq!(claimed_first[0].ref_id, job_refs[0]);
-    assert_eq!(claimed_first[0].tenant_id, seeded.tenant_id);
+    assert_eq!(direct.queue.len(), 1);
+    assert_eq!(direct.scheduler.pending().len(), 2);
 
-    let mut second = worker.begin().await.unwrap();
-    let claimed_second = db::claim_due_jobs(&mut second, "skill_run", now, 10)
-        .await
-        .unwrap();
-    assert_eq!(
-        claimed_second.iter().map(|j| j.ref_id).collect::<Vec<_>>(),
-        job_refs[1..]
-    );
-
-    db::complete_due_job(&mut first, claimed_first[0].id)
-        .await
-        .unwrap();
-    first.commit().await.unwrap();
-    for job in &claimed_second {
-        db::retry_due_job(&mut second, job.id, now + Duration::minutes(5))
-            .await
-            .unwrap();
-    }
-    second.commit().await.unwrap();
-
-    let mut third = worker.begin().await.unwrap();
+    let mut tx = direct.store.tx(seeded.tenant_id);
+    tx.cancel_schedule(later);
+    tx.commit().await.unwrap();
+    let due = direct.scheduler.take_due(now + Duration::minutes(1));
+    assert_eq!(due.len(), 1);
+    let fired = Envelope::parse(&due[0].body).unwrap();
     assert!(
-        db::claim_due_jobs(&mut third, "skill_run", now, 10)
-            .await
-            .unwrap()
-            .is_empty()
+        matches!(fired.job, Job::TaskResume { resume_at, .. } if resume_at == now + Duration::seconds(10))
     );
-    let later = db::claim_due_jobs(&mut third, "skill_run", now + Duration::minutes(5), 10)
-        .await
-        .unwrap();
-    assert_eq!(later.len(), 2);
-    assert!(later.iter().all(|job| job.attempts == 1));
-    third.rollback().await.unwrap();
+
+    let messages = dynamo.scan(sanchoris_core::item::Table::Main, "msg").await;
+    assert_eq!(messages.len(), 4);
+    assert!(messages.iter().all(|m| {
+        sanchoris_core::store::relayed_from_item(m)
+            .unwrap()
+            .is_some()
+    }));
 }
 
 #[tokio::test]
-async fn row_level_security_isolates_tenants() {
-    let pg = TestPostgres::start().await;
-    let admin = pg.admin_pool().await;
-    let app = pg.app_pool().await;
-    let a = pg.seed_tenant(&admin, "pro").await;
-    let b = pg.seed_tenant(&admin, "pro").await;
-    let task_a = create_task(&app, &a, "shared-name", &[]).await.id();
-    let task_b = create_task(&app, &b, "shared-name", &[]).await.id();
+async fn tenant_transactions_cannot_touch_other_tenants_or_plans() {
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let a = dynamo.seed_tenant("pro").await;
+    let b = dynamo.seed_tenant("pro").await;
+    let task_a = create_task(&store, &a, "shared-name", &[]).await.id();
+    let task_b = create_task(&store, &b, "shared-name", &[]).await.id();
+    assert_ne!(task_a, task_b);
 
-    let mut tx = TenantTx::begin(&app, a.tenant_id).await.unwrap();
-    let visible: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM sanchoris.tasks")
-        .fetch_all(tx.conn())
+    let mut tx = store.tx(a.tenant_id);
+    let foreign = keys::task_key(b.tenant_id, task_b);
+    assert!(matches!(
+        tx.get::<Task>(&foreign).await,
+        Err(DbError::CrossTenant { .. })
+    ));
+    assert!(matches!(
+        tx.update(&foreign, Update::new().set_s("title", "stolen")),
+        Err(DbError::CrossTenant { .. })
+    ));
+    assert!(matches!(
+        tx.delete(&keys::tenant_key(b.tenant_id)),
+        Err(DbError::CrossTenant { .. })
+    ));
+    let prefixed = Key::main(format!("T#{}0", a.tenant_id), "#TENANT");
+    assert!(matches!(
+        tx.get_item(&prefixed).await,
+        Err(DbError::CrossTenant { .. })
+    ));
+    assert!(matches!(
+        tx.update(
+            &keys::plan_key("pro"),
+            Update::new().set_n("max_concurrency", 100)
+        ),
+        Err(DbError::CrossTenant { .. })
+    ));
+    let own = tx
+        .query::<Task>(&keys::task_pk(a.tenant_id, task_a), "")
         .await
         .unwrap();
-    assert_eq!(visible, vec![task_a]);
-    let tenants: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM sanchoris.tenants")
-        .fetch_all(tx.conn())
-        .await
-        .unwrap();
-    assert_eq!(tenants, vec![a.tenant_id]);
-    let updated = sqlx::query("UPDATE sanchoris.tasks SET title = 'stolen' WHERE id = $1")
-        .bind(task_b)
-        .execute(tx.conn())
-        .await
-        .unwrap();
-    assert_eq!(updated.rows_affected(), 0);
-    tx.rollback().await.unwrap();
-
-    let mut tx = TenantTx::begin(&app, a.tenant_id).await.unwrap();
-    let cross_insert = sqlx::query(
-        "INSERT INTO sanchoris.due_jobs (tenant_id, kind, ref_id, due_at) VALUES ($1, 'skill_run', $2, now())",
-    )
-    .bind(b.tenant_id)
-    .bind(Uuid::new_v4())
-    .execute(tx.conn())
-    .await
-    .unwrap_err();
-    assert!(
-        cross_insert.to_string().contains("row-level security"),
-        "{cross_insert}"
-    );
-    tx.rollback().await.unwrap();
-
-    let mut fresh = sqlx::PgConnection::connect_with(&pg.connect_options(APP_ROLE))
-        .await
-        .unwrap();
-    let unscoped = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM sanchoris.tasks")
-        .fetch_one(&mut fresh)
-        .await
-        .unwrap_err();
-    assert!(unscoped.to_string().contains("app.tenant_id"), "{unscoped}");
-
-    let worker = pg.worker_pool().await;
-    let all: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.tasks")
-        .fetch_one(&worker)
-        .await
-        .unwrap();
-    assert_eq!(all, 2);
+    assert_eq!(own.iter().map(|t| t.id).collect::<Vec<_>>(), vec![task_a]);
+    let plan = db::plan(&store, "pro").await.unwrap();
+    assert_eq!(plan.max_concurrency, 5);
+    assert_eq!(Plan::KIND, "plan");
 }
 
 #[tokio::test]
 async fn audit_events_are_append_only() {
-    let pg = TestPostgres::start().await;
-    let admin = pg.admin_pool().await;
-    let app = pg.app_pool().await;
-    let seeded = pg.seed_tenant(&admin, "pro").await;
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("pro").await;
+    let at = Utc::now();
 
-    let mut tx = TenantTx::begin(&app, seeded.tenant_id).await.unwrap();
-    let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO sanchoris.audit_events (tenant_id, actor_kind, actor_ref, action, target_kind, target_ref, summary) \
-         VALUES ($1, 'member', $2, 'trigger.enable', 'trigger', 'labeled-issue', 'Enabled labeled-issue') RETURNING id",
+    let mut tx = store.tx(seeded.tenant_id);
+    let id = record_audit(
+        &mut tx,
+        &AuditEntry {
+            at,
+            actor_kind: ActorKind::Member,
+            actor_ref: &seeded.member_id.to_string(),
+            action: "trigger.enable",
+            target_kind: "trigger",
+            target_ref: "labeled-issue",
+            summary: "Enabled labeled-issue",
+            origin: AuditOrigin::Web,
+            source_ip: None,
+            metadata: Map::new(),
+        },
     )
-    .bind(seeded.tenant_id)
-    .bind(seeded.member_id.to_string())
-    .fetch_one(tx.conn())
     .await
     .unwrap();
     tx.commit().await.unwrap();
 
-    for statement in [
-        "UPDATE sanchoris.audit_events SET summary = 'changed' WHERE id = $1",
-        "DELETE FROM sanchoris.audit_events WHERE id = $1",
-    ] {
-        let mut tx = TenantTx::begin(&app, seeded.tenant_id).await.unwrap();
-        let denied = sqlx::query(statement)
-            .bind(id)
-            .execute(tx.conn())
-            .await
-            .unwrap_err();
-        assert!(denied.to_string().contains("permission denied"), "{denied}");
-        tx.rollback().await.unwrap();
+    let key = keys::audit_key(seeded.tenant_id, at, id);
+    let mut tx = store.tx(seeded.tenant_id);
+    assert!(matches!(
+        tx.update(&key, Update::new().set_s("summary", "changed")),
+        Err(DbError::AppendOnly(_))
+    ));
+    assert!(matches!(tx.delete(&key), Err(DbError::AppendOnly(_))));
+    let events = audit_events(&mut tx).await.unwrap();
+    let mut replay = events[0].clone();
+    replay.summary = "changed".into();
+    assert!(matches!(tx.put(&replay), Err(DbError::AppendOnly(_))));
+    tx.insert(&replay).unwrap();
+    assert!(matches!(tx.commit().await, Err(DbError::Conflict)));
 
-        let rejected = sqlx::query(statement)
-            .bind(id)
-            .execute(&admin)
-            .await
-            .unwrap_err();
-        assert!(rejected.to_string().contains("append-only"), "{rejected}");
-    }
-    let truncate = sqlx::query("TRUNCATE sanchoris.audit_events")
-        .execute(&admin)
-        .await
-        .unwrap_err();
-    assert!(truncate.to_string().contains("append-only"), "{truncate}");
-
-    let summary: String =
-        sqlx::query_scalar("SELECT summary FROM sanchoris.audit_events WHERE id = $1")
-            .bind(id)
-            .fetch_one(&admin)
-            .await
-            .unwrap();
-    assert_eq!(summary, "Enabled labeled-issue");
+    let stored = dynamo.all::<AuditEvent>().await;
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].summary, "Enabled labeled-issue");
+    assert_eq!(stored[0].metadata["origin"], "web");
+    let plan = db::plan(&store, "pro").await.unwrap();
+    assert_eq!(
+        stored[0].expires_at.timestamp(),
+        (at + Duration::days(plan.audit_retention_days)).timestamp()
+    );
 }
 
 #[tokio::test]
-async fn plans_are_read_only_for_the_app() {
-    let pg = TestPostgres::start().await;
-    let app = pg.app_pool().await;
-    let concurrency: i32 =
-        sqlx::query_scalar("SELECT max_concurrency FROM sanchoris.plans WHERE id = 'pro'")
-            .fetch_one(&app)
-            .await
-            .unwrap();
-    assert_eq!(concurrency, 5);
-    let denied = sqlx::query("UPDATE sanchoris.plans SET max_concurrency = 100")
-        .execute(&app)
+async fn large_documents_are_stored_in_the_blob_store() {
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("pro").await;
+    let mut definition = definition();
+    definition.skills[0].definition = json!({ "SkillMd": "x".repeat(200_000) });
+    let mut tx = store.tx(seeded.tenant_id);
+    let recorded = db::create_task(
+        &mut tx,
+        &NewTask {
+            trigger_id: seeded.trigger_id,
+            trigger_event_id: None,
+            config_revision_id: seeded.config_revision_id,
+            name: "big",
+            title: "big",
+            definition: &definition,
+            parent_task_id: None,
+            channel: None,
+            requested_by_member_id: None,
+            blocked_by: &[],
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let keys_stored = dynamo.blobs().keys();
+    assert_eq!(keys_stored.len(), 1);
+    assert!(keys_stored[0].starts_with(&format!("docs/{}/", seeded.tenant_id)));
+    let task = store
+        .get::<Task>(&keys::task_key(seeded.tenant_id, recorded.id()))
         .await
-        .unwrap_err();
-    assert!(denied.to_string().contains("permission denied"), "{denied}");
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        task.definition["Skills"][0]["Definition"]["SkillMd"]
+            .as_str()
+            .unwrap()
+            .len(),
+        200_000
+    );
 }
 
 #[tokio::test]
-async fn schema_reapplies_cleanly() {
-    let pg = TestPostgres::start().await;
-    let admin = pg.admin_pool().await;
-    sqlx::raw_sql(sanchoris_core::testing::SCHEMA_SQL)
-        .execute(&admin)
+async fn reads_inside_a_transaction_see_its_own_writes() {
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("pro").await;
+    let id = create_task(&store, &seeded, "visible", &[]).await.id();
+    let mut tx = store.tx(seeded.tenant_id);
+    let key = keys::task_key(seeded.tenant_id, id);
+    let mut task = tx.get::<Task>(&key).await.unwrap().unwrap();
+    task.title = "renamed".into();
+    tx.put(&task).unwrap();
+    tx.update(
+        &keys::tenant_key(seeded.tenant_id),
+        Update::new().add("running_tasks", 2),
+    )
+    .unwrap();
+    assert_eq!(
+        tx.get::<Task>(&key).await.unwrap().unwrap().title,
+        "renamed"
+    );
+    assert_eq!(db::tenant(&mut tx).await.unwrap().running_tasks, 2);
+    let names = tx
+        .query::<Task>(&keys::task_pk(seeded.tenant_id, id), "#")
         .await
         .unwrap();
+    assert_eq!(names[0].title, "renamed");
+
+    let mut racing = store.tx(seeded.tenant_id);
+    let mut other = racing.get::<Task>(&key).await.unwrap().unwrap();
+    other.title = "first".into();
+    racing.put(&other).unwrap();
+    racing.commit().await.unwrap();
+    assert!(matches!(tx.commit().await, Err(DbError::Conflict)));
+    assert_eq!(tenant(&store, seeded.tenant_id).await.running_tasks, 0);
 }

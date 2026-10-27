@@ -2,13 +2,15 @@ use std::net::IpAddr;
 
 use chrono::{DateTime, Utc};
 use serde_json::{Map, json};
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::audit::{AuditEntry, record_audit};
 use crate::billing::PAYMENT_PENDING;
-use crate::db::{DbError, TenantTx};
+use crate::db::{DbError, Store};
+use crate::items::{Guard, Member, Membership, Tenant, uniq};
+use crate::keys;
 use crate::model::{ActorKind, AuditOrigin};
+use crate::store::retry;
 
 const SLUG_LIMIT: usize = 40;
 const SLUG_ATTEMPTS: u32 = 100;
@@ -53,8 +55,23 @@ pub fn slug_base(name: &str) -> String {
     }
 }
 
+async fn free_slug(store: &Store, base: &str) -> Result<String, DbError> {
+    for attempt in 1..=SLUG_ATTEMPTS {
+        let candidate = if attempt == 1 {
+            base.to_string()
+        } else {
+            format!("{base}-{attempt}")
+        };
+        let key = keys::uniq_key(uniq::SLUG, &candidate);
+        if store.get::<Guard>(&key).await?.is_none() {
+            return Ok(candidate);
+        }
+    }
+    Err(DbError::SlugExhausted(base.to_string()))
+}
+
 pub async fn create_tenant(
-    pool: &PgPool,
+    store: &Store,
     tenant: &NewTenant<'_>,
 ) -> Result<CreatedTenant, DbError> {
     let tenant_id = tenant.id;
@@ -63,74 +80,81 @@ pub async fn create_tenant(
     } else {
         ("active", None)
     };
-    let mut tx = TenantTx::begin(pool, tenant_id).await?;
     let base = slug_base(tenant.name);
-    let mut slug = None;
-    for attempt in 1..=SLUG_ATTEMPTS {
-        let candidate = if attempt == 1 {
-            base.clone()
-        } else {
-            format!("{base}-{attempt}")
-        };
-        let inserted = sqlx::query_scalar::<_, Uuid>(
-            "INSERT INTO sanchoris.tenants \
-             (id, slug, name, plan_id, period_start, status, suspended_reason, stripe_customer_id, created_by_user_id, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $5, $5) \
-             ON CONFLICT (slug) DO NOTHING RETURNING id",
-        )
-        .bind(tenant_id)
-        .bind(&candidate)
-        .bind(tenant.name)
-        .bind(tenant.plan_id)
-        .bind(tenant.now)
-        .bind(status)
-        .bind(reason)
-        .bind(tenant.stripe_customer_id)
-        .bind(tenant.user_id)
-        .fetch_optional(tx.conn())
-        .await?;
-        if inserted.is_some() {
-            slug = Some(candidate);
-            break;
+    retry(SLUG_ATTEMPTS, || async {
+        let slug = free_slug(store, &base).await?;
+        let member_id = Uuid::new_v4();
+        let mut tx = store.tx(tenant_id);
+        tx.insert(&Tenant {
+            id: tenant_id,
+            slug: slug.clone(),
+            name: tenant.name.to_string(),
+            plan_id: tenant.plan_id.to_string(),
+            period_start: tenant.now,
+            tasks_this_period: 0,
+            workspace_seconds_this_period: 0,
+            running_tasks: 0,
+            status: status.to_string(),
+            suspended_reason: reason.map(str::to_string),
+            stripe_customer_id: tenant.stripe_customer_id.map(str::to_string),
+            created_by_user_id: tenant.user_id,
+            created_at: tenant.now,
+            updated_at: tenant.now,
+        })?;
+        tx.insert(&Guard::of_tenant(
+            keys::uniq_key(uniq::SLUG, &slug),
+            tenant_id,
+            tenant_id,
+        ))?;
+        if let Some(customer) = tenant.stripe_customer_id {
+            tx.insert(&Guard::of_tenant(
+                keys::uniq_key(uniq::STRIPE_CUSTOMER, customer),
+                tenant_id,
+                tenant_id,
+            ))?;
         }
-    }
-    let slug = slug.ok_or(DbError::SlugExhausted(base))?;
-    let member_id = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO sanchoris.members (tenant_id, user_id, role, joined_at, last_active_at) \
-         VALUES ($1, $2, 'owner', $3, $3) RETURNING id",
-    )
-    .bind(tenant_id)
-    .bind(tenant.user_id)
-    .bind(tenant.now)
-    .fetch_one(tx.conn())
-    .await?;
-    let mut metadata = Map::new();
-    metadata.insert("plan".into(), json!(tenant.plan_id));
-    if tenant.payment_pending {
-        metadata.insert("status".into(), json!(PAYMENT_PENDING));
-    }
-    record_audit(
-        &mut tx,
-        &AuditEntry {
-            at: tenant.now,
-            actor_kind: ActorKind::Member,
-            actor_ref: &member_id.to_string(),
-            action: "tenant.create",
-            target_kind: "tenant",
-            target_ref: &tenant_id.to_string(),
-            summary: &format!("Created tenant {} on plan {}", tenant.name, tenant.plan_id),
-            origin: tenant.origin,
-            source_ip: tenant.source_ip,
-            metadata,
-        },
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(CreatedTenant {
-        tenant_id,
-        slug,
-        member_id,
+        tx.insert(&Member {
+            id: member_id,
+            tenant_id,
+            user_id: tenant.user_id,
+            role: "owner".into(),
+            joined_at: tenant.now,
+            last_active_at: Some(tenant.now),
+        })?;
+        tx.insert(&Membership {
+            user_id: tenant.user_id,
+            tenant_id,
+            member_id,
+        })?;
+        let mut metadata = Map::new();
+        metadata.insert("plan".into(), json!(tenant.plan_id));
+        if tenant.payment_pending {
+            metadata.insert("status".into(), json!(PAYMENT_PENDING));
+        }
+        record_audit(
+            &mut tx,
+            &AuditEntry {
+                at: tenant.now,
+                actor_kind: ActorKind::Member,
+                actor_ref: &member_id.to_string(),
+                action: "tenant.create",
+                target_kind: "tenant",
+                target_ref: &tenant_id.to_string(),
+                summary: &format!("Created tenant {} on plan {}", tenant.name, tenant.plan_id),
+                origin: tenant.origin,
+                source_ip: tenant.source_ip,
+                metadata,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(CreatedTenant {
+            tenant_id,
+            slug,
+            member_id,
+        })
     })
+    .await
 }
 
 #[cfg(test)]

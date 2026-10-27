@@ -1,10 +1,15 @@
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
-use crate::db::{DbError, Recorded, TenantTx};
+use crate::db::{DbError, REF_RUN, Recorded, Store, TenantTx, locate};
 use crate::github::{GithubEventError, normalize_github_event};
+use crate::items::{
+    Guard, InboundEvent, Integration, OutboxItem, Pending, RunChannel, RunEventItem, uniq,
+};
+use crate::jobs::Job;
+use crate::keys;
+use crate::store::retry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutboxType {
@@ -67,6 +72,13 @@ impl RunEventType {
     }
 }
 
+async fn channel_of(tx: &mut TenantTx, run_id: Uuid) -> Result<RunChannel, DbError> {
+    let key = keys::run_channel_key(tx.tenant_id(), run_id);
+    tx.get::<RunChannel>(&key)
+        .await?
+        .ok_or_else(|| DbError::Missing(format!("run {run_id}")))
+}
+
 pub async fn enqueue_outbox(
     tx: &mut TenantTx,
     run_id: Uuid,
@@ -75,19 +87,36 @@ pub async fn enqueue_outbox(
     dedupe_key: &str,
 ) -> Result<bool, DbError> {
     let tenant_id = tx.tenant_id();
-    let inserted = sqlx::query(
-        "INSERT INTO sanchoris.run_outbox (tenant_id, run_id, type, payload, dedupe_key) \
-         VALUES ($1, $2, $3, $4, $5) \
-         ON CONFLICT (run_id, dedupe_key) DO NOTHING",
-    )
-    .bind(tenant_id)
-    .bind(run_id)
-    .bind(kind.as_str())
-    .bind(payload)
-    .bind(dedupe_key)
-    .execute(tx.conn())
-    .await?;
-    Ok(inserted.rows_affected() == 1)
+    let dedupe = keys::outbox_dedupe_key(tenant_id, run_id, dedupe_key);
+    if tx.get::<Guard>(&dedupe).await?.is_some() {
+        return Ok(false);
+    }
+    let mut channel = channel_of(tx, run_id).await?;
+    let seq = channel.next_outbox_seq;
+    channel.next_outbox_seq += 1;
+    tx.put(&channel)?;
+    let id = Uuid::new_v4();
+    tx.insert(&OutboxItem {
+        id,
+        tenant_id,
+        run_id,
+        seq,
+        kind: kind.as_str().to_string(),
+        payload: payload.clone(),
+        dedupe_key: dedupe_key.to_string(),
+        created_at: Utc::now(),
+        delivered_at: None,
+    })?;
+    tx.insert(&Guard::new(dedupe, id))?;
+    tx.emit(Job::DeliverOutbox { tenant_id, run_id });
+    if matches!(kind, OutboxType::UserMessage | OutboxType::Exec) {
+        tx.emit(Job::Reconcile {
+            tenant_id,
+            task_id: channel.task_id,
+            run_id,
+        });
+    }
+    Ok(true)
 }
 
 pub async fn enqueue_user_message(
@@ -116,43 +145,46 @@ pub struct OutboxRow {
     pub created_at: DateTime<Utc>,
 }
 
+pub async fn outbox(tx: &mut TenantTx, run_id: Uuid) -> Result<Vec<OutboxItem>, DbError> {
+    tx.query::<OutboxItem>(&keys::run_pk(tx.tenant_id(), run_id), "OUT#")
+        .await
+}
+
 pub async fn undelivered_outbox(
-    conn: &mut PgConnection,
+    tx: &mut TenantTx,
     run_id: Uuid,
 ) -> Result<Vec<OutboxRow>, DbError> {
-    let rows = sqlx::query(
-        "SELECT id, run_id, seq, type, payload, created_at FROM sanchoris.run_outbox \
-         WHERE run_id = $1 AND delivered_at IS NULL ORDER BY seq",
-    )
-    .bind(run_id)
-    .fetch_all(conn)
-    .await?;
-    rows.iter()
-        .map(|row| {
-            Ok(OutboxRow {
-                id: row.try_get("id")?,
-                run_id: row.try_get("run_id")?,
-                seq: row.try_get("seq")?,
-                kind: row.try_get("type")?,
-                payload: row.try_get("payload")?,
-                created_at: row.try_get("created_at")?,
-            })
+    Ok(outbox(tx, run_id)
+        .await?
+        .into_iter()
+        .filter(|item| item.delivered_at.is_none())
+        .map(|item| OutboxRow {
+            id: item.id,
+            run_id: item.run_id,
+            seq: item.seq,
+            kind: item.kind,
+            payload: item.payload,
+            created_at: item.created_at,
         })
-        .collect()
+        .collect())
 }
 
 pub async fn mark_outbox_delivered(
-    conn: &mut PgConnection,
-    ids: &[Uuid],
+    tx: &mut TenantTx,
+    run_id: Uuid,
+    seqs: &[i64],
     at: DateTime<Utc>,
 ) -> Result<(), DbError> {
-    sqlx::query(
-        "UPDATE sanchoris.run_outbox SET delivered_at = $2 WHERE id = ANY($1) AND delivered_at IS NULL",
-    )
-    .bind(ids)
-    .bind(at)
-    .execute(conn)
-    .await?;
+    let tenant_id = tx.tenant_id();
+    for seq in seqs {
+        let key = keys::outbox_key(tenant_id, run_id, *seq);
+        if let Some(mut item) = tx.get::<OutboxItem>(&key).await?
+            && item.delivered_at.is_none()
+        {
+            item.delivered_at = Some(at);
+            tx.put(&item)?;
+        }
+    }
     Ok(())
 }
 
@@ -164,31 +196,43 @@ pub async fn record_run_event(
     payload: &Value,
 ) -> Result<Recorded, DbError> {
     let tenant_id = tx.tenant_id();
-    let inserted = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO sanchoris.run_events (tenant_id, run_id, seq, type, payload) \
-         VALUES ($1, $2, $3, $4, $5) \
-         ON CONFLICT (run_id, seq) DO NOTHING \
-         RETURNING id",
-    )
-    .bind(tenant_id)
-    .bind(run_id)
-    .bind(seq)
-    .bind(kind.as_str())
-    .bind(payload)
-    .fetch_optional(tx.conn())
-    .await?;
-    if let Some(id) = inserted {
-        return Ok(Recorded::New(id));
+    let location = locate(tx, run_id, REF_RUN)
+        .await?
+        .ok_or_else(|| DbError::Missing(format!("run {run_id}")))?;
+    let task_id = location
+        .parent_id
+        .ok_or_else(|| DbError::Decode(format!("run {run_id} has no task")))?;
+    let id = Uuid::new_v4();
+    let received_at = Utc::now();
+    let key = keys::run_event_key(tenant_id, run_id, seq, received_at, id);
+    if seq.is_some()
+        && let Some(existing) = tx.get::<RunEventItem>(&key).await?
+    {
+        return Ok(Recorded::Duplicate(existing.id));
     }
-    let existing = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM sanchoris.run_events WHERE run_id = $1 AND seq = $2",
-    )
-    .bind(run_id)
-    .bind(seq)
-    .fetch_optional(tx.conn())
-    .await?
-    .ok_or(DbError::ConflictNotVisible("run event"))?;
-    Ok(Recorded::Duplicate(existing))
+    tx.insert(&RunEventItem {
+        id,
+        tenant_id,
+        run_id,
+        seq,
+        kind: kind.as_str().to_string(),
+        payload: payload.clone(),
+        received_at,
+        processed_at: None,
+        error: None,
+    })?;
+    tx.insert(&Pending {
+        key: keys::pending_run_event_key(tenant_id, run_id, received_at, id),
+        target: key,
+        id,
+        received_at,
+    })?;
+    tx.emit(Job::RunEvents {
+        tenant_id,
+        task_id,
+        run_id,
+    });
+    Ok(Recorded::New(id))
 }
 
 pub async fn record_inbound_event(
@@ -198,31 +242,29 @@ pub async fn record_inbound_event(
     event: &Value,
 ) -> Result<Recorded, DbError> {
     let tenant_id = tx.tenant_id();
-    let inserted = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO sanchoris.inbound_events (tenant_id, source, key, event) \
-         VALUES ($1, $2, $3, $4) \
-         ON CONFLICT (tenant_id, source, key) DO NOTHING \
-         RETURNING id",
-    )
-    .bind(tenant_id)
-    .bind(source)
-    .bind(key)
-    .bind(event)
-    .fetch_optional(tx.conn())
-    .await?;
-    if let Some(id) = inserted {
-        return Ok(Recorded::New(id));
+    let item_key = keys::inbound_event_key(tenant_id, source, key);
+    if let Some(existing) = tx.get::<InboundEvent>(&item_key).await? {
+        return Ok(Recorded::Duplicate(existing.id));
     }
-    let existing = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM sanchoris.inbound_events WHERE tenant_id = $1 AND source = $2 AND key = $3",
-    )
-    .bind(tenant_id)
-    .bind(source)
-    .bind(key)
-    .fetch_optional(tx.conn())
-    .await?
-    .ok_or(DbError::ConflictNotVisible("inbound event"))?;
-    Ok(Recorded::Duplicate(existing))
+    let id = Uuid::new_v4();
+    let received_at = Utc::now();
+    tx.insert(&InboundEvent {
+        id,
+        tenant_id,
+        source: source.to_string(),
+        key: key.to_string(),
+        event: event.clone(),
+        received_at,
+        processed_at: None,
+    })?;
+    tx.insert(&Pending {
+        key: keys::pending_inbound_key(tenant_id, received_at, id),
+        target: item_key,
+        id,
+        received_at,
+    })?;
+    tx.emit(Job::Inbound { tenant_id });
+    Ok(Recorded::New(id))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -236,20 +278,26 @@ pub enum IngestError {
 }
 
 pub async fn tenant_for_installation(
-    worker: &mut PgConnection,
+    store: &Store,
     installation_id: i64,
 ) -> Result<Option<Uuid>, DbError> {
-    Ok(sqlx::query_scalar::<_, Uuid>(
-        "SELECT tenant_id FROM sanchoris.integrations \
-         WHERE github_installation_id = $1 AND status = 'connected'",
-    )
-    .bind(installation_id)
-    .fetch_optional(worker)
-    .await?)
+    let key = keys::uniq_key(uniq::INSTALLATION, &installation_id.to_string());
+    let Some(guard) = store.get::<Guard>(&key).await? else {
+        return Ok(None);
+    };
+    let tenant_id = guard
+        .tenant_id
+        .ok_or_else(|| DbError::Decode(format!("installation {installation_id} has no tenant")))?;
+    let integration = store
+        .get::<Integration>(&keys::integration_key(tenant_id, guard.target))
+        .await?;
+    Ok(integration
+        .filter(|i| i.status == "connected")
+        .map(|i| i.tenant_id))
 }
 
 pub async fn ingest_github_delivery(
-    pool: &sqlx::PgPool,
+    store: &Store,
     delivery_id: &str,
     event_name: &str,
     payload: &Value,
@@ -260,14 +308,16 @@ pub async fn ingest_github_delivery(
     let installation_id = normalized.detail["installation"]["id"]
         .as_i64()
         .expect("normalized GitHub events carry the installation id");
-    let mut conn = pool.acquire().await.map_err(DbError::from)?;
-    let tenant_id = tenant_for_installation(&mut conn, installation_id)
+    let tenant_id = tenant_for_installation(store, installation_id)
         .await?
         .ok_or(IngestError::UnknownInstallation(installation_id))?;
-    drop(conn);
-    let mut tx = TenantTx::begin(pool, tenant_id).await?;
-    let recorded =
-        record_inbound_event(&mut tx, "github", delivery_id, &normalized.to_value()).await?;
-    tx.commit().await?;
+    let event = normalized.to_value();
+    let recorded = retry(8, || async {
+        let mut tx = store.tx(tenant_id);
+        let recorded = record_inbound_event(&mut tx, "github", delivery_id, &event).await?;
+        tx.commit().await?;
+        Ok(recorded)
+    })
+    .await?;
     Ok(Some(recorded))
 }

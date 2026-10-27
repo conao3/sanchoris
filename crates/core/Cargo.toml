@@ -6,7 +6,11 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-test-support = ["dep:tempfile"]
+test-support = []
+
+[[bin]]
+name = "sanchoris-dynamo-create"
+path = "src/bin/dynamo_create.rs"
 
 [dependencies]
 sanchoris-config.workspace = true
@@ -18,9 +22,13 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 hmac = "0.13"
 sha2 = "0.11"
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "macros", "uuid", "chrono", "json", "tls-rustls"] }
-tempfile = { version = "3", optional = true }
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process"] }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-dynamodb = "1"
+aws-sdk-s3 = "1"
+aws-sdk-sqs = "1"
+aws-sdk-scheduler = "1"
 
 [dev-dependencies]
 sanchoris-core = { path = ".", features = ["test-support"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
