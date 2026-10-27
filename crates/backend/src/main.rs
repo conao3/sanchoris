@@ -149,7 +149,10 @@ fn authorization_header(request: &str) -> Option<&str> {
         .filter(|token| !token.is_empty())
 }
 
-fn resolve_auth_context(state: &ServerState, request: &str) -> Result<Option<AuthContext>, AuthError> {
+fn resolve_auth_context(
+    state: &ServerState,
+    request: &str,
+) -> Result<Option<AuthContext>, AuthError> {
     let Some(token) = authorization_header(request) else {
         return Ok(None);
     };

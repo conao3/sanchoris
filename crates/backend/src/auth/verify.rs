@@ -57,7 +57,11 @@ pub async fn verify_token(token: &str, env: &BackendEnv) -> Result<AuthIdentity,
         _ => return Err(AuthError::Unauthorized),
     }
 
-    let username = username_from_identity(claims.username.as_deref(), claims.email.as_deref(), &claims.sub);
+    let username = username_from_identity(
+        claims.username.as_deref(),
+        claims.email.as_deref(),
+        &claims.sub,
+    );
 
     Ok(AuthIdentity {
         sub: claims.sub,
@@ -72,11 +76,7 @@ fn username_from_identity(username: Option<&str>, email: Option<&str>, sub: &str
         .or_else(|| email.and_then(|value| value.split('@').next().map(str::to_string)))
         .unwrap_or_else(|| sub.to_string());
     let slug = slugify(&candidate);
-    if slug.is_empty() {
-        slugify(sub)
-    } else {
-        slug
-    }
+    if slug.is_empty() { slugify(sub) } else { slug }
 }
 
 fn slugify(value: &str) -> String {

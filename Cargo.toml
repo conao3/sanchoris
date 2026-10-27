@@ -1,8 +1,18 @@
 [workspace]
-members = ["crates/backend"]
+members = ["crates/backend", "crates/config", "crates/engine", "crates/core"]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/conao3/sanchoris"
+
+[workspace.dependencies]
+sanchoris-config = { path = "crates/config" }
+sanchoris-engine = { path = "crates/engine" }
+sanchoris-core = { path = "crates/core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
+indexmap = { version = "2", features = ["serde"] }
+thiserror = "2"

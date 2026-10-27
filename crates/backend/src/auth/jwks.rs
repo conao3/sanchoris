@@ -40,9 +40,8 @@ async fn lookup_cached(kid: &str) -> Result<Option<DecodingKey>, AuthError> {
 }
 
 async fn fetch_jwks(region: &str, user_pool_id: &str) -> Result<JwkSet, AuthError> {
-    let url = format!(
-        "https://cognito-idp.{region}.amazonaws.com/{user_pool_id}/.well-known/jwks.json"
-    );
+    let url =
+        format!("https://cognito-idp.{region}.amazonaws.com/{user_pool_id}/.well-known/jwks.json");
     let response = reqwest::get(&url)
         .await
         .map_err(|error| AuthError::Internal(format!("failed to fetch JWKS: {error}")))?;

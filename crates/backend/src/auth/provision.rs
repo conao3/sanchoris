@@ -24,7 +24,9 @@ pub async fn build_auth_context(
         .bind(format!("cognito:{}", identity.sub))
         .execute(&mut *tx)
         .await
-        .map_err(|error| AuthError::Internal(format!("failed to acquire advisory lock: {error}")))?;
+        .map_err(|error| {
+            AuthError::Internal(format!("failed to acquire advisory lock: {error}"))
+        })?;
 
     let existing = sqlx::query(
         "SELECT id, email, display_name FROM sanchoris.users WHERE cognito_subject = $1",
