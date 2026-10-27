@@ -179,7 +179,7 @@ Every item in `main` has `kind` (the entity), `v` (a version incremented by ever
 | `T#<t>#TASK#<task>` | `SR#<number>#CHECK#<token>`, `SR#<number>#APPROVAL#<token>` | `check_wait`, `approval_wait` | Check waits carry `gsi2` = (`SWEEP#CHECKWAIT`, `<next_poll_at>#<t>#<wait>`) while waiting |
 | `T#<t>#TASK#<task>` | `SR#<number>#TIMER#<timer id>` | `engine_timer` | `timer_id = uuid v5(skill run, timer)`, `due_at`, `message_id` of the scheduled job |
 | `T#<t>#TASK#<task>` | `USAGE#<recorded_at>#<id>` | `usage` | Tokens and cost per turn; `gsi1` = (`T#<t>#USAGE`, `<recorded_at>#<id>`) |
-| `T#<t>#TASK#<task>` | `CHAT#<created_at>#<id>` | `chat_message` | Chat messages of the task |
+| `T#<t>#TASK#<task>` | `CHAT#<created_at>#<id>` | `chat_message` | The agent's posts to the task's chat thread: `run_id`, `outbox_id`, `channel`, `author_kind`, `text`; written when the run's `chat_post` outbox items are delivered. Members' messages are the thread's inbound events |
 | `T#<t>#RUN#<run>` | `#CHANNEL` | `run_channel` | `task_id`, `next_outbox_seq` (outbox order), `instances` (agent instances), the WebSocket connection id |
 | `T#<t>#RUN#<run>` | `EVT#<seq, 20 digits>` or `EVT#~<received_at>#<id>` | `run_event` | Unique per (run, seq); events without a seq (`human_reply`) get a time key |
 | `T#<t>#RUN#<run>` | `PEND#<received_at>#<event>` | `pending` | Unprocessed run events, in arrival order |
@@ -260,7 +260,7 @@ Reads marked "consistent" use the base table; "index" uses `gsi1`/`gsi2`; "app" 
 | Task by trigger event | The trigger event's `task_id` |
 | State entries, last N | Query `SR#<n>#E#` descending with a limit; count by Query `SR#<n>#E#` |
 | Run log | Query run partition `EVT#`, `OUT#`, `LOG#` (from `after`); Query task `WS#` |
-| Chat messages of a task | Get `T#<t>#INBOUND` `EVT#<source>#<trigger event key>` for the start; Query index `gsi1` `T#<t>#THREAD#<source>#<thread>` from the start, before the next thread task (Query trigger `TASK#<thread>/`); `chat_post` items of each run's `OUT#` |
+| Chat messages of a task | Get `T#<t>#INBOUND` `EVT#<source>#<trigger event key>` for the start; Query index `gsi1` `T#<t>#THREAD#<source>#<thread>` from the start, before the next thread task (Query trigger `TASK#<thread>/`); the agent's posts by Query `T#<t>#TASK#<task>` `CHAT#` |
 | Send chat message | `record_inbound_event`, then the `ChatDispatcher` port (`dispatcher::dispatch_tenant`); result by Get `T#<t>#TRIGGER#<tr>` `EVT#<key>` per trigger |
 | Resume, snooze, stop a task; stop a run | Get the task; `record_run_event` (human reply), `tasks::abort_task`, or `tasks::stop_run`; Put the task; audit |
 | Triggers | Per config Query `TRIGGER#` (app filter `removed_at`); counts by Query index `gsi1` `T#<t>#TASKS` (app); `next_run_at` on the trigger |

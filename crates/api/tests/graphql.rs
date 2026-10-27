@@ -2,11 +2,13 @@ mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration as StdDuration;
 
 use base64::Engine;
 use chrono::{Duration, Utc};
 use reqwest::StatusCode;
 use sanchoris_api::signing::HmacKey;
+use sanchoris_core::channel::{OutboxType, enqueue_outbox};
 use sanchoris_core::items::{
     AuditEvent, ConfigRevision, Credential, Integration, Run, Task, Tenant, User,
 };
@@ -18,8 +20,8 @@ use serde_json::{Value, json};
 use support::fake_github::{CONFIG_REPO, CONFIG_SHA, FakeGitHub};
 use support::{
     Api, CONFIG_YAML, CREDENTIAL_KEY, Driving, FRONTEND_INDEX, FRONTEND_SCRIPT, INSTALLATION,
-    STRIPE_SECRET, Seeded, WEBHOOK_SECRET, Workspaces, bare_repo, github_signature, seed,
-    start_api,
+    STRIPE_SECRET, Seeded, WEBHOOK_SECRET, Workspaces, bare_repo, eventually, github_signature,
+    seed, start_api,
 };
 use uuid::Uuid;
 
@@ -371,6 +373,38 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .find(|run| run.task_id == task_uuid && run.number == 1)
         .expect("the chat task has a first run")
         .id;
+    let mut tx = w.api.store.tx(tenant);
+    enqueue_outbox(
+        &mut tx,
+        run_id,
+        OutboxType::ChatPost,
+        &json!({ "text": "Two issues are open.", "channel": { "source": "web", "scope": "all" } }),
+        "chat:agent-answer",
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let posted = eventually(
+        "the agent's chat post",
+        StdDuration::from_secs(10),
+        || async {
+            let chat = w
+                .ok(
+                    owner,
+                    "Chat",
+                    json!({ "tenant": slug, "task": task_id, "withTask": true }),
+                )
+                .await;
+            chat["tenant"]["task"]["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["text"] == "Two issues are open.")
+                .cloned()
+        },
+    )
+    .await;
+    assert_eq!(posted["authorKind"], "AGENT");
     let run = w
         .ok(
             owner,

@@ -4,9 +4,9 @@ use sanchoris_config::Start;
 use sanchoris_core::db::{self, REF_CONFIG_REVISION, REF_RUN, REF_TRIGGER};
 use sanchoris_core::item::format_time;
 use sanchoris_core::items::{
-    Child, ConfigRevision as RevisionItem, Dependency, InboundEvent, OutboxItem,
-    Output as OutputItem, Run as RunItem, RunEventItem, SkillRunItem, Task as TaskItem, TaskName,
-    Workspace as WorkspaceItem,
+    ChatMessage as ChatMessageItem, Child, ConfigRevision as RevisionItem, Dependency,
+    InboundEvent, OutboxItem, Output as OutputItem, Run as RunItem, RunEventItem, SkillRunItem,
+    Task as TaskItem, TaskName, Workspace as WorkspaceItem,
 };
 use sanchoris_core::keys;
 use sanchoris_core::model::{TaskDefinition, TaskStatus as CoreStatus};
@@ -1151,15 +1151,9 @@ impl ChatMessage {
                 },
             )
             .await?;
-        let mut posts = Vec::new();
-        for run in task.runs(ctx).await? {
-            posts.extend(
-                tx.query::<OutboxItem>(&keys::run_pk(tenant_id, run.row.id), "OUT#")
-                    .await?
-                    .into_iter()
-                    .filter(|outbox| outbox.kind == "chat_post"),
-            );
-        }
+        let posts = tx
+            .query::<ChatMessageItem>(&keys::task_pk(tenant_id, task.row.id), "CHAT#")
+            .await?;
         let mut messages = inbound
             .into_iter()
             .map(|event| ChatMessage {
@@ -1175,13 +1169,13 @@ impl ChatMessage {
                     .to_string(),
                 at: event.received_at,
             })
-            .chain(posts.into_iter().map(|outbox| ChatMessage {
+            .chain(posts.into_iter().map(|post| ChatMessage {
                 scope: task.scope,
-                id: outbox.id,
+                id: post.id,
                 author_kind: ChatAuthorKind::Agent,
                 member_id: None,
-                text: outbox.payload["text"].as_str().unwrap_or("").to_string(),
-                at: outbox.created_at,
+                text: post.text,
+                at: post.created_at,
             }))
             .collect::<Vec<_>>();
         messages.sort_by(|a, b| a.at.cmp(&b.at).then(a.id.cmp(&b.id)));

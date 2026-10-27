@@ -12,11 +12,11 @@ use sanchoris_core::db::{
 };
 use sanchoris_core::item::{Entity, Key, Table};
 use sanchoris_core::items::{
-    AuditEvent, ChangeRequest, Config, ConfigRevision, Credential, Guard, InboundEvent,
-    Integration, Invitation, InvitationEmail, Member, Membership, OutboxItem, Output, Pending,
-    Project, Repository, Run, RunChannel, RunEventItem, SessionDef, SkillDef, SkillRunItem,
-    StateEntryItem, Task, TaskName, Tenant, Trigger, TriggerEvent, UsageRecord, UsageSnapshot,
-    User, Workspace, uniq,
+    AuditEvent, ChangeRequest, ChatMessage, Config, ConfigRevision, Credential, Guard,
+    InboundEvent, Integration, Invitation, InvitationEmail, Member, Membership, OutboxItem, Output,
+    Pending, Project, Repository, Run, RunChannel, RunEventItem, SessionDef, SkillDef,
+    SkillRunItem, StateEntryItem, Task, TaskName, Tenant, Trigger, TriggerEvent, UsageRecord,
+    UsageSnapshot, User, Workspace, uniq,
 };
 use sanchoris_core::jobs::Relayed;
 use sanchoris_core::keys;
@@ -1357,6 +1357,18 @@ impl World {
             json!({ "text": "The checkout spec is flaky.", "channel": { "source": "web", "thread": "thread-1" } }),
             now - Duration::minutes(15),
         );
+        tx.insert(&ChatMessage {
+            id: Uuid::new_v4(),
+            tenant_id: acme,
+            task_id: chat_task,
+            run_id: Some(chat_run),
+            outbox_id: None,
+            channel: Some(json!({ "source": "web", "thread": "thread-1" })),
+            author_kind: "agent".into(),
+            text: "The checkout spec is flaky.".into(),
+            created_at: now - Duration::minutes(15),
+        })
+        .unwrap();
         let change_request = Uuid::new_v4();
         tx.insert(&ChangeRequest {
             id: change_request,
