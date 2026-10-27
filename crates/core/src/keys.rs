@@ -51,9 +51,13 @@ pub fn uniq_key(kind: &str, value: &str) -> Key {
     Key::main(format!("UNIQ#{kind}#{value}"), "#")
 }
 
+pub fn invitation_email_pk(email: &str) -> String {
+    format!("INVITEMAIL#{}", email.to_lowercase())
+}
+
 pub fn invitation_email_key(email: &str, tenant_id: Uuid, invitation_id: Uuid) -> Key {
     Key::main(
-        format!("INVITEMAIL#{}", email.to_lowercase()),
+        invitation_email_pk(email),
         format!("INVITE#{tenant_id}#{invitation_id}"),
     )
 }
@@ -386,6 +390,10 @@ pub fn task_name_index(tenant_id: Uuid, name: &str) -> String {
 
 pub fn runs_index(tenant_id: Uuid) -> String {
     format!("T#{tenant_id}#RUNS")
+}
+
+pub fn open_runs_index(tenant_id: Uuid) -> String {
+    format!("T#{tenant_id}#OPENRUNS")
 }
 
 pub fn workspaces_index(tenant_id: Uuid) -> String {

@@ -177,6 +177,7 @@ pub enum SortKey {
     All,
     Prefix(String),
     AtMost(String),
+    AtLeast(String),
     Between(String, String),
 }
 
@@ -189,6 +190,64 @@ impl SortKey {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listing {
+    pub table: Table,
+    pub index: Option<Index>,
+    pub pk: String,
+    pub sort: SortKey,
+    pub forward: bool,
+    pub limit: Option<usize>,
+}
+
+impl Listing {
+    pub fn main(pk: impl Into<String>) -> Self {
+        Self {
+            table: Table::Main,
+            index: None,
+            pk: pk.into(),
+            sort: SortKey::All,
+            forward: true,
+            limit: None,
+        }
+    }
+
+    pub fn index(index: Index, pk: impl Into<String>) -> Self {
+        Self {
+            index: Some(index),
+            ..Self::main(pk)
+        }
+    }
+
+    pub fn audit(pk: impl Into<String>) -> Self {
+        Self {
+            table: Table::Audit,
+            ..Self::main(pk)
+        }
+    }
+
+    pub fn sort(mut self, sort: SortKey) -> Self {
+        self.sort = sort;
+        self
+    }
+
+    pub fn prefix(self, prefix: &str) -> Self {
+        self.sort(SortKey::prefix(prefix))
+    }
+
+    pub fn descending(mut self) -> Self {
+        self.forward = false;
+        self
+    }
+
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+}
+
+const LIST_PAGE: usize = 50;
 
 impl Store {
     pub fn new(
@@ -293,16 +352,17 @@ impl Store {
     }
 
     pub async fn get_item(&self, key: &Key) -> Result<Option<Item>, DbError> {
-        let output = self
-            .inner
-            .client
-            .get_item()
-            .table_name(self.inner.tables.name(key.table))
-            .set_key(Some(key.attributes()))
-            .consistent_read(true)
-            .send()
-            .await
-            .map_err(dynamo_error)?;
+        let output = Box::pin(
+            self.inner
+                .client
+                .get_item()
+                .table_name(self.inner.tables.name(key.table))
+                .set_key(Some(key.attributes()))
+                .consistent_read(true)
+                .send(),
+        )
+        .await
+        .map_err(dynamo_error)?;
         match output.item {
             Some(item) => Ok(Some(self.hydrate(item).await?)),
             None => Ok(None),
@@ -325,7 +385,37 @@ impl Store {
         forward: bool,
         limit: Option<usize>,
     ) -> Result<Vec<Item>, DbError> {
-        let (pk_name, sk_name) = match index {
+        let listing = Listing {
+            table,
+            index,
+            pk: pk.to_string(),
+            sort: sort.clone(),
+            forward,
+            limit,
+        };
+        self.run_listing(&listing, false, |_| true).await
+    }
+
+    pub async fn list<E: Entity>(
+        &self,
+        listing: &Listing,
+        keep: impl Fn(&E) -> bool,
+    ) -> Result<Vec<E>, DbError> {
+        let items = self
+            .run_listing(listing, true, |item| {
+                is_kind::<E>(item) && E::from_item(item).map_or(true, |entity| keep(&entity))
+            })
+            .await?;
+        items.iter().map(E::from_item).collect()
+    }
+
+    async fn run_listing(
+        &self,
+        listing: &Listing,
+        filtered: bool,
+        keep: impl Fn(&Item) -> bool,
+    ) -> Result<Vec<Item>, DbError> {
+        let (pk_name, sk_name) = match listing.index {
             Some(index) => index.attributes(),
             None => ("pk", "sk"),
         };
@@ -333,8 +423,9 @@ impl Store {
             ("#pk".to_string(), pk_name.to_string()),
             ("#sk".to_string(), sk_name.to_string()),
         ]);
-        let mut values = HashMap::from([(":pk".to_string(), AttributeValue::S(pk.to_string()))]);
-        let condition = match sort {
+        let mut values =
+            HashMap::from([(":pk".to_string(), AttributeValue::S(listing.pk.clone()))]);
+        let condition = match &listing.sort {
             SortKey::All => {
                 names.remove("#sk");
                 "#pk = :pk".to_string()
@@ -347,12 +438,17 @@ impl Store {
                 values.insert(":a".into(), AttributeValue::S(upper.clone()));
                 "#pk = :pk AND #sk <= :a".to_string()
             }
+            SortKey::AtLeast(lower) => {
+                values.insert(":a".into(), AttributeValue::S(lower.clone()));
+                "#pk = :pk AND #sk >= :a".to_string()
+            }
             SortKey::Between(lower, upper) => {
                 values.insert(":a".into(), AttributeValue::S(lower.clone()));
                 values.insert(":b".into(), AttributeValue::S(upper.clone()));
                 "#pk = :pk AND #sk BETWEEN :a AND :b".to_string()
             }
         };
+        let full = |items: &Vec<Item>| listing.limit.is_some_and(|limit| items.len() >= limit);
         let mut items = Vec::new();
         let mut start = None;
         loop {
@@ -360,25 +456,36 @@ impl Store {
                 .inner
                 .client
                 .query()
-                .table_name(self.inner.tables.name(table))
+                .table_name(self.inner.tables.name(listing.table))
                 .key_condition_expression(&condition)
                 .set_expression_attribute_names(Some(names.clone()))
                 .set_expression_attribute_values(Some(values.clone()))
-                .scan_index_forward(forward)
+                .scan_index_forward(listing.forward)
                 .set_exclusive_start_key(start.take());
-            match index {
+            match listing.index {
                 Some(index) => request = request.index_name(index.name()),
                 None => request = request.consistent_read(true),
             }
-            if let Some(limit) = limit {
+            if let Some(limit) = listing.limit {
                 let remaining = limit.saturating_sub(items.len());
-                request = request.limit(i32::try_from(remaining).unwrap_or(i32::MAX));
+                let page = if filtered {
+                    remaining.max(LIST_PAGE)
+                } else {
+                    remaining
+                };
+                request = request.limit(i32::try_from(page).unwrap_or(i32::MAX));
             }
-            let output = request.send().await.map_err(dynamo_error)?;
+            let output = Box::pin(request.send()).await.map_err(dynamo_error)?;
             for item in output.items.unwrap_or_default() {
-                items.push(self.hydrate(item).await?);
+                if full(&items) {
+                    break;
+                }
+                let item = self.hydrate(item).await?;
+                if keep(&item) {
+                    items.push(item);
+                }
             }
-            if limit.is_some_and(|limit| items.len() >= limit) {
+            if full(&items) {
                 break;
             }
             match output.last_evaluated_key {
@@ -412,13 +519,14 @@ impl Store {
         if writes.len() > MAX_TRANSACTION_ITEMS {
             return Err(DbError::TooManyWrites(writes.len()));
         }
-        let result = self
-            .inner
-            .client
-            .transact_write_items()
-            .set_transact_items(Some(writes))
-            .send()
-            .await;
+        let result = Box::pin(
+            self.inner
+                .client
+                .transact_write_items()
+                .set_transact_items(Some(writes))
+                .send(),
+        )
+        .await;
         match result {
             Ok(_) => Ok(()),
             Err(error) => match error.as_service_error() {
@@ -463,14 +571,16 @@ impl Store {
     }
 }
 
+fn is_kind<E: Entity>(item: &Item) -> bool {
+    item.get(KIND)
+        .and_then(|v| v.as_s().ok())
+        .is_some_and(|kind| kind == E::KIND)
+}
+
 fn decode_kind<E: Entity>(items: Vec<Item>) -> Result<Vec<E>, DbError> {
     items
         .iter()
-        .filter(|item| {
-            item.get(KIND)
-                .and_then(|v| v.as_s().ok())
-                .is_some_and(|kind| kind == E::KIND)
-        })
+        .filter(|item| is_kind::<E>(item))
         .map(E::from_item)
         .collect()
 }
@@ -837,6 +947,19 @@ impl TenantTx {
 
     pub async fn query<E: Entity>(&mut self, pk: &str, prefix: &str) -> Result<Vec<E>, DbError> {
         decode_kind(self.query_items(Table::Main, pk, prefix).await?)
+    }
+
+    pub async fn list<E: Entity>(
+        &self,
+        listing: &Listing,
+        keep: impl Fn(&E) -> bool,
+    ) -> Result<Vec<E>, DbError> {
+        self.guard(&Key {
+            table: listing.table,
+            pk: listing.pk.clone(),
+            sk: String::new(),
+        })?;
+        self.store.list(listing, keep).await
     }
 
     pub fn insert_item(&mut self, key: Key, mut item: Item) -> Result<(), DbError> {
