@@ -35,8 +35,9 @@ function stopPostgres() {
 
 try {
   run('initdb', ['-D', dataDir, '--encoding=UTF8', '--locale=C']);
-  run('pg_ctl', ['-D', dataDir, '-o', `-k ${socketDir}`, '-w', 'start']);
+  run('pg_ctl', ['-D', dataDir, '-o', `-k ${socketDir} -c listen_addresses=''`, '-w', 'start']);
   run('createdb', [dbName]);
+  run('psql', ['--file', 'db/schema.sql', '--set', 'ON_ERROR_STOP=1']);
   run('psql', ['--file', 'db/schema.sql', '--set', 'ON_ERROR_STOP=1']);
 
   const tableCount = run(
@@ -51,22 +52,33 @@ try {
   ).trim();
 
   const requiredTables = [
-    'project_profiles',
-    'conversations',
-    'chat_messages',
-    'tasks',
-    'workflow_specs',
-    'workflow_blocks',
-    'workflow_edges',
-    'workflow_runs',
-    'workflow_step_runs',
-    'workspaces',
-    'verification_results',
-    'reviews',
-    'pull_requests',
-    'merges',
-    'events',
+    'plans',
+    'tenants',
     'users',
+    'members',
+    'invitations',
+    'audit_events',
+    'credentials',
+    'usage_snapshots',
+    'integrations',
+    'configs',
+    'config_revisions',
+    'projects',
+    'repositories',
+    'sessions',
+    'skills',
+    'triggers',
+    'change_requests',
+    'trigger_events',
+    'tasks',
+    'task_dependencies',
+    'runs',
+    'workspaces',
+    'skill_runs',
+    'state_entries',
+    'outputs',
+    'usage',
+    'due_jobs',
   ];
 
   const missingTables = requiredTables.filter((table) => {

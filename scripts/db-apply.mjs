@@ -1,18 +1,32 @@
 import { spawnSync } from 'node:child_process';
 
-const databaseUrl = process.env.DATABASE_URL ?? 'postgres://sanchoris:sanchoris@127.0.0.1:54329/sanchoris';
-const schemaPath = process.argv[2] ?? 'db/schema.sql';
-
-const command = process.env.PSQLDEF ? 'psqldef' : 'psql';
-const args = command === 'psqldef'
-  ? ['--file', schemaPath, databaseUrl]
-  : [databaseUrl, '--file', schemaPath, '--set', 'ON_ERROR_STOP=1'];
-
-const result = spawnSync(command, args, { stdio: 'inherit' });
-
-if (result.error) {
-  console.error(`${command} failed to start: ${result.error.message}`);
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) {
+  console.error('DATABASE_URL is not set');
   process.exit(1);
 }
 
-process.exit(result.status ?? 1);
+const args = process.argv.slice(2);
+const reset = args.includes('--reset');
+const positional = args.filter((arg) => arg !== '--reset');
+if (positional.length > 1) {
+  console.error('usage: db-apply.mjs [--reset] [schema-path]');
+  process.exit(1);
+}
+const schemaPath = positional[0] ?? 'db/schema.sql';
+
+function psql(psqlArgs) {
+  const result = spawnSync('psql', [databaseUrl, '--set', 'ON_ERROR_STOP=1', ...psqlArgs], { stdio: 'inherit' });
+  if (result.error) {
+    console.error(`psql failed to start: ${result.error.message}`);
+    process.exit(1);
+  }
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
+}
+
+if (reset) {
+  psql(['--command', 'DROP SCHEMA IF EXISTS sanchoris CASCADE']);
+}
+psql(['--file', schemaPath]);
