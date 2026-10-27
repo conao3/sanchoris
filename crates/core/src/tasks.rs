@@ -70,7 +70,7 @@ pub async fn runs_of(tx: &mut TenantTx, task_id: Uuid) -> Result<Vec<Run>, DbErr
     let mut runs = tx
         .query::<Run>(&keys::task_pk(tx.tenant_id(), task_id), "RUN#")
         .await?;
-    runs.sort_by(|a, b| (a.started_at, a.id).cmp(&(b.started_at, b.id)));
+    runs.sort_by_key(|a| (a.started_at, a.id));
     Ok(runs)
 }
 

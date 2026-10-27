@@ -467,7 +467,7 @@ pub async fn reconcile(
         .into_iter()
         .filter(|w| w.run_id == run_id && w.stopped_at.is_none())
         .collect::<Vec<_>>();
-    open.sort_by(|a, b| (a.started_at, a.id).cmp(&(b.started_at, b.id)));
+    open.sort_by_key(|a| (a.started_at, a.id));
     let pending = outbox(&mut tx, run_id).await?.iter().any(wakes_the_session);
     match open.into_iter().next() {
         None => {

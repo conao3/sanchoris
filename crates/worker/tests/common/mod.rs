@@ -444,7 +444,7 @@ pub async fn task_view(store: &Store, tenant_id: Uuid, name: &str) -> TaskView {
         .query::<Run>(&keys::task_pk(tenant_id, id), "RUN#")
         .await
         .unwrap();
-    runs.sort_by(|a, b| (a.started_at, a.id).cmp(&(b.started_at, b.id)));
+    runs.sort_by_key(|a| (a.started_at, a.id));
     TaskView {
         id,
         status: task.status.as_str().to_string(),
@@ -472,7 +472,7 @@ pub async fn answer_execs(
         .into_iter()
         .filter(|item| item.kind == "exec" && item.delivered_at.is_none())
         .collect::<Vec<_>>();
-    execs.sort_by(|a, b| (a.created_at, a.seq).cmp(&(b.created_at, b.seq)));
+    execs.sort_by_key(|a| (a.created_at, a.seq));
     let runs = dynamo.all::<Run>().await;
     for item in &execs {
         let run = runs.iter().find(|r| r.id == item.run_id).unwrap();

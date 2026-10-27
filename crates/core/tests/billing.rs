@@ -24,7 +24,7 @@ async fn audit_actions(dynamo: &TestDynamo, id: Uuid) -> Vec<String> {
         .into_iter()
         .filter(|e| e.tenant_id == id)
         .collect::<Vec<_>>();
-    events.sort_by(|a, b| (a.at, a.id).cmp(&(b.at, b.id)));
+    events.sort_by_key(|a| (a.at, a.id));
     events.into_iter().map(|e| e.action).collect()
 }
 

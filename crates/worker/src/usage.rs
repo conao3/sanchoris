@@ -35,7 +35,7 @@ async fn credential_of(tx: &mut TenantTx, task_id: Uuid) -> Result<Credential> {
     let mut credentials = tx
         .query::<Credential>(&keys::tenant_pk(tx.tenant_id()), "CRED#")
         .await?;
-    credentials.sort_by(|a, b| (a.created_at, a.id).cmp(&(b.created_at, b.id)));
+    credentials.sort_by_key(|a| (a.created_at, a.id));
     let found = if name == sanchoris_config::REQUESTER {
         credentials.into_iter().find(|c| {
             c.scope == "personal"

@@ -220,7 +220,7 @@ pub(crate) async fn installations(
         .into_iter()
         .filter(|i| i.kind == "github_installation" && i.status == "connected")
         .collect::<Vec<_>>();
-    integrations.sort_by(|a, b| (a.created_at, a.id).cmp(&(b.created_at, b.id)));
+    integrations.sort_by_key(|a| (a.created_at, a.id));
     Ok(integrations
         .into_iter()
         .filter_map(|i| {
