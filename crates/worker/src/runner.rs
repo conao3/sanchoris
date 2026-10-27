@@ -134,7 +134,16 @@ impl LocalProcessRunner {
                 .status
                 .success();
             if exists {
-                git_ok(&["-C", &dir, "checkout", "--quiet", "-B", &spec.branch, &remote]).await?;
+                git_ok(&[
+                    "-C",
+                    &dir,
+                    "checkout",
+                    "--quiet",
+                    "-B",
+                    &spec.branch,
+                    &remote,
+                ])
+                .await?;
             } else {
                 git_ok(&["-C", &dir, "checkout", "--quiet", "-b", &spec.branch]).await?;
             }
@@ -156,10 +165,7 @@ impl LocalProcessRunner {
         match tokio::fs::remove_file(&socket).await {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(RunnerError(format!(
-                "remove {}: {error}",
-                socket.display()
-            ))),
+            Err(error) => Err(RunnerError(format!("remove {}: {error}", socket.display()))),
         }
     }
 }
@@ -327,7 +333,10 @@ mod tests {
         let env = fixture.runner.environment(run_id, Path::new("/w/1"));
         let get = |name: &str| env.iter().find(|(k, _)| *k == name).unwrap().1.clone();
         assert_eq!(get("SANCHORIS_RUN_ID"), run_id.to_string());
-        assert_eq!(get("SANCHORIS_CONTROL_URL"), "ws://127.0.0.1:1/runs/channel");
+        assert_eq!(
+            get("SANCHORIS_CONTROL_URL"),
+            "ws://127.0.0.1:1/runs/channel"
+        );
         assert_eq!(get("SANCHORIS_WORKSPACE_DIR"), "/w/1");
         assert_eq!(
             PathBuf::from(get("SANCHORIS_SOCKET_PATH")),

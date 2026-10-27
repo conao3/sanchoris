@@ -563,7 +563,7 @@ CREATE TABLE IF NOT EXISTS sanchoris.run_channel_instances (
     instance_id uuid NOT NULL,
     seq_offset bigint NOT NULL CHECK (seq_offset >= 0),
     processed_seq bigint NOT NULL DEFAULT 0 CHECK (processed_seq >= 0),
-    started boolean NOT NULL DEFAULT false,
+    start_outbox_id uuid REFERENCES sanchoris.run_outbox(id) ON DELETE SET NULL,
     connected_at timestamptz NOT NULL,
     UNIQUE (run_id, instance_id),
     UNIQUE (run_id, seq_offset)

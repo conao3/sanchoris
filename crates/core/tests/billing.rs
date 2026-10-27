@@ -36,11 +36,13 @@ async fn tenant(pool: &PgPool, id: Uuid) -> Tenant {
 }
 
 async fn audit_actions(pool: &PgPool, id: Uuid) -> Vec<String> {
-    sqlx::query_scalar("SELECT action FROM sanchoris.audit_events WHERE tenant_id = $1 ORDER BY at, id")
-        .bind(id)
-        .fetch_all(pool)
-        .await
-        .unwrap()
+    sqlx::query_scalar(
+        "SELECT action FROM sanchoris.audit_events WHERE tenant_id = $1 ORDER BY at, id",
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -64,12 +66,21 @@ async fn stripe_events_drive_the_tenant_status_plan_and_period() {
     .unwrap();
     let mut conn = pool.acquire().await.unwrap();
 
-    complete_checkout(&mut conn, seeded.tenant_id, "cus_1").await.unwrap();
+    complete_checkout(&mut conn, seeded.tenant_id, "cus_1")
+        .await
+        .unwrap();
     let t = tenant(&pool, seeded.tenant_id).await;
-    assert_eq!((t.status.as_str(), t.customer.as_deref()), ("active", Some("cus_1")));
-    complete_checkout(&mut conn, seeded.tenant_id, "cus_1").await.unwrap();
+    assert_eq!(
+        (t.status.as_str(), t.customer.as_deref()),
+        ("active", Some("cus_1"))
+    );
+    complete_checkout(&mut conn, seeded.tenant_id, "cus_1")
+        .await
+        .unwrap();
 
-    billing::change_plan(&mut conn, "cus_1", "price_pro").await.unwrap();
+    billing::change_plan(&mut conn, "cus_1", "price_pro")
+        .await
+        .unwrap();
     assert_eq!(tenant(&pool, seeded.tenant_id).await.plan_id, "pro");
     assert!(matches!(
         billing::change_plan(&mut conn, "cus_1", "price_unknown").await,
