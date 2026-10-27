@@ -188,6 +188,7 @@ pub struct StripeConfig {
     pub webhook_secret: HmacKey,
     pub secret_key: String,
     pub api_url: String,
+    pub portal_configuration: String,
 }
 
 #[derive(Debug, Clone)]
@@ -326,6 +327,7 @@ impl ApiConfig {
         let github_url = env.get("GITHUB_URL");
         let github_api_url = env.get("GITHUB_API_URL");
         let stripe_api_url = env.get("STRIPE_API_URL");
+        let stripe_portal_configuration = env.get("STRIPE_PORTAL_CONFIGURATION");
         let webhook_secret = env.secret(secrets, "GITHUB_WEBHOOK_SECRET");
         let github_client_id = env.secret(secrets, "GITHUB_APP_CLIENT_ID");
         let github_client_secret = env.secret(secrets, "GITHUB_APP_CLIENT_SECRET");
@@ -355,6 +357,7 @@ impl ApiConfig {
                 webhook_secret: key("STRIPE_WEBHOOK_SECRET", &stripe_webhook_secret)?,
                 secret_key: stripe_secret_key,
                 api_url: url("STRIPE_API_URL", &stripe_api_url)?,
+                portal_configuration: stripe_portal_configuration,
             },
             task_tokens: TaskTokenSigner::new(signer(TASK_TOKEN_SIGNING_KEY_ENV, &task_key)?),
             oauth_state_key: strong_key("OAUTH_STATE_SIGNING_KEY", &state_key)?,

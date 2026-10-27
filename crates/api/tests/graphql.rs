@@ -684,6 +684,11 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         portal["openBillingPortal"]["url"],
         "https://billing.stripe.test/cus_acme"
     );
+    let portals = w.api.stripe.requests("/v1/billing_portal/sessions");
+    assert_eq!(
+        portals[0].form["configuration"],
+        support::fake_stripe::PORTAL_CONFIGURATION
+    );
 
     let free = w
         .ok(

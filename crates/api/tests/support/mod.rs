@@ -189,6 +189,7 @@ pub async fn start_api(
             webhook_secret: HmacKey::new(STRIPE_SECRET.as_bytes()).unwrap(),
             secret_key: fake_stripe::SECRET_KEY.into(),
             api_url: stripe_url,
+            portal_configuration: fake_stripe::PORTAL_CONFIGURATION.into(),
         },
         task_tokens: TaskTokenSigner::new(Signer::new(&TASK_KEY).unwrap()),
         oauth_state_key: HmacKey::strong(&[7u8; 32]).unwrap(),

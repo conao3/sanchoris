@@ -6,6 +6,7 @@ use aws_sdk_dynamodb::types::{
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::aws::MissingEnv;
 use crate::item::Entity;
 use crate::items::Plan;
 use crate::store::{DbError, Tables};
@@ -94,6 +95,32 @@ pub fn plans() -> Vec<Plan> {
             stripe_price_id: None,
         })
         .collect()
+}
+
+pub fn stripe_price_env(plan_id: &str) -> String {
+    format!("SANCHORIS_STRIPE_PRICE_{}", plan_id.to_uppercase())
+}
+
+pub fn priced_plans(price_of: impl Fn(&str) -> Option<String>) -> Result<Vec<Plan>, MissingEnv> {
+    let mut missing = Vec::new();
+    let plans = plans()
+        .into_iter()
+        .map(|mut plan| {
+            if plan.price_cents > 0 {
+                let name = stripe_price_env(&plan.id);
+                match price_of(&name).filter(|price| !price.is_empty()) {
+                    Some(price) => plan.stripe_price_id = Some(price),
+                    None => missing.push(name),
+                }
+            }
+            plan
+        })
+        .collect();
+    if missing.is_empty() {
+        Ok(plans)
+    } else {
+        Err(MissingEnv(missing))
+    }
 }
 
 fn text<'a>(value: &'a Value, name: &str) -> &'a str {
@@ -277,5 +304,28 @@ mod tests {
         );
         assert_eq!(schema.read_only_leading_keys, ["PLANS"]);
         assert_eq!(plans().len(), 4);
+    }
+
+    #[test]
+    fn paid_plans_take_their_stripe_prices_and_fail_without_one() {
+        let priced = priced_plans(|name| Some(format!("price_for_{name}"))).unwrap();
+        let prices = priced
+            .iter()
+            .map(|plan| (plan.id.as_str(), plan.stripe_price_id.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            prices,
+            [
+                ("free", None),
+                ("starter", Some("price_for_SANCHORIS_STRIPE_PRICE_STARTER")),
+                ("pro", Some("price_for_SANCHORIS_STRIPE_PRICE_PRO")),
+                ("max", Some("price_for_SANCHORIS_STRIPE_PRICE_MAX")),
+            ]
+        );
+        let missing = priced_plans(|name| {
+            (name != "SANCHORIS_STRIPE_PRICE_PRO").then(|| "price_x".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(missing.0, ["SANCHORIS_STRIPE_PRICE_PRO"]);
     }
 }

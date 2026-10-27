@@ -9,6 +9,7 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 pub const SECRET_KEY: &str = "sk_test_http";
+pub const PORTAL_CONFIGURATION: &str = "bpc_test_sanchoris";
 
 #[derive(Debug, Clone)]
 pub struct StripeRequest {

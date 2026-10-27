@@ -303,6 +303,10 @@ impl CheckoutPort for StripeCheckout {
                 &[
                     ("customer".into(), customer),
                     (
+                        "configuration".into(),
+                        self.config.stripe.portal_configuration.clone(),
+                    ),
+                    (
                         "return_url".into(),
                         format!("{}/settings/billing", self.config.public_url),
                     ),
