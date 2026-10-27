@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod channel;
 pub mod db;
 pub mod github;
@@ -7,6 +8,7 @@ pub mod model;
 pub mod pattern;
 pub mod skillrun;
 pub mod tasks;
+pub mod tenants;
 pub mod tokens;
 pub mod transform;
 

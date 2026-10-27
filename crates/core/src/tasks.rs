@@ -132,6 +132,70 @@ pub async fn apply_decision(
     Ok(())
 }
 
+pub async fn abort_task(
+    tx: &mut TenantTx,
+    task_id: Uuid,
+    reason: &str,
+    now: DateTime<Utc>,
+) -> Result<bool, DbError> {
+    let aborted = sqlx::query_scalar::<_, Uuid>(
+        "UPDATE sanchoris.tasks SET status = 'ABORTED', wait_reason = NULL, resume_at = NULL, \
+         snoozed_until = NULL, error = NULL, cause = NULL, finished_at = $2, updated_at = $2 \
+         WHERE id = $1 AND status NOT IN ('SUCCEEDED', 'FAILED', 'ABORTED') RETURNING id",
+    )
+    .bind(task_id)
+    .bind(now)
+    .fetch_optional(tx.conn())
+    .await?;
+    if aborted.is_none() {
+        return Ok(false);
+    }
+    sqlx::query("DELETE FROM sanchoris.due_jobs WHERE kind = $1 AND ref_id = $2")
+        .bind(DUE_TASK_RESUME)
+        .bind(task_id)
+        .execute(tx.conn())
+        .await?;
+    let runs = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM sanchoris.runs WHERE task_id = $1 AND status NOT IN ('completed', 'failed') \
+         ORDER BY started_at, id",
+    )
+    .bind(task_id)
+    .fetch_all(tx.conn())
+    .await?;
+    for run_id in runs {
+        stop_run(tx, run_id, reason, now).await?;
+    }
+    Ok(true)
+}
+
+pub async fn stop_run(
+    tx: &mut TenantTx,
+    run_id: Uuid,
+    reason: &str,
+    now: DateTime<Utc>,
+) -> Result<bool, DbError> {
+    let stopped = sqlx::query_scalar::<_, Uuid>(
+        "UPDATE sanchoris.runs SET status = 'completed', finished_at = $2, updated_at = $2 \
+         WHERE id = $1 AND status NOT IN ('completed', 'failed') RETURNING id",
+    )
+    .bind(run_id)
+    .bind(now)
+    .fetch_optional(tx.conn())
+    .await?;
+    if stopped.is_none() {
+        return Ok(false);
+    }
+    enqueue_outbox(
+        tx,
+        run_id,
+        OutboxType::Shutdown,
+        &json!({ "reason": reason }),
+        "shutdown:stopped",
+    )
+    .await?;
+    Ok(true)
+}
+
 pub async fn finish_runs(
     tx: &mut TenantTx,
     task_id: Uuid,

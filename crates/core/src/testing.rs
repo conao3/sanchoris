@@ -125,9 +125,10 @@ impl TestPostgres {
             .await
             .expect("insert user");
         let tenant_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO sanchoris.tenants (name, plan_id, period_start, status, created_by_user_id) \
-             VALUES ('Test tenant', $1, now(), 'active', $2) RETURNING id",
+            "INSERT INTO sanchoris.tenants (slug, name, plan_id, period_start, status, created_by_user_id) \
+             VALUES ($1, 'Test tenant', $2, now(), 'active', $3) RETURNING id",
         )
+        .bind(format!("tenant-{}", user_id.simple()))
         .bind(plan_id)
         .bind(user_id)
         .fetch_one(admin)
@@ -142,7 +143,7 @@ impl TestPostgres {
         .await
         .expect("insert member");
         let config_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO sanchoris.configs (tenant_id, repository, root_path) VALUES ($1, 'acme/sanchoris-config', '/') RETURNING id",
+            "INSERT INTO sanchoris.configs (tenant_id, repository, root_path, branch) VALUES ($1, 'acme/sanchoris-config', '/', 'main') RETURNING id",
         )
         .bind(tenant_id)
         .fetch_one(admin)

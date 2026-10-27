@@ -15,6 +15,10 @@ CREATE OR REPLACE FUNCTION sanchoris.current_tenant_id() RETURNS uuid
     LANGUAGE sql STABLE
     AS $$ SELECT current_setting('app.tenant_id')::uuid $$;
 
+CREATE OR REPLACE FUNCTION sanchoris.current_user_id() RETURNS uuid
+    LANGUAGE sql STABLE
+    AS $$ SELECT nullif(current_setting('app.user_id', true), '')::uuid $$;
+
 CREATE OR REPLACE FUNCTION sanchoris.reject_audit_event_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -65,6 +69,7 @@ CREATE TABLE IF NOT EXISTS sanchoris.users (
     display_name text NOT NULL,
     github_user_id bigint UNIQUE,
     github_login text UNIQUE,
+    is_operator boolean NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CHECK ((github_user_id IS NULL) = (github_login IS NULL))
@@ -72,6 +77,7 @@ CREATE TABLE IF NOT EXISTS sanchoris.users (
 
 CREATE TABLE IF NOT EXISTS sanchoris.tenants (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    slug text NOT NULL UNIQUE CHECK (slug ~ '^[a-z0-9][a-z0-9-]*$'),
     name text NOT NULL,
     plan_id text NOT NULL REFERENCES sanchoris.plans(id),
     period_start timestamptz NOT NULL,
@@ -133,13 +139,17 @@ CREATE TABLE IF NOT EXISTS sanchoris.credentials (
     kind text NOT NULL CHECK (kind IN ('subscription', 'api_key', 'bedrock')),
     account text NOT NULL,
     status text NOT NULL CHECK (status IN ('connected', 'reconnect')),
+    subscription_plan text,
+    rejected_at timestamptz,
     encrypted_value bytea NOT NULL,
     kms_key_id text NOT NULL,
     last_used_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (tenant_id, name),
-    CHECK ((scope = 'personal') = (member_id IS NOT NULL))
+    CHECK ((scope = 'personal') = (member_id IS NOT NULL)),
+    CHECK ((status = 'reconnect') = (rejected_at IS NOT NULL)),
+    CHECK (kind = 'subscription' OR subscription_plan IS NULL)
 );
 
 CREATE TABLE IF NOT EXISTS sanchoris.usage_snapshots (
@@ -172,6 +182,7 @@ CREATE TABLE IF NOT EXISTS sanchoris.configs (
     tenant_id uuid NOT NULL REFERENCES sanchoris.tenants(id) ON DELETE CASCADE,
     repository text NOT NULL,
     root_path text NOT NULL,
+    branch text NOT NULL,
     active_revision_id uuid,
     synced_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -301,6 +312,7 @@ CREATE TABLE IF NOT EXISTS sanchoris.tasks (
     status text NOT NULL CHECK (status IN ('PENDING', 'RUNNING', 'WAITING', 'NEEDS_YOU', 'SUCCEEDED', 'FAILED', 'ABORTED')),
     wait_reason text CHECK (wait_reason IN ('skill', 'usage_limit', 'chat')),
     resume_at timestamptz,
+    snoozed_until timestamptz,
     nudges integer NOT NULL DEFAULT 0 CHECK (nudges >= 0),
     definition jsonb NOT NULL,
     parent_task_id uuid REFERENCES sanchoris.tasks(id) ON DELETE SET NULL,
@@ -334,6 +346,7 @@ CREATE TABLE IF NOT EXISTS sanchoris.change_requests (
     tenant_id uuid NOT NULL REFERENCES sanchoris.tenants(id) ON DELETE CASCADE,
     config_id uuid NOT NULL REFERENCES sanchoris.configs(id) ON DELETE CASCADE,
     pr_number integer NOT NULL,
+    title text NOT NULL,
     state text NOT NULL CHECK (state IN ('open', 'merged', 'closed')),
     changed_files jsonb NOT NULL DEFAULT '[]'::jsonb,
     changed_definitions jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -628,8 +641,27 @@ CREATE POLICY tenant_isolation ON sanchoris.tenants TO sanchoris_app
 DROP POLICY IF EXISTS worker_access ON sanchoris.tenants;
 CREATE POLICY worker_access ON sanchoris.tenants TO sanchoris_worker USING (true) WITH CHECK (true);
 
+CREATE OR REPLACE FUNCTION sanchoris.current_user_is_operator() RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$ SELECT coalesce((SELECT is_operator FROM sanchoris.users WHERE id = sanchoris.current_user_id()), false) $$;
+
+DROP POLICY IF EXISTS user_memberships ON sanchoris.members;
+CREATE POLICY user_memberships ON sanchoris.members FOR SELECT TO sanchoris_app
+    USING (user_id = sanchoris.current_user_id());
+DROP POLICY IF EXISTS user_invitations ON sanchoris.invitations;
+CREATE POLICY user_invitations ON sanchoris.invitations FOR SELECT TO sanchoris_app
+    USING (lower(email) = (SELECT lower(u.email) FROM sanchoris.users u WHERE u.id = sanchoris.current_user_id()));
+DROP POLICY IF EXISTS user_tenants ON sanchoris.tenants;
+CREATE POLICY user_tenants ON sanchoris.tenants FOR SELECT TO sanchoris_app
+    USING (
+        sanchoris.current_user_is_operator()
+        OR EXISTS (SELECT 1 FROM sanchoris.members m WHERE m.tenant_id = tenants.id AND m.user_id = sanchoris.current_user_id())
+    );
+
 GRANT USAGE ON SCHEMA sanchoris TO sanchoris_app, sanchoris_worker;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA sanchoris TO sanchoris_app, sanchoris_worker;
 REVOKE INSERT, UPDATE, DELETE ON sanchoris.plans FROM sanchoris_app, sanchoris_worker;
 REVOKE UPDATE, DELETE, TRUNCATE ON sanchoris.audit_events FROM sanchoris_app, sanchoris_worker;
 GRANT EXECUTE ON FUNCTION sanchoris.current_tenant_id() TO sanchoris_app, sanchoris_worker;
+GRANT EXECUTE ON FUNCTION sanchoris.current_user_id() TO sanchoris_app, sanchoris_worker;
+GRANT EXECUTE ON FUNCTION sanchoris.current_user_is_operator() TO sanchoris_app, sanchoris_worker;

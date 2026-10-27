@@ -18,6 +18,8 @@ pub enum DbError {
     TenantNotFound(Uuid),
     #[error("{0} conflicted but the existing row is not visible")]
     ConflictNotVisible(&'static str),
+    #[error("no free tenant slug starts with {0}")]
+    SlugExhausted(String),
 }
 
 pub struct TenantTx {
@@ -61,6 +63,38 @@ impl TenantTx {
 
     pub async fn rollback(self) -> Result<(), DbError> {
         self.tx.rollback().await?;
+        Ok(())
+    }
+}
+
+pub struct UserTx {
+    user_id: Uuid,
+    tx: Transaction<'static, Postgres>,
+}
+
+impl UserTx {
+    pub async fn begin(pool: &PgPool, user_id: Uuid) -> Result<Self, DbError> {
+        let mut tx = pool.begin().await?;
+        sqlx::query(
+            "SELECT set_config('app.tenant_id', $1, true), set_config('app.user_id', $2, true)",
+        )
+        .bind(Uuid::nil().to_string())
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        Ok(Self { user_id, tx })
+    }
+
+    pub fn user_id(&self) -> Uuid {
+        self.user_id
+    }
+
+    pub fn conn(&mut self) -> &mut PgConnection {
+        &mut self.tx
+    }
+
+    pub async fn commit(self) -> Result<(), DbError> {
+        self.tx.commit().await?;
         Ok(())
     }
 }
