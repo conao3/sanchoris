@@ -1,0 +1,25 @@
+[package]
+name = "sanchoris-graphql"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sanchoris-config.workspace = true
+sanchoris-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+async-graphql = "7.2.1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "macros", "uuid", "chrono", "json", "tls-rustls"] }
+aes-gcm = "0.10"
+base64 = "0.22"
+
+[dev-dependencies]
+sanchoris-core = { path = "../core", features = ["test-support"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
