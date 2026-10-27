@@ -1,276 +1,65 @@
 @import "tailwindcss";
+@import "@fontsource/ibm-plex-sans/latin-400.css";
+@import "@fontsource/ibm-plex-sans/latin-500.css";
+@import "@fontsource/ibm-plex-sans/latin-600.css";
+@import "@fontsource/ibm-plex-mono/latin-400.css";
+@import "@fontsource/ibm-plex-mono/latin-500.css";
 
-/*
- * Design tokens.
- * Source of truth:
- *   ../design-tokens/color.json      (Tier 1, DTCG)
- *   ../design-tokens/radius.json     (Tier 2, DTCG)
- *   ../design-tokens/shadow.json     (Tier 2, DTCG)
- *   ../design-tokens/typography.json (Tier 2, DTCG)
- * Naming map (JSON → CSS var): the `.base` leaf is dropped, dot path is joined with `-`.
- *   color.text.body.base        → --color-body
- *   color.brand.primary.base    → --color-primary
- *   color.surface.dark.elevated → --color-surface-dark-elevated
- *   radius.input                → --radius-input         (→ utility: rounded-input)
- *   shadow.card-dark            → --shadow-card-dark     (→ utility: shadow-card-dark)
- *   text.size.h1                → --text-h1              (→ utility: text-h1)
- *   font.weight.medium          → --font-weight-medium   (→ utility: font-medium)
- *   tracking.wider              → --tracking-wider       (→ utility: tracking-wider)
- */
 @theme {
-  /* surface (cream) */
-  --color-canvas: #faf9f5;
-  --color-surface-soft: #f5f0e8;
-  --color-surface-card: #efe9de;
-  --color-surface-cream-strong: #e8e0d2;
-  /* surface (dark) */
-  --color-surface-dark: #181715;
-  --color-surface-dark-elevated: #252320;
-  --color-surface-dark-soft: #1f1e1b;
-  /* hairline */
-  --color-hairline: #e6dfd8;
-  --color-hairline-soft: #ebe6df;
-  /* text on cream */
-  --color-ink: #141413;
-  --color-body: #3d3d3a;
-  --color-body-strong: #252523;
-  --color-muted: #6c6a64;
-  --color-muted-soft: #8e8b82;
-  /* text on dark */
-  --color-on-dark: #faf9f5;
-  --color-on-dark-soft: #a09d96;
-  --color-on-primary: #ffffff;
-  /* brand (Sanchoris Coral) */
-  --color-primary: #cc785c;
-  --color-primary-active: #a9583e;
-  --color-primary-disabled: #e6dfd8;
-  /* accent */
-  --color-accent-teal: #5db8a6;
-  --color-accent-amber: #e8a55a;
-  /* semantic */
-  --color-success: #5db872;
-  --color-warning: #d4a017;
-  --color-error: #c64545;
+  --color-*: initial;
+  --color-white: #ffffff;
+  --color-transparent: transparent;
+  --color-bg: #ffffff;
+  --color-sub: #fafafa;
+  --color-hover: #f4f4f5;
+  --color-line: #e4e4e7;
+  --color-line2: #d4d4d8;
+  --color-faint: #a1a1aa;
+  --color-muted: #71717a;
+  --color-body: #3f3f46;
+  --color-ink: #18181b;
+  --color-run: #2457c5;
+  --color-ok: #1a7f4b;
+  --color-warn: #a85a00;
+  --color-err: #c13030;
+  --color-term-bg: #15171a;
+  --color-term-fg: #d4d4d8;
+  --color-term-line: #2a2d33;
+  --color-term-instruction-bg: #1d2026;
+  --color-term-instruction: #cfe0ff;
+  --color-term-event: #e0b36a;
+  --color-term-error: #f08a8a;
+  --color-term-user: #8fb4ff;
 
-  /* radius */
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-input: 10px;
-  --radius-card: 12px;
-  --radius-pill: 9999px;
+  --radius-ui: 6px;
+  --radius-kbd: 4px;
 
-  /* shadow */
-  --shadow-card-soft: 0 1px 0 rgba(28, 25, 23, 0.04);
-  --shadow-card-elevated: 0 8px 18px rgba(28, 25, 23, 0.06);
-  --shadow-card-dark: 0 16px 40px -20px rgba(0, 0, 0, 0.45);
-  --shadow-focus-primary: 0 0 0 3px rgba(204, 120, 92, 0.22);
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
-  /* font-family */
-  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-serif: "Cormorant Garamond", "Tiempos Headline", Garamond, "Times New Roman", serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
-
-  /* font-weight */
-  --font-weight-regular: 400;
-  --font-weight-medium: 500;
-  --font-weight-semibold: 600;
-  --font-weight-bold: 700;
-
-  /* font-size (paired with line-height where it makes sense) */
-  --text-xs: 0.6875rem;          /* 11px */
-  --text-xs--line-height: 1.4;
-  --text-sm: 0.75rem;            /* 12px */
-  --text-sm--line-height: 1.45;
-  --text-base: 0.875rem;         /* 14px */
-  --text-base--line-height: 1.55;
-  --text-md: 0.90625rem;         /* 14.5px */
-  --text-md--line-height: 1.55;
-  --text-lg: 1rem;               /* 16px */
-  --text-lg--line-height: 1.55;
-  --text-h3: 1.625rem;           /* 26px */
-  --text-h3--line-height: 1.1;
-  --text-h2: 2.375rem;           /* 38px */
-  --text-h2--line-height: 1.05;
-  --text-h1: 3rem;               /* 48px */
-  --text-h1--line-height: 1.05;
-  --text-hero: 3.625rem;         /* 58px (clamp upper bound) */
-  --text-hero--line-height: 1.05;
-
-  /* tracking */
-  --tracking-tighter: -1px;
-  --tracking-tight: -0.5px;
-  --tracking-normal: 0;
-  --tracking-wide: 0.16em;
-  --tracking-wider: 0.24em;
-
-  /* leading (standalone, for headings that need explicit override) */
-  --leading-tight: 1;
-  --leading-heading: 1.05;
-  --leading-snug: 1.4;
-  --leading-body: 1.55;
-  --leading-relaxed: 1.65;
+  --text-2xs: 11px;
+  --text-xs: 11.5px;
+  --text-sm: 12px;
+  --text-ctl: 12.5px;
+  --text-base: 13px;
+  --text-lg: 15px;
+  --text-h1: 20px;
+  --text-h1--line-height: 1.25;
+  --text-auth: 24px;
+  --text-auth--line-height: 1.25;
 }
 
-:root {
-  color: var(--color-ink);
-  background: var(--color-canvas);
-  font-family: var(--font-sans);
-}
-
-body {
-  margin: 0;
-}
-
-button,
-textarea {
-  font: inherit;
-}
-
-.panel {
-  border: 1px solid rgb(214 211 209);
-  background: rgba(255, 255, 255, 0.82);
-  border-radius: 8px;
-  padding: 16px;
-  box-shadow: 0 1px 0 rgba(28, 25, 23, 0.04);
-}
-
-.nav-pill {
-  border: 1px solid rgb(214 211 209);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-  padding: 8px 12px;
-  text-decoration: none;
-  transition:
-    background-color 160ms ease,
-    border-color 160ms ease,
-    color 160ms ease;
-}
-
-.nav-pill:hover,
-.nav-pill-active {
-  border-color: rgb(4 120 87);
-  background: rgb(236 253 245);
-  color: rgb(4 120 87);
-}
-
-.action-button {
-  border-radius: 999px;
-  background: rgb(4 120 87);
-  color: white;
-  padding: 8px 14px;
-  font-size: 0.875rem;
-  font-weight: 700;
-  outline: none;
-  transition: background-color 160ms ease;
-}
-
-.action-button:hover {
-  background: rgb(6 95 70);
-}
-
-.action-button:focus-visible {
-  box-shadow:
-    0 0 0 2px white,
-    0 0 0 4px rgb(4 120 87);
-}
-
-.status-chip {
-  flex: 0 0 auto;
-  border: 1px solid rgb(190 178 160);
-  border-radius: 999px;
-  background: rgb(250 247 242);
-  padding: 4px 8px;
-  font-size: 0.6875rem;
-  font-weight: 700;
-  color: rgb(87 83 78);
-}
-
-.workflow-canvas {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(150px, 1fr));
-  gap: 14px 30px;
-  overflow-x: auto;
-  border: 1px solid rgb(214 211 209);
-  border-radius: 8px;
-  background:
-    linear-gradient(rgba(120, 113, 108, 0.1) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(120, 113, 108, 0.1) 1px, transparent 1px),
-    #fbfaf7;
-  background-size: 28px 28px;
-  padding: 18px;
-}
-
-.workflow-block {
-  min-height: 118px;
-  border: 1px solid rgb(214 211 209);
-  border-radius: 8px;
-  background: white;
-  padding: 14px;
-  box-shadow: 0 8px 18px rgba(28, 25, 23, 0.06);
-}
-
-.workflow-source {
-  border-color: rgb(20 184 166);
-}
-
-.workflow-active {
-  border-color: rgb(37 99 235);
-  background: rgb(239 246 255);
-}
-
-.workflow-waiting,
-.workflow-locked {
-  border-color: rgb(217 119 6);
-  background: rgb(255 251 235);
-}
-
-.workflow-arrow {
-  align-self: center;
-  height: 2px;
-  min-width: 24px;
-  background: rgb(120 113 108);
-  position: relative;
-}
-
-.workflow-arrow::after {
-  content: "";
-  position: absolute;
-  right: -1px;
-  top: -4px;
-  width: 9px;
-  height: 9px;
-  border-right: 2px solid rgb(120 113 108);
-  border-top: 2px solid rgb(120 113 108);
-  transform: rotate(45deg);
-}
-
-.metric-green {
-  color: rgb(4 120 87);
-}
-
-.metric-amber {
-  color: rgb(180 83 9);
-}
-
-.metric-blue {
-  color: rgb(37 99 235);
-}
-
-@media (max-width: 900px) {
-  .workflow-canvas {
-    grid-template-columns: minmax(190px, 1fr);
+@layer base {
+  html,
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font: 13px/1.5 var(--font-sans);
+    font-variant-numeric: tabular-nums;
   }
 
-  .workflow-arrow {
-    width: 2px;
-    height: 24px;
-    justify-self: center;
-  }
-
-  .workflow-arrow::after {
-    right: -4px;
-    top: 14px;
-    transform: rotate(135deg);
+  #root {
+    height: 100vh;
   }
 }

@@ -1,29 +1,7 @@
 {
   "$schema": "https://schemas.tokens.studio/latest/tokens-schema.json",
   "radius": {
-    "xs": {
-      "$type": "dimension",
-      "$value": "4px"
-    },
-    "sm": {
-      "$type": "dimension",
-      "$value": "6px"
-    },
-    "md": {
-      "$type": "dimension",
-      "$value": "8px"
-    },
-    "input": {
-      "$type": "dimension",
-      "$value": "10px"
-    },
-    "card": {
-      "$type": "dimension",
-      "$value": "12px"
-    },
-    "pill": {
-      "$type": "dimension",
-      "$value": "9999px"
-    }
+    "ui": { "$type": "dimension", "$value": "6px" },
+    "kbd": { "$type": "dimension", "$value": "4px" }
   }
 }
