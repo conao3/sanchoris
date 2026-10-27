@@ -11,6 +11,7 @@ States:
   Push:
     Type: Task
     Resource: sanchoris:::git:push
+    ResultPath: null
     Parameters: { Repos.$: $.Repos }
     TimeoutSeconds: 300
     Retry:

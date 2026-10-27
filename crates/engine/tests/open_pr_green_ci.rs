@@ -13,15 +13,8 @@ const FIXTURE: &str = include_str!("../../config/tests/fixtures/open-pr-green-ci
 const FAILED_CHECK: &str = "acme/shop-web#52 (checkout_spec::flaky)";
 const CI_LOG: &str = "assertion failed: expected 3 items, got 2";
 
-const PUSH_RESOURCE: &str = "    Resource: sanchoris:::git:push\n";
-
 fn skill() -> String {
-    let discarded = format!("{PUSH_RESOURCE}    ResultPath: null\n");
-    if FIXTURE.contains(&discarded) {
-        return FIXTURE.to_string();
-    }
-    assert!(FIXTURE.contains(PUSH_RESOURCE));
-    FIXTURE.replace(PUSH_RESOURCE, &discarded)
+    FIXTURE.to_string()
 }
 
 fn input() -> Value {

@@ -13,7 +13,7 @@ fn parses_open_pr_green_ci() {
     let State::Task(push) = &def.states["Push"] else {
         panic!()
     };
-    assert_eq!(push.result_path, ResultPath::Root);
+    assert_eq!(push.result_path, ResultPath::Discard);
 }
 
 #[test]
