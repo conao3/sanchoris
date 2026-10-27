@@ -161,7 +161,9 @@ async fn labeled_issue_starts_a_running_task_with_the_documented_message() {
         (Some("started".into()), None)
     );
     assert_eq!(world.dynamo.all::<InboundEvent>().await.len(), 1);
-    assert_eq!(world.dynamo.all::<TriggerEvent>().await.len(), 1);
+    let events = world.dynamo.all::<TriggerEvent>().await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].task_id, Some(task.id));
     world
         .label_issue(
             "delivery-35-again",

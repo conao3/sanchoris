@@ -110,6 +110,7 @@ pub async fn record_trigger_event(
         result: None,
         reason: None,
         evaluated_at: None,
+        task_id: None,
     })?;
     insert_ref(tx, id, REF_TRIGGER_EVENT, key, Some(event.trigger_id))?;
     Ok(Recorded::New(id))
@@ -176,6 +177,14 @@ pub async fn create_task(tx: &mut TenantTx, task: &NewTask<'_>) -> Result<Record
     }
     let id = Uuid::new_v4();
     let now = Utc::now();
+    if let Some(trigger_event_id) = task.trigger_event_id {
+        let location = locate(tx, trigger_event_id, REF_TRIGGER_EVENT)
+            .await?
+            .ok_or_else(|| DbError::Missing(format!("trigger event {trigger_event_id}")))?;
+        let mut event = tx.require::<TriggerEvent>(&location.target).await?;
+        event.task_id = Some(id);
+        tx.put(&event)?;
+    }
     tx.insert(&Task {
         id,
         tenant_id,

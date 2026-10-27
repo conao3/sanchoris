@@ -883,6 +883,7 @@ pub struct TriggerEvent {
     pub result: Option<String>,
     pub reason: Option<String>,
     pub evaluated_at: Option<DateTime<Utc>>,
+    pub task_id: Option<Uuid>,
 }
 
 impl Entity for TriggerEvent {
@@ -902,6 +903,7 @@ impl Entity for TriggerEvent {
             .opt_s("result", self.result.as_ref())
             .opt_s("reason", self.reason.as_ref())
             .opt_time("evaluated_at", self.evaluated_at)
+            .opt_uuid("task_id", self.task_id)
             .s("gsi1pk", keys::trigger_events_index(self.tenant_id))
             .s("gsi1sk", keys::time_id(self.received_at, self.id));
     }
@@ -917,6 +919,7 @@ impl Entity for TriggerEvent {
             result: r.opt_s("result")?,
             reason: r.opt_s("reason")?,
             evaluated_at: r.opt_time("evaluated_at")?,
+            task_id: r.opt_uuid("task_id")?,
         })
     }
 }

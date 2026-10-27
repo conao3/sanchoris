@@ -144,4 +144,12 @@ mod tests {
         );
         assert!(schedule_name(envelope.id).len() <= 64);
     }
+
+    #[test]
+    fn rate_schedule_bodies_parse_with_their_scheduled_time() {
+        let body = r#"{"id":"00000000-0000-0000-0000-000000000000","job":{"type":"sweep_checks"},"scheduledTime":"2026-10-27T09:00:00Z"}"#;
+        let envelope = Envelope::parse(body).unwrap();
+        assert_eq!(envelope.job, Job::SweepChecks);
+        assert_eq!(envelope.job.group(), "sweep:checks");
+    }
 }
