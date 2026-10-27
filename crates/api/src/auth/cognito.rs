@@ -104,8 +104,8 @@ impl IdentityVerifier for CognitoVerifier {
             return Err(AuthError::Unauthorized);
         }
         let display_name = display_name(
-            claims.username.as_deref(),
             claims.email.as_deref(),
+            claims.username.as_deref(),
             &claims.sub,
         );
         Ok(Identity {
@@ -116,10 +116,10 @@ impl IdentityVerifier for CognitoVerifier {
     }
 }
 
-fn display_name(username: Option<&str>, email: Option<&str>, subject: &str) -> String {
-    let candidate = username
-        .map(str::to_string)
-        .or_else(|| email.and_then(|value| value.split('@').next().map(str::to_string)))
+fn display_name(email: Option<&str>, username: Option<&str>, subject: &str) -> String {
+    let candidate = email
+        .and_then(|value| value.split('@').next().map(str::to_string))
+        .or_else(|| username.map(str::to_string))
         .unwrap_or_else(|| subject.to_string());
     let slug = slugify(&candidate);
     if slug.is_empty() {
@@ -156,12 +156,12 @@ mod tests {
     }
 
     #[test]
-    fn display_names_prefer_the_username_then_the_email() {
-        assert_eq!(display_name(Some("Google_1234"), None, "s"), "google-1234");
+    fn display_names_prefer_the_email_then_the_username() {
         assert_eq!(
-            display_name(None, Some("Mika.Dev@example.com"), "s"),
+            display_name(Some("Mika.Dev@example.com"), Some("Google_1234"), "s"),
             "mika-dev"
         );
+        assert_eq!(display_name(None, Some("Google_1234"), "s"), "google-1234");
         assert_eq!(display_name(None, None, "abc-123"), "abc-123");
     }
 }
