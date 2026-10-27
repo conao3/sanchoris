@@ -556,6 +556,45 @@ CREATE TABLE IF NOT EXISTS sanchoris.usage_alerts (
     UNIQUE (tenant_id, period_start, metric, threshold_percent)
 );
 
+CREATE TABLE IF NOT EXISTS sanchoris.run_channel_instances (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES sanchoris.tenants(id) ON DELETE CASCADE,
+    run_id uuid NOT NULL REFERENCES sanchoris.runs(id) ON DELETE CASCADE,
+    instance_id uuid NOT NULL,
+    seq_offset bigint NOT NULL CHECK (seq_offset >= 0),
+    processed_seq bigint NOT NULL DEFAULT 0 CHECK (processed_seq >= 0),
+    started boolean NOT NULL DEFAULT false,
+    connected_at timestamptz NOT NULL,
+    UNIQUE (run_id, instance_id),
+    UNIQUE (run_id, seq_offset)
+);
+
+CREATE TABLE IF NOT EXISTS sanchoris.run_log_entries (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES sanchoris.tenants(id) ON DELETE CASCADE,
+    run_id uuid NOT NULL REFERENCES sanchoris.runs(id) ON DELETE CASCADE,
+    seq bigint NOT NULL,
+    turn integer NOT NULL CHECK (turn > 0),
+    kind text NOT NULL CHECK (kind IN ('text', 'tool_use', 'tool_result', 'item', 'system', 'log')),
+    data jsonb NOT NULL,
+    at timestamptz NOT NULL,
+    UNIQUE (run_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS sanchoris.chat_messages (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES sanchoris.tenants(id) ON DELETE CASCADE,
+    task_id uuid NOT NULL REFERENCES sanchoris.tasks(id) ON DELETE CASCADE,
+    run_id uuid REFERENCES sanchoris.runs(id) ON DELETE SET NULL,
+    outbox_id uuid UNIQUE,
+    channel jsonb,
+    author_kind text NOT NULL CHECK (author_kind IN ('agent', 'member')),
+    member_id uuid REFERENCES sanchoris.members(id) ON DELETE SET NULL,
+    text text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CHECK ((author_kind = 'member') = (member_id IS NOT NULL))
+);
+
 CREATE INDEX IF NOT EXISTS members_tenant_idx ON sanchoris.members (tenant_id);
 CREATE UNIQUE INDEX IF NOT EXISTS invitations_pending_email_idx ON sanchoris.invitations (tenant_id, email) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS audit_events_tenant_at_idx ON sanchoris.audit_events (tenant_id, at);
@@ -581,6 +620,7 @@ CREATE INDEX IF NOT EXISTS run_events_unprocessed_idx ON sanchoris.run_events (r
 CREATE INDEX IF NOT EXISTS run_outbox_undelivered_idx ON sanchoris.run_outbox (run_id, seq) WHERE delivered_at IS NULL;
 CREATE INDEX IF NOT EXISTS resource_invocations_pending_idx ON sanchoris.resource_invocations (created_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS check_waits_waiting_idx ON sanchoris.check_waits (next_poll_at) WHERE status = 'waiting';
+CREATE INDEX IF NOT EXISTS chat_messages_task_created_idx ON sanchoris.chat_messages (task_id, created_at);
 
 CREATE OR REPLACE TRIGGER audit_events_reject_update_delete
     BEFORE UPDATE OR DELETE ON sanchoris.audit_events
@@ -600,7 +640,8 @@ BEGIN
         'sessions', 'skills', 'triggers', 'trigger_events', 'tasks', 'task_dependencies',
         'change_requests', 'runs', 'workspaces', 'skill_runs', 'state_entries',
         'outputs', 'usage', 'due_jobs', 'inbound_events', 'run_events', 'run_outbox',
-        'resource_invocations', 'check_waits', 'approval_waits', 'usage_alerts'
+        'resource_invocations', 'check_waits', 'approval_waits', 'usage_alerts',
+        'run_channel_instances', 'run_log_entries', 'chat_messages'
     ]
     LOOP
         EXECUTE format('ALTER TABLE sanchoris.%I ENABLE ROW LEVEL SECURITY', table_name);

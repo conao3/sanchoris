@@ -1,3 +1,4 @@
+pub mod billing;
 pub mod channel;
 pub mod db;
 pub mod github;
