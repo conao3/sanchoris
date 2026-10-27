@@ -23,3 +23,4 @@ base64 = "0.22"
 
 [dev-dependencies]
 sanchoris-core = { path = "../core", features = ["test-support"] }
+tempfile = "3"

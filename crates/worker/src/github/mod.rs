@@ -18,7 +18,6 @@ use crate::ports::{
 };
 use transport::{HttpRequest, HttpResponse, HttpTransport, ReqwestTransport};
 
-pub const GITHUB_API_URL: &str = "https://api.github.com";
 const PER_PAGE: usize = 100;
 
 #[derive(Serialize)]
@@ -134,7 +133,8 @@ impl GitHubApi {
         let key =
             std::env::var("GITHUB_APP_PRIVATE_KEY").expect("GITHUB_APP_PRIVATE_KEY must be set");
         let auth = AppAuth::new(&app_id, &key).expect("GITHUB_APP_PRIVATE_KEY is an RSA PEM key");
-        Self::new(GITHUB_API_URL, Arc::new(ReqwestTransport::new()), auth)
+        let base_url = std::env::var("GITHUB_API_URL").expect("GITHUB_API_URL must be set");
+        Self::new(&base_url, Arc::new(ReqwestTransport::new()), auth)
     }
 
     fn headers(token: &str) -> Vec<(String, String)> {

@@ -228,7 +228,7 @@ pub(crate) fn installation_for(installations: &[Installation], repo: &str) -> Re
     ports::installation_for(installations, repo).map_err(WorkerError::Invalid)
 }
 
-pub async fn run_from_env() {
+pub async fn run_from_env(shutdown: tokio::sync::watch::Receiver<bool>) {
     let control = runner::LocalRunnerConfig::from_env();
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = PgPool::connect(&database_url)
@@ -245,11 +245,5 @@ pub async fn run_from_env() {
         runner: Arc::new(runner::LocalProcessRunner::new(control, clock)),
     };
     let worker = Arc::new(Worker::new(pool, deps, Settings::default()));
-    let (sender, receiver) = tokio::sync::watch::channel(false);
-    let signal = tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        let _ = sender.send(true);
-    });
-    worker.run(receiver).await;
-    signal.abort();
+    worker.run(shutdown).await;
 }

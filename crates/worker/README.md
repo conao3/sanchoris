@@ -55,4 +55,6 @@ The task branch is `sanchoris/<task id>`.
 
 ## Environment
 
-`DATABASE_URL`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `RUN_TOKEN_SIGNING_KEY`, `SANCHORIS_WORKSPACE_COMMAND`, `SANCHORIS_CONTROL_URL`, `SANCHORIS_SOCKET_DIR`. The api also needs `TASK_TOKEN_SIGNING_KEY` for approvals. All are required.
+`DATABASE_URL`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_API_URL`, `RUN_TOKEN_SIGNING_KEY`, `SANCHORIS_WORKSPACE_COMMAND`, `SANCHORIS_CONTROL_URL`, `SANCHORIS_SOCKET_DIR`, `SANCHORIS_WORKSPACES_DIR`, `SANCHORIS_GIT_URL`. The api also needs `TASK_TOKEN_SIGNING_KEY` for approvals. All are required.
+
+`LocalProcessRunner` creates a directory per workspace under `SANCHORIS_WORKSPACES_DIR`, clones each repository from `SANCHORIS_GIT_URL/<owner>/<name>.git` into a directory named after the repository, checks out the task branch (from `origin` when it exists), and starts `SANCHORIS_WORKSPACE_COMMAND` there with `SANCHORIS_RUN_ID`, `SANCHORIS_RUN_TOKEN`, `SANCHORIS_CONTROL_URL`, `SANCHORIS_SOCKET_PATH`, and `SANCHORIS_WORKSPACE_DIR`. Stopping the workspace kills the process and removes the directory.
