@@ -12,7 +12,7 @@ import {
 } from "./protocol.ts";
 
 type ReplyMessage = SkillResponseMessage | RecordUploadResponseMessage;
-type InboundCommand = Exclude<InboundMessage, ReplyMessage | { type: "ack" }>;
+type InboundCommand = Exclude<InboundMessage, ReplyMessage | { type: "ack" | "close" }>;
 
 interface PendingReply {
   resolve: (message: ReplyMessage) => void;
@@ -173,6 +173,9 @@ export class RunChannel {
       case "ack":
         this.unacked = this.unacked.filter((message) => message.seq > parsed.seq);
         if (this.unacked.length === 0) for (const waiter of this.ackWaiters.splice(0)) waiter();
+        return;
+      case "close":
+        this.fail(new ProtocolError(`Run channel closed by control plane: ${parsed.code} ${parsed.reason}`));
         return;
       case "skill_response":
       case "record_upload_response": {

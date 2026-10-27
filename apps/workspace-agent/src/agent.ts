@@ -67,7 +67,7 @@ export class WorkspaceAgent {
     return this.exitCode;
   }
 
-  private handleCommand(message: Exclude<InboundMessage, { type: "ack" | "skill_response" | "record_upload_response" }>): void {
+  private handleCommand(message: Exclude<InboundMessage, { type: "ack" | "close" | "skill_response" | "record_upload_response" }>): void {
     switch (message.type) {
       case "start":
         if (this.start) {

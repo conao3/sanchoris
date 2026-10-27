@@ -221,6 +221,13 @@ describe("workspace agent with a fake worker", () => {
     control.sendRaw(JSON.stringify({ type: "start", runId: RUN_ID }));
     expect(await exitCode).toBe(1);
   });
+
+  it("exits with an error without reconnecting when the control plane sends close", async () => {
+    const { control, exitCode } = await setup(async () => "unused");
+    await control.waitFor("hello");
+    control.sendRaw(JSON.stringify({ type: "close", runId: RUN_ID, code: 4000, reason: "expected seq 4, received 9" }));
+    expect(await exitCode).toBe(1);
+  });
 });
 
 describe("session record round trip", () => {

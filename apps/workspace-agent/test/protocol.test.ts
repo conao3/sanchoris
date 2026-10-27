@@ -6,6 +6,7 @@ import type { ZodType } from "zod";
 
 import {
   AckMessage,
+  CloseMessage,
   EventMessage,
   ExecMessage,
   ExecResultMessage,
@@ -40,6 +41,7 @@ const inbound: Record<string, ZodType> = {
   skill_response: SkillResponseMessage,
   record_upload_response: RecordUploadResponseMessage,
   ack: AckMessage,
+  close: CloseMessage,
 };
 
 const outbound: Record<string, ZodType> = {

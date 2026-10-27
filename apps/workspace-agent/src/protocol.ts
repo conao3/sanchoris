@@ -118,6 +118,13 @@ export const AckMessage = z.strictObject({
   seq: z.number().int().positive(),
 });
 
+export const CloseMessage = z.strictObject({
+  type: z.literal("close"),
+  runId: RunId,
+  code: z.number().int().min(4000).max(4999),
+  reason: z.string(),
+});
+
 export const InboundMessage = z.union([
   StartMessage,
   UserMessage,
@@ -127,6 +134,7 @@ export const InboundMessage = z.union([
   SkillResponseMessage,
   RecordUploadResponseMessage,
   AckMessage,
+  CloseMessage,
 ]);
 export type InboundMessage = z.infer<typeof InboundMessage>;
 

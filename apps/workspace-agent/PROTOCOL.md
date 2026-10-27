@@ -24,7 +24,8 @@ The worker runs with the agent's environment, so `sanchoris` must be on `PATH`.
 - The control plane rejects an invalid or expired token at the upgrade with HTTP `401` (or `403`). The agent treats that as fatal and exits with code 1.
 - Each WebSocket text frame is one JSON object. Every object has `type` and `runId`. `runId` is an opaque string equal to `SANCHORIS_RUN_ID`. Unknown fields are rejected on both sides.
 - An inbound message that fails validation, or carries another `runId`, is a protocol error: the agent exits with code 1.
-- The control plane ends a Run by sending `shutdown`, or by closing the socket with a code in `4000`–`4999` (the agent exits with code 1 without reconnecting). Any other close or network error makes the agent reconnect with exponential backoff (0.5 s doubling up to 30 s, reset after a successful upgrade).
+- In AWS the control plane is an API Gateway WebSocket API: a Lambda authorizer checks the `Authorization` header on `$connect`, and messages are answered from Lambda through the API Gateway Management API. Locally `sanchoris all` serves the same protocol at `/runs/channel`.
+- The control plane ends a Run by sending `shutdown`, or rejects the agent by sending `close` (a code in `4000`–`4999` and a reason) and closing the socket; the agent exits with code 1 without reconnecting. The agent treats a WebSocket close code in `4000`–`4999` the same way. Any other close or network error makes the agent reconnect with exponential backoff (0.5 s doubling up to 30 s, reset after a successful upgrade).
 
 ## Delivery
 
@@ -46,6 +47,7 @@ The worker runs with the agent's environment, so `sanchoris` must be on `PATH`.
 | `skill_response` | `requestId`, `ok`, `result` or `error` | Reply to `skill_request` |
 | `record_upload_response` | `requestId`, `ok`, `url`, `headers`, `key` or `error` | Reply to `record_upload_request` |
 | `ack` | `seq` | Cumulative acknowledgement of outbound messages |
+| `close` | `code`, `reason` | The control plane rejects this agent (`4000`: protocol error). The agent exits with code 1 without reconnecting |
 
 `start` fields:
 
@@ -133,6 +135,10 @@ The worker runs with the agent's environment, so `sanchoris` must be on `PATH`.
 
 ```json
 { "type": "ack", "runId": "42", "seq": 17 }
+```
+
+```json
+{ "type": "close", "runId": "42", "code": 4000, "reason": "expected seq 4, received 9" }
 ```
 
 ## Messages: agent to control plane
