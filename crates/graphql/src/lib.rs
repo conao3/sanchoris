@@ -18,7 +18,7 @@ use async_graphql::{EmptySubscription, Schema};
 use sanchoris_core::db::Store;
 
 pub use context::{AuthUser, ClientIp};
-pub use crypto::{AesGcmEncryptor, CREDENTIAL_KEY_ENV, LOCAL_KEY_ID};
+pub use crypto::{AesGcmEncryptor, LOCAL_KEY_ID};
 pub use mutation::MutationRoot;
 pub use ports::{
     AuditExportPort, ChatDispatcher, CheckoutPort, Clock, ConfigLocation, ConfigProblem,

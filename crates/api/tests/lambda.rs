@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use sanchoris_api::channel::{Channel, ConnectionSender, SendError};
+use sanchoris_api::graphql;
 use sanchoris_api::lambda::{
     self, AuthorizerEvent, BatchResponse, ItemFailure, LambdaError, SqsEvent, StreamEvent,
     WebSocketEvent, WebSocketResponse,
@@ -20,12 +21,14 @@ use sanchoris_core::keys;
 use sanchoris_core::local::{MemoryQueue, MemoryScheduler};
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_core::tokens::{RunTokenSigner, Signer};
+use sanchoris_graphql::ClientIp;
 use sanchoris_worker::github::transport::ReqwestTransport;
 use sanchoris_worker::github::{AppAuth, GitHubApi};
 use sanchoris_worker::resources::GitHubResources;
 use sanchoris_worker::{Deps, Settings, Worker};
 use serde_json::{Value, json};
 use support::{NoWorkspaces, RUN_KEY, rsa_key, seed, task_with_run};
+use tower::ServiceExt;
 use uuid::Uuid;
 
 #[derive(Default)]
@@ -416,4 +419,32 @@ async fn the_stream_relay_sends_due_jobs_and_schedules_later_ones() {
         lambda::relay_stream(&queue, &scheduler, now, &broken).await,
         failures(&["5", "6"])
     );
+}
+
+async fn client_ip_of(event: Value) -> (u16, String) {
+    let request: lambda_http::request::LambdaRequest = serde_json::from_value(event).unwrap();
+    let request =
+        lambda_http::Request::from(request).map(|body| axum::body::Body::from(body.to_vec()));
+    let router = axum::Router::new()
+        .route(
+            "/ip",
+            axum::routing::get(
+                |axum::Extension(ip): axum::Extension<ClientIp>| async move { ip.0.to_string() },
+            ),
+        )
+        .layer(axum::middleware::from_fn(graphql::gateway_ip));
+    let response = router.oneshot(request).await.unwrap();
+    let status = response.status().as_u16();
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    (status, String::from_utf8(body.to_vec()).unwrap())
+}
+
+#[tokio::test]
+async fn the_api_function_takes_the_client_ip_from_the_http_api_request_context() {
+    let event = fixture("http.json", &[("sourceIp", "203.0.113.7".to_string())]);
+    assert_eq!(client_ip_of(event).await, (200, "203.0.113.7".to_string()));
+    let unparsable = fixture("http.json", &[("sourceIp", "not-an-ip".to_string())]);
+    assert_eq!(client_ip_of(unparsable).await.0, 500);
 }

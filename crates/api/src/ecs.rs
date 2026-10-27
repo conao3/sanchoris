@@ -8,11 +8,11 @@ use aws_sdk_ecs::types::{
 };
 use chrono::Duration;
 use sanchoris_core::clock::Clock;
-use sanchoris_core::tokens::{RUN_TOKEN_SIGNING_KEY_ENV, RunTokenSigner, Signer};
+use sanchoris_core::tokens::RunTokenSigner;
 use sanchoris_worker::ports::{RunnerError, RunnerPort, WorkspaceHandle, WorkspaceSpec};
 use uuid::Uuid;
 
-use crate::config::{ConfigError, Reader};
+use crate::config::{ConfigError, Reader, Secrets, run_tokens};
 
 pub const PLATFORM: &str = "ecs";
 const TOKEN_TTL_HOURS: i64 = 12;
@@ -39,7 +39,7 @@ fn list(value: &str) -> Vec<String> {
 }
 
 impl EcsRunnerConfig {
-    pub fn from_env() -> Result<Self, ConfigError> {
+    pub fn load(secrets: &Secrets) -> Result<Self, ConfigError> {
         let mut env = Reader::new();
         let cluster = env.get("SANCHORIS_ECS_CLUSTER");
         let task_definition = env.get("SANCHORIS_ECS_TASK_DEFINITION");
@@ -48,12 +48,7 @@ impl EcsRunnerConfig {
         let security_groups = env.get("SANCHORIS_ECS_SECURITY_GROUPS");
         let control_url = env.get("SANCHORIS_CONTROL_URL");
         let git_url = env.get("SANCHORIS_GIT_URL");
-        let run_key = env.get(RUN_TOKEN_SIGNING_KEY_ENV);
         env.finish()?;
-        let signer = Signer::new(run_key.as_bytes()).map_err(|error| ConfigError::Invalid {
-            name: RUN_TOKEN_SIGNING_KEY_ENV,
-            message: error.to_string(),
-        })?;
         Ok(Self {
             cluster,
             task_definition,
@@ -62,7 +57,7 @@ impl EcsRunnerConfig {
             security_groups: list(&security_groups),
             control_url,
             git_url: git_url.trim_end_matches('/').to_string(),
-            run_tokens: RunTokenSigner::new(signer),
+            run_tokens: run_tokens(secrets)?,
         })
     }
 }

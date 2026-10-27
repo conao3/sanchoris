@@ -10,6 +10,7 @@ use sanchoris_core::items::{Guard, Integration, Member, Membership, User, uniq};
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
 use sanchoris_core::store::retry;
+use sanchoris_graphql::GithubConnectUrl;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -127,8 +128,10 @@ impl GitHubLinks {
     pub fn new(config: Arc<ApiConfig>) -> Self {
         Self { config }
     }
+}
 
-    pub fn link_account(&self, user_id: Uuid) -> String {
+impl GithubConnectUrl for GitHubLinks {
+    fn link_account(&self, user_id: Uuid) -> String {
         let state = issue_state(
             &self.config.oauth_state_key,
             OAuthState::Link { user_id },
@@ -137,7 +140,7 @@ impl GitHubLinks {
         authorize_url(&self.config, &state)
     }
 
-    pub fn install_app(&self, tenant_id: Uuid, user_id: Uuid) -> String {
+    fn install_app(&self, tenant_id: Uuid, user_id: Uuid) -> String {
         let state = issue_state(
             &self.config.oauth_state_key,
             OAuthState::Install { tenant_id, user_id },

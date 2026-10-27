@@ -3,14 +3,14 @@ use std::sync::Arc;
 use lambda_runtime::{LambdaEvent, service_fn};
 use sanchoris_api::channel::Channel;
 use sanchoris_api::channel::gateway::GatewaySender;
-use sanchoris_api::config::ChannelConfig;
+use sanchoris_api::config::{ChannelConfig, RUN_TOKEN_SECRETS, Secrets};
 use sanchoris_api::lambda::{self, WebSocketEvent};
 use sanchoris_api::records::s3_records;
 
 #[tokio::main]
 async fn main() -> Result<(), lambda_runtime::Error> {
-    let config = ChannelConfig::from_env()?;
     let sdk = aws_config::load_from_env().await;
+    let config = ChannelConfig::load(&Secrets::from_ssm(&sdk, &RUN_TOKEN_SECRETS).await?)?;
     let channel = Channel {
         store: lambda::store(&sdk)?,
         run_tokens: config.run_tokens,

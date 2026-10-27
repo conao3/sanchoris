@@ -30,11 +30,18 @@ name = "relay"
 path = "src/bin/relay.rs"
 
 [dependencies]
+sanchoris-config.workspace = true
 sanchoris-core.workspace = true
+sanchoris-graphql.workspace = true
 sanchoris-worker.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml_ng.workspace = true
 thiserror.workspace = true
+async-graphql = "7.2.1"
+aws-sdk-ssm = "1"
+rust-embed = "8.13"
+mime_guess = "2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
@@ -59,3 +66,4 @@ futures-util = { version = "0.3", features = ["sink"] }
 sanchoris-core = { path = "../core", features = ["test-support"] }
 tempfile = "3"
 tokio-tungstenite = "0.28"
+tower = { version = "0.5", features = ["util"] }

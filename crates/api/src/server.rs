@@ -5,14 +5,16 @@ use axum::Router;
 use sanchoris_core::db::Store;
 use sanchoris_core::local::{MemoryQueue, MemoryScheduler};
 use sanchoris_core::tokens::RunTokenSigner;
+use sanchoris_worker::Worker;
 use sanchoris_worker::driver::LocalDriver;
 use sanchoris_worker::error::WorkerError;
-use sanchoris_worker::{Deps, Settings, Worker};
 use tokio::sync::watch;
 
 use crate::app::{AppState, router};
 use crate::channel::Channel;
 use crate::channel::local::{self as local_channel, LocalChannel, LocalConnections};
+use crate::frontend::Frontend;
+use crate::graphql;
 use crate::records::{LocalRecordStore, RecordStore};
 
 pub const QUEUE_INTERVAL: Duration = Duration::from_millis(100);
@@ -41,26 +43,28 @@ pub struct LocalServer {
 }
 
 impl LocalServer {
-    pub fn new(
-        state: AppState,
-        channel: LocalChannel,
-        local_records: Option<Arc<LocalRecordStore>>,
-        queue: Arc<MemoryQueue>,
-        scheduler: Arc<MemoryScheduler>,
-        deps: Deps,
-        settings: Settings,
-    ) -> Self {
-        let worker = Arc::new(Worker::new(state.store.clone(), deps, settings));
-        let router = router(state).merge(local_channel::router(channel));
-        let router = match local_records {
+    pub fn new(parts: LocalParts) -> Self {
+        let router =
+            router(parts.state, parts.frontend).merge(local_channel::router(parts.channel));
+        let router = match parts.local_records {
             Some(records) => router.nest_service("/records", records.router()),
             None => router,
         };
         Self {
-            router,
-            driver: Arc::new(LocalDriver::new(worker, queue, scheduler)),
+            router: router.layer(axum::middleware::from_fn(graphql::peer_ip)),
+            driver: Arc::new(LocalDriver::new(parts.worker, parts.queue, parts.scheduler)),
         }
     }
+}
+
+pub struct LocalParts {
+    pub state: AppState,
+    pub frontend: Frontend,
+    pub channel: LocalChannel,
+    pub local_records: Option<Arc<LocalRecordStore>>,
+    pub queue: Arc<MemoryQueue>,
+    pub scheduler: Arc<MemoryScheduler>,
+    pub worker: Arc<Worker>,
 }
 
 fn report(result: Result<usize, WorkerError>) {
@@ -103,10 +107,15 @@ pub async fn serve(
     shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let driver = tokio::spawn(drive(server.driver.clone(), shutdown.clone()));
-    let served = axum::serve(listener, server.router)
-        .with_graceful_shutdown(stopped(shutdown))
-        .await
-        .map_err(|error| format!("serve: {error}"));
+    let served = axum::serve(
+        listener,
+        server
+            .router
+            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(stopped(shutdown))
+    .await
+    .map_err(|error| format!("serve: {error}"));
     driver
         .await
         .map_err(|error| format!("the worker stopped: {error}"))?;

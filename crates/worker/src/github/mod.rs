@@ -16,7 +16,7 @@ use crate::ports::{
     CheckRun, ConfigSource, GitHubClient, GitHubError, GitHubReader, IssueComment, IssueRef,
     IssueRelations, MergeResult, NewPullRequest, PullRequest,
 };
-use transport::{HttpRequest, HttpResponse, HttpTransport, ReqwestTransport};
+use transport::{HttpRequest, HttpResponse, HttpTransport};
 
 const PER_PAGE: usize = 100;
 
@@ -161,15 +161,6 @@ impl GitHubApi {
             transport,
             auth,
         }
-    }
-
-    pub fn from_env() -> Self {
-        let app_id = std::env::var("GITHUB_APP_ID").expect("GITHUB_APP_ID must be set");
-        let key =
-            std::env::var("GITHUB_APP_PRIVATE_KEY").expect("GITHUB_APP_PRIVATE_KEY must be set");
-        let auth = AppAuth::new(&app_id, &key).expect("GITHUB_APP_PRIVATE_KEY is an RSA PEM key");
-        let base_url = std::env::var("GITHUB_API_URL").expect("GITHUB_API_URL must be set");
-        Self::new(&base_url, Arc::new(ReqwestTransport::new()), auth)
     }
 
     fn headers(token: &str) -> Vec<(String, String)> {

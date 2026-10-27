@@ -15,9 +15,14 @@ use chrono::Utc;
 use reqwest::redirect::Policy;
 use sanchoris_api::app::AppState;
 use sanchoris_api::auth::{AuthError, Identity, IdentityVerifier};
-use sanchoris_api::config::{ApiConfig, CognitoConfig, GitHubConfig, StripeConfig};
+use sanchoris_api::config::{
+    ApiConfig, CognitoConfig, CredentialKey, GitHubAppConfig, GitHubConfig, RecordsConfig,
+    StripeConfig,
+};
+use sanchoris_api::frontend::Frontend;
+use sanchoris_api::graphql::{self, GraphqlPorts};
 use sanchoris_api::records::{LocalRecordStore, RecordStore};
-use sanchoris_api::server::{LocalServer, drive, local_channel};
+use sanchoris_api::server::{LocalParts, LocalServer, drive, local_channel};
 use sanchoris_api::signing::HmacKey;
 use sanchoris_core::clock::{Clock, SystemClock};
 use sanchoris_core::db::{REF_RUN, Store, insert_ref};
@@ -28,18 +33,18 @@ use sanchoris_core::model::TaskStatus;
 use sanchoris_core::store::Relay;
 use sanchoris_core::testing::{SeededTenant, TestDynamo};
 use sanchoris_core::tokens::{RunTokenSigner, Signer, TaskTokenSigner};
+use sanchoris_graphql::AesGcmEncryptor;
 use sanchoris_worker::driver::LocalDriver;
-use sanchoris_worker::github::transport::ReqwestTransport;
-use sanchoris_worker::github::{AppAuth, GitHubApi};
 use sanchoris_worker::ports::{RunnerError, RunnerPort, WorkspaceHandle, WorkspaceSpec};
 use sanchoris_worker::resources::GitHubResources;
 use sanchoris_worker::runner::{LocalProcessRunner, LocalRunnerConfig};
-use sanchoris_worker::{Deps, Settings};
+use sanchoris_worker::{Deps, Settings, Worker};
 use serde_json::{Value, json};
 use tokio::sync::watch;
 use uuid::Uuid;
 
 use fake_github::FakeGitHub;
+use fake_stripe::FakeStripe;
 
 pub const RUN_KEY: &[u8] = b"http-test-run-token-signing-key-0123";
 pub const TASK_KEY: [u8; 32] = [6u8; 32];
@@ -111,6 +116,7 @@ pub struct Api {
     pub store: Store,
     pub records: Arc<LocalRecordStore>,
     pub driver: Arc<LocalDriver>,
+    pub stripe: Arc<FakeStripe>,
     shutdown: watch::Sender<bool>,
 }
 
@@ -152,9 +158,14 @@ pub async fn start_api(
     driving: Driving,
 ) -> Api {
     let github_url = listen(github.router()).await;
+    let stripe = FakeStripe::new();
+    let stripe_url = listen(stripe.clone().router()).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let url = format!("http://{address}");
+    let records_dir = dir.join("records");
+    let records_key = HmacKey::strong(&[5u8; 32]).unwrap();
+    let private_key = rsa_key();
     let config = ApiConfig {
         public_url: url.clone(),
         cognito: CognitoConfig {
@@ -169,19 +180,27 @@ pub async fn start_api(
             web_url: github_url.clone(),
             api_url: github_url.clone(),
         },
+        github_app: GitHubAppConfig {
+            app_id: "1".into(),
+            private_key: private_key.clone(),
+            api_url: github_url.clone(),
+        },
         stripe: StripeConfig {
             webhook_secret: HmacKey::new(STRIPE_SECRET.as_bytes()).unwrap(),
+            secret_key: fake_stripe::SECRET_KEY.into(),
+            api_url: stripe_url,
         },
         task_tokens: TaskTokenSigner::new(Signer::new(&TASK_KEY).unwrap()),
         oauth_state_key: HmacKey::strong(&[7u8; 32]).unwrap(),
+        credential_key: CredentialKey(Arc::new(AesGcmEncryptor::new(&CREDENTIAL_KEY))),
+        records: RecordsConfig::Local {
+            dir: records_dir.clone(),
+            signing_key: records_key.clone(),
+        },
     };
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let direct = dynamo.direct_store(clock.clone());
-    let records = Arc::new(LocalRecordStore::new(
-        &dir.join("records"),
-        HmacKey::strong(&[5u8; 32]).unwrap(),
-        &url,
-    ));
+    let records = Arc::new(LocalRecordStore::new(&records_dir, records_key, &url));
     let run_tokens = RunTokenSigner::new(Signer::new(RUN_KEY).unwrap());
     let channel = local_channel(
         direct.store.clone(),
@@ -192,11 +211,7 @@ pub async fn start_api(
         .redirect(Policy::none())
         .build()
         .unwrap();
-    let github_app = Arc::new(GitHubApi::new(
-        &github_url,
-        Arc::new(ReqwestTransport::new()),
-        AppAuth::new("1", &rsa_key()).unwrap(),
-    ));
+    let github_app = Arc::new(config.github_app.client().unwrap());
     let runner: Arc<dyn RunnerPort> = match workspaces {
         Workspaces::None => Arc::new(NoWorkspaces),
         Workspaces::Agent {
@@ -230,22 +245,39 @@ pub async fn start_api(
         runner,
         pusher: Arc::new(channel.channel.clone()),
     };
-    let state = AppState {
-        store: direct.store.clone(),
-        config: Arc::new(config),
-        verifier: Arc::new(StubVerifier),
-        http: http.clone(),
-        github_app,
-    };
-    let server = LocalServer::new(
-        state,
-        channel,
-        Some(records.clone()),
-        direct.queue,
-        direct.scheduler,
-        deps,
-        Settings::default(),
+    let worker = Arc::new(Worker::new(direct.store.clone(), deps, Settings::default()));
+    let config = Arc::new(config);
+    let schema = sanchoris_graphql::build_schema(
+        direct.store.clone(),
+        graphql::deps(GraphqlPorts {
+            store: direct.store.clone(),
+            config: config.clone(),
+            http: http.clone(),
+            worker: worker.clone(),
+            github_app: github_app.clone(),
+            records: records.clone(),
+        }),
     );
+    let frontend_dir = dir.join("frontend");
+    std::fs::create_dir_all(frontend_dir.join("assets")).unwrap();
+    std::fs::write(frontend_dir.join("index.html"), FRONTEND_INDEX).unwrap();
+    std::fs::write(frontend_dir.join("assets/app.js"), FRONTEND_SCRIPT).unwrap();
+    let server = LocalServer::new(LocalParts {
+        state: AppState {
+            store: direct.store.clone(),
+            config,
+            verifier: Arc::new(StubVerifier),
+            http: http.clone(),
+            github_app,
+            schema,
+        },
+        frontend: Frontend::dir(frontend_dir).unwrap(),
+        channel,
+        local_records: Some(records.clone()),
+        queue: direct.queue,
+        scheduler: direct.scheduler,
+        worker,
+    });
     let (shutdown, receiver) = watch::channel(false);
     let driver = server.driver.clone();
     match driving {
@@ -253,16 +285,28 @@ pub async fn start_api(
         Driving::Full => tokio::spawn(drive(driver.clone(), receiver)),
     };
     let router = server.router;
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
     Api {
         url,
         http,
         store: direct.store,
         records,
         driver,
+        stripe,
         shutdown,
     }
 }
+
+pub const FRONTEND_INDEX: &str = "<!doctype html><title>Sanchoris</title><script type=\"module\" src=\"/assets/app.js\"></script>";
+pub const FRONTEND_SCRIPT: &str = "console.log('sanchoris');";
+pub const CREDENTIAL_KEY: [u8; 32] = [3u8; 32];
 
 pub const CONFIG_YAML: &str = r#"Version: 1
 Projects:
@@ -386,6 +430,13 @@ pub async fn seed(dynamo: &TestDynamo) -> Seeded {
             .put(&Guard::new(keys::uniq_key(kind, &value), tenant.user_id))
             .await;
     }
+    dynamo
+        .put(&Guard::of_tenant(
+            keys::uniq_key(uniq::SLUG, &format!("tenant-{}", tenant.user_id.simple())),
+            tenant.tenant_id,
+            tenant.tenant_id,
+        ))
+        .await;
     let integration_id = Uuid::new_v4();
     dynamo
         .put(&Integration {

@@ -239,19 +239,3 @@ pub(crate) fn installation_for(installations: &[Installation], repo: &str) -> Re
 pub async fn installation_for_repo(tx: &mut TenantTx, repo: &str) -> Result<i64> {
     installation_for(&installations(tx).await?, repo)
 }
-
-pub fn deps_from_env(pusher: Arc<dyn OutboxPusher>) -> (Deps, Arc<github::GitHubApi>) {
-    let control = runner::LocalRunnerConfig::from_env();
-    let clock: Arc<dyn Clock> = Arc::new(clock::SystemClock);
-    let api = Arc::new(github::GitHubApi::from_env());
-    let deps = Deps {
-        clock: Arc::clone(&clock),
-        github: api.clone(),
-        reader: api.clone(),
-        config_source: api.clone(),
-        resources: Arc::new(resources::GitHubResources::new(api.clone())),
-        runner: Arc::new(runner::LocalProcessRunner::new(control, clock)),
-        pusher,
-    };
-    (deps, api)
-}

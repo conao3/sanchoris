@@ -1,0 +1,29 @@
+{
+  "version": "2.0",
+  "routeKey": "$default",
+  "rawPath": "/ip",
+  "rawQueryString": "",
+  "headers": {
+    "host": "dev-sanchoris.sancode.dev",
+    "user-agent": "curl/8.9.1"
+  },
+  "requestContext": {
+    "accountId": "249899228725",
+    "apiId": "abc123defg",
+    "domainName": "dev-sanchoris.sancode.dev",
+    "domainPrefix": "dev-sanchoris",
+    "http": {
+      "method": "GET",
+      "path": "/ip",
+      "protocol": "HTTP/1.1",
+      "sourceIp": "{{sourceIp}}",
+      "userAgent": "curl/8.9.1"
+    },
+    "requestId": "Q2xpZW50SXA=",
+    "routeKey": "$default",
+    "stage": "$default",
+    "time": "27/Oct/2026:04:00:00 +0000",
+    "timeEpoch": 1824955200000
+  },
+  "isBase64Encoded": false
+}

@@ -95,18 +95,25 @@ fn check_key(tenant_id: Uuid, key: &str) -> Result<(), RecordError> {
     Ok(())
 }
 
+pub const TENANT_CONTEXT_KEY: &str = "sanchoris:tenant";
+
+pub fn encryption_context(tenant_id: Uuid) -> String {
+    base64::engine::general_purpose::STANDARD
+        .encode(serde_json::json!({ (TENANT_CONTEXT_KEY): tenant_id.to_string() }).to_string())
+}
+
 pub struct S3RecordStore {
     client: aws_sdk_s3::Client,
     bucket: String,
-    kms_key_prefix: String,
+    kms_key: String,
 }
 
 impl S3RecordStore {
-    pub fn new(config: &aws_config::SdkConfig, bucket: &str, kms_key_prefix: &str) -> Self {
+    pub fn new(config: &aws_config::SdkConfig, bucket: &str, kms_key: &str) -> Self {
         Self {
             client: aws_sdk_s3::Client::new(config),
             bucket: bucket.to_string(),
-            kms_key_prefix: kms_key_prefix.to_string(),
+            kms_key: kms_key.to_string(),
         }
     }
 
@@ -134,7 +141,9 @@ impl RecordStore for S3RecordStore {
             .bucket(&self.bucket)
             .key(key)
             .server_side_encryption(ServerSideEncryption::AwsKms)
-            .ssekms_key_id(format!("{}{tenant_id}", self.kms_key_prefix))
+            .ssekms_key_id(&self.kms_key)
+            .ssekms_encryption_context(encryption_context(tenant_id))
+            .bucket_key_enabled(false)
             .checksum_sha256(base64::engine::general_purpose::STANDARD.encode(digest))
             .presigned(Self::presigning()?)
             .await
@@ -169,7 +178,9 @@ impl RecordStore for S3RecordStore {
             .bucket(&self.bucket)
             .key(key)
             .server_side_encryption(ServerSideEncryption::AwsKms)
-            .ssekms_key_id(format!("{}{tenant_id}", self.kms_key_prefix))
+            .ssekms_key_id(&self.kms_key)
+            .ssekms_encryption_context(encryption_context(tenant_id))
+            .bucket_key_enabled(false)
             .body(body.into())
             .send()
             .await
@@ -183,10 +194,9 @@ pub fn s3_records(
     sdk: &aws_config::SdkConfig,
 ) -> Result<Arc<dyn RecordStore>, ConfigError> {
     match config {
-        RecordsConfig::S3 {
-            bucket,
-            kms_key_prefix,
-        } => Ok(Arc::new(S3RecordStore::new(sdk, bucket, kms_key_prefix))),
+        RecordsConfig::S3 { bucket, kms_key } => {
+            Ok(Arc::new(S3RecordStore::new(sdk, bucket, kms_key)))
+        }
         RecordsConfig::Local { .. } => Err(ConfigError::Invalid {
             name: "SANCHORIS_RECORDS_STORE",
             message: "Lambda functions store records in S3; set it to s3".into(),
@@ -385,5 +395,18 @@ mod tests {
         assert!(check_key(Uuid::new_v4(), &key).is_err());
         assert!(record_key(tenant, run, "../escape", 1).is_err());
         assert!(check_key(tenant, &format!("t/{tenant}/../x")).is_err());
+    }
+
+    #[test]
+    fn the_encryption_context_names_the_tenant() {
+        let tenant = Uuid::new_v4();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encryption_context(tenant))
+            .unwrap();
+        let context: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
+        assert_eq!(
+            context,
+            serde_json::json!({ "sanchoris:tenant": tenant.to_string() })
+        );
     }
 }

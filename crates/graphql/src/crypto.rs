@@ -7,7 +7,6 @@ use uuid::Uuid;
 
 use crate::ports::{Encrypted, Encryptor, PortError};
 
-pub const CREDENTIAL_KEY_ENV: &str = "SANCHORIS_CREDENTIAL_KEY";
 pub const LOCAL_KEY_ID: &str = "local-aes-256-gcm";
 const NONCE_LEN: usize = 12;
 
@@ -22,18 +21,13 @@ impl AesGcmEncryptor {
         }
     }
 
-    pub fn from_env() -> Result<Self, PortError> {
-        let encoded = std::env::var(CREDENTIAL_KEY_ENV)
-            .map_err(|_| PortError::Failed(format!("{CREDENTIAL_KEY_ENV} is not set")))?;
+    pub fn from_base64(encoded: &str) -> Result<Self, String> {
         let bytes = STANDARD
             .decode(encoded.trim())
-            .map_err(|e| PortError::Failed(format!("{CREDENTIAL_KEY_ENV} is not base64: {e}")))?;
-        let key: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-            PortError::Failed(format!(
-                "{CREDENTIAL_KEY_ENV} must decode to 32 bytes, got {}",
-                bytes.len()
-            ))
-        })?;
+            .map_err(|e| format!("not base64: {e}"))?;
+        let key: [u8; 32] = bytes
+            .try_into()
+            .map_err(|bytes: Vec<u8>| format!("must decode to 32 bytes, got {}", bytes.len()))?;
         Ok(Self::new(&key))
     }
 

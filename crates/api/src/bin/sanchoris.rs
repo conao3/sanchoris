@@ -4,19 +4,23 @@ use std::sync::Arc;
 use sanchoris_api::app::{AppState, http_client};
 use sanchoris_api::auth::cognito::CognitoVerifier;
 use sanchoris_api::config::{LocalConfig, RecordsConfig, STORE_ENV, WORKER_ENV, require};
+use sanchoris_api::frontend::Frontend;
+use sanchoris_api::graphql::{self, GraphqlPorts};
 use sanchoris_api::records::{LocalRecordStore, RecordStore, S3RecordStore};
-use sanchoris_api::server::{LocalServer, local_channel, serve};
+use sanchoris_api::server::{LocalParts, LocalServer, local_channel, serve};
 use sanchoris_core::clock::{Clock, SystemClock};
 use sanchoris_core::db::Store;
 use sanchoris_core::local::{DirBlobStore, MemoryQueue, MemoryScheduler};
 use sanchoris_core::store::Relay;
-use sanchoris_worker::{Settings, deps_from_env};
+use sanchoris_worker::resources::GitHubResources;
+use sanchoris_worker::runner::{LocalProcessRunner, LocalRunnerConfig};
+use sanchoris_worker::{Deps, Settings, Worker};
 use tokio::sync::watch;
 
 const USAGE: &str = "Usage: sanchoris all
 
-  all  Run the HTTP API, the Run channel, and the worker in one process
-       against DynamoDB Local (local development)";
+  all  Run the HTTP API, the Run channel, the worker, and the built frontend
+       in one process against DynamoDB Local (local development)";
 
 async fn signals(sender: watch::Sender<bool>) {
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -32,6 +36,7 @@ async fn run() -> Result<(), String> {
     let config = LocalConfig::from_env().map_err(|error| error.to_string())?;
     require(&STORE_ENV).map_err(|error| error.to_string())?;
     require(&WORKER_ENV).map_err(|error| error.to_string())?;
+    let frontend = Frontend::dir(config.frontend_dir.clone())?;
     let sdk = aws_config::load_from_env().await;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let queue = Arc::new(MemoryQueue::new(clock.clone()));
@@ -42,19 +47,15 @@ async fn run() -> Result<(), String> {
         Relay::Direct {
             queue: queue.clone(),
             scheduler: scheduler.clone(),
-            clock,
+            clock: clock.clone(),
         },
     )
     .map_err(|error| error.to_string())?;
     let (records, local_records): (Arc<dyn RecordStore>, Option<Arc<LocalRecordStore>>) =
         match &config.channel.records {
-            RecordsConfig::S3 {
-                bucket,
-                kms_key_prefix,
-            } => (
-                Arc::new(S3RecordStore::new(&sdk, bucket, kms_key_prefix)),
-                None,
-            ),
+            RecordsConfig::S3 { bucket, kms_key } => {
+                (Arc::new(S3RecordStore::new(&sdk, bucket, kms_key)), None)
+            }
             RecordsConfig::Local { dir, signing_key } => {
                 let local = Arc::new(LocalRecordStore::new(
                     dir,
@@ -64,27 +65,65 @@ async fn run() -> Result<(), String> {
                 (local.clone(), Some(local))
             }
         };
-    let channel = local_channel(store.clone(), config.channel.run_tokens.clone(), records);
-    let (deps, github_app) = deps_from_env(Arc::new(channel.channel.clone()));
+    let channel = local_channel(
+        store.clone(),
+        config.channel.run_tokens.clone(),
+        records.clone(),
+    );
+    let github_app = Arc::new(
+        config
+            .api
+            .github_app
+            .client()
+            .map_err(|error| error.to_string())?,
+    );
+    let worker = Arc::new(Worker::new(
+        store.clone(),
+        Deps {
+            clock: clock.clone(),
+            github: github_app.clone(),
+            reader: github_app.clone(),
+            config_source: github_app.clone(),
+            resources: Arc::new(GitHubResources::new(github_app.clone())),
+            runner: Arc::new(LocalProcessRunner::new(
+                LocalRunnerConfig::from_env(),
+                clock,
+            )),
+            pusher: Arc::new(channel.channel.clone()),
+        },
+        Settings::default(),
+    ));
     let http = http_client()?;
     let verifier = CognitoVerifier::new(config.api.cognito.clone(), http.clone())
         .map_err(|error| format!("COGNITO_USER_POOL_ID: {error}"))?;
-    let state = AppState {
-        store,
-        config: Arc::new(config.api),
-        verifier: Arc::new(verifier),
-        http,
-        github_app,
-    };
-    let server = LocalServer::new(
-        state,
+    let api = Arc::new(config.api);
+    let schema = sanchoris_graphql::build_schema(
+        store.clone(),
+        graphql::deps(GraphqlPorts {
+            store: store.clone(),
+            config: api.clone(),
+            http: http.clone(),
+            worker: worker.clone(),
+            github_app: github_app.clone(),
+            records,
+        }),
+    );
+    let server = LocalServer::new(LocalParts {
+        state: AppState {
+            store,
+            config: api,
+            verifier: Arc::new(verifier),
+            http,
+            github_app,
+            schema,
+        },
+        frontend,
         channel,
         local_records,
         queue,
         scheduler,
-        deps,
-        Settings::default(),
-    );
+        worker,
+    });
     let listener = tokio::net::TcpListener::bind(config.bind_addr)
         .await
         .map_err(|error| format!("bind {}: {error}", config.bind_addr))?;
