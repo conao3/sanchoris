@@ -1,15 +1,23 @@
 use async_graphql::{Context, ID, InputObject, Object, Result};
 use chrono::{DateTime, Utc};
 use sanchoris_config::Start;
-use sanchoris_core::model::TaskDefinition;
+use sanchoris_core::db::{self, REF_CONFIG_REVISION, REF_RUN, REF_TRIGGER};
+use sanchoris_core::item::format_time;
+use sanchoris_core::items::{
+    Child, ConfigRevision as RevisionItem, Dependency, InboundEvent, OutboxItem,
+    Output as OutputItem, Run as RunItem, RunEventItem, SkillRunItem, Task as TaskItem, TaskName,
+    Workspace as WorkspaceItem,
+};
+use sanchoris_core::keys;
+use sanchoris_core::model::{TaskDefinition, TaskStatus as CoreStatus};
+use sanchoris_core::store::{Index, Listing, SortKey};
 use sanchoris_core::tasks::task_branch;
 use serde_json::Value;
-use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::account::Member;
 use crate::config::Session;
-use crate::context::{Scope, tenant_tx};
+use crate::context::{Scope, tx};
 use crate::enums::{
     ChannelKind, ChatAuthorKind, LogLineKind, NeedsYouReason, OutputKind, OutputState,
     PendingReason, Provider, RequesterKind, RequiredSkillState, RunStatus, TaskStatus, WaitReason,
@@ -32,70 +40,39 @@ pub(crate) struct TaskFilter {
     pub active: Option<bool>,
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct TaskRow {
-    pub id: Uuid,
-    pub trigger_id: Uuid,
-    pub trigger_event_id: Option<Uuid>,
-    pub config_revision_id: Uuid,
-    pub name: String,
-    pub title: String,
-    pub status: String,
-    pub wait_reason: Option<String>,
-    pub resume_at: Option<DateTime<Utc>>,
-    pub snoozed_until: Option<DateTime<Utc>>,
-    pub nudges: i32,
-    pub definition: Value,
-    pub parent_task_id: Option<Uuid>,
-    pub channel: Option<Value>,
-    pub requested_by_member_id: Option<Uuid>,
-    pub error: Option<String>,
-    pub cause: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub started_at: Option<DateTime<Utc>>,
-    pub finished_at: Option<DateTime<Utc>>,
-    pub updated_at: DateTime<Utc>,
-}
-
-const TASK_SELECT: &str = "SELECT t.id, t.trigger_id, t.trigger_event_id, t.config_revision_id, t.name, t.title, \
-     t.status, t.wait_reason, t.resume_at, t.snoozed_until, t.nudges, t.definition, t.parent_task_id, \
-     t.channel, t.requested_by_member_id, t.error, t.cause, t.created_at, t.started_at, t.finished_at, \
-     t.updated_at FROM sanchoris.tasks t";
-
-const TERMINAL: &str = "('SUCCEEDED', 'FAILED', 'ABORTED')";
-
 pub(crate) struct Task {
     pub scope: Scope,
-    pub row: TaskRow,
+    pub row: TaskItem,
+}
+
+fn offers_skill(task: &TaskItem, name: &str) -> bool {
+    task.definition["Skills"]
+        .as_array()
+        .is_some_and(|skills| skills.iter().any(|skill| skill["Name"] == name))
 }
 
 impl Task {
-    async fn select(
+    async fn listed(
         ctx: &Context<'_>,
         scope: Scope,
-        condition: &str,
-        id: Option<Uuid>,
-        text: Option<&str>,
+        keep: impl Fn(&TaskItem) -> bool,
     ) -> Result<Vec<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, TaskRow>(sql!(
-            "{TASK_SELECT} WHERE t.tenant_id = $1 AND {condition}"
-        ))
-        .bind(scope.tenant_id)
-        .bind(id)
-        .bind(text)
-        .fetch_all(tx.conn())
-        .await?;
-        Ok(rows.into_iter().map(|row| Task { scope, row }).collect())
+        Ok(tx(ctx, scope.tenant_id)
+            .list::<TaskItem>(
+                &Listing::index(Index::Gsi1, keys::tasks_index(scope.tenant_id)),
+                keep,
+            )
+            .await?
+            .into_iter()
+            .map(|row| Task { scope, row })
+            .collect())
     }
 
     pub async fn find(ctx: &Context<'_>, scope: Scope, id: Uuid) -> Result<Option<Self>> {
-        Ok(
-            Self::select(ctx, scope, "t.id = $2 AND $3::text IS NULL", Some(id), None)
-                .await?
-                .into_iter()
-                .next(),
-        )
+        Ok(tx(ctx, scope.tenant_id)
+            .get::<TaskItem>(&keys::task_key(scope.tenant_id, id))
+            .await?
+            .map(|row| Task { scope, row }))
     }
 
     pub async fn load(ctx: &Context<'_>, scope: Scope, id: Uuid) -> Result<Self> {
@@ -104,34 +81,19 @@ impl Task {
             .ok_or_else(|| not_found(format!("task {id}")))
     }
 
-    pub async fn by_trigger_event(
-        ctx: &Context<'_>,
-        scope: Scope,
-        event_id: Uuid,
-    ) -> Result<Option<Self>> {
-        Ok(Self::select(
-            ctx,
-            scope,
-            "t.trigger_event_id = $2 AND $3::text IS NULL",
-            Some(event_id),
-            None,
-        )
-        .await?
-        .into_iter()
-        .next())
-    }
-
     pub async fn by_name(ctx: &Context<'_>, scope: Scope, name: &str) -> Result<Option<Self>> {
-        Ok(Self::select(
-            ctx,
-            scope,
-            "$2::uuid IS NULL AND t.name = $3 ORDER BY t.created_at DESC, t.id DESC LIMIT 1",
-            None,
-            Some(name),
-        )
-        .await?
-        .into_iter()
-        .next())
+        let latest = tx(ctx, scope.tenant_id)
+            .list::<TaskName>(
+                &Listing::index(Index::Gsi1, keys::task_name_index(scope.tenant_id, name))
+                    .descending()
+                    .limit(1),
+                |_| true,
+            )
+            .await?;
+        match latest.into_iter().next() {
+            Some(entry) => Self::find(ctx, scope, entry.task_id).await,
+            None => Ok(None),
+        }
     }
 
     pub async fn list(ctx: &Context<'_>, scope: Scope, filter: TaskFilter) -> Result<Vec<Self>> {
@@ -142,52 +104,54 @@ impl Task {
                 .collect::<Vec<_>>()
         });
         let trigger_id = filter.trigger_id.as_ref().map(parse_id).transpose()?;
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, TaskRow>(sql!(
-            "{TASK_SELECT} WHERE t.tenant_id = $1 \
-               AND ($2::text[] IS NULL OR t.status = ANY($2)) \
-               AND ($3::uuid IS NULL OR t.trigger_id = $3) \
-               AND ($4::text IS NULL OR EXISTS ( \
-                     SELECT 1 FROM jsonb_array_elements(t.definition->'Skills') s WHERE s->>'Name' = $4)) \
-               AND ($5::boolean IS NULL OR (t.status NOT IN {TERMINAL}) = $5) \
-             ORDER BY (t.status = 'NEEDS_YOU') DESC, t.updated_at DESC, t.id"
-        ))
-        .bind(scope.tenant_id)
-        .bind(statuses)
-        .bind(trigger_id)
-        .bind(filter.skill_name)
-        .bind(filter.active)
-        .fetch_all(tx.conn())
+        let mut tasks = Self::listed(ctx, scope, |task| {
+            statuses
+                .as_ref()
+                .is_none_or(|statuses| statuses.iter().any(|s| s == task.status.as_str()))
+                && trigger_id.is_none_or(|id| task.trigger_id == id)
+                && filter
+                    .skill_name
+                    .as_deref()
+                    .is_none_or(|name| offers_skill(task, name))
+                && filter
+                    .active
+                    .is_none_or(|active| task.status.is_terminal() != active)
+        })
         .await?;
-        Ok(rows.into_iter().map(|row| Task { scope, row }).collect())
+        tasks.sort_by(|a, b| {
+            let needs_you = |task: &Task| task.row.status == CoreStatus::NeedsYou;
+            (needs_you(b), b.row.updated_at, a.row.id).cmp(&(
+                needs_you(a),
+                a.row.updated_at,
+                b.row.id,
+            ))
+        });
+        Ok(tasks)
     }
 
     pub async fn chats(ctx: &Context<'_>, scope: Scope) -> Result<Vec<Self>> {
-        Self::select(
-            ctx,
-            scope,
-            "t.channel->>'source' IN ('web', 'slack') AND $2::uuid IS NULL AND $3::text IS NULL \
-             ORDER BY t.created_at DESC, t.id",
-            None,
-            None,
-        )
-        .await
+        let mut tasks = Self::listed(ctx, scope, |task| {
+            task.channel
+                .as_ref()
+                .and_then(|channel| channel["source"].as_str())
+                .is_some_and(|source| matches!(source, "web" | "slack"))
+        })
+        .await?;
+        tasks.sort_by(|a, b| (b.row.created_at, a.row.id).cmp(&(a.row.created_at, b.row.id)));
+        Ok(tasks)
     }
 
-    async fn related(
-        ctx: &Context<'_>,
-        scope: Scope,
-        condition: &str,
-        id: Uuid,
-    ) -> Result<Vec<Self>> {
-        Self::select(
-            ctx,
-            scope,
-            &format!("$3::text IS NULL AND {condition}"),
-            Some(id),
-            None,
-        )
-        .await
+    async fn found(ctx: &Context<'_>, scope: Scope, ids: Vec<Uuid>) -> Result<Vec<Self>> {
+        let mut tasks = Vec::new();
+        for id in ids {
+            tasks.push(Self::load(ctx, scope, id).await?);
+        }
+        tasks.sort_by(|a, b| (a.row.created_at, a.row.id).cmp(&(b.row.created_at, b.row.id)));
+        Ok(tasks)
+    }
+
+    fn pk(&self) -> String {
+        keys::task_pk(self.scope.tenant_id, self.row.id)
     }
 
     pub fn definition(&self) -> Result<TaskDefinition> {
@@ -207,34 +171,27 @@ impl Task {
     }
 
     pub fn status_value(&self) -> Result<TaskStatus> {
-        TaskStatus::from_db(&self.row.status)
+        TaskStatus::from_db(self.row.status.as_str())
     }
 
     pub async fn config_id(&self, ctx: &Context<'_>) -> Result<Uuid> {
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        Ok(
-            sqlx::query_scalar::<_, Uuid>("SELECT config_id FROM sanchoris.triggers WHERE id = $1")
-                .bind(self.row.trigger_id)
-                .fetch_one(tx.conn())
-                .await?,
-        )
+        let mut tx = tx(ctx, self.scope.tenant_id);
+        db::locate(&mut tx, self.row.trigger_id, REF_TRIGGER)
+            .await?
+            .and_then(|location| location.parent_id)
+            .ok_or_else(|| not_found(format!("trigger {}", self.row.trigger_id)))
     }
 
     pub async fn session_data(&self, ctx: &Context<'_>) -> Result<Session> {
         let definition = self.definition()?;
         let config_id = self.config_id(ctx).await?;
         let name = definition.session.name;
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        let id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM sanchoris.sessions WHERE config_id = $1 AND name = $2",
-        )
-        .bind(config_id)
-        .bind(&name)
-        .fetch_optional(tx.conn())
-        .await?;
+        let id = Session::by_name(ctx, self.scope, config_id, &name)
+            .await?
+            .map(|session| session.id);
         Ok(Session {
             scope: self.scope,
-            id: id.map_or_else(|| format!("{}/session", self.row.id), |id| id.to_string()),
+            id: id.unwrap_or_else(|| format!("{}/session", self.row.id)),
             config_id,
             name,
             definition: definition.session.definition,
@@ -248,8 +205,7 @@ impl Task {
     }
 
     pub async fn chat_scope(&self, ctx: &Context<'_>) -> Result<String> {
-        if let Some(event_id) = self.row.trigger_event_id
-            && let Some(event) = TriggerEvent::find(ctx, self.scope, event_id).await?
+        if let Some(event) = self.trigger_event(ctx).await?
             && let Some(scope) = event.event()["detail"]["scope"].as_str()
         {
             return Ok(scope.to_string());
@@ -271,7 +227,17 @@ impl Task {
     }
 
     pub async fn runs(&self, ctx: &Context<'_>) -> Result<Vec<Run>> {
-        Run::query(ctx, self.scope, Some(self.row.id), None).await
+        let mut rows = tx(ctx, self.scope.tenant_id)
+            .query::<RunItem>(&self.pk(), "RUN#")
+            .await?;
+        rows.sort_by(|a, b| (a.started_at, a.id).cmp(&(b.started_at, b.id)));
+        Ok(rows
+            .into_iter()
+            .map(|row| Run {
+                scope: self.scope,
+                row,
+            })
+            .collect())
     }
 }
 
@@ -296,37 +262,41 @@ impl Task {
     async fn wait_reason(&self) -> Result<Option<WaitReason>> {
         self.row
             .wait_reason
-            .as_deref()
-            .map(WaitReason::from_db)
+            .map(|reason| WaitReason::from_db(reason.as_str()))
             .transpose()
     }
 
     async fn pending_reason(&self, ctx: &Context<'_>) -> Result<Option<PendingReason>> {
-        if self.row.status != "PENDING" {
+        if self.row.status != CoreStatus::Pending {
             return Ok(None);
         }
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        let row = sqlx::query_as::<_, (bool, bool)>(sql!(
-            "SELECT \
-               EXISTS (SELECT 1 FROM sanchoris.task_dependencies d JOIN sanchoris.tasks b ON b.id = d.blocked_by_task_id \
-                       WHERE d.task_id = $1 AND b.status NOT IN {TERMINAL}), \
-               (SELECT t.status <> 'active' OR t.tasks_this_period >= p.task_limit \
-                       OR t.workspace_seconds_this_period >= p.workspace_seconds_limit \
-                FROM sanchoris.tenants t JOIN sanchoris.plans p ON p.id = t.plan_id WHERE t.id = $2)"
-        ))
-        .bind(self.row.id)
-        .bind(self.scope.tenant_id)
-        .fetch_one(tx.conn())
-        .await?;
-        Ok(Some(match row {
-            (true, _) => PendingReason::Blocked,
-            (false, true) => PendingReason::PlanLimit,
-            (false, false) => PendingReason::Concurrency,
+        let mut tx = tx(ctx, self.scope.tenant_id);
+        let mut blocked = false;
+        for dependency in tx.query::<Dependency>(&self.pk(), "DEP#").await? {
+            let blocker = tx
+                .get::<TaskItem>(&keys::task_key(
+                    self.scope.tenant_id,
+                    dependency.blocked_by_task_id,
+                ))
+                .await?;
+            blocked |= blocker.is_some_and(|blocker| !blocker.status.is_terminal());
+        }
+        if blocked {
+            return Ok(Some(PendingReason::Blocked));
+        }
+        let (tenant, plan) = db::tenant_plan(&mut tx).await?;
+        let limited = tenant.status != "active"
+            || tenant.tasks_this_period >= plan.task_limit
+            || tenant.workspace_seconds_this_period >= plan.workspace_seconds_limit;
+        Ok(Some(if limited {
+            PendingReason::PlanLimit
+        } else {
+            PendingReason::Concurrency
         }))
     }
 
     async fn needs_you_reason(&self) -> Option<NeedsYouReason> {
-        if self.row.status != "NEEDS_YOU" {
+        if self.row.status != CoreStatus::NeedsYou {
             return None;
         }
         Some(match self.row.error.as_deref() {
@@ -359,8 +329,8 @@ impl Task {
         ts_opt(self.row.snoozed_until)
     }
 
-    async fn nudges(&self) -> i32 {
-        self.row.nudges
+    async fn nudges(&self) -> Result<i32> {
+        Ok(i32::try_from(self.row.nudges)?)
     }
 
     async fn max_nudges(&self) -> Result<i32> {
@@ -434,15 +404,14 @@ impl Task {
     }
 
     async fn config_revision(&self, ctx: &Context<'_>) -> Result<i32> {
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        Ok(sqlx::query_scalar::<_, i32>(
-            "SELECT (SELECT count(*) FROM sanchoris.config_revisions p WHERE p.config_id = r.config_id \
-                       AND (p.created_at, p.id) <= (r.created_at, r.id))::int \
-             FROM sanchoris.config_revisions r WHERE r.id = $1",
-        )
-        .bind(self.row.config_revision_id)
-        .fetch_one(tx.conn())
-        .await?)
+        let mut tx = tx(ctx, self.scope.tenant_id);
+        let revision_id = self.row.config_revision_id;
+        let location = db::locate(&mut tx, revision_id, REF_CONFIG_REVISION)
+            .await?
+            .ok_or_else(|| not_found(format!("config revision {revision_id}")))?;
+        Ok(i32::try_from(
+            tx.require::<RevisionItem>(&location.target).await?.number,
+        )?)
     }
 
     async fn issue(&self, ctx: &Context<'_>) -> Result<Option<IssueRef>> {
@@ -478,22 +447,28 @@ impl Task {
     }
 
     async fn children(&self, ctx: &Context<'_>) -> Result<Vec<Task>> {
-        Task::related(
+        let children = tx(ctx, self.scope.tenant_id)
+            .query::<Child>(&self.pk(), "CHILD#")
+            .await?;
+        Task::found(
             ctx,
             self.scope,
-            "t.parent_task_id = $2 ORDER BY t.created_at, t.id",
-            self.row.id,
+            children.into_iter().map(|child| child.task_id).collect(),
         )
         .await
     }
 
     async fn blocked_by(&self, ctx: &Context<'_>) -> Result<Vec<Task>> {
-        Task::related(
+        let dependencies = tx(ctx, self.scope.tenant_id)
+            .query::<Dependency>(&self.pk(), "DEP#")
+            .await?;
+        Task::found(
             ctx,
             self.scope,
-            "t.id IN (SELECT blocked_by_task_id FROM sanchoris.task_dependencies WHERE task_id = $2) \
-             ORDER BY t.created_at, t.id",
-            self.row.id,
+            dependencies
+                .into_iter()
+                .map(|dependency| dependency.blocked_by_task_id)
+                .collect(),
         )
         .await
     }
@@ -505,7 +480,7 @@ impl Task {
     async fn required_skills(&self, ctx: &Context<'_>) -> Result<Vec<RequiredSkillStatus>> {
         let definition = self.definition()?;
         let required = self.start()?.required_skills;
-        let runs = SkillRun::query(ctx, self.scope, Some(self.row.id), None).await?;
+        let runs = SkillRun::of_task(ctx, self.scope, self.row.id).await?;
         let config_id = self.config_id(ctx).await?;
         let mut statuses = Vec::new();
         for name in required {
@@ -550,7 +525,7 @@ impl Task {
     }
 
     async fn skill_runs(&self, ctx: &Context<'_>) -> Result<Vec<SkillRun>> {
-        SkillRun::query(ctx, self.scope, Some(self.row.id), None).await
+        SkillRun::of_task(ctx, self.scope, self.row.id).await
     }
 
     #[graphql(name = "runs")]
@@ -563,11 +538,11 @@ impl Task {
             .runs(ctx)
             .await?
             .into_iter()
-            .find(|run| run.row.number == number))
+            .find(|run| run.row.number == i64::from(number)))
     }
 
     async fn outputs(&self, ctx: &Context<'_>) -> Result<Vec<Output>> {
-        Output::query(ctx, self.scope, Some(self.row.id), None).await
+        Output::of_task(ctx, self.scope, self.row.id, |_| true).await
     }
 
     async fn messages(&self, ctx: &Context<'_>) -> Result<Vec<ChatMessage>> {
@@ -579,7 +554,13 @@ impl Task {
     }
 
     async fn turns(&self, ctx: &Context<'_>) -> Result<i32> {
-        Ok(self.runs(ctx).await?.iter().map(|run| run.row.turns).sum())
+        let turns = self
+            .runs(ctx)
+            .await?
+            .iter()
+            .map(|run| run.row.turns)
+            .sum::<i64>();
+        Ok(i32::try_from(turns)?)
     }
 
     async fn cost_usd(&self, ctx: &Context<'_>) -> Result<f64> {
@@ -714,80 +695,48 @@ impl RequiredSkillStatus {
     }
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct RunRow {
-    pub id: Uuid,
-    pub task_id: Uuid,
-    pub session_name: String,
-    pub worker: String,
-    pub model: String,
-    pub agent_session_id: Option<String>,
-    pub status: String,
-    pub turns: i32,
-    pub cost_usd: f64,
-    pub summary: Option<String>,
-    pub error: Option<String>,
-    pub started_at: DateTime<Utc>,
-    pub finished_at: Option<DateTime<Utc>>,
-    pub updated_at: DateTime<Utc>,
-    pub number: i32,
-}
-
 pub(crate) struct Run {
     pub scope: Scope,
-    pub row: RunRow,
+    pub row: RunItem,
 }
 
 impl Run {
-    pub async fn query(
-        ctx: &Context<'_>,
-        scope: Scope,
-        task_id: Option<Uuid>,
-        run_id: Option<Uuid>,
-    ) -> Result<Vec<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, RunRow>(
-            "SELECT r.id, r.task_id, r.session_name, r.worker, r.model, r.agent_session_id, r.status, r.turns, \
-                    r.cost_usd::float8 AS cost_usd, r.summary, r.error, r.started_at, r.finished_at, r.updated_at, \
-                    (SELECT count(*) FROM sanchoris.runs p WHERE p.task_id = r.task_id \
-                       AND (p.started_at, p.id) <= (r.started_at, r.id))::int AS number \
-             FROM sanchoris.runs r \
-             WHERE r.tenant_id = $1 AND ($2::uuid IS NULL OR r.task_id = $2) AND ($3::uuid IS NULL OR r.id = $3) \
-             ORDER BY r.started_at, r.id",
-        )
-        .bind(scope.tenant_id)
-        .bind(task_id)
-        .bind(run_id)
-        .fetch_all(tx.conn())
-        .await?;
-        Ok(rows.into_iter().map(|row| Run { scope, row }).collect())
+    pub async fn load(ctx: &Context<'_>, scope: Scope, run_id: Uuid) -> Result<Self> {
+        let mut tx = tx(ctx, scope.tenant_id);
+        let location = db::locate(&mut tx, run_id, REF_RUN)
+            .await?
+            .ok_or_else(|| not_found(format!("run {run_id}")))?;
+        let row = tx.require::<RunItem>(&location.target).await?;
+        Ok(Run { scope, row })
     }
 
-    pub async fn load(ctx: &Context<'_>, scope: Scope, run_id: Uuid) -> Result<Self> {
-        Self::query(ctx, scope, None, Some(run_id))
+    async fn workspaces(&self, ctx: &Context<'_>) -> Result<Vec<WorkspaceItem>> {
+        let mut workspaces = tx(ctx, self.scope.tenant_id)
+            .query::<WorkspaceItem>(
+                &keys::task_pk(self.scope.tenant_id, self.row.task_id),
+                "WS#",
+            )
             .await?
             .into_iter()
-            .next()
-            .ok_or_else(|| not_found(format!("run {run_id}")))
+            .filter(|workspace| workspace.run_id == self.row.id)
+            .collect::<Vec<_>>();
+        workspaces.sort_by(|a, b| (a.started_at, a.id).cmp(&(b.started_at, b.id)));
+        Ok(workspaces)
     }
 
     async fn log_lines(&self, ctx: &Context<'_>) -> Result<Vec<LogLine>> {
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
         let mut entries: Vec<(DateTime<Utc>, u8, LogLineKind, String)> = Vec::new();
-        let workspaces = sqlx::query_as::<_, (DateTime<Utc>, Option<DateTime<Utc>>, String, String)>(
-            "SELECT started_at, stopped_at, platform, compute FROM sanchoris.workspaces WHERE run_id = $1 ORDER BY started_at, id",
-        )
-        .bind(self.row.id)
-        .fetch_all(tx.conn())
-        .await?;
-        for (started, stopped, platform, compute) in workspaces {
+        for workspace in self.workspaces(ctx).await? {
             entries.push((
-                started,
+                workspace.started_at,
                 0,
                 LogLineKind::System,
-                format!("workspace started · {platform} · {compute} · {WORKSPACE_VCPU} vCPU"),
+                format!(
+                    "workspace started · {} · {} · {WORKSPACE_VCPU} vCPU",
+                    workspace.platform, workspace.compute
+                ),
             ));
-            if let Some(stopped) = stopped {
+            if let Some(stopped) = workspace.stopped_at {
                 entries.push((
                     stopped,
                     0,
@@ -796,15 +745,12 @@ impl Run {
                 ));
             }
         }
-        let outbox = sqlx::query_as::<_, (DateTime<Utc>, String, Value)>(
-            "SELECT created_at, type, payload FROM sanchoris.run_outbox WHERE run_id = $1 ORDER BY seq",
-        )
-        .bind(self.row.id)
-        .fetch_all(tx.conn())
-        .await?;
-        for (at, kind, payload) in outbox {
+        let mut tx = tx(ctx, self.scope.tenant_id);
+        let run_pk = keys::run_pk(self.scope.tenant_id, self.row.id);
+        for outbox in tx.query::<OutboxItem>(&run_pk, "OUT#").await? {
+            let payload = &outbox.payload;
             let text = |key: &str| payload[key].as_str().unwrap_or("").to_string();
-            let line = match kind.as_str() {
+            let line = match outbox.kind.as_str() {
                 "start" => match payload["instruction"].as_str() {
                     Some(instruction) => (LogLineKind::Instruction, instruction.to_string()),
                     None => (
@@ -841,16 +787,13 @@ impl Run {
                 "chat_post" => (LogLineKind::Agent, text("text")),
                 other => (LogLineKind::System, other.to_string()),
             };
-            entries.push((at, 1, line.0, line.1));
+            entries.push((outbox.created_at, 1, line.0, line.1));
         }
-        let events = sqlx::query_as::<_, (DateTime<Utc>, String, Value, Option<String>)>(
-            "SELECT received_at, type, payload, error FROM sanchoris.run_events WHERE run_id = $1 ORDER BY received_at, seq, id",
-        )
-        .bind(self.row.id)
-        .fetch_all(tx.conn())
-        .await?;
-        for (at, kind, payload, error) in events {
-            let line = match kind.as_str() {
+        let mut events = tx.query::<RunEventItem>(&run_pk, "EVT#").await?;
+        events.sort_by(|a, b| (a.received_at, a.seq, a.id).cmp(&(b.received_at, b.seq, b.id)));
+        for event in events {
+            let payload = &event.payload;
+            let line = match event.kind.as_str() {
                 "ready" => Some((LogLineKind::System, "session ready".to_string())),
                 "turn_end" => Some((
                     LogLineKind::Event,
@@ -876,10 +819,10 @@ impl Run {
                 _ => None,
             };
             if let Some((kind, text)) = line {
-                entries.push((at, 2, kind, text));
+                entries.push((event.received_at, 2, kind, text));
             }
-            if let Some(error) = error {
-                entries.push((at, 3, LogLineKind::Error, error));
+            if let Some(error) = event.error {
+                entries.push((event.received_at, 3, LogLineKind::Error, error));
             }
         }
         if let Some(error) = &self.row.error {
@@ -910,8 +853,8 @@ impl Run {
         ID(self.row.id.to_string())
     }
 
-    async fn number(&self) -> i32 {
-        self.row.number
+    async fn number(&self) -> Result<i32> {
+        Ok(i32::try_from(self.row.number)?)
     }
 
     async fn task(&self, ctx: &Context<'_>) -> Result<Task> {
@@ -954,8 +897,8 @@ impl Run {
         ts_opt(self.row.finished_at)
     }
 
-    async fn turns(&self) -> i32 {
-        self.row.turns
+    async fn turns(&self) -> Result<i32> {
+        Ok(i32::try_from(self.row.turns)?)
     }
 
     async fn cost_usd(&self) -> f64 {
@@ -967,31 +910,13 @@ impl Run {
     }
 
     async fn workspace(&self, ctx: &Context<'_>) -> Result<Workspace> {
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        let row = sqlx::query_as::<_, (String, String, Value, String, Option<String>)>(
-            "SELECT platform, compute, repositories, branch, base_commit FROM sanchoris.workspaces \
-             WHERE run_id = $1 ORDER BY started_at DESC, id DESC LIMIT 1",
-        )
-        .bind(self.row.id)
-        .fetch_optional(tx.conn())
-        .await?;
-        drop(tx);
-        if let Some((platform, compute, repositories, branch, base_commit)) = row {
+        if let Some(latest) = self.workspaces(ctx).await?.pop() {
             return Ok(Workspace {
-                platform,
-                compute: WorkspaceCompute::from_db(&compute)?,
-                repositories: repositories
-                    .as_array()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                branch,
-                base_commit: base_commit.unwrap_or_default(),
+                platform: latest.platform,
+                compute: WorkspaceCompute::from_db(&latest.compute)?,
+                repositories: latest.repositories,
+                branch: latest.branch,
+                base_commit: latest.base_commit.unwrap_or_default(),
             });
         }
         let task = Task::load(ctx, self.scope, self.row.task_id).await?;
@@ -1016,15 +941,16 @@ impl Run {
     }
 
     async fn skill_runs(&self, ctx: &Context<'_>) -> Result<Vec<SkillRun>> {
-        SkillRun::query(ctx, self.scope, None, Some(self.row.id)).await
+        Ok(SkillRun::of_task(ctx, self.scope, self.row.task_id)
+            .await?
+            .into_iter()
+            .filter(|run| run.row.run_id == Some(self.row.id))
+            .collect())
     }
 
     async fn outputs(&self, ctx: &Context<'_>) -> Result<Vec<Output>> {
-        Ok(Output::query(ctx, self.scope, Some(self.row.task_id), None)
-            .await?
-            .into_iter()
-            .filter(|output| output.run_id == Some(self.row.id))
-            .collect())
+        let run_id = self.row.id;
+        Output::of_task(ctx, self.scope, self.row.task_id, |run| run == Some(run_id)).await
     }
 }
 
@@ -1093,49 +1019,52 @@ impl LogLine {
     }
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct OutputRow {
-    id: Uuid,
-    run_id: Option<Uuid>,
-    kind: String,
-    repository: String,
-    number: i32,
-    url: String,
-    state: Option<String>,
-    created_at: DateTime<Utc>,
-}
-
 pub(crate) struct Output {
-    run_id: Option<Uuid>,
-    row: OutputRow,
+    row: OutputItem,
 }
 
 impl Output {
-    pub async fn query(
+    fn sorted(mut rows: Vec<OutputItem>) -> Vec<Self> {
+        rows.sort_by(|a, b| (a.created_at, a.id).cmp(&(b.created_at, b.id)));
+        rows.into_iter().map(|row| Output { row }).collect()
+    }
+
+    pub async fn of_task(
         ctx: &Context<'_>,
         scope: Scope,
-        task_id: Option<Uuid>,
-        skill_run_id: Option<Uuid>,
+        task_id: Uuid,
+        run: impl Fn(Option<Uuid>) -> bool,
     ) -> Result<Vec<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, OutputRow>(
-            "SELECT o.id, s.run_id, o.kind, o.repository, o.number, o.url, o.state, o.created_at \
-             FROM sanchoris.outputs o JOIN sanchoris.skill_runs s ON s.id = o.skill_run_id \
-             WHERE o.tenant_id = $1 AND ($2::uuid IS NULL OR s.task_id = $2) AND ($3::uuid IS NULL OR o.skill_run_id = $3) \
-             ORDER BY o.created_at, o.id",
-        )
-        .bind(scope.tenant_id)
-        .bind(task_id)
-        .bind(skill_run_id)
-        .fetch_all(tx.conn())
-        .await?;
-        Ok(rows
+        let mut tx = tx(ctx, scope.tenant_id);
+        let pk = keys::task_pk(scope.tenant_id, task_id);
+        let skill_runs = tx.query::<SkillRunItem>(&pk, "SR#").await?;
+        let outputs = tx
+            .query::<OutputItem>(&pk, "SR#")
+            .await?
             .into_iter()
-            .map(|row| Output {
-                run_id: row.run_id,
-                row,
+            .filter(|output| {
+                run(skill_runs
+                    .iter()
+                    .find(|skill_run| skill_run.id == output.skill_run_id)
+                    .and_then(|skill_run| skill_run.run_id))
             })
-            .collect())
+            .collect();
+        Ok(Self::sorted(outputs))
+    }
+
+    pub async fn of_skill_run(
+        ctx: &Context<'_>,
+        scope: Scope,
+        task_id: Uuid,
+        number: i32,
+    ) -> Result<Vec<Self>> {
+        let rows = tx(ctx, scope.tenant_id)
+            .query::<OutputItem>(
+                &keys::task_pk(scope.tenant_id, task_id),
+                &format!("{}#OUT#", keys::skill_run_prefix(number)),
+            )
+            .await?;
+        Ok(Self::sorted(rows))
     }
 }
 
@@ -1153,8 +1082,8 @@ impl Output {
         &self.row.repository
     }
 
-    async fn number(&self) -> i32 {
-        self.row.number
+    async fn number(&self) -> Result<i32> {
+        Ok(i32::try_from(self.row.number)?)
     }
 
     async fn url(&self) -> &str {
@@ -1187,68 +1116,72 @@ impl ChatMessage {
         let Some((kind, thread)) = task.chat_thread() else {
             return Ok(Vec::new());
         };
-        let mut tx = tenant_tx(ctx, task.scope.tenant_id).await?;
-        let started = match task.row.trigger_event_id {
-            Some(event_id) => sqlx::query_scalar::<_, DateTime<Utc>>(
-                "SELECT i.received_at FROM sanchoris.trigger_events e \
-                 JOIN sanchoris.inbound_events i ON i.tenant_id = e.tenant_id AND i.key = e.key AND i.source = $2 \
-                 WHERE e.id = $1",
-            )
-            .bind(event_id)
-            .bind(kind.as_db())
-            .fetch_optional(tx.conn())
-            .await?
-            .unwrap_or(task.row.created_at),
+        let tenant_id = task.scope.tenant_id;
+        let mut tx = tx(ctx, tenant_id);
+        let started = match task.trigger_event(ctx).await? {
+            Some(event) => tx
+                .get::<InboundEvent>(&keys::inbound_event_key(
+                    tenant_id,
+                    kind.as_db(),
+                    event.key(),
+                ))
+                .await?
+                .map_or(task.row.created_at, |inbound| inbound.received_at),
             None => task.row.created_at,
         };
-        let next = sqlx::query_scalar::<_, DateTime<Utc>>(
-            "SELECT created_at FROM sanchoris.tasks WHERE trigger_id = $1 AND channel->>'thread' = $2 \
-               AND created_at > $3 ORDER BY created_at LIMIT 1",
-        )
-        .bind(task.row.trigger_id)
-        .bind(&thread)
-        .bind(task.row.created_at)
-        .fetch_optional(tx.conn())
-        .await?;
-        let inbound = sqlx::query_as::<_, (Uuid, DateTime<Utc>, Value)>(
-            "SELECT id, received_at, event FROM sanchoris.inbound_events \
-             WHERE tenant_id = $1 AND source = $2 AND event->'detail'->>'thread' = $3 \
-               AND received_at >= $4 AND ($5::timestamptz IS NULL OR received_at < $5) \
-             ORDER BY received_at, id",
-        )
-        .bind(task.scope.tenant_id)
-        .bind(kind.as_db())
-        .bind(&thread)
-        .bind(started)
-        .bind(next)
-        .fetch_all(tx.conn())
-        .await?;
-        let posts = sqlx::query_as::<_, (Uuid, DateTime<Utc>, Value)>(
-            "SELECT o.id, o.created_at, o.payload FROM sanchoris.run_outbox o JOIN sanchoris.runs r ON r.id = o.run_id \
-             WHERE r.task_id = $1 AND o.type = 'chat_post' ORDER BY o.created_at, o.seq",
-        )
-        .bind(task.row.id)
-        .fetch_all(tx.conn())
-        .await?;
+        let next = tx
+            .query::<TaskName>(
+                &keys::trigger_pk(tenant_id, task.row.trigger_id),
+                &format!("TASK#{thread}/"),
+            )
+            .await?
+            .into_iter()
+            .map(|name| name.created_at)
+            .filter(|created| *created > task.row.created_at)
+            .min();
+        let inbound = tx
+            .list::<InboundEvent>(
+                &Listing::index(
+                    Index::Gsi1,
+                    keys::thread_index(tenant_id, kind.as_db(), &thread),
+                )
+                .sort(SortKey::AtLeast(format_time(started))),
+                |event| {
+                    event.received_at >= started && next.is_none_or(|next| event.received_at < next)
+                },
+            )
+            .await?;
+        let mut posts = Vec::new();
+        for run in task.runs(ctx).await? {
+            posts.extend(
+                tx.query::<OutboxItem>(&keys::run_pk(tenant_id, run.row.id), "OUT#")
+                    .await?
+                    .into_iter()
+                    .filter(|outbox| outbox.kind == "chat_post"),
+            );
+        }
         let mut messages = inbound
             .into_iter()
-            .map(|(id, at, event)| ChatMessage {
+            .map(|event| ChatMessage {
                 scope: task.scope,
-                id,
+                id: event.id,
                 author_kind: ChatAuthorKind::Member,
-                member_id: event["detail"]["member_id"]
+                member_id: event.event["detail"]["member_id"]
                     .as_str()
                     .and_then(|id| id.parse().ok()),
-                text: event["detail"]["text"].as_str().unwrap_or("").to_string(),
-                at,
+                text: event.event["detail"]["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                at: event.received_at,
             })
-            .chain(posts.into_iter().map(|(id, at, payload)| ChatMessage {
+            .chain(posts.into_iter().map(|outbox| ChatMessage {
                 scope: task.scope,
-                id,
+                id: outbox.id,
                 author_kind: ChatAuthorKind::Agent,
                 member_id: None,
-                text: payload["text"].as_str().unwrap_or("").to_string(),
-                at,
+                text: outbox.payload["text"].as_str().unwrap_or("").to_string(),
+                at: outbox.created_at,
             }))
             .collect::<Vec<_>>();
         messages.sort_by(|a, b| a.at.cmp(&b.at).then(a.id.cmp(&b.id)));

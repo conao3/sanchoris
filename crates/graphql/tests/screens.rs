@@ -331,7 +331,7 @@ async fn every_screen_query_validates_and_executes() {
     assert_eq!(tenants[0]["name"], "Acme");
     assert_eq!(tenants[0]["githubOwner"]["kind"], "ORGANIZATION");
     assert_eq!(tenants[0]["usage"]["seatsUsed"], 4);
-    assert_eq!(operator["operator"]["runningRuns"], 2);
+    assert_eq!(operator["operator"]["runningRuns"], 3);
     assert_eq!(operator["operator"]["revenueThisMonthUsd"], 100);
 }
 

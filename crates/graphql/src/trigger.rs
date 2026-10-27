@@ -1,12 +1,15 @@
 use async_graphql::{Context, ID, Object, Result};
 use chrono::{DateTime, Duration, Utc};
 use sanchoris_config::{Limits, Start};
+use sanchoris_core::db::{self, REF_TRIGGER, REF_TRIGGER_EVENT};
+use sanchoris_core::items::{Task as TaskItem, Trigger as TriggerItem, TriggerEvent as EventItem};
+use sanchoris_core::keys;
+use sanchoris_core::store::{Index, Listing};
 use serde_json::{Map, Value};
-use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::config::{ChangeRequest, Config, Session, edit_url};
-use crate::context::{Scope, now, tenant_tx};
+use crate::config::{ChangeRequest, Config, Session, edit_url, in_configs};
+use crate::context::{Scope, now, tx};
 use crate::enums::{
     ConfigObjectKind, EventSource, TriggerEventKind, TriggerEventReason, TriggerEventResult,
     TriggerState,
@@ -16,50 +19,28 @@ use crate::scalars::{Timestamp, ts, ts_opt};
 use crate::skill::Skill;
 use crate::task::Task;
 
-pub(crate) const DUE_TRIGGER_SCHEDULE: &str = "trigger_schedule";
-
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct TriggerRow {
-    pub id: Uuid,
-    pub config_id: Uuid,
-    pub name: String,
-    pub state: String,
-    pub event_pattern: Option<Value>,
-    pub schedule_expression: Option<String>,
-    pub input_transformer: Option<Value>,
-    pub start: Value,
-}
-
-const TRIGGER_COLUMNS: &str =
-    "id, config_id, name, state, event_pattern, schedule_expression, input_transformer, start";
-
 pub(crate) struct Trigger {
     pub scope: Scope,
-    pub row: TriggerRow,
+    pub row: TriggerItem,
 }
 
 impl Trigger {
     pub async fn all(ctx: &Context<'_>, scope: Scope) -> Result<Vec<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, TriggerRow>(sql!(
-            "SELECT {TRIGGER_COLUMNS} FROM sanchoris.triggers \
-             WHERE tenant_id = $1 AND removed_at IS NULL ORDER BY name, id"
-        ))
-        .bind(scope.tenant_id)
-        .fetch_all(tx.conn())
-        .await?;
+        let mut rows = in_configs::<TriggerItem>(ctx, scope, "TRIGGER#")
+            .await?
+            .into_iter()
+            .filter(|row| row.removed_at.is_none())
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| (&a.name, a.id).cmp(&(&b.name, b.id)));
         Ok(rows.into_iter().map(|row| Trigger { scope, row }).collect())
     }
 
     pub async fn load(ctx: &Context<'_>, scope: Scope, trigger_id: Uuid) -> Result<Self> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let row = sqlx::query_as::<_, TriggerRow>(sql!(
-            "SELECT {TRIGGER_COLUMNS} FROM sanchoris.triggers WHERE id = $1"
-        ))
-        .bind(trigger_id)
-        .fetch_optional(tx.conn())
-        .await?
-        .ok_or_else(|| not_found(format!("trigger {trigger_id}")))?;
+        let mut tx = tx(ctx, scope.tenant_id);
+        let location = db::locate(&mut tx, trigger_id, REF_TRIGGER)
+            .await?
+            .ok_or_else(|| not_found(format!("trigger {trigger_id}")))?;
+        let row = tx.require::<TriggerItem>(&location.target).await?;
         Ok(Trigger { scope, row })
     }
 
@@ -93,10 +74,9 @@ impl Trigger {
 
     pub fn trigger_match(&self) -> Result<TriggerMatch> {
         TriggerMatch::from_definition(
-            self.scope,
-            self.row.id,
             self.row.event_pattern.as_ref(),
             self.row.schedule_expression.as_deref(),
+            self.row.next_run_at,
         )
     }
 
@@ -106,18 +86,18 @@ impl Trigger {
         since: Option<DateTime<Utc>>,
         active_only: bool,
     ) -> Result<i32> {
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        let count = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM sanchoris.tasks WHERE trigger_id = $1 \
-             AND ($2::timestamptz IS NULL OR created_at >= $2) \
-             AND (NOT $3 OR status NOT IN ('SUCCEEDED', 'FAILED', 'ABORTED'))",
-        )
-        .bind(self.row.id)
-        .bind(since)
-        .bind(active_only)
-        .fetch_one(tx.conn())
-        .await?;
-        Ok(i32::try_from(count)?)
+        let trigger_id = self.row.id;
+        let tasks = tx(ctx, self.scope.tenant_id)
+            .list::<TaskItem>(
+                &Listing::index(Index::Gsi1, keys::tasks_index(self.scope.tenant_id)),
+                |task| {
+                    task.trigger_id == trigger_id
+                        && since.is_none_or(|since| task.created_at >= since)
+                        && (!active_only || !task.status.is_terminal())
+                },
+            )
+            .await?;
+        Ok(i32::try_from(tasks.len())?)
     }
 }
 
@@ -259,8 +239,6 @@ fn strings(value: Option<&Value>) -> Vec<String> {
 }
 
 pub(crate) struct TriggerMatch {
-    scope: Scope,
-    trigger_id: Uuid,
     source: EventSource,
     kind: TriggerEventKind,
     repositories: Vec<String>,
@@ -269,19 +247,17 @@ pub(crate) struct TriggerMatch {
     chat_scope: Option<String>,
     slack_channel: Option<String>,
     schedule_expression: Option<String>,
+    next_run_at: Option<DateTime<Utc>>,
 }
 
 impl TriggerMatch {
     fn from_definition(
-        scope: Scope,
-        trigger_id: Uuid,
         pattern: Option<&Value>,
         schedule_expression: Option<&str>,
+        next_run_at: Option<DateTime<Utc>>,
     ) -> Result<Self> {
         if let Some(expression) = schedule_expression {
             return Ok(Self {
-                scope,
-                trigger_id,
                 source: EventSource::Schedule,
                 kind: TriggerEventKind::Schedule,
                 repositories: Vec::new(),
@@ -290,6 +266,7 @@ impl TriggerMatch {
                 chat_scope: None,
                 slack_channel: None,
                 schedule_expression: Some(expression.to_string()),
+                next_run_at,
             });
         }
         let pattern = pattern.ok_or_else(|| {
@@ -309,8 +286,6 @@ impl TriggerMatch {
             strings(value)
         };
         Ok(Self {
-            scope,
-            trigger_id,
             source: EventSource::from_db(&source)?,
             kind: TriggerEventKind::from_db(&detail_type)?,
             repositories: field(&["repository"]),
@@ -319,6 +294,7 @@ impl TriggerMatch {
             chat_scope: field(&["scope"]).into_iter().next(),
             slack_channel: field(&["channel"]).into_iter().next(),
             schedule_expression: None,
+            next_run_at: None,
         })
     }
 
@@ -365,36 +341,14 @@ impl TriggerMatch {
         self.schedule_expression.as_deref()
     }
 
-    async fn next_run_at(&self, ctx: &Context<'_>) -> Result<Option<Timestamp>> {
-        if self.schedule_expression.is_none() {
-            return Ok(None);
-        }
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        let due_at = sqlx::query_scalar::<_, DateTime<Utc>>(
-            "SELECT due_at FROM sanchoris.due_jobs WHERE kind = $1 AND ref_id = $2",
-        )
-        .bind(DUE_TRIGGER_SCHEDULE)
-        .bind(self.trigger_id)
-        .fetch_optional(tx.conn())
-        .await?;
-        Ok(ts_opt(due_at))
+    async fn next_run_at(&self) -> Option<Timestamp> {
+        ts_opt(self.next_run_at)
     }
-}
-
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct TriggerEventRow {
-    id: Uuid,
-    trigger_id: Uuid,
-    key: String,
-    event: Value,
-    received_at: DateTime<Utc>,
-    result: Option<String>,
-    reason: Option<String>,
 }
 
 pub(crate) struct TriggerEvent {
     scope: Scope,
-    row: TriggerEventRow,
+    row: EventItem,
 }
 
 impl TriggerEvent {
@@ -404,17 +358,16 @@ impl TriggerEvent {
         trigger_id: Option<Uuid>,
         limit: i32,
     ) -> Result<Vec<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, TriggerEventRow>(
-            "SELECT id, trigger_id, key, event, received_at, result, reason FROM sanchoris.trigger_events \
-             WHERE tenant_id = $1 AND result IS NOT NULL AND ($2::uuid IS NULL OR trigger_id = $2) \
-             ORDER BY received_at DESC, id DESC LIMIT $3",
-        )
-        .bind(scope.tenant_id)
-        .bind(trigger_id)
-        .bind(i64::from(limit))
-        .fetch_all(tx.conn())
-        .await?;
+        let rows = tx(ctx, scope.tenant_id)
+            .list::<EventItem>(
+                &Listing::index(Index::Gsi1, keys::trigger_events_index(scope.tenant_id))
+                    .descending()
+                    .limit(usize::try_from(limit)?),
+                |event| {
+                    event.result.is_some() && trigger_id.is_none_or(|id| event.trigger_id == id)
+                },
+            )
+            .await?;
         Ok(rows
             .into_iter()
             .map(|row| TriggerEvent { scope, row })
@@ -422,18 +375,22 @@ impl TriggerEvent {
     }
 
     pub async fn find(ctx: &Context<'_>, scope: Scope, id: Uuid) -> Result<Option<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let row = sqlx::query_as::<_, TriggerEventRow>(
-            "SELECT id, trigger_id, key, event, received_at, result, reason FROM sanchoris.trigger_events WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(tx.conn())
-        .await?;
-        Ok(row.map(|row| TriggerEvent { scope, row }))
+        let mut tx = tx(ctx, scope.tenant_id);
+        let Some(location) = db::locate(&mut tx, id, REF_TRIGGER_EVENT).await? else {
+            return Ok(None);
+        };
+        Ok(tx
+            .get::<EventItem>(&location.target)
+            .await?
+            .map(|row| TriggerEvent { scope, row }))
     }
 
     pub fn event(&self) -> &Value {
         &self.row.event
+    }
+
+    pub fn key(&self) -> &str {
+        &self.row.key
     }
 
     fn reason_kind(&self) -> Option<TriggerEventReason> {
@@ -492,7 +449,10 @@ impl TriggerEvent {
     }
 
     async fn task(&self, ctx: &Context<'_>) -> Result<Option<Task>> {
-        Task::by_trigger_event(ctx, self.scope, self.row.id).await
+        match self.row.task_id {
+            Some(task_id) => Task::find(ctx, self.scope, task_id).await,
+            None => Ok(None),
+        }
     }
 
     async fn limited_task(&self, ctx: &Context<'_>) -> Result<Option<Task>> {

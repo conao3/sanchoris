@@ -1,14 +1,31 @@
 mod common;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use common::World;
+use sanchoris_core::item::Table;
+use sanchoris_core::items::{
+    ChangeRequest, Config, Credential, Guard, InboundEvent, Invitation, Member, Membership,
+    OutboxItem, Pending, Run, RunEventItem, Tenant, Trigger,
+};
+use sanchoris_core::jobs::{Job, Relayed};
+use sanchoris_core::keys;
+use sanchoris_core::model::TaskStatus;
 use sanchoris_graphql::{ConfigProblem, PlanChange};
 use serde_json::{Value, json};
-use sqlx::Row;
 use uuid::Uuid;
 
 fn iso(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+async fn inbound_text(w: &World, text: &str) -> InboundEvent {
+    w.all::<InboundEvent>()
+        .await
+        .into_iter()
+        .find(|event| event.event["detail"]["text"] == text)
+        .unwrap_or_else(|| panic!("no inbound event says {text}"))
 }
 
 #[tokio::test]
@@ -32,29 +49,33 @@ async fn task_and_run_mutations_reach_the_agent_session() {
         )
         .await;
     assert_eq!(resumed["resumeTask"]["id"], w.issue_task.to_string());
-    let reply = sqlx::query(
-        "SELECT type, payload, seq FROM sanchoris.run_events WHERE run_id = $1 AND type = 'human_reply'",
-    )
-    .bind(w.issue_run)
-    .fetch_one(&w.admin)
-    .await
-    .unwrap();
+    let reply = w
+        .all::<RunEventItem>()
+        .await
+        .into_iter()
+        .find(|event| event.run_id == w.issue_run && event.kind == "human_reply")
+        .expect("the reply is recorded");
     assert_eq!(
-        reply.get::<Value, _>("payload"),
+        reply.payload,
         json!({ "member": "Ken", "text": "Use the staging database." })
     );
-    assert_eq!(reply.get::<Option<i64>, _>("seq"), None);
+    assert_eq!(reply.seq, None);
+    let pending = w
+        .all::<Pending>()
+        .await
+        .into_iter()
+        .filter(|marker| marker.id == reply.id)
+        .count();
+    assert_eq!(pending, 1);
     let audit = w.audit(w.acme, "task.resume").await;
     assert_eq!(audit.actor_kind, "member");
     assert_eq!(audit.actor_ref, w.ken.member_id.unwrap().to_string());
     assert_eq!(audit.target_ref, w.issue_task.to_string());
-    let last_active: Option<DateTime<Utc>> = w
-        .scalar(
-            "SELECT last_active_at FROM sanchoris.members WHERE id = $1",
-            w.ken.member_id.unwrap(),
-        )
-        .await;
-    assert!(last_active.is_some());
+    let ken: Member = w
+        .get(&keys::member_key(w.acme, w.ken.member_id.unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(ken.last_active_at, Some(w.now));
 
     let until = w.now + Duration::hours(3);
     let snoozed = w
@@ -65,6 +86,13 @@ async fn task_and_run_mutations_reach_the_agent_session() {
         )
         .await;
     assert_eq!(snoozed["snoozeTask"]["snoozedUntil"], iso(until));
+    assert_eq!(
+        w.task(w.acme, w.issue_task)
+            .await
+            .snoozed_until
+            .map(|at| at.to_rfc3339_opts(SecondsFormat::Secs, true)),
+        Some(iso(until))
+    );
     w.audit(w.acme, "task.snooze").await;
     assert_eq!(
         w.error_code(
@@ -89,13 +117,16 @@ async fn task_and_run_mutations_reach_the_agent_session() {
         .ok(&w.ken, "StopRun", json!({ "runId": w.chat_run }))
         .await;
     assert_eq!(stopped_run["stopRun"]["status"], "COMPLETED");
-    let shutdown: Value = w
-        .scalar(
-            "SELECT payload FROM sanchoris.run_outbox WHERE run_id = $1 AND type = 'shutdown'",
-            w.chat_run,
-        )
-        .await;
-    assert_eq!(shutdown, json!({ "reason": "Ken stopped the session" }));
+    let shutdown = w
+        .all::<OutboxItem>()
+        .await
+        .into_iter()
+        .find(|outbox| outbox.run_id == w.chat_run && outbox.kind == "shutdown")
+        .expect("the shutdown is queued");
+    assert_eq!(
+        shutdown.payload,
+        json!({ "reason": "Ken stopped the session" })
+    );
     assert_eq!(
         w.audit(w.acme, "run.stop").await.target_ref,
         w.chat_task.to_string()
@@ -110,20 +141,14 @@ async fn task_and_run_mutations_reach_the_agent_session() {
         .ok(&w.mika, "StopTask", json!({ "taskId": w.issue_task }))
         .await;
     assert_eq!(stopped["stopTask"]["status"], "ABORTED");
-    let run_status: String = w
-        .scalar(
-            "SELECT status FROM sanchoris.runs WHERE id = $1",
-            w.issue_run,
-        )
-        .await;
-    assert_eq!(run_status, "completed");
-    let error: Option<String> = w
-        .scalar(
-            "SELECT error FROM sanchoris.tasks WHERE id = $1",
-            w.issue_task,
-        )
-        .await;
-    assert_eq!(error, None);
+    let run: Run = w
+        .get(&keys::run_key(w.acme, w.issue_task, w.issue_run))
+        .await
+        .unwrap();
+    assert_eq!(run.status, "completed");
+    let task = w.task(w.acme, w.issue_task).await;
+    assert_eq!(task.error, None);
+    assert_eq!(task.status, TaskStatus::Aborted);
     w.audit(w.acme, "task.stop").await;
     assert_eq!(
         w.error_code(&w.mika, "StopTask", json!({ "taskId": w.issue_task }))
@@ -153,13 +178,9 @@ async fn chat_messages_start_threads_and_continue_them() {
         started["sendChatMessage"]["message"]["text"],
         "Add a dark mode"
     );
-    let event: Value = sqlx::query_scalar(
-        "SELECT event FROM sanchoris.inbound_events WHERE tenant_id = $1 AND event->'detail'->>'text' = 'Add a dark mode'",
-    )
-    .bind(w.acme)
-    .fetch_one(&w.admin)
-    .await
-    .unwrap();
+    let event = inbound_text(&w, "Add a dark mode").await;
+    assert_eq!(event.tenant_id, w.acme);
+    let event = event.event;
     assert_eq!(event["source"], "web");
     assert_eq!(event["detail-type"], "Message");
     assert_eq!(event["detail"]["scope"], "all");
@@ -168,13 +189,10 @@ async fn chat_messages_start_threads_and_continue_them() {
         event["detail"]["member_id"],
         w.ken.member_id.unwrap().to_string()
     );
-    let requester: Option<Uuid> = w
-        .scalar(
-            "SELECT requested_by_member_id FROM sanchoris.tasks WHERE id = $1",
-            task_id,
-        )
-        .await;
-    assert_eq!(requester, w.ken.member_id);
+    assert_eq!(
+        w.task(w.acme, task_id).await.requested_by_member_id,
+        w.ken.member_id
+    );
     let audit = w.audit(w.acme, "chat.message_send").await;
     assert_eq!(audit.target_kind, "chat");
 
@@ -205,13 +223,29 @@ async fn chat_messages_start_threads_and_continue_them() {
         continued["sendChatMessage"]["task"]["id"],
         w.chat_task.to_string()
     );
-    let thread: String = sqlx::query_scalar(
-        "SELECT event->'detail'->>'thread' FROM sanchoris.inbound_events WHERE event->'detail'->>'text' = 'Any update?'",
-    )
-    .fetch_one(&w.admin)
-    .await
-    .unwrap();
-    assert_eq!(thread, "thread-1");
+    let continued = inbound_text(&w, "Any update?").await;
+    assert_eq!(continued.event["detail"]["thread"], "thread-1");
+    let chat = w
+        .ok(
+            &w.mika,
+            "Chat",
+            json!({ "tenant": "acme", "task": w.chat_task, "withTask": true }),
+        )
+        .await;
+    let texts = chat["tenant"]["task"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["text"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        texts,
+        vec![
+            "What is failing?".to_string(),
+            "The checkout spec is flaky.".to_string(),
+            "Any update?".to_string(),
+        ]
+    );
 
     assert_eq!(
         w.error_code(
@@ -245,13 +279,14 @@ async fn trigger_and_config_mutations_change_the_config_records() {
         )
         .await;
     assert_eq!(disabled["setTriggerState"]["state"], "DISABLED");
-    let jobs: i64 = w
-        .scalar(
-            "SELECT count(*) FROM sanchoris.due_jobs WHERE ref_id = $1",
-            w.nightly_trigger,
-        )
-        .await;
-    assert_eq!(jobs, 0);
+    let nightly_key = keys::trigger_key(w.acme, w.config_id, "nightly");
+    let disabled_item: Trigger = w.get(&nightly_key).await.unwrap();
+    assert_eq!(disabled_item.state, "DISABLED");
+    assert_eq!(disabled_item.next_run_at, None);
+    assert_eq!(disabled_item.schedule_message_id, None);
+    let messages = w.messages().await;
+    assert_eq!(messages.len(), 1);
+    assert!(matches!(&messages[0], Relayed::Cancel { .. }));
     w.audit(w.acme, "trigger.disable").await;
     w.ok(
         &w.sota,
@@ -259,13 +294,28 @@ async fn trigger_and_config_mutations_change_the_config_records() {
         json!({ "triggerId": w.nightly_trigger, "state": "ENABLED" }),
     )
     .await;
-    let state: String = w
-        .scalar(
-            "SELECT state FROM sanchoris.triggers WHERE id = $1",
-            w.nightly_trigger,
-        )
-        .await;
-    assert_eq!(state, "ENABLED");
+    let enabled: Trigger = w.get(&nightly_key).await.unwrap();
+    assert_eq!(enabled.state, "ENABLED");
+    let next_run_at = enabled.next_run_at.expect("the schedule is armed");
+    assert!(next_run_at > w.now);
+    let scheduled = w
+        .messages()
+        .await
+        .into_iter()
+        .find_map(|message| match message {
+            Relayed::Send {
+                envelope,
+                deliver_at,
+            } => Some((envelope, deliver_at)),
+            Relayed::Cancel { .. } => None,
+        })
+        .expect("the next run is scheduled");
+    assert_eq!(scheduled.0.id, enabled.schedule_message_id.unwrap());
+    assert_eq!(scheduled.1, Some(next_run_at));
+    assert!(matches!(
+        scheduled.0.job,
+        Job::TriggerSchedule { trigger_id, .. } if trigger_id == w.nightly_trigger
+    ));
     w.audit(w.acme, "trigger.enable").await;
 
     let proposed = w
@@ -293,15 +343,18 @@ async fn trigger_and_config_mutations_change_the_config_records() {
     ))
     .expect("the proposed trigger is valid config YAML");
     assert_eq!(yaml.triggers["labeled-issue-2"].start.session, "shop");
-    let changes: Value = sqlx::query_scalar(
-        "SELECT changed_definitions FROM sanchoris.change_requests WHERE pr_number = 42",
-    )
-    .fetch_one(&w.admin)
-    .await
-    .unwrap();
+    let change: ChangeRequest = w
+        .get(&keys::change_request_key(w.acme, w.config_id, 42))
+        .await
+        .unwrap();
     assert_eq!(
-        changes,
+        change.changed_definitions,
         json!([{ "kind": "trigger", "name": "labeled-issue-2" }])
+    );
+    assert_eq!(change.requested_by_member_id, w.ken.member_id);
+    assert_eq!(
+        proposed["proposeTriggerFromTemplate"]["id"],
+        change.id.to_string()
     );
     w.audit(w.acme, "change_request.open").await;
     assert_eq!(
@@ -343,13 +396,17 @@ async fn trigger_and_config_mutations_change_the_config_records() {
         .unwrap()
         .parse()
         .unwrap();
-    let branch: String = w
-        .scalar(
-            "SELECT branch FROM sanchoris.configs WHERE id = $1",
-            config_id,
-        )
-        .await;
-    assert_eq!(branch, "release");
+    let added_config: Config = w.get(&keys::config_key(w.acme, config_id)).await.unwrap();
+    assert_eq!(added_config.branch, "release");
+    let guard: Guard = w
+        .get(&keys::config_repository_key(
+            w.acme,
+            "acme/platform",
+            "tools/sanchoris/",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(guard.target, config_id);
     assert_eq!(*w.recorder.syncs.lock().unwrap(), vec![config_id]);
     w.audit(w.acme, "config.add").await;
     assert_eq!(
@@ -399,23 +456,30 @@ async fn credentials_are_encrypted_and_removable_by_their_owner() {
         .unwrap()
         .parse()
         .unwrap();
-    let row = sqlx::query(
-        "SELECT member_id, provider, kind, account, encrypted_value, kms_key_id FROM sanchoris.credentials WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_one(&w.admin)
-    .await
-    .unwrap();
-    assert_eq!(row.get::<Option<Uuid>, _>("member_id"), w.ken.member_id);
-    assert_eq!(row.get::<String, _>("provider"), "claude");
-    assert_eq!(row.get::<String, _>("kind"), "api_key");
-    assert_eq!(row.get::<String, _>("account"), "sk-ant-…9f2c");
-    assert_eq!(
-        row.get::<String, _>("kms_key_id"),
-        sanchoris_graphql::LOCAL_KEY_ID
-    );
-    let encrypted: Vec<u8> = row.get("encrypted_value");
+    let row: Credential = w.get(&keys::credential_key(w.acme, id)).await.unwrap();
+    assert_eq!(row.member_id, w.ken.member_id);
+    assert_eq!(row.scope, "personal");
+    assert_eq!(row.provider, "claude");
+    assert_eq!(row.kind, "api_key");
+    assert_eq!(row.account, "sk-ant-…9f2c");
+    assert_eq!(row.kms_key_id, sanchoris_graphql::LOCAL_KEY_ID);
+    assert!(!row.encrypted_value.contains(key));
+    let encrypted = STANDARD.decode(&row.encrypted_value).unwrap();
     assert!(!encrypted.windows(key.len()).any(|w| w == key.as_bytes()));
+    let stored = w
+        .dynamo
+        .scan(Table::Main, "credential")
+        .await
+        .into_iter()
+        .map(|item| format!("{item:?}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!stored.contains(key));
+    let name_guard: Guard = w
+        .get(&keys::credential_name_key(w.acme, "ken-key"))
+        .await
+        .unwrap();
+    assert_eq!(name_guard.target, id);
     assert_eq!(
         w.encryptor.decrypt(w.acme, &encrypted).unwrap(),
         key.as_bytes()
@@ -443,13 +507,10 @@ async fn credentials_are_encrypted_and_removable_by_their_owner() {
         .unwrap()
         .parse()
         .unwrap();
-    let kind: String = w
-        .scalar(
-            "SELECT kind FROM sanchoris.credentials WHERE id = $1",
-            org_id,
-        )
-        .await;
-    assert_eq!(kind, "bedrock");
+    let org_row: Credential = w.get(&keys::credential_key(w.acme, org_id)).await.unwrap();
+    assert_eq!(org_row.kind, "bedrock");
+    assert_eq!(org_row.scope, "org");
+    assert_eq!(org_row.member_id, None);
 
     assert_eq!(
         w.error_code(
@@ -470,19 +531,24 @@ async fn credentials_are_encrypted_and_removable_by_their_owner() {
         json!({ "credentialId": w.org_credential }),
     )
     .await;
-    let left: i64 = w
-        .scalar(
-            "SELECT count(*) FROM sanchoris.credentials WHERE tenant_id = $1",
-            w.acme,
-        )
-        .await;
+    let left = w
+        .all::<Credential>()
+        .await
+        .into_iter()
+        .filter(|credential| credential.tenant_id == w.acme)
+        .count();
     assert_eq!(left, 3);
-    let deletions: i64 = w
-        .scalar(
-            "SELECT count(*) FROM sanchoris.audit_events WHERE tenant_id = $1 AND action = 'credential.delete'",
-            w.acme,
-        )
-        .await;
+    assert!(
+        w.get::<Guard>(&keys::credential_name_key(w.acme, "ken-key"))
+            .await
+            .is_none()
+    );
+    let deletions = w
+        .audit_actions(w.acme)
+        .await
+        .into_iter()
+        .filter(|action| action == "credential.delete")
+        .count();
     assert_eq!(deletions, 2);
 }
 
@@ -527,6 +593,25 @@ async fn members_are_invited_promoted_and_removed() {
         .await;
     assert_eq!(revoked["revokeInvitation"]["state"], "REVOKED");
     w.audit(w.acme, "member.invitation_revoke").await;
+    assert!(
+        w.get::<Guard>(&keys::pending_invitation_key(w.acme, "new@acme.dev"))
+            .await
+            .is_none()
+    );
+    let again = w
+        .ok(
+            &w.sota,
+            "InviteMember",
+            json!({ "input": { "tenantId": w.acme, "email": "new@acme.dev", "role": "MEMBER" } }),
+        )
+        .await;
+    assert_eq!(again["inviteMember"]["state"], "PENDING");
+    w.ok(
+        &w.sota,
+        "RevokeInvitation",
+        json!({ "invitationId": again["inviteMember"]["id"] }),
+    )
+    .await;
 
     let promoted = w
         .ok(
@@ -561,6 +646,22 @@ async fn members_are_invited_promoted_and_removed() {
         w.audit(w.acme, "member.invitation_accept").await.actor_ref,
         ren_member.to_string()
     );
+    let membership: Membership = w
+        .get(&keys::membership_key(w.ren.user_id, w.acme))
+        .await
+        .unwrap();
+    assert_eq!(membership.member_id, ren_member);
+    let invitation: Invitation = w
+        .get(&keys::invitation_key(w.acme, w.invitation))
+        .await
+        .unwrap();
+    assert_eq!(invitation.status, "accepted");
+    assert_eq!(invitation.accepted_at, Some(w.now));
+    assert!(
+        w.get::<Guard>(&keys::pending_invitation_key(w.acme, "ren@acme.dev"))
+            .await
+            .is_none()
+    );
     let shell = w.ok(&w.ren, "Shell", json!({})).await;
     assert_eq!(shell["viewer"]["memberships"][0]["tenant"]["slug"], "acme");
     let page = w.ok(&w.ren, "CreateTenantPage", json!({})).await;
@@ -592,13 +693,16 @@ async fn members_are_invited_promoted_and_removed() {
         )
         .await;
     assert!(response.errors.is_empty(), "{:?}", response.errors);
-    let left: i64 = w
-        .scalar(
-            "SELECT count(*) FROM sanchoris.members WHERE id = $1",
-            ren_member,
-        )
-        .await;
-    assert_eq!(left, 0);
+    assert!(
+        w.get::<Member>(&keys::member_key(w.acme, ren_member))
+            .await
+            .is_none()
+    );
+    assert!(
+        w.get::<Membership>(&keys::membership_key(w.ren.user_id, w.acme))
+            .await
+            .is_none()
+    );
     let audit = w.audit(w.acme, "member.remove").await;
     assert_eq!(audit.actor_ref, w.ken.member_id.unwrap().to_string());
     assert_eq!(audit.metadata["target_name"], "Ren");
@@ -652,13 +756,15 @@ async fn tenants_billing_and_operator_actions() {
         .unwrap();
     let audit = w.audit(tenant_id, "tenant.create").await;
     assert_eq!(audit.actor_kind, "member");
-    let role: String = w
-        .scalar(
-            "SELECT role FROM sanchoris.members WHERE tenant_id = $1",
-            tenant_id,
-        )
-        .await;
-    assert_eq!(role, "owner");
+    let members = w
+        .all::<Member>()
+        .await
+        .into_iter()
+        .filter(|member| member.tenant_id == tenant_id)
+        .collect::<Vec<_>>();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].role, "owner");
+    assert_eq!(members[0].user_id, w.ren.user_id);
     assert_eq!(
         w.error_code(
             &w.ren,
@@ -705,6 +811,8 @@ async fn tenants_billing_and_operator_actions() {
         .await;
     assert_eq!(applied["changePlan"]["checkoutUrl"], Value::Null);
     assert_eq!(applied["changePlan"]["tenant"]["plan"]["name"], "Max");
+    let tenant: Tenant = w.get(&keys::tenant_key(w.acme)).await.unwrap();
+    assert_eq!(tenant.plan_id, "max");
     w.audit(w.acme, "tenant.plan_change").await;
 
     let portal = w
@@ -786,6 +894,18 @@ async fn tenants_billing_and_operator_actions() {
         )
         .await;
     assert_eq!(suspended["suspendTenant"]["state"], "SUSPENDED");
+    let tenant: Tenant = w.get(&keys::tenant_key(w.acme)).await.unwrap();
+    assert_eq!(tenant.status, "suspended");
+    assert_eq!(tenant.suspended_reason.as_deref(), Some("Crypto mining"));
+    assert_eq!(
+        w.error_code(
+            &w.operator,
+            "SuspendTenant",
+            json!({ "tenantId": w.acme, "reason": "again" })
+        )
+        .await,
+        "CONFLICT"
+    );
     assert_eq!(
         suspended["suspendTenant"]["suspendedReason"],
         "Crypto mining"
@@ -803,6 +923,9 @@ async fn tenants_billing_and_operator_actions() {
         )
         .await;
     assert_eq!(unsuspended["unsuspendTenant"]["state"], "ACTIVE");
+    let tenant: Tenant = w.get(&keys::tenant_key(w.acme)).await.unwrap();
+    assert_eq!(tenant.status, "active");
+    assert_eq!(tenant.suspended_reason, None);
     assert_eq!(
         unsuspended["unsuspendTenant"]["suspendedReason"],
         Value::Null

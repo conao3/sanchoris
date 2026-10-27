@@ -1,12 +1,18 @@
 use async_graphql::{Context, ID, Object, Result};
 use chrono::{DateTime, Utc};
 use sanchoris_config::{Checkout, REQUESTER};
+use sanchoris_core::db::{self, REF_CONFIG_REVISION};
+use sanchoris_core::items::{
+    self, ConfigRevision as RevisionItem, Project as ProjectItem, Repository as RepositoryItem,
+    SessionDef, SkillDef, Trigger as TriggerItem,
+};
+use sanchoris_core::keys;
+use sanchoris_core::store::Listing;
 use serde_json::Value;
-use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::account::{Credential, Member};
-use crate::context::{Scope, tenant_tx};
+use crate::context::{Scope, tx};
 use crate::enums::{
     ChangeRequestState, ConfigObjectKind, Provider, UsageLimitResume, WorkspaceCompute,
 };
@@ -30,58 +36,66 @@ pub(crate) fn edit_url(repository: &str, branch: &str, root: &str, path: &str) -
     )
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct ConfigRow {
-    pub id: Uuid,
-    pub repository: String,
-    pub root_path: String,
-    pub branch: String,
-    pub active_revision_id: Option<Uuid>,
-    pub synced_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
+pub(crate) async fn config_rows(ctx: &Context<'_>, scope: Scope) -> Result<Vec<items::Config>> {
+    let mut rows = tx(ctx, scope.tenant_id)
+        .query::<items::Config>(&keys::tenant_pk(scope.tenant_id), "CONFIG#")
+        .await?;
+    rows.sort_by(|a, b| (&a.repository, &a.root_path).cmp(&(&b.repository, &b.root_path)));
+    Ok(rows)
 }
 
-const CONFIG_COLUMNS: &str =
-    "id, repository, root_path, branch, active_revision_id, synced_at, created_at";
+pub(crate) async fn in_configs<E: sanchoris_core::item::Entity>(
+    ctx: &Context<'_>,
+    scope: Scope,
+    prefix: &str,
+) -> Result<Vec<E>> {
+    let mut found = Vec::new();
+    let mut tx = tx(ctx, scope.tenant_id);
+    for config in config_rows(ctx, scope).await? {
+        found.extend(
+            tx.query::<E>(&keys::config_pk(scope.tenant_id, config.id), prefix)
+                .await?,
+        );
+    }
+    Ok(found)
+}
 
 pub(crate) struct Config {
     pub scope: Scope,
-    pub row: ConfigRow,
+    pub row: items::Config,
 }
 
 impl Config {
     pub async fn all(ctx: &Context<'_>, scope: Scope) -> Result<Vec<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, ConfigRow>(sql!(
-            "SELECT {CONFIG_COLUMNS} FROM sanchoris.configs WHERE tenant_id = $1 ORDER BY repository, root_path"
-        ))
-        .bind(scope.tenant_id)
-        .fetch_all(tx.conn())
-        .await?;
-        Ok(rows.into_iter().map(|row| Config { scope, row }).collect())
+        Ok(config_rows(ctx, scope)
+            .await?
+            .into_iter()
+            .map(|row| Config { scope, row })
+            .collect())
     }
 
     pub async fn load(ctx: &Context<'_>, scope: Scope, config_id: Uuid) -> Result<Self> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let row = sqlx::query_as::<_, ConfigRow>(sql!(
-            "SELECT {CONFIG_COLUMNS} FROM sanchoris.configs WHERE id = $1"
-        ))
-        .bind(config_id)
-        .fetch_optional(tx.conn())
-        .await?
-        .ok_or_else(|| not_found(format!("config {config_id}")))?;
-        Ok(Config { scope, row })
+        tx(ctx, scope.tenant_id)
+            .get::<items::Config>(&keys::config_key(scope.tenant_id, config_id))
+            .await?
+            .map(|row| Config { scope, row })
+            .ok_or_else(|| not_found(format!("config {config_id}")))
     }
 
-    async fn revision_rows(&self, ctx: &Context<'_>, limit: i64) -> Result<Vec<RevisionRow>> {
-        let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-        Ok(sqlx::query_as::<_, RevisionRow>(sql!(
-            "{REVISION_SELECT} WHERE r.config_id = $1 ORDER BY r.created_at DESC, r.id DESC LIMIT $2"
-        ))
-        .bind(self.row.id)
-        .bind(limit)
-        .fetch_all(tx.conn())
-        .await?)
+    async fn revision_rows(&self, ctx: &Context<'_>, limit: usize) -> Result<Vec<RevisionItem>> {
+        Ok(tx(ctx, self.scope.tenant_id)
+            .list::<RevisionItem>(
+                &Listing::main(keys::config_pk(self.scope.tenant_id, self.row.id))
+                    .prefix("REV#")
+                    .descending()
+                    .limit(limit),
+                |_| true,
+            )
+            .await?)
+    }
+
+    fn pk(&self) -> String {
+        keys::config_pk(self.scope.tenant_id, self.row.id)
     }
 }
 
@@ -128,15 +142,16 @@ impl Config {
 
     async fn revision(&self, ctx: &Context<'_>) -> Result<ConfigRevision> {
         if let Some(active) = self.row.active_revision_id {
-            let mut tx = tenant_tx(ctx, self.scope.tenant_id).await?;
-            let row = sqlx::query_as::<_, RevisionRow>(sql!("{REVISION_SELECT} WHERE r.id = $1"))
-                .bind(active)
-                .fetch_one(tx.conn())
-                .await?;
-            return Ok(ConfigRevision::Stored(row));
+            let mut tx = tx(ctx, self.scope.tenant_id);
+            let location = db::locate(&mut tx, active, REF_CONFIG_REVISION)
+                .await?
+                .ok_or_else(|| not_found(format!("config revision {active}")))?;
+            return Ok(ConfigRevision::Stored(Box::new(
+                tx.require::<RevisionItem>(&location.target).await?,
+            )));
         }
         Ok(match self.revision_rows(ctx, 1).await?.into_iter().next() {
-            Some(row) => ConfigRevision::Stored(row),
+            Some(row) => ConfigRevision::Stored(Box::new(row)),
             None => ConfigRevision::NotSynced {
                 config_id: self.row.id,
                 created_at: self.row.created_at,
@@ -150,10 +165,10 @@ impl Config {
         #[graphql(default = 10)] limit: Option<i32>,
     ) -> Result<Vec<ConfigRevision>> {
         Ok(self
-            .revision_rows(ctx, i64::from(limit.unwrap_or(10)))
+            .revision_rows(ctx, usize::try_from(limit.unwrap_or(10))?)
             .await?
             .into_iter()
-            .map(ConfigRevision::Stored)
+            .map(|row| ConfigRevision::Stored(Box::new(row)))
             .collect())
     }
 
@@ -166,27 +181,25 @@ impl Config {
     }
 
     async fn trigger_count(&self, ctx: &Context<'_>) -> Result<i32> {
-        count(
-            ctx,
-            self.scope,
-            "SELECT count(*) FROM sanchoris.triggers WHERE config_id = $1 AND removed_at IS NULL",
-            self.row.id,
-        )
-        .await
+        let count = tx(ctx, self.scope.tenant_id)
+            .query::<TriggerItem>(&self.pk(), "TRIGGER#")
+            .await?
+            .iter()
+            .filter(|trigger| trigger.removed_at.is_none())
+            .count();
+        Ok(i32::try_from(count)?)
     }
 
     async fn skill_count(&self, ctx: &Context<'_>) -> Result<i32> {
-        count(
-            ctx,
-            self.scope,
-            "SELECT count(*) FROM sanchoris.skills WHERE config_id = $1",
-            self.row.id,
-        )
-        .await
+        let count = tx(ctx, self.scope.tenant_id)
+            .query::<SkillDef>(&self.pk(), "SKILL#")
+            .await?
+            .len();
+        Ok(i32::try_from(count)?)
     }
 
     async fn projects(&self, ctx: &Context<'_>) -> Result<Vec<Project>> {
-        Project::query(ctx, self.scope, Some(self.row.id)).await
+        Project::of_config(ctx, self.scope, self.row.id).await
     }
 
     async fn change_requests(
@@ -198,37 +211,8 @@ impl Config {
     }
 }
 
-pub(crate) async fn count(
-    ctx: &Context<'_>,
-    scope: Scope,
-    sql: &'static str,
-    id: Uuid,
-) -> Result<i32> {
-    let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-    let count = sqlx::query_scalar::<_, i64>(sql)
-        .bind(id)
-        .fetch_one(tx.conn())
-        .await?;
-    Ok(i32::try_from(count)?)
-}
-
-const REVISION_SELECT: &str = "SELECT r.id, r.commit_sha, r.validation_status, r.validation_messages, r.created_at, \
-     (SELECT count(*) FROM sanchoris.config_revisions p WHERE p.config_id = r.config_id \
-        AND (p.created_at, p.id) <= (r.created_at, r.id))::int AS number \
-     FROM sanchoris.config_revisions r";
-
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct RevisionRow {
-    id: Uuid,
-    commit_sha: String,
-    validation_status: String,
-    validation_messages: Value,
-    created_at: DateTime<Utc>,
-    number: i32,
-}
-
 pub(crate) enum ConfigRevision {
-    Stored(RevisionRow),
+    Stored(Box<RevisionItem>),
     NotSynced {
         config_id: Uuid,
         created_at: DateTime<Utc>,
@@ -244,10 +228,10 @@ impl ConfigRevision {
         }
     }
 
-    async fn number(&self) -> i32 {
+    async fn number(&self) -> Result<i32> {
         match self {
-            Self::Stored(row) => row.number,
-            Self::NotSynced { .. } => 0,
+            Self::Stored(row) => Ok(i32::try_from(row.number)?),
+            Self::NotSynced { .. } => Ok(0),
         }
     }
 
@@ -344,35 +328,29 @@ impl ValidationError {
     }
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct ProjectRow {
-    id: Uuid,
-    config_id: Uuid,
-    name: String,
-    system_prompt: String,
-}
-
 pub(crate) struct Project {
     scope: Scope,
-    row: ProjectRow,
+    row: ProjectItem,
 }
 
 impl Project {
-    pub async fn query(
-        ctx: &Context<'_>,
-        scope: Scope,
-        config_id: Option<Uuid>,
-    ) -> Result<Vec<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, ProjectRow>(
-            "SELECT id, config_id, name, system_prompt FROM sanchoris.projects \
-             WHERE tenant_id = $1 AND ($2::uuid IS NULL OR config_id = $2) ORDER BY name, id",
-        )
-        .bind(scope.tenant_id)
-        .bind(config_id)
-        .fetch_all(tx.conn())
-        .await?;
-        Ok(rows.into_iter().map(|row| Project { scope, row }).collect())
+    fn sorted(scope: Scope, mut rows: Vec<ProjectItem>) -> Vec<Self> {
+        rows.sort_by(|a, b| (&a.name, a.id).cmp(&(&b.name, b.id)));
+        rows.into_iter().map(|row| Project { scope, row }).collect()
+    }
+
+    pub async fn all(ctx: &Context<'_>, scope: Scope) -> Result<Vec<Self>> {
+        Ok(Self::sorted(
+            scope,
+            in_configs::<ProjectItem>(ctx, scope, "PROJECT#").await?,
+        ))
+    }
+
+    pub async fn of_config(ctx: &Context<'_>, scope: Scope, config_id: Uuid) -> Result<Vec<Self>> {
+        let rows = tx(ctx, scope.tenant_id)
+            .query::<ProjectItem>(&keys::config_pk(scope.tenant_id, config_id), "PROJECT#")
+            .await?;
+        Ok(Self::sorted(scope, rows))
     }
 
     pub async fn by_name(
@@ -381,30 +359,22 @@ impl Project {
         config_id: Uuid,
         name: &str,
     ) -> Result<Option<Self>> {
-        Ok(Self::query(ctx, scope, Some(config_id))
+        Ok(tx(ctx, scope.tenant_id)
+            .get::<ProjectItem>(&keys::project_key(scope.tenant_id, config_id, name))
             .await?
-            .into_iter()
-            .find(|project| project.row.name == name))
+            .map(|row| Project { scope, row }))
     }
 
-    async fn repository_rows(&self, ctx: &Context<'_>) -> Result<Vec<RepositoryRow>> {
-        repository_rows(ctx, self.scope, self.row.id).await
+    async fn repository_rows(&self, ctx: &Context<'_>) -> Result<Vec<RepositoryItem>> {
+        let mut rows = tx(ctx, self.scope.tenant_id)
+            .query::<RepositoryItem>(
+                &keys::config_pk(self.scope.tenant_id, self.row.config_id),
+                &format!("PROJECT#{}#REPO#", self.row.name),
+            )
+            .await?;
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(rows)
     }
-}
-
-async fn repository_rows(
-    ctx: &Context<'_>,
-    scope: Scope,
-    project_id: Uuid,
-) -> Result<Vec<RepositoryRow>> {
-    let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-    Ok(sqlx::query_as::<_, RepositoryRow>(
-        "SELECT id, name, url, prebuild_status, prebuild_at FROM sanchoris.repositories \
-         WHERE project_id = $1 ORDER BY name",
-    )
-    .bind(project_id)
-    .fetch_all(tx.conn())
-    .await?)
 }
 
 #[Object]
@@ -439,7 +409,7 @@ impl Project {
             .repository_rows(ctx)
             .await?
             .iter()
-            .filter_map(RepositoryRow::warm_build)
+            .filter_map(warm_build)
             .max_by_key(|build| build.finished_at))
     }
 
@@ -456,37 +426,26 @@ impl Project {
     }
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct RepositoryRow {
-    id: Uuid,
-    name: String,
-    url: String,
-    prebuild_status: Option<String>,
-    prebuild_at: Option<DateTime<Utc>>,
+fn full_name(row: &RepositoryItem) -> &str {
+    row.url.trim_start_matches("github.com/")
 }
 
-impl RepositoryRow {
-    fn full_name(&self) -> &str {
-        self.url.trim_start_matches("github.com/")
-    }
-
-    fn warm_build(&self) -> Option<WarmBuild> {
-        let finished_at = self.prebuild_at?;
-        match self.prebuild_status.as_deref() {
-            Some("succeeded") => Some(WarmBuild {
-                succeeded: true,
-                finished_at,
-            }),
-            Some("failed") => Some(WarmBuild {
-                succeeded: false,
-                finished_at,
-            }),
-            _ => None,
-        }
+fn warm_build(row: &RepositoryItem) -> Option<WarmBuild> {
+    let finished_at = row.prebuild_at?;
+    match row.prebuild_status.as_deref() {
+        Some("succeeded") => Some(WarmBuild {
+            succeeded: true,
+            finished_at,
+        }),
+        Some("failed") => Some(WarmBuild {
+            succeeded: false,
+            finished_at,
+        }),
+        _ => None,
     }
 }
 
-pub(crate) struct Repository(RepositoryRow);
+pub(crate) struct Repository(RepositoryItem);
 
 #[Object]
 impl Repository {
@@ -499,15 +458,15 @@ impl Repository {
     }
 
     async fn full_name(&self) -> &str {
-        self.0.full_name()
+        full_name(&self.0)
     }
 
     async fn url(&self) -> String {
-        format!("https://github.com/{}", self.0.full_name())
+        format!("https://github.com/{}", full_name(&self.0))
     }
 
     async fn warm_build(&self) -> Option<WarmBuild> {
-        self.0.warm_build()
+        warm_build(&self.0)
     }
 }
 
@@ -535,32 +494,23 @@ pub(crate) struct Session {
     pub definition: Value,
 }
 
-#[derive(Debug, FromRow)]
-struct SessionRow {
-    id: Uuid,
-    config_id: Uuid,
-    name: String,
-    definition: Value,
-}
-
 impl Session {
+    fn from_row(scope: Scope, row: SessionDef) -> Self {
+        Session {
+            scope,
+            id: row.id.to_string(),
+            config_id: row.config_id,
+            name: row.name,
+            definition: row.definition,
+        }
+    }
+
     pub async fn all(ctx: &Context<'_>, scope: Scope) -> Result<Vec<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, SessionRow>(
-            "SELECT id, config_id, name, definition FROM sanchoris.sessions WHERE tenant_id = $1 ORDER BY name, id",
-        )
-        .bind(scope.tenant_id)
-        .fetch_all(tx.conn())
-        .await?;
+        let mut rows = in_configs::<SessionDef>(ctx, scope, "SESSION#").await?;
+        rows.sort_by(|a, b| (&a.name, a.id).cmp(&(&b.name, b.id)));
         Ok(rows
             .into_iter()
-            .map(|row| Session {
-                scope,
-                id: row.id.to_string(),
-                config_id: row.config_id,
-                name: row.name,
-                definition: row.definition,
-            })
+            .map(|row| Self::from_row(scope, row))
             .collect())
     }
 
@@ -570,10 +520,10 @@ impl Session {
         config_id: Uuid,
         name: &str,
     ) -> Result<Option<Self>> {
-        Ok(Self::all(ctx, scope)
+        Ok(tx(ctx, scope.tenant_id)
+            .get::<SessionDef>(&keys::session_key(scope.tenant_id, config_id, name))
             .await?
-            .into_iter()
-            .find(|session| session.config_id == config_id && session.name == name))
+            .map(|row| Self::from_row(scope, row)))
     }
 
     pub fn parsed(&self) -> Result<sanchoris_config::Session> {
@@ -591,7 +541,7 @@ impl Session {
                         .repository_rows(ctx)
                         .await?
                         .iter()
-                        .map(|row| row.full_name().to_string())
+                        .map(|row| full_name(row).to_string())
                         .collect()),
                     None => Ok(Vec::new()),
                 }
@@ -666,43 +616,44 @@ impl Session {
     }
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct ChangeRequestRow {
-    id: Uuid,
-    config_id: Uuid,
-    config_repository: String,
-    pr_number: i32,
-    title: String,
-    state: String,
-    changed_definitions: Value,
-    validation_status: Option<String>,
-    validation_messages: Value,
-    requested_by_member_id: Option<Uuid>,
-    requested_by_task_id: Option<Uuid>,
-    created_at: DateTime<Utc>,
-}
-
 pub(crate) struct ChangeRequest {
     scope: Scope,
-    row: ChangeRequestRow,
+    config_repository: String,
+    row: items::ChangeRequest,
 }
 
 impl ChangeRequest {
+    pub fn new(scope: Scope, config_repository: String, row: items::ChangeRequest) -> Self {
+        Self {
+            scope,
+            config_repository,
+            row,
+        }
+    }
+
     pub async fn query(
         ctx: &Context<'_>,
         scope: Scope,
         config_id: Option<Uuid>,
         state: Option<ChangeRequestState>,
     ) -> Result<Vec<Self>> {
-        Self::select(ctx, scope, config_id, state, None).await
-    }
-
-    pub async fn by_id(ctx: &Context<'_>, scope: Scope, id: Uuid) -> Result<Self> {
-        Self::select(ctx, scope, None, None, Some(id))
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| not_found(format!("change request {id}")))
+        let mut tx = tx(ctx, scope.tenant_id);
+        let mut found = Vec::new();
+        for config in config_rows(ctx, scope).await? {
+            if config_id.is_some_and(|id| id != config.id) {
+                continue;
+            }
+            let rows = tx
+                .query::<items::ChangeRequest>(&keys::config_pk(scope.tenant_id, config.id), "CR#")
+                .await?;
+            found.extend(
+                rows.into_iter()
+                    .filter(|row| state.is_none_or(|state| row.state == state.as_db()))
+                    .map(|row| ChangeRequest::new(scope, config.repository.clone(), row)),
+            );
+        }
+        found.sort_by(|a, b| (b.row.created_at, a.row.id).cmp(&(a.row.created_at, b.row.id)));
+        Ok(found)
     }
 
     pub async fn open_for(
@@ -728,35 +679,6 @@ impl ChangeRequest {
                 }),
         )
     }
-
-    async fn select(
-        ctx: &Context<'_>,
-        scope: Scope,
-        config_id: Option<Uuid>,
-        state: Option<ChangeRequestState>,
-        id: Option<Uuid>,
-    ) -> Result<Vec<Self>> {
-        let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
-        let rows = sqlx::query_as::<_, ChangeRequestRow>(
-            "SELECT cr.id, cr.config_id, c.repository AS config_repository, cr.pr_number, cr.title, cr.state, \
-                    cr.changed_definitions, cr.validation_status, cr.validation_messages, \
-                    cr.requested_by_member_id, cr.requested_by_task_id, cr.created_at \
-             FROM sanchoris.change_requests cr JOIN sanchoris.configs c ON c.id = cr.config_id \
-             WHERE cr.tenant_id = $1 AND ($2::uuid IS NULL OR cr.config_id = $2) \
-               AND ($3::text IS NULL OR cr.state = $3) AND ($4::uuid IS NULL OR cr.id = $4) \
-             ORDER BY cr.created_at DESC, cr.id",
-        )
-        .bind(scope.tenant_id)
-        .bind(config_id)
-        .bind(state.map(ChangeRequestState::as_db))
-        .bind(id)
-        .fetch_all(tx.conn())
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| ChangeRequest { scope, row })
-            .collect())
-    }
 }
 
 #[Object]
@@ -769,8 +691,8 @@ impl ChangeRequest {
         Config::load(ctx, self.scope, self.row.config_id).await
     }
 
-    async fn number(&self) -> i32 {
-        self.row.pr_number
+    async fn number(&self) -> Result<i32> {
+        Ok(i32::try_from(self.row.pr_number)?)
     }
 
     async fn title(&self) -> &str {
@@ -780,7 +702,7 @@ impl ChangeRequest {
     async fn url(&self) -> String {
         format!(
             "https://github.com/{}/pull/{}",
-            self.row.config_repository, self.row.pr_number
+            self.config_repository, self.row.pr_number
         )
     }
 

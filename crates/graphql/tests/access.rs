@@ -1,32 +1,227 @@
 mod common;
 
-use common::World;
-use sanchoris_core::db::{TenantTx, UserTx};
+use common::{Person, World};
+use sanchoris_core::db::DbError;
+use sanchoris_core::item::Key;
+use sanchoris_core::items::{Member, Task, User};
+use sanchoris_core::keys;
+use sanchoris_core::model::TaskStatus;
+use sanchoris_core::store::{Index, Listing};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-#[tokio::test]
-async fn members_of_one_tenant_cannot_read_another() {
-    let w = World::new().await;
+struct Victim {
+    tenant: Uuid,
+    slug: &'static str,
+    config: Uuid,
+    trigger: Uuid,
+    task: Uuid,
+    run: Uuid,
+    credential: Uuid,
+    invitation: Uuid,
+    member: Uuid,
+}
 
-    let home = w.ok(&w.hana, "Home", json!({ "tenant": "acme" })).await;
+fn acme(w: &World) -> Victim {
+    Victim {
+        tenant: w.acme,
+        slug: "acme",
+        config: w.config_id,
+        trigger: w.labeled_trigger,
+        task: w.issue_task,
+        run: w.issue_run,
+        credential: w.org_credential,
+        invitation: w.invitation,
+        member: w.ken.member_id.unwrap(),
+    }
+}
+
+fn globex(w: &World) -> Victim {
+    Victim {
+        tenant: w.globex,
+        slug: "globex",
+        config: w.globex_config,
+        trigger: w.globex_trigger,
+        task: w.globex_task,
+        run: w.globex_run,
+        credential: w.globex_credential,
+        invitation: w.globex_invitation,
+        member: w.hana.member_id.unwrap(),
+    }
+}
+
+fn foreign_mutations(victim: &Victim, own_tenant: Uuid) -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            "InviteMember",
+            json!({ "input": { "tenantId": victim.tenant, "email": "x@example.dev", "role": "MEMBER" } }),
+        ),
+        (
+            "RevokeInvitation",
+            json!({ "invitationId": victim.invitation }),
+        ),
+        (
+            "ChangeMemberRole",
+            json!({ "memberId": victim.member, "role": "ADMIN" }),
+        ),
+        (
+            "ResumeTask",
+            json!({ "input": { "taskId": victim.task, "message": "hi" } }),
+        ),
+        (
+            "SnoozeTask",
+            json!({ "taskId": victim.task, "until": "2099-01-01T00:00:00Z" }),
+        ),
+        ("StopTask", json!({ "taskId": victim.task })),
+        ("StopRun", json!({ "runId": victim.run })),
+        (
+            "SendChatMessage",
+            json!({ "input": { "tenantId": victim.tenant, "scope": "all", "text": "hi" } }),
+        ),
+        (
+            "SendChatMessage",
+            json!({ "input": { "tenantId": own_tenant, "taskId": victim.task, "text": "hi" } }),
+        ),
+        (
+            "SetTriggerState",
+            json!({ "triggerId": victim.trigger, "state": "DISABLED" }),
+        ),
+        (
+            "ProposeTrigger",
+            json!({ "input": { "tenantId": victim.tenant, "configId": victim.config, "templateId": "labeled-issue", "repository": "acme/shop-web" } }),
+        ),
+        (
+            "ProposeTrigger",
+            json!({ "input": { "tenantId": own_tenant, "configId": victim.config, "templateId": "labeled-issue", "repository": "acme/shop-web" } }),
+        ),
+        (
+            "AddConfig",
+            json!({ "input": { "tenantId": victim.tenant, "repository": "x/y", "root": "/", "branch": "main" } }),
+        ),
+        ("SyncConfig", json!({ "configId": victim.config })),
+        (
+            "AddCredential",
+            json!({ "input": { "tenantId": victim.tenant, "name": "x", "provider": "ANTHROPIC", "key": "sk-ant-api03-0123456789", "scope": "PERSONAL" } }),
+        ),
+        (
+            "RemoveCredential",
+            json!({ "credentialId": victim.credential }),
+        ),
+        (
+            "ChangePlan",
+            json!({ "tenantId": victim.tenant, "planId": "max" }),
+        ),
+        ("OpenBillingPortal", json!({ "tenantId": victim.tenant })),
+        (
+            "ExportAuditLog",
+            json!({ "tenantId": victim.tenant, "filter": null }),
+        ),
+        ("ConnectSlack", json!({ "tenantId": victim.tenant })),
+    ]
+}
+
+async fn assert_isolated(w: &World, attacker: &Person, own_tenant: Uuid, victim: &Victim) {
+    let audit_before = w.audit_actions(victim.tenant).await;
+    let tasks_before = w.all::<Task>().await.len();
+
+    let home = w
+        .ok(attacker, "Home", json!({ "tenant": victim.slug }))
+        .await;
     assert_eq!(home["tenant"], Value::Null);
-    let shell = w.ok(&w.hana, "Shell", json!({})).await;
-    let slugs = shell["viewer"]["memberships"]
-        .as_array()
+    let shell = w.ok(attacker, "Shell", json!({})).await;
+    assert!(
+        shell["viewer"]["memberships"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["tenant"]["slug"] != victim.slug)
+    );
+    let page = w.ok(attacker, "CreateTenantPage", json!({})).await;
+    assert!(
+        page["viewer"]["invitations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|invitation| invitation["id"] != victim.invitation.to_string())
+    );
+    let operator = w.ok(attacker, "OperatorTenants", json!({})).await;
+    assert_eq!(operator["operator"], Value::Null);
+    let own_slug = w
+        .get::<sanchoris_core::items::Tenant>(&keys::tenant_key(own_tenant))
+        .await
         .unwrap()
-        .iter()
-        .map(|m| m["tenant"]["slug"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(slugs, vec!["globex"]);
+        .slug;
     let task = w
         .ok(
-            &w.hana,
+            attacker,
             "Task",
-            json!({ "tenant": "globex", "id": w.issue_task }),
+            json!({ "tenant": own_slug, "id": victim.task }),
         )
         .await;
     assert_eq!(task["tenant"]["task"], Value::Null);
+    let chat = w
+        .ok(
+            attacker,
+            "Chat",
+            json!({ "tenant": own_slug, "task": victim.task, "withTask": true }),
+        )
+        .await;
+    assert_eq!(chat["tenant"]["task"], Value::Null);
+
+    for (operation, variables) in foreign_mutations(victim, own_tenant) {
+        assert_eq!(
+            w.error_code(attacker, operation, variables.clone()).await,
+            "NOT_FOUND",
+            "{operation} {variables}"
+        );
+    }
+    let response = w
+        .inline(
+            attacker,
+            "mutation($id: ID!) { removeMember(memberId: $id) }",
+            json!({ "id": victim.member }),
+        )
+        .await;
+    assert_eq!(
+        response.errors[0]
+            .extensions
+            .as_ref()
+            .unwrap()
+            .get("code")
+            .unwrap()
+            .to_string(),
+        "\"NOT_FOUND\""
+    );
+    assert_eq!(
+        w.error_code(
+            attacker,
+            "AcceptInvitation",
+            json!({ "invitationId": victim.invitation })
+        )
+        .await,
+        "NOT_FOUND"
+    );
+
+    assert_eq!(w.audit_actions(victim.tenant).await, audit_before);
+    assert_eq!(w.all::<Task>().await.len(), tasks_before);
+    assert_eq!(
+        w.task(victim.tenant, victim.task).await.status,
+        TaskStatus::NeedsYou
+    );
+    assert!(
+        w.get::<Member>(&keys::member_key(victim.tenant, victim.member))
+            .await
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn members_of_one_tenant_cannot_read_or_change_another() {
+    let w = World::new().await;
+    assert_isolated(&w, &w.hana, w.globex, &acme(&w)).await;
+    assert_isolated(&w, &w.mika, w.acme, &globex(&w)).await;
+    assert_isolated(&w, &w.sota, w.acme, &globex(&w)).await;
+
     let own = w
         .ok(
             &w.hana,
@@ -35,125 +230,99 @@ async fn members_of_one_tenant_cannot_read_another() {
         )
         .await;
     assert_eq!(own["tenant"]["task"]["title"], "Globex secret task");
-    let foreign = w
+    let tasks = w
         .ok(
             &w.mika,
-            "Task",
-            json!({ "tenant": "acme", "id": w.globex_task }),
+            "Tasks",
+            json!({ "tenant": "acme", "filter": null }),
         )
         .await;
-    assert_eq!(foreign["tenant"]["task"], Value::Null);
-
-    assert_eq!(
-        w.error_code(
-            &w.hana,
-            "ResumeTask",
-            json!({ "input": { "taskId": w.issue_task, "message": "hi" } }),
+    assert!(
+        tasks["tenant"]["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|task| task["id"] != w.globex_task.to_string())
+    );
+    let chats = w
+        .ok(
+            &w.mika,
+            "Chat",
+            json!({ "tenant": "acme", "task": w.chat_task, "withTask": false }),
         )
-        .await,
-        "NOT_FOUND"
+        .await;
+    assert!(
+        chats["tenant"]["chats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|task| task["id"] != w.globex_task.to_string())
     );
-    assert_eq!(
-        w.error_code(&w.hana, "StopTask", json!({ "taskId": w.issue_task }))
-            .await,
-        "NOT_FOUND"
-    );
-    assert_eq!(
-        w.error_code(
-            &w.hana,
-            "SetTriggerState",
-            json!({ "triggerId": w.labeled_trigger, "state": "DISABLED" }),
-        )
-        .await,
-        "NOT_FOUND"
-    );
-    assert_eq!(
-        w.error_code(
-            &w.hana,
-            "InviteMember",
-            json!({ "input": { "tenantId": w.acme, "email": "x@globex.dev", "role": "MEMBER" } }),
-        )
-        .await,
-        "NOT_FOUND"
-    );
-    assert_eq!(
-        w.error_code(
-            &w.hana,
-            "RemoveCredential",
-            json!({ "credentialId": w.org_credential })
-        )
-        .await,
-        "NOT_FOUND"
-    );
-    assert_eq!(
-        w.scalar::<String>(
-            "SELECT status FROM sanchoris.tasks WHERE id = $1",
-            w.issue_task
-        )
-        .await,
-        "NEEDS_YOU"
-    );
+    let members = w.ok(&w.mika, "Members", json!({ "tenant": "acme" })).await;
+    assert_eq!(members["tenant"]["members"].as_array().unwrap().len(), 3);
+    assert_eq!(members["tenant"]["usage"]["seatsUsed"], 4);
 }
 
 #[tokio::test]
-async fn row_level_security_hides_other_tenants_from_the_app_role() {
+async fn tenant_transactions_reject_keys_of_other_tenants() {
     let w = World::new().await;
-    let mut tx = TenantTx::begin(&w.app, w.globex).await.unwrap();
-    let visible: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM sanchoris.tasks")
-        .fetch_all(tx.conn())
+    let mut tx = w.store.tx(w.globex);
+    let foreign = keys::task_key(w.acme, w.issue_task);
+    assert!(matches!(
+        tx.get::<Task>(&foreign).await,
+        Err(DbError::CrossTenant { .. })
+    ));
+    assert!(matches!(
+        tx.query::<Task>(&keys::task_pk(w.acme, w.issue_task), "")
+            .await,
+        Err(DbError::CrossTenant { .. })
+    ));
+    assert!(matches!(
+        tx.list::<Task>(
+            &Listing::index(Index::Gsi1, keys::tasks_index(w.acme)),
+            |_| true
+        )
+        .await,
+        Err(DbError::CrossTenant { .. })
+    ));
+    assert!(matches!(
+        tx.list::<sanchoris_core::items::AuditEvent>(
+            &Listing::audit(keys::tenant_pk(w.acme)),
+            |_| true
+        )
+        .await,
+        Err(DbError::CrossTenant { .. })
+    ));
+    assert!(matches!(
+        tx.list::<sanchoris_core::items::Tenant>(
+            &Listing::index(Index::Gsi2, keys::TENANTS_INDEX),
+            |_| true
+        )
+        .await,
+        Err(DbError::CrossTenant { .. })
+    ));
+    assert!(matches!(
+        tx.delete(&foreign),
+        Err(DbError::CrossTenant { .. })
+    ));
+    let own = tx
+        .list::<Task>(
+            &Listing::index(Index::Gsi1, keys::tasks_index(w.globex)),
+            |_| true,
+        )
         .await
         .unwrap();
-    assert_eq!(visible, vec![w.globex_task]);
-    let tenants: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.tenants")
-        .fetch_one(tx.conn())
-        .await
-        .unwrap();
-    assert_eq!(tenants, 1);
-    drop(tx);
-
-    let mut tx = UserTx::begin(&w.app, w.hana.user_id).await.unwrap();
-    let tenants: Vec<String> =
-        sqlx::query_scalar("SELECT slug FROM sanchoris.tenants ORDER BY slug")
-            .fetch_all(tx.conn())
-            .await
-            .unwrap();
-    assert_eq!(tenants, vec!["globex"]);
-    let tasks: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.tasks")
-        .fetch_one(tx.conn())
-        .await
-        .unwrap();
-    assert_eq!(tasks, 0);
-    let members: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.members")
-        .fetch_one(tx.conn())
-        .await
-        .unwrap();
-    assert_eq!(members, 1);
-    drop(tx);
-
-    let mut tx = UserTx::begin(&w.app, w.ren.user_id).await.unwrap();
-    let invitations: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.invitations")
-        .fetch_one(tx.conn())
-        .await
-        .unwrap();
-    assert_eq!(invitations, 1);
-    let tenants: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.tenants")
-        .fetch_one(tx.conn())
-        .await
-        .unwrap();
-    assert_eq!(tenants, 0);
-    drop(tx);
-
-    let mut tx = UserTx::begin(&w.app, w.operator.user_id).await.unwrap();
-    let tenants: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.tenants")
-        .fetch_one(tx.conn())
-        .await
-        .unwrap();
-    assert_eq!(tenants, 2);
-    let tasks: i64 = sqlx::query_scalar("SELECT count(*) FROM sanchoris.tasks")
-        .fetch_one(tx.conn())
-        .await
-        .unwrap();
-    assert_eq!(tasks, 0);
+    assert_eq!(
+        own.iter().map(|task| task.id).collect::<Vec<_>>(),
+        vec![w.globex_task]
+    );
+    let user: Option<User> = tx.get(&keys::user_key(w.hana.user_id)).await.unwrap();
+    assert!(user.is_some());
+    let plans: Key = keys::plan_key("free");
+    assert!(matches!(
+        tx.delete(&plans),
+        Err(DbError::CrossTenant { .. })
+    ));
 }
 
 #[tokio::test]
@@ -198,6 +367,11 @@ async fn roles_gate_admin_and_owner_operations() {
         "FORBIDDEN"
     );
     assert_eq!(
+        w.error_code(&w.ken, "SyncConfig", json!({ "configId": w.config_id }))
+            .await,
+        "FORBIDDEN"
+    );
+    assert_eq!(
         w.error_code(
             &w.ken,
             "AddCredential",
@@ -220,6 +394,29 @@ async fn roles_gate_admin_and_owner_operations() {
             &w.ken,
             "ChangeMemberRole",
             json!({ "memberId": w.ken.member_id, "role": "ADMIN" })
+        )
+        .await,
+        "FORBIDDEN"
+    );
+    assert_eq!(
+        w.error_code(
+            &w.ken,
+            "RevokeInvitation",
+            json!({ "invitationId": w.invitation })
+        )
+        .await,
+        "FORBIDDEN"
+    );
+    assert_eq!(
+        w.error_code(&w.ken, "ConnectSlack", json!({ "tenantId": w.acme }))
+            .await,
+        "FORBIDDEN"
+    );
+    assert_eq!(
+        w.error_code(
+            &w.ken,
+            "ExportAuditLog",
+            json!({ "tenantId": w.acme, "filter": null })
         )
         .await,
         "FORBIDDEN"
@@ -266,6 +463,11 @@ async fn roles_gate_admin_and_owner_operations() {
         "FORBIDDEN"
     );
     assert_eq!(
+        w.error_code(&w.mika, "UnsuspendTenant", json!({ "tenantId": w.acme }))
+            .await,
+        "FORBIDDEN"
+    );
+    assert_eq!(
         w.error_code(
             &w.mika,
             "ChangeMemberRole",
@@ -282,40 +484,41 @@ async fn roles_gate_admin_and_owner_operations() {
     let members = w.ok(&w.ken, "Members", tenant.clone()).await;
     assert_eq!(members["tenant"]["viewerMember"]["role"], "MEMBER");
 
-    let response = w
-        .inline(
+    assert_eq!(
+        w.inline_code(
             &w.operator,
             "query { operator { tenants { name tasks { id } } } }",
             json!({}),
         )
-        .await;
-    assert_eq!(
-        response.errors[0]
-            .extensions
-            .as_ref()
-            .unwrap()
-            .get("code")
-            .unwrap()
-            .to_string(),
-        "\"FORBIDDEN\""
+        .await,
+        "FORBIDDEN"
     );
-
-    let response = w
-        .inline(
+    assert_eq!(
+        w.inline_code(
+            &w.operator,
+            "query { operator { tenants { members { id } } } }",
+            json!({}),
+        )
+        .await,
+        "FORBIDDEN"
+    );
+    assert_eq!(
+        w.inline_code(
             &w.ren,
             "query { viewer { invitations { invitedBy { tenant { name tasks { id } } } } } }",
             json!({}),
         )
-        .await;
+        .await,
+        "FORBIDDEN"
+    );
     assert_eq!(
-        response.errors[0]
-            .extensions
-            .as_ref()
-            .unwrap()
-            .get("code")
-            .unwrap()
-            .to_string(),
-        "\"FORBIDDEN\""
+        w.inline_code(
+            &w.ren,
+            "query { viewer { invitations { invitedBy { tenant { plan { id } } } } } }",
+            json!({}),
+        )
+        .await,
+        "FORBIDDEN"
     );
 
     assert!(w.audit_actions(w.acme).await.is_empty());
@@ -324,20 +527,25 @@ async fn roles_gate_admin_and_owner_operations() {
 #[tokio::test]
 async fn requests_without_a_user_are_rejected() {
     let w = World::new().await;
-    let response = w
-        .schema
-        .execute(async_graphql::Request::new(
-            "query { viewer { isOperator } }",
-        ))
-        .await;
-    assert_eq!(
-        response.errors[0]
-            .extensions
-            .as_ref()
-            .unwrap()
-            .get("code")
-            .unwrap()
-            .to_string(),
-        "\"UNAUTHENTICATED\""
-    );
+    for query in [
+        "query { viewer { isOperator } }",
+        "query { plans { id } }",
+        "query { tenant(slug: \"acme\") { id } }",
+        "query { operator { runningRuns } }",
+        "query { triggerTemplates { id } }",
+        "mutation { connectGitHub { url } }",
+    ] {
+        let response = w.schema.execute(async_graphql::Request::new(query)).await;
+        assert_eq!(
+            response.errors[0]
+                .extensions
+                .as_ref()
+                .unwrap()
+                .get("code")
+                .unwrap()
+                .to_string(),
+            "\"UNAUTHENTICATED\"",
+            "{query}"
+        );
+    }
 }
