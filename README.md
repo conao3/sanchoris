@@ -8,9 +8,11 @@ Sanchoris is a pnpm + Vite frontend and Rust backend monorepo.
 - `apps/workspace-agent`: the agent that runs inside a Workspace, and the `sanchoris` command (`PROTOCOL.md` describes the Run channel)
 - `crates/api`: the HTTP API, the Run channel, and their Lambda functions (`api`, `channel`, `channel-authorizer`, `worker`, `relay`), and the `sanchoris` binary that runs everything in one process for local development
 - `crates/config`, `crates/engine`, `crates/core`, `crates/worker`: configuration, the skill engine, persistence (DynamoDB, S3, and the queue and scheduler ports), and the worker's message handlers
+- `crates/graphql`: the GraphQL schema of the web app (`apps/frontend/src/graphql/schema.graphql`) over the DynamoDB store
 - `docs/architecture.md`: the serverless AWS architecture and the DynamoDB data model
 - `infra/tables.json`, `infra/plans.json`: the DynamoDB table definitions (CloudFormation properties) and the plan catalog, read by `sanchoris-dynamo-create` and the tests
 - `scripts/dev.mjs`: local development process supervisor
+- `scripts/build-lambda.mjs`: builds the frontend and the Lambda zips (`pnpm build:lambda`)
 - `scripts/e2e/fake-agent.ts`: the scripted workspace agent used by the end-to-end test
 
 ## Development
@@ -35,7 +37,7 @@ pnpm dev
 
 Dev targets DynamoDB Local, **Cognito Hosted UI** login, and a GitHub App, so the environment must be set first (see [Environment](#environment)). `pnpm dev` fails fast with the list of missing variables.
 
-The dev command creates the DynamoDB tables at startup (`pnpm dynamo:create`), then runs `sanchoris all` (through `cargo watch`) on an internal free port, starts Vite through portless, and proxies `/api`, `/auth/github`, `/webhooks`, `/records`, and `/runs` through the same frontend host. Local workspaces are processes started by the worker under `.sanchoris/dev/workspaces`, and session records are stored under `.sanchoris/dev/records`. By default, local development uses plain HTTP on an unprivileged port so it works without sudo or TLS setup.
+The dev command creates the DynamoDB tables at startup (`pnpm dynamo:create`), builds the frontend for the api's fallback (`apps/frontend/dist`), then runs `sanchoris all` (through `cargo watch`) on an internal free port, starts Vite through portless, and proxies `/api`, `/auth/github`, `/webhooks`, `/records`, and `/runs` through the same frontend host. Local workspaces are processes started by the worker under `.sanchoris/dev/workspaces`, and session records are stored under `.sanchoris/dev/records`. By default, local development uses plain HTTP on an unprivileged port so it works without sudo or TLS setup.
 
 A local workspace runs `apps/workspace-agent` with Claude Code, so the dev environment also needs `CLAUDE_CONFIG_DIR` and `SANCHORIS_CLAUDE_PATH` (see `apps/workspace-agent/PROTOCOL.md`) and a `sanchoris` command on `PATH`.
 
@@ -45,13 +47,14 @@ A local workspace runs `apps/workspace-agent` with Claude Code, so the dev envir
 cargo run -p sanchoris-api --bin sanchoris -- all
 ```
 
-`sanchoris all` runs the HTTP API, the Run channel WebSocket, and the worker (`LocalDriver` over the in-memory queue and scheduler) in one process against DynamoDB Local, with offloaded attributes under `SANCHORIS_DOCS_DIR`. In AWS the same code runs as Lambda functions:
+`sanchoris all` runs the HTTP API, the Run channel WebSocket, the worker (`LocalDriver` over the in-memory queue and scheduler), and the built frontend from `SANCHORIS_FRONTEND_DIR` in one process against DynamoDB Local, with offloaded attributes under `SANCHORIS_DOCS_DIR`. In AWS the same code runs as Lambda functions:
 
 ```sh
-nix develop -c pnpm build:lambda
+VITE_COGNITO_DOMAIN=dev-auth-k8s.sancode.dev VITE_COGNITO_CLIENT_ID=<client id> \
+  nix develop -c pnpm build:lambda
 ```
 
-builds `target/lambda/{api,channel,channel-authorizer,worker,relay}/bootstrap.zip` for `provided.al2023` on `arm64` (static `aarch64-unknown-linux-musl` binaries cross-compiled by `cargo lambda` with the devShell's musl cross linker). `docs/architecture.md` ("Lambda functions") lists each function's trigger, variables, and IAM actions.
+builds the frontend into `apps/frontend/dist`, then `target/lambda/{api,channel,channel-authorizer,worker,relay}/bootstrap.zip` for `provided.al2023` on `arm64` (static `aarch64-unknown-linux-musl` binaries cross-compiled by `cargo lambda` with the devShell's musl cross linker). The `api` binary embeds `apps/frontend/dist` and serves it on the same origin as the API, so the deployment needs no separate static hosting; it refuses to start when the build embedded no `index.html`. `docs/architecture.md` ("Lambda functions") lists each function's trigger, handler, variables, and IAM actions.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -67,6 +70,7 @@ builds `target/lambda/{api,channel,channel-authorizer,worker,relay}/bootstrap.zi
 | `POST /webhooks/stripe` | Stripe webhook. Verifies `Stripe-Signature` (5 minute tolerance) and handles `checkout.session.completed` (activates the tenant on `metadata.plan_id`), `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, and `invoice.payment_failed` |
 | `GET /runs/channel` | Run channel WebSocket for `workspace-agent` in `sanchoris all` (bearer Run token; see `apps/workspace-agent/PROTOCOL.md`). In AWS the API Gateway WebSocket API serves the same protocol |
 | `PUT`/`GET /records/{key}` | Signed session record upload and download when `SANCHORIS_RECORDS_STORE=local` |
+| `GET` any other path | The built frontend: a file of `apps/frontend/dist` (`assets/` with an immutable cache), `index.html` for client routes without a file extension, `404` for missing files and for unknown paths under `/api`, `/webhooks`, `/auth/github`, `/records`, and `/runs` |
 
 ## Environment
 
@@ -78,30 +82,35 @@ cp .env.example .env.local
 
 `.envrc` loads `.env.local` after `use flake`, so its values win over the worktrunk-managed `.env` block; `scripts/dev.mjs` reads it too. **Only `.env.example` is committed; never commit real values.** The binary has no defaults: it stops with the list of missing variables.
 
+Secrets (the rows marked *secret*) come from the environment in `sanchoris all` and from SSM Parameter Store in the Lambda functions: each function reads the parameters it needs once at cold start from `<SANCHORIS_SECRETS_PATH><name>` (String or SecureString) and stops with the list of missing parameters. The parameter names are in `docs/architecture.md` ("Secrets").
+
 | Variable | Used by | Value |
 | --- | --- | --- |
-| `SANCHORIS_TABLE_MAIN`, `SANCHORIS_TABLE_AUDIT` | api, worker | DynamoDB table names (`docs/architecture.md`) |
-| `AWS_REGION`, `AWS_ENDPOINT_URL_DYNAMODB` | api, worker | Region of the tables; the endpoint points at DynamoDB Local in development and is unset in AWS |
-| `SANCHORIS_DOCS_BUCKET` | api, channel, worker (Lambda) | Bucket for attributes larger than 32 KiB (config revisions, skill bodies, large events) |
-| `SANCHORIS_WORK_QUEUE_URL`, `SANCHORIS_WORK_QUEUE_ARN`, `SANCHORIS_SCHEDULE_GROUP`, `SANCHORIS_SCHEDULER_ROLE_ARN` | worker (AWS) | The SQS FIFO work queue and the EventBridge Scheduler group and role that deliver delayed jobs to it |
+| `SANCHORIS_TABLE_MAIN`, `SANCHORIS_TABLE_AUDIT` | api, channel-authorizer, channel, worker, `sanchoris all` | DynamoDB table names (`docs/architecture.md`) |
+| `AWS_REGION`, `AWS_ENDPOINT_URL_DYNAMODB` | all | Region of the tables; the endpoint points at DynamoDB Local in development and is unset in AWS |
+| `SANCHORIS_DOCS_BUCKET` | api, channel-authorizer, channel, worker (Lambda) | Bucket for attributes larger than 32 KiB (config revisions, skill bodies, large events) |
+| `SANCHORIS_SECRETS_PATH` | api, channel-authorizer, channel, worker (Lambda) | SSM path of the secrets, e.g. `/dev-k8s/sanchoris/` |
+| `SANCHORIS_WORK_QUEUE_URL`, `SANCHORIS_WORK_QUEUE_ARN`, `SANCHORIS_SCHEDULE_GROUP`, `SANCHORIS_SCHEDULER_ROLE_ARN` | relay | The SQS FIFO work queue and the EventBridge Scheduler group and role that deliver delayed jobs to it |
 | `SANCHORIS_BIND_ADDR` | `sanchoris all` | Listen address, e.g. `127.0.0.1:8080` (set by `pnpm dev`) |
-| `SANCHORIS_PUBLIC_URL` | api | Public origin, e.g. `http://sanchoris.localhost:1355`; OAuth redirects and local record URLs start with it |
-| `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` | api | aws-infra-k8s exports `dev-k8s-UserPool` and `dev-k8s-UserPoolClient` (the region is the pool-id prefix) |
-| `VITE_COGNITO_DOMAIN`, `VITE_COGNITO_CLIENT_ID` | frontend | Hosted UI domain (host only, dev `dev-auth-k8s.sancode.dev`) and the same client id |
-| `GITHUB_URL`, `GITHUB_API_URL` | api, worker | `https://github.com` and `https://api.github.com` |
-| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | api, worker | GitHub App id and private key (PEM) |
-| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` | api | GitHub App OAuth client for account linking and installation checks |
-| `GITHUB_APP_SLUG` | api | The App slug in `https://github.com/apps/<slug>`; the install URL is `<GITHUB_URL>/apps/<slug>/installations/new`. Set the App's Setup URL to `<SANCHORIS_PUBLIC_URL>/auth/github/setup` |
-| `GITHUB_WEBHOOK_SECRET` | api | GitHub App webhook secret |
+| `SANCHORIS_FRONTEND_DIR` | `sanchoris all` | Built frontend (`apps/frontend/dist`, built and set by `pnpm dev`); the api Lambda embeds it instead |
+| `SANCHORIS_PUBLIC_URL` | api | Public origin, e.g. `http://sanchoris.localhost:1355`; OAuth redirects, Stripe return URLs, and local record URLs start with it |
+| `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` | api | aws-infra-k8s exports `dev-k8s-UserPool` and `dev-k8s-SanchorisUserPoolClient` (the region is the pool-id prefix) |
+| `VITE_COGNITO_DOMAIN`, `VITE_COGNITO_CLIENT_ID` | frontend (`pnpm dev`, `pnpm build:lambda`) | Hosted UI domain (host only, dev `dev-auth-k8s.sancode.dev`) and the same client id |
+| `GITHUB_URL` | api | `https://github.com` |
+| `GITHUB_API_URL` | api, worker | `https://api.github.com` |
+| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | api, worker (*secret*) | GitHub App id and private key (PEM) |
+| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` | api (*secret*) | GitHub App OAuth client for account linking and installation checks |
+| `GITHUB_APP_SLUG` | api (*secret*) | The App slug in `https://github.com/apps/<slug>`; the install URL is `<GITHUB_URL>/apps/<slug>/installations/new`. Set the App's Setup URL to `<SANCHORIS_PUBLIC_URL>/auth/github/setup` |
+| `GITHUB_WEBHOOK_SECRET` | api (*secret*) | GitHub App webhook secret |
 | `STRIPE_API_URL` | api | `https://api.stripe.com` |
-| `STRIPE_SECRET_KEY` | api | Stripe secret key (Checkout, the customer portal, subscription changes) |
-| `STRIPE_WEBHOOK_SECRET` | api | Stripe webhook signing secret |
-| `RUN_TOKEN_SIGNING_KEY` | channel, channel-authorizer, worker | Signs Run channel tokens (32+ bytes) |
-| `TASK_TOKEN_SIGNING_KEY` | api | Signs approval tokens (32+ bytes) |
-| `OAUTH_STATE_SIGNING_KEY` | api | Signs the GitHub OAuth and installation `state`, bound to the signed-in user and tenant (32+ bytes) |
-| `SANCHORIS_CREDENTIAL_KEY` | api | AES-256-GCM key for stored API keys: 32 bytes in base64 (`openssl rand -base64 32`) |
-| `SANCHORIS_RECORDS_STORE` | channel, worker | `s3` or `local` |
-| `AWS_REGION`, `S3_RECORDS_BUCKET`, `KMS_KEY_PREFIX` | channel, worker (`s3`) | Records bucket; objects are encrypted with the KMS key `<KMS_KEY_PREFIX><tenant id>` |
+| `STRIPE_SECRET_KEY` | api (*secret*) | Stripe secret key (Checkout, the customer portal, subscription changes) |
+| `STRIPE_WEBHOOK_SECRET` | api (*secret*) | Stripe webhook signing secret |
+| `RUN_TOKEN_SIGNING_KEY` | channel, channel-authorizer, worker (*secret*) | Signs Run channel tokens (32+ bytes) |
+| `TASK_TOKEN_SIGNING_KEY` | api (*secret*) | Signs approval tokens (32+ bytes) |
+| `OAUTH_STATE_SIGNING_KEY` | api (*secret*) | Signs the GitHub OAuth and installation `state`, bound to the signed-in user and tenant (32+ bytes) |
+| `SANCHORIS_CREDENTIAL_KEY` | api (*secret*) | AES-256-GCM key for stored API keys: 32 bytes in base64 (`openssl rand -base64 32`) |
+| `SANCHORIS_RECORDS_STORE` | api, channel, worker | `s3` or `local` (Lambda functions take `s3`) |
+| `SANCHORIS_RECORDS_BUCKET`, `SANCHORIS_RECORDS_KMS_KEY` | api, channel, worker (`s3`) | Bucket of session records and audit exports, and the KMS key (ARN or alias) that encrypts them with the tenant id in the encryption context |
 | `SANCHORIS_RECORDS_DIR`, `RECORDS_SIGNING_KEY` | `sanchoris all` (`local`) | Record directory (set by `pnpm dev`) and the URL signing key (32+ bytes) |
 | `SANCHORIS_WORKSPACE_COMMAND` | `sanchoris all` | Command that starts the workspace agent (set by `pnpm dev`) |
 | `SANCHORIS_CONTROL_URL` | `sanchoris all`, worker | Run channel URL given to workspaces: locally `ws://127.0.0.1:8080/runs/channel` (set by `pnpm dev`), in AWS the `wss://` URL of the WebSocket API |
@@ -124,17 +133,17 @@ The schema's ports are wired as follows:
 | Checkout | Stripe API. A paid `createTenant` opens a Checkout Session (subscription mode, `client_reference_id` = the new tenant id, `metadata.plan_id`, the plan's `stripe_price_id`) and creates the tenant suspended with `payment_pending`; `checkout.session.completed` activates it. `changePlan` swaps the price of the active subscription, cancels it for the Free plan, or opens Checkout when the tenant has no subscription. `openBillingPortal` opens a customer portal session |
 | GitHub | `connectGitHub` returns the OAuth authorize URL; `Tenant.githubAppInstallUrl` returns the App install URL with a signed `state` (see `/auth/github/setup`) |
 | Slack | Not available: `connectSlack` fails with `BAD_USER_INPUT` "Slack is not available yet" |
-| Config sync | `addConfig` and `syncConfig` run the config syncer for that config inline |
+| Config sync | `addConfig` and `syncConfig` run the config syncer for that config inline, in the api process or the api Lambda (GitHub reads and DynamoDB writes, within the API Gateway 29 s limit) |
 | Config repository | `addConfig` reads the branch head through the GitHub App and validates it; `proposeTriggerFromTemplate` creates a branch, commits the trigger into `sanchoris.yaml` (Contents API), and opens a pull request |
-| Chat | `sendChatMessage` runs the trigger dispatcher for the tenant inline, so the new task is in the response |
-| Audit export | Writes `t/<tenant>/audit/<file>.jsonl` to the records store (S3 or local) and returns a signed GET URL (15 minutes) |
+| Chat | `sendChatMessage` runs the trigger dispatcher for the tenant inline, so the new task is in the response; starting the Workspace (`Reconcile`) stays with the worker |
+| Audit export | Writes `t/<tenant>/audit/<file>.jsonl` to the records store (the records bucket or the local directory) and returns a signed GET URL (15 minutes) |
 | Credentials | AES-256-GCM with `SANCHORIS_CREDENTIAL_KEY`, bound to the tenant id |
 
 Read the Cognito ids with:
 
 ```sh
 aws cloudformation list-exports \
-  --query "Exports[?Name=='dev-k8s-UserPool'||Name=='dev-k8s-UserPoolClient'].[Name,Value]" \
+  --query "Exports[?Name=='dev-k8s-UserPool'||Name=='dev-k8s-SanchorisUserPoolClient'].[Name,Value]" \
   --output text
 ```
 
@@ -142,12 +151,13 @@ aws cloudformation list-exports \
 
 Login mirrors sanplan: Cognito Hosted UI (OAuth2 authorization-code, no Amplify), stateless JWT verification in the api, and just-in-time user provisioning (the `USER#` items in `docs/architecture.md`). The frontend redirects unauthenticated users to `/login`, which sends them to the Cognito Hosted UI; the callback at `/auth/callback` exchanges the code for tokens and stores them in `localStorage`. The ID token rides on every `/api/*` request as `Authorization: Bearer <id_token>`; the api verifies it (RS256 + issuer + exp + client_id/aud) against the pool JWKS and upserts the user. GitHub accounts are linked separately from Settings → Integrations through `/auth/github`.
 
-> **Prerequisite (separate repo).** The shared Cognito app client
-> (`resource-user-pool-client` in aws-infra-k8s `cognito.clj`) must allow the
-> sanchoris dev URLs before login can complete: add callback
-> `http://sanchoris.localhost:1355/auth/callback` and logout
-> `http://sanchoris.localhost:1355/login`, then redeploy the `dev-k8s-cognito`
-> stack. Until then the Hosted UI rejects the `redirect_uri`.
+> **Prerequisite (separate repo).** The sanchoris app client of the shared
+> user pool (aws-infra-k8s `cognito.clj`, export
+> `<prefix>-SanchorisUserPoolClient`) allows callback
+> `<origin>/auth/callback` and logout `<origin>/login` for
+> `http://sanchoris.localhost:1355` and the deployed origin. Deploy the
+> `dev-k8s-cognito` stack with it before signing in; until then the Hosted UI
+> rejects the `redirect_uri`.
 
 ### DynamoDB Local
 
@@ -242,6 +252,7 @@ The runner only creates log directories and runs the explicit command after `--`
 
 ```sh
 pnpm check
+cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 pnpm e2e

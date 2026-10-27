@@ -6,7 +6,8 @@ Sanchoris runs as a serverless control plane on AWS: Lambda functions behind API
 
 ```text
 Browser ── HTTPS ──> API Gateway HTTP API ──> Lambda api ───────────────┐
-                       /api/* (Cognito JWT), /webhooks/*, /auth/github*  │
+                       /api/* (Cognito JWT); $default: /webhooks/*,      │
+                       /auth/github*, /health, the frontend (SPA)        │
 workspace-agent ── WSS ─> API Gateway WebSocket API ──> Lambda channel ──┤
                        $connect: Lambda channel-authorizer (Run token)   │
                                                                          ▼
@@ -22,7 +23,7 @@ workspace-agent ── WSS ─> API Gateway WebSocket API ──> Lambda channel
 
 | Component | Trigger | Code | Does |
 |---|---|---|---|
-| Lambda `api` | API Gateway HTTP API: `POST /api/graphql`, `GET /api/me`, `POST /api/tasks/{id}/replies`, `POST /api/approvals` (JWT authorizer on the shared Cognito pool), `POST /webhooks/github`, `POST /webhooks/stripe`, `/auth/github*`, `GET /health` | `crates/api`, `crates/graphql` | GraphQL for the screens, webhook ingest (signature checked in code), OAuth, record presigning. Writes through `TenantTx`; never waits on the worker except `ConfigSync` and `Inbound`, which it may run inline through the worker functions |
+| Lambda `api` | API Gateway HTTP API: `ANY /api/{proxy+}` (`POST /api/graphql`, `GET /api/me`, `POST /api/tasks/{id}/replies`, `POST /api/approvals`; JWT authorizer on the shared Cognito pool) and `$default` (`POST /webhooks/github`, `POST /webhooks/stripe`, `/auth/github*`, `GET /health`, every other `GET` for the frontend) | `crates/api`, `crates/graphql` | GraphQL for the screens, webhook ingest (signature checked in code), OAuth, audit exports, and the built frontend embedded in the binary (SPA fallback to `index.html`), all on one origin. Writes through `TenantTx`. Config sync (`addConfig`, `syncConfig`) and chat dispatch (`sendChatMessage`) run inline through `config_sync::sync_config` and `dispatcher::dispatch_tenant` on a `Worker` whose runner and outbox pusher refuse to act: both only read GitHub and write DynamoDB, finish well inside the 29 s integration timeout, and let the mutation return the synced config or the started task. The jobs they emit (`Reconcile`, `DeliverOutbox`, ...) run in the worker function |
 | Lambda `channel-authorizer` | REQUEST authorizer of the WebSocket API's `$connect`, identity source `route.request.header.Authorization`, result caching off | `crates/api` (`lambda::authorize`) | Verifies the `Authorization: Bearer <Run token>` header that `workspace-agent` sends (non-browser clients may set headers on the upgrade). An invalid or expired token fails with `Unauthorized` (HTTP 401); a run that is missing or finished gets a `Deny` policy (HTTP 403); otherwise `Allow` with the context `tenantId` and `runId` |
 | Lambda `channel` | API Gateway WebSocket API: `$connect`, `$default`, `$disconnect` | `crates/api` (`lambda::websocket`, `channel::Channel`) | Run channel (`apps/workspace-agent/PROTOCOL.md`). `$connect` stores the connection id on the run's `#CHANNEL` item; `$disconnect` clears it when it is still that connection. `$default`: `hello` registers the agent instance (`INST#`) and emits `DeliverOutbox`; sequenced messages are deduplicated by `(instanceId, seq)`, recorded, and acknowledged; `skill_request` and `record_upload_request` are answered in the same invocation. Replies go through the API Gateway Management API. A protocol error sends `close` (code 4000) and deletes the connection |
 | Lambda `relay` | DynamoDB Streams on the main table, filter `eventName = INSERT` and `kind = msg` (`infra/tables.json` `streamFilters`) | `sanchoris_core::store::{relayed_from_item, relay}` | Turns committed message items into SQS sends (`deliver_at` absent or past) or EventBridge one-time schedules (`deliver_at` in the future), and deletes cancelled schedules |
@@ -31,7 +32,7 @@ workspace-agent ── WSS ─> API Gateway WebSocket API ──> Lambda channel
 | EventBridge Scheduler group `sanchoris` | — | `EventBridgeScheduler` | One-time `at()` schedules created by the relay (engine timers, `ResumeAt`, idle deadlines, trigger schedules), `ActionAfterCompletion: DELETE`, target the work queue with the job's group. Four rate schedules created by CloudFormation (below) |
 | ECS Fargate | `RunTask` from the worker's `RunnerPort` | — | Workspaces only |
 | DynamoDB | — | `sanchoris_core::store` | `main` (single table) and `audit` (append-only) |
-| S3 | — | `BlobStore` | `docs` (attributes over 32 KiB: config revisions, skill bodies, task definitions, large events; content-addressed `docs/<tenant>/<sha256>`), `records` (session records, per-tenant KMS key, presigned by the api), `logs` (run log archives), `audit-exports` |
+| S3 | — | `BlobStore`, `records::S3RecordStore` | `docs` (attributes over 32 KiB: config revisions, skill bodies, task definitions, large events; content-addressed `docs/<tenant>/<sha256>`) and `records` (session records `t/<tenant>/runs/...` presigned by the channel and the worker, audit exports `t/<tenant>/audit/...` written by the api). Records are encrypted with one KMS key (`SANCHORIS_RECORDS_KMS_KEY`) with `{"sanchoris:tenant": "<tenant id>"}` in the encryption context and S3 Bucket Keys off, so every data key and its CloudTrail entry name the tenant. Run log lines stay in DynamoDB (`LOG#` with TTL) |
 
 ### Rate schedules
 
@@ -56,7 +57,7 @@ The SQS body is the `Envelope` JSON: `{"id": "<uuid>", "job": {"type": "<job>", 
 
 ### Local runtime
 
-`sanchoris all` and the tests run every component in one process: the api serves HTTP and the Run channel (`/runs/channel`, the same `channel::Channel` logic as the Lambda routes over an axum WebSocket), `Store` uses `Relay::Direct` over `MemoryQueue` and `MemoryScheduler`, `LocalDriver` handles the queue and fires due schedules on the `Clock`, and DynamoDB Local (`pnpm dynamo:local`) holds the tables. `DirBlobStore` replaces S3.
+`sanchoris all` and the tests run every component in one process: the api serves HTTP and the Run channel (`/runs/channel`, the same `channel::Channel` logic as the Lambda routes over an axum WebSocket), `Store` uses `Relay::Direct` over `MemoryQueue` and `MemoryScheduler`, `LocalDriver` handles the queue and fires due schedules on the `Clock`, and DynamoDB Local (`pnpm dynamo:local`) holds the tables. `DirBlobStore` replaces S3, the local records store replaces the records bucket, and the frontend comes from `SANCHORIS_FRONTEND_DIR`. GraphQL's inline config sync and chat dispatch use the same `Worker` as `LocalDriver`.
 
 ## Ports
 
@@ -72,21 +73,40 @@ The SQS body is the `Envelope` JSON: `{"id": "<uuid>", "job": {"type": "<job>", 
 
 ## Lambda functions
 
-One crate (`crates/api`) builds every function as its own binary. `pnpm build:lambda` cross-compiles them with `cargo lambda` for `aarch64-unknown-linux-musl` (static, so the glibc of the runtime does not matter) and writes `target/lambda/<function>/bootstrap.zip`. Deploy each zip on the `provided.al2023` runtime with the `arm64` architecture; the handler name is ignored by custom runtimes (use `bootstrap`).
+One crate (`crates/api`) builds every function as its own binary. `pnpm build:lambda` builds the frontend into `apps/frontend/dist` (embedded by the `api` binary), cross-compiles the binaries with `cargo lambda` for `aarch64-unknown-linux-musl` (static, so the glibc of the runtime does not matter), and writes `target/lambda/<function>/bootstrap.zip`. Deploy each zip on the `provided.al2023` runtime with the `arm64` architecture and the handler `bootstrap` (custom runtimes ignore the name; the binary is the handler).
 
-| Function | Binary | Trigger | Environment | IAM actions |
-|---|---|---|---|---|
-| `api` | `api` (`lambda_http` over the axum router of `app::router`) | API Gateway HTTP API (payload 2.0): `/api/*` behind the JWT authorizer, `/webhooks/*`, `/auth/github*`, `/health` | Store variables; `SANCHORIS_PUBLIC_URL`, `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID`, `GITHUB_URL`, `GITHUB_API_URL`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG`, `GITHUB_WEBHOOK_SECRET`, `STRIPE_WEBHOOK_SECRET`, `TASK_TOKEN_SIGNING_KEY`, `OAUTH_STATE_SIGNING_KEY` | Store actions |
-| `channel-authorizer` | `channel-authorizer` | WebSocket API `$connect` REQUEST authorizer | Store variables; `RUN_TOKEN_SIGNING_KEY` | `dynamodb:GetItem` on `main`; `s3:GetObject` on `docs` |
-| `channel` | `channel` | WebSocket API routes `$connect`, `$default`, `$disconnect` (Lambda proxy integration) | Store variables; `RUN_TOKEN_SIGNING_KEY`, `SANCHORIS_RECORDS_STORE=s3`, `S3_RECORDS_BUCKET`, `KMS_KEY_PREFIX`, `SANCHORIS_CHANNEL_ENDPOINT` (`https://<api id>.execute-api.<region>.amazonaws.com/<stage>`) | Store actions; `execute-api:ManageConnections` on `arn:aws:execute-api:<region>:<account>:<api id>/<stage>/POST/@connections/*` and `.../DELETE/@connections/*`; `s3:PutObject`, `s3:GetObject` on `records` and `kms:GenerateDataKey`, `kms:Decrypt` on the tenant keys (presigned uploads and downloads are signed with the function's role) |
-| `worker` | `worker` | SQS FIFO `sanchoris-work.fifo` (`ReportBatchItemFailures`) | Store variables; `RUN_TOKEN_SIGNING_KEY`, `SANCHORIS_RECORDS_STORE=s3`, `S3_RECORDS_BUCKET`, `KMS_KEY_PREFIX`, `SANCHORIS_CHANNEL_ENDPOINT`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_API_URL`, `SANCHORIS_ECS_CLUSTER`, `SANCHORIS_ECS_TASK_DEFINITION`, `SANCHORIS_ECS_CONTAINER`, `SANCHORIS_ECS_SUBNETS`, `SANCHORIS_ECS_SECURITY_GROUPS` (comma-separated), `SANCHORIS_CONTROL_URL` (the `wss://` URL of the WebSocket API), `SANCHORIS_GIT_URL` | Store actions; `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes` on the work queue (event source mapping); `execute-api:ManageConnections` as for `channel`; records and KMS as for `channel`; `ecs:RunTask` on the task definition, `ecs:StopTask` on the cluster's tasks, `iam:PassRole` on the task and execution roles |
-| `relay` | `relay` | DynamoDB Streams of `main` (`NEW_IMAGE`, filter `eventName = INSERT` and `kind = msg`, `ReportBatchItemFailures`) | `SANCHORIS_WORK_QUEUE_URL`, `SANCHORIS_WORK_QUEUE_ARN`, `SANCHORIS_SCHEDULE_GROUP`, `SANCHORIS_SCHEDULER_ROLE_ARN` | `dynamodb:GetRecords`, `dynamodb:GetShardIterator`, `dynamodb:DescribeStream`, `dynamodb:ListStreams` on the stream; `sqs:SendMessage` on the work queue; `scheduler:CreateSchedule`, `scheduler:DeleteSchedule` in the group; `iam:PassRole` on the scheduler role |
+| Function | Handler | Trigger | Timeout, memory | Environment | Secrets (SSM) | IAM actions |
+|---|---|---|---|---|---|---|
+| `api` | `api`: `lambda_http::run` over `app::router` with the `graphql::gateway_ip` layer | API Gateway HTTP API (payload 2.0, integration timeout 29 s): `ANY /api/{proxy+}` with the Cognito JWT authorizer (issuer = the user pool, audience = the sanchoris app client) and `$default` without an authorizer | 29 s, 512 MB | Store variables; `SANCHORIS_SECRETS_PATH`, `SANCHORIS_PUBLIC_URL`, `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID`, `GITHUB_URL`, `GITHUB_API_URL`, `STRIPE_API_URL`, `SANCHORIS_RECORDS_STORE=s3`, `SANCHORIS_RECORDS_BUCKET`, `SANCHORIS_RECORDS_KMS_KEY` | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG`, `GITHUB_WEBHOOK_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `TASK_TOKEN_SIGNING_KEY`, `OAUTH_STATE_SIGNING_KEY`, `SANCHORIS_CREDENTIAL_KEY` | Store actions; records actions; `ssm:GetParameters` on its parameters |
+| `channel-authorizer` | `channel-authorizer`: `lambda::authorize` | REQUEST authorizer of the WebSocket API's `$connect` (identity source `route.request.header.Authorization`, no caching) | 10 s, 256 MB | Store variables; `SANCHORIS_SECRETS_PATH` | `RUN_TOKEN_SIGNING_KEY` | `dynamodb:GetItem` on `main` and its indexes; `s3:GetObject`, `s3:ListBucket` on `docs` with `kms:GenerateDataKey`, `kms:Decrypt` on the bucket key; `ssm:GetParameters` on its parameter |
+| `channel` | `channel`: `lambda::websocket` over `channel::Channel` with `GatewaySender` | WebSocket API routes `$connect` (behind `channel-authorizer`), `$default`, `$disconnect` (Lambda proxy integration) | 29 s, 256 MB | Store variables; `SANCHORIS_SECRETS_PATH`, `SANCHORIS_RECORDS_STORE=s3`, `SANCHORIS_RECORDS_BUCKET`, `SANCHORIS_RECORDS_KMS_KEY`, `SANCHORIS_CHANNEL_ENDPOINT` (`https://<api id>.execute-api.<region>.amazonaws.com/<stage>`) | `RUN_TOKEN_SIGNING_KEY` | Store actions; records actions; connection actions; `ssm:GetParameters` on its parameter |
+| `worker` | `worker`: `lambda::work` over `Worker` with `EcsRunner` and the channel as `OutboxPusher` | SQS FIFO `sanchoris-work.fifo` (batch 10, `ReportBatchItemFailures`, `MaximumConcurrency` from the stack) | 300 s, 512 MB | Store variables; `SANCHORIS_SECRETS_PATH`, `SANCHORIS_RECORDS_STORE=s3`, `SANCHORIS_RECORDS_BUCKET`, `SANCHORIS_RECORDS_KMS_KEY`, `SANCHORIS_CHANNEL_ENDPOINT`, `GITHUB_API_URL`, `SANCHORIS_ECS_CLUSTER`, `SANCHORIS_ECS_TASK_DEFINITION`, `SANCHORIS_ECS_CONTAINER`, `SANCHORIS_ECS_SUBNETS`, `SANCHORIS_ECS_SECURITY_GROUPS` (comma-separated), `SANCHORIS_CONTROL_URL` (the `wss://` URL of the WebSocket API), `SANCHORIS_GIT_URL` | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `RUN_TOKEN_SIGNING_KEY` | Store actions; records actions; connection actions; `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes`, `sqs:ChangeMessageVisibility` on the work queue; `ecs:RunTask` on the Workspace task definition in the cluster, `ecs:StopTask`, `ecs:DescribeTasks`, `ecs:TagResource` on the cluster's tasks, `iam:PassRole` on the Workspace execution role; `ssm:GetParameters` on its parameters |
+| `relay` | `relay`: `lambda::relay_stream` over `SqsQueue` and `EventBridgeScheduler` | DynamoDB Streams of `main` (`NEW_IMAGE`, filter `eventName = INSERT` and `kind = msg` from `infra/tables.json` `streamFilters`, batch 100, bisect on error, `ReportBatchItemFailures`, failures to a DLQ) | 60 s, 256 MB | `SANCHORIS_WORK_QUEUE_URL`, `SANCHORIS_WORK_QUEUE_ARN`, `SANCHORIS_SCHEDULE_GROUP`, `SANCHORIS_SCHEDULER_ROLE_ARN` | — | `dynamodb:GetRecords`, `dynamodb:GetShardIterator`, `dynamodb:DescribeStream`, `dynamodb:ListStreams` on the stream; `sqs:SendMessage` on the work queue and the stream DLQ; `scheduler:CreateSchedule`, `scheduler:DeleteSchedule`, `scheduler:GetSchedule` in the group; `iam:PassRole` on the scheduler role |
 
-The store variables are `SANCHORIS_TABLE_MAIN`, `SANCHORIS_TABLE_AUDIT`, and `SANCHORIS_DOCS_BUCKET`. The store actions are `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:ConditionCheckItem` (through `TransactWriteItems`) on `main` and its indexes, `dynamodb:PutItem` and `dynamodb:Query` on `audit` (with the `appendOnlyDeniedActions` deny), and `s3:GetObject`, `s3:PutObject` on `docs`. Every function also needs the basic CloudWatch Logs permissions.
+The store variables are `SANCHORIS_TABLE_MAIN`, `SANCHORIS_TABLE_AUDIT`, and `SANCHORIS_DOCS_BUCKET`. The store actions are `dynamodb:GetItem`, `dynamodb:BatchGetItem`, `dynamodb:Query`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:ConditionCheckItem` (through `TransactWriteItems`) on `main` and its indexes (with a deny of writes to the `PLANS` partition), `dynamodb:PutItem`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:ConditionCheckItem` on `audit` (with the `appendOnlyDeniedActions` deny), and `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` on `docs` with `kms:GenerateDataKey`, `kms:Decrypt` on the bucket key. The records actions are `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` on `records` and `kms:GenerateDataKey`, `kms:Decrypt` on `SANCHORIS_RECORDS_KMS_KEY` (presigned uploads and downloads are signed with the function's role). The connection actions are `execute-api:ManageConnections` on `arn:aws:execute-api:<region>:<account>:<api id>/<stage>/POST/@connections/*` and `.../DELETE/@connections/*`. Every function also gets `logs:CreateLogStream` and `logs:PutLogEvents` on its log group.
 
 The Fargate task gets `SANCHORIS_RUN_ID`, `SANCHORIS_RUN_TOKEN`, `SANCHORIS_CONTROL_URL`, `SANCHORIS_GIT_URL`, `SANCHORIS_BRANCH`, and `SANCHORIS_REPOSITORIES` (comma-separated `owner/name`) as container overrides. The workspace image clones the repositories, sets `SANCHORIS_SOCKET_PATH` and `SANCHORIS_WORKSPACE_DIR`, and starts `workspace-agent` (`apps/workspace-agent/PROTOCOL.md`).
 
 Tenant isolation is enforced in the application: every function uses one role, and `TenantTx` rejects keys outside its tenant. No request assumes a tenant-scoped role.
+
+### Secrets
+
+Secrets never sit in a function's environment. Each function reads the parameters of its "Secrets" column once at cold start with `ssm:GetParameters` (with decryption, so String and SecureString both work) from `<SANCHORIS_SECRETS_PATH><parameter>` and stops with the names of missing parameters. This keeps the `api` function (which needs the GitHub App private key and ten more secrets) well under Lambda's 4 KB limit on environment variables. `sanchoris all` reads the same variables from its environment.
+
+| Parameter | Variable |
+|---|---|
+| `github-app-id` | `GITHUB_APP_ID` |
+| `github-app-private-key` | `GITHUB_APP_PRIVATE_KEY` (PEM) |
+| `github-app-client-id` | `GITHUB_APP_CLIENT_ID` |
+| `github-app-client-secret` | `GITHUB_APP_CLIENT_SECRET` |
+| `github-app-slug` | `GITHUB_APP_SLUG` |
+| `github-webhook-secret` | `GITHUB_WEBHOOK_SECRET` |
+| `stripe-secret-key` | `STRIPE_SECRET_KEY` |
+| `stripe-webhook-secret` | `STRIPE_WEBHOOK_SECRET` |
+| `run-token-signing-key` | `RUN_TOKEN_SIGNING_KEY` (32+ bytes) |
+| `task-token-signing-key` | `TASK_TOKEN_SIGNING_KEY` (32+ bytes) |
+| `oauth-state-signing-key` | `OAUTH_STATE_SIGNING_KEY` (32+ bytes) |
+| `credential-key` | `SANCHORIS_CREDENTIAL_KEY` (32 bytes in base64) |
 
 ## Environment
 
@@ -97,13 +117,16 @@ All variables are required where they are used; nothing has a default.
 | `SANCHORIS_TABLE_MAIN`, `SANCHORIS_TABLE_AUDIT` | api, channel-authorizer, channel, worker, `sanchoris all` | Table names |
 | `SANCHORIS_DOCS_BUCKET` | api, channel-authorizer, channel, worker | Bucket of offloaded attributes |
 | `SANCHORIS_DOCS_DIR` | `sanchoris all` | Directory of offloaded attributes (`DirBlobStore`) |
+| `SANCHORIS_SECRETS_PATH` | api, channel-authorizer, channel, worker | SSM path of the secrets, `/<prefix>/sanchoris/` |
+| `SANCHORIS_RECORDS_STORE`, `SANCHORIS_RECORDS_BUCKET`, `SANCHORIS_RECORDS_KMS_KEY` | api, channel, worker | `s3`, the records bucket, and its KMS key |
+| `SANCHORIS_FRONTEND_DIR` | `sanchoris all` | Built frontend; the `api` function embeds it |
 | `SANCHORIS_WORK_QUEUE_URL` | relay | Work queue URL |
 | `SANCHORIS_WORK_QUEUE_ARN`, `SANCHORIS_SCHEDULE_GROUP`, `SANCHORIS_SCHEDULER_ROLE_ARN` | relay | Target, group, and execution role of one-time schedules |
 | `SANCHORIS_CHANNEL_ENDPOINT` | channel, worker | API Gateway Management API endpoint of the WebSocket stage |
 | `AWS_REGION` | all | Region |
 | `AWS_ENDPOINT_URL_DYNAMODB` | local only | DynamoDB Local |
 
-The GitHub, Stripe, Cognito, signing-key, and records variables are listed in `README.md`.
+The GitHub, Stripe, Cognito, signing-key, and local records variables are listed in `README.md`.
 
 ## Data model
 
@@ -251,7 +274,7 @@ Reads marked "consistent" use the base table; "index" uses `gsi1`/`gsi2`; "app" 
 | Add config | Get `CONFIGREPO#` guard; Insert config + guard; audit; then the `ConfigSyncTrigger` port (`ConfigSync` or `config_sync::sync_config` inline) |
 | Credentials | Query `T#<t>` `CRED#`; by name Get `CREDNAME#<name>`; latest usage Query `USAGESNAP#<cred>#` descending limit 1; add with Insert `CRED#` + `CREDNAME#`; remove deletes both |
 | Members, invitations | Query `T#<t>` `MEMBER#` → Get users; Query `INVITE#`; invite with `INVITEPENDING#` guard, `INVITEMAIL#` item, and an update of the tenant item conditioned on its read version; role changes and removals take the same tenant condition, so seat and owner counts are checked one change at a time |
-| Audit log, export | Query audit `T#<t>` descending from `since`, filter `actor_kind`, `actor_ref`, `action`, limit 100; actor names by Get `MEMBER#` + `USER#`, `USER#`, or ref (trigger, run → task); export writes all pages to the `audit-exports` bucket |
+| Audit log, export | Query audit `T#<t>` descending from `since`, filter `actor_kind`, `actor_ref`, `action`, limit 100; actor names by Get `MEMBER#` + `USER#`, `USER#`, or ref (trigger, run → task); export writes all pages as JSON lines to `t/<t>/audit/<file>` in the records bucket and returns a presigned GET URL |
 | Plan change, suspension | Update `#TENANT` (`plan_id`; `status` with the condition on the current status); audit |
 | Operator | Query index `gsi2` `TENANTS`; per tenant Get `#TENANT`, Query index `gsi2` `T#<t>#OPENRUNS`, Query index `gsi1` `T#<t>#WORKSPACES` for run hours |
 | Integrations, OAuth | Query `T#<t>` `INTEG#`; link GitHub with Insert `UNIQ#ghuser`, `UNIQ#ghlogin`; unlink with Put `USER#<u>` and Delete both guards, then an audit item per tenant of the user; installation with `UNIQ#installation#<id>` (+ tenant check) |
@@ -269,6 +292,6 @@ Reads marked "consistent" use the base table; "index" uses `gsi1`/`gsi2`; "app" 
 
 - Retention of task data: TTL covers audit, snapshots, logs, and messages. Deleting a finished task's partitions after the plan's `retention_days` needs a scheduled `purge` job; the offloaded `docs/` objects then need a lifecycle rule or reference tracking.
 - Config activation writes every definition of a config in one transaction, so a config with more than about 90 projects, repositories, sessions, skills, and triggers fails with `TooManyWrites`. Either cap it in validation or activate per-revision partitions behind a single pointer flip.
-- Audit tamper resistance stops at IAM: an app role with `PutItem` could overwrite an existing event by key. S3 Object Lock on `audit-exports` would make exported history immutable.
+- Audit tamper resistance stops at IAM: an app role with `PutItem` could overwrite an existing event by key. S3 Object Lock on the `t/<t>/audit/` objects of the records bucket would make exported history immutable.
 - Plans' Stripe prices are per environment and are written into `PLANS` at deploy time (`sanchoris-dynamo-create` writes the catalog without prices).
 - Hot partitions: `T#<t>` holds the tenant counters that every status change touches; at high volume the counter moves to its own sharded items. The sweep partitions in `gsi2` are single keys and may need shards.
