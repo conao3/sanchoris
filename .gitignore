@@ -6,9 +6,6 @@ dist/
 # Rust
 /target/
 
-# Local database
-/.postgres-data/
-
 # Symphony orchestrator runtime
 /log/
 

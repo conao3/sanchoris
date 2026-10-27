@@ -5,7 +5,6 @@ import { spawnSync } from 'node:child_process';
 const envPath = '.env';
 const beginMarker = '# BEGIN WORKTRUNK ENV';
 const endMarker = '# END WORKTRUNK ENV';
-const postgresPort = '54329';
 
 function readStdinJson() {
   try {
@@ -31,21 +30,19 @@ function currentBranch() {
   return branch;
 }
 
-function sanitizeDb(value) {
+function sanitizeName(value) {
   const normalized = value
     .toLowerCase()
     .replace(/[^a-z0-9_]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .replace(/^[0-9]/, 'b_$&');
+    .replace(/^_+|_+$/g, '');
   const hash = createHash('sha1').update(value).digest('hex').slice(0, 6);
   const base = normalized || 'branch';
-  return `${base}_${hash}`.slice(0, 63).replace(/_+$/g, '');
+  return `${base}_${hash}`.slice(0, 48).replace(/_+$/g, '');
 }
 
-function bindHost(value) {
+function dynamoPort(value) {
   const hash = createHash('sha1').update(value).digest();
-  const octets = [hash[0], hash[1], hash[2]].map((byte) => (byte % 254) + 1);
-  return `127.${octets[0]}.${octets[1]}.${octets[2]}`;
+  return 8100 + (hash.readUInt16BE(0) % 800);
 }
 
 function upsertManagedBlock(current, block) {
@@ -59,18 +56,18 @@ function upsertManagedBlock(current, block) {
 
 const context = readStdinJson();
 const branch = context?.branch || currentBranch();
-const composeProjectName = `sanchoris_${sanitizeDb(branch)}`;
-const host = bindHost(`sanchoris:${branch}`);
-const databaseUrl = `postgres://sanchoris:sanchoris@${host}:${postgresPort}/sanchoris`;
+const name = sanitizeName(branch);
+const port = dynamoPort(`sanchoris:${branch}`);
 
 const block = `${beginMarker}
-COMPOSE_PROJECT_NAME=${composeProjectName}
-BIND_HOST=${host}
-DATABASE_URL=${databaseUrl}
+SANCHORIS_DYNAMO_PORT=${port}
+AWS_ENDPOINT_URL_DYNAMODB=http://127.0.0.1:${port}
+SANCHORIS_TABLE_MAIN=sanchoris-${name}-main
+SANCHORIS_TABLE_AUDIT=sanchoris-${name}-audit
 ${endMarker}`;
 
 const current = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
 const next = upsertManagedBlock(current, block);
 writeFileSync(envPath, next);
 
-console.log(`Updated ${envPath} Worktrunk block for ${branch}: ${host}:${postgresPort}`);
+console.log(`Updated ${envPath} Worktrunk block for ${branch}: DynamoDB Local on port ${port}`);

@@ -1,27 +1,14 @@
 session: sanchoris${SLUG:+-$SLUG}
-hook_session_closed: echo "sanchoris dev session closed; local docker postgres (if started) stays up — run 'docker compose down' to stop it"
+hook_session_closed: echo "sanchoris dev session closed"
 inherit_env:
   - SLUG
 
-# Dev targets neon (DATABASE_URL set in the gitignored .env.local; see
-# .env.example). neon is the source of truth. The `db` pane covers OFFLINE dev:
-# leave DATABASE_URL unset to fall back to local docker postgres — start that
-# pane with `docker compose up`. docker-compose.yml is retained.
 tasks:
   - id: db
-    # Local Postgres for OFFLINE dev only. With neon (DATABASE_URL set) this pane
-    # waits idle; run 'docker compose up' here yourself when working offline.
-    cmd: >-
-      bash -c 'if [ -n "${DATABASE_URL:-}" ]; then
-      echo "DATABASE_URL set (neon) -- local docker postgres not needed. Run: docker compose up";
-      exec sleep infinity;
-      else exec docker compose up; fi'
+    cmd: pnpm dynamo:local
 
   - id: dev
-    # Wait for Postgres only when using the local docker default (no neon URL).
-    # With neon, DATABASE_URL is reachable directly so we skip the wait.
     cmd: >-
-      bash -c 'if [ -z "${DATABASE_URL:-}" ]; then
-      until pg_isready -d "postgres://sanchoris:sanchoris@127.0.0.1:54329/sanchoris" >/dev/null 2>&1; do
-      echo "waiting for local postgres..."; sleep 1; done; fi;
+      bash -c 'until (exec 3<>/dev/tcp/127.0.0.1/${SANCHORIS_DYNAMO_PORT:?set SANCHORIS_DYNAMO_PORT}) 2>/dev/null; do
+      echo "waiting for DynamoDB Local..."; sleep 1; done;
       PORTLESS_HTTPS=1 exec pnpm dev'

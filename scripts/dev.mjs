@@ -33,16 +33,16 @@ function loadDotenvIfExists(path = '.env') {
   }
 }
 
-function applyDatabaseSchema() {
-  console.log('sanchoris dev database: applying db/schema.sql');
-  const result = spawnSync('pnpm', ['db:apply'], {
+function createTables() {
+  console.log('sanchoris dev database: creating the DynamoDB tables');
+  const result = spawnSync('pnpm', ['dynamo:create'], {
     env: process.env,
     stdio: 'inherit',
     shell: false,
   });
 
   if (result.error) {
-    console.error(`db:apply failed to start: ${result.error.message}`);
+    console.error(`dynamo:create failed to start: ${result.error.message}`);
     process.exit(1);
   }
 
@@ -118,7 +118,10 @@ loadDotenvIfExists('.env');
 // here so a missing var is obvious rather than surfacing as a startup error in
 // the sanchoris binary or a blank Hosted UI redirect.
 const requiredEnv = [
-  'DATABASE_URL',
+  'SANCHORIS_TABLE_MAIN',
+  'SANCHORIS_TABLE_AUDIT',
+  'AWS_REGION',
+  'AWS_ENDPOINT_URL_DYNAMODB',
   'COGNITO_USER_POOL_ID',
   'COGNITO_CLIENT_ID',
   'VITE_COGNITO_DOMAIN',
@@ -154,7 +157,7 @@ if (missingEnv.length > 0) {
   process.exit(1);
 }
 
-applyDatabaseSchema();
+createTables();
 
 const children = [];
 let shuttingDown = false;

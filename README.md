@@ -7,7 +7,9 @@ Sanchoris is a pnpm + Vite frontend and Rust backend monorepo.
 - `apps/frontend`: Vite frontend package managed by pnpm
 - `apps/workspace-agent`: the agent that runs inside a Workspace, and the `sanchoris` command (`PROTOCOL.md` describes the Run channel)
 - `crates/api`: the `sanchoris` binary (HTTP API and background worker)
-- `crates/config`, `crates/engine`, `crates/core`, `crates/worker`: configuration, the skill engine, persistence, and the worker loops
+- `crates/config`, `crates/engine`, `crates/core`, `crates/worker`: configuration, the skill engine, persistence (DynamoDB, S3, and the queue and scheduler ports), and the worker's message handlers
+- `docs/architecture.md`: the serverless AWS architecture and the DynamoDB data model
+- `infra/tables.json`, `infra/plans.json`: the DynamoDB table definitions (CloudFormation properties) and the plan catalog, read by `sanchoris-dynamo-create` and the tests
 - `scripts/dev.mjs`: local development process supervisor
 - `scripts/e2e/fake-agent.ts`: the scripted workspace agent used by the end-to-end test
 
@@ -31,9 +33,9 @@ Run the frontend, the api, and the worker on one local development host:
 pnpm dev
 ```
 
-Dev targets a **neon** Postgres, **Cognito Hosted UI** login, and a GitHub App, so the environment must be set first (see [Environment](#environment)). `pnpm dev` fails fast with the list of missing variables.
+Dev targets DynamoDB Local, **Cognito Hosted UI** login, and a GitHub App, so the environment must be set first (see [Environment](#environment)). `pnpm dev` fails fast with the list of missing variables.
 
-The dev command applies `db/schema.sql` at startup, then runs `sanchoris all` (through `cargo watch`) on an internal free port, starts Vite through portless, and proxies `/api`, `/auth/github`, `/webhooks`, `/records`, and `/runs` through the same frontend host. Local workspaces are processes started by the worker under `.sanchoris/dev/workspaces`, and session records are stored under `.sanchoris/dev/records`. By default, local development uses plain HTTP on an unprivileged port so it works without sudo or TLS setup.
+The dev command creates the DynamoDB tables at startup (`pnpm dynamo:create`), then runs `sanchoris all` (through `cargo watch`) on an internal free port, starts Vite through portless, and proxies `/api`, `/auth/github`, `/webhooks`, `/records`, and `/runs` through the same frontend host. Local workspaces are processes started by the worker under `.sanchoris/dev/workspaces`, and session records are stored under `.sanchoris/dev/records`. By default, local development uses plain HTTP on an unprivileged port so it works without sudo or TLS setup.
 
 A local workspace runs `apps/workspace-agent` with Claude Code, so the dev environment also needs `CLAUDE_CONFIG_DIR` and `SANCHORIS_CLAUDE_PATH` (see `apps/workspace-agent/PROTOCOL.md`) and a `sanchoris` command on `PATH`.
 
@@ -68,11 +70,14 @@ Every `.env*` file is treated as secret and gitignored; only `*.example` is comm
 cp .env.example .env.local
 ```
 
-`.envrc` loads `.env.local` after `use flake`, so its values win over the worktrunk-managed `.env` block and the flake default; `scripts/dev.mjs` reads it too. **Only `.env.example` is committed; never commit real values.** The binary has no defaults: it stops with the list of missing variables.
+`.envrc` loads `.env.local` after `use flake`, so its values win over the worktrunk-managed `.env` block; `scripts/dev.mjs` reads it too. **Only `.env.example` is committed; never commit real values.** The binary has no defaults: it stops with the list of missing variables.
 
 | Variable | Used by | Value |
 | --- | --- | --- |
-| `DATABASE_URL` | serve, worker | Postgres, direct connection (not the neon `-pooler` host); neon needs `?sslmode=require`. The role must be a member of `sanchoris_worker` and be allowed to `SET ROLE sanchoris_app` (`pnpm db:apply` grants both) |
+| `SANCHORIS_TABLE_MAIN`, `SANCHORIS_TABLE_AUDIT` | serve, worker | DynamoDB table names (`docs/architecture.md`) |
+| `AWS_REGION`, `AWS_ENDPOINT_URL_DYNAMODB` | serve, worker | Region of the tables; the endpoint points at DynamoDB Local in development and is unset in AWS |
+| `SANCHORIS_DOCS_BUCKET` | serve, worker | Bucket for attributes larger than 32 KiB (config revisions, skill bodies, large events) |
+| `SANCHORIS_WORK_QUEUE_URL`, `SANCHORIS_WORK_QUEUE_ARN`, `SANCHORIS_SCHEDULE_GROUP`, `SANCHORIS_SCHEDULER_ROLE_ARN` | worker (AWS) | The SQS FIFO work queue and the EventBridge Scheduler group and role that deliver delayed jobs to it |
 | `SANCHORIS_BIND_ADDR` | serve | Listen address, e.g. `127.0.0.1:8080` (set by `pnpm dev`) |
 | `SANCHORIS_PUBLIC_URL` | serve | Public origin, e.g. `http://sanchoris.localhost:1355`; OAuth redirects and local record URLs start with it |
 | `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` | serve | aws-infra-k8s exports `dev-k8s-UserPool` and `dev-k8s-UserPoolClient` (the region is the pool-id prefix) |
@@ -101,7 +106,7 @@ cp .env.example .env.local
 
 ### GraphQL API
 
-`POST /api/graphql` runs the `crates/graphql` schema behind the Cognito JWT check. Queries and mutations use a second pool on the same `DATABASE_URL` whose connections run `SET ROLE sanchoris_app`, so row-level security limits every statement to the signed-in user's tenants; webhooks, OAuth, and the worker keep the `sanchoris_worker` pool. Because the role is set per connection, `DATABASE_URL` must be a direct connection, and `serve` refuses a neon `-pooler` host.
+`POST /api/graphql` runs the `crates/graphql` schema behind the Cognito JWT check. Queries and mutations run in a `TenantTx` of a tenant the signed-in user is a member of, which rejects every key outside that tenant's partitions (`docs/architecture.md`, "Tenant isolation").
 
 The schema's ports are wired as follows:
 
@@ -126,7 +131,7 @@ aws cloudformation list-exports \
 
 ### Login
 
-Login mirrors sanplan: Cognito Hosted UI (OAuth2 authorization-code, no Amplify), stateless JWT verification in the api, and just-in-time user provisioning into `sanchoris.users`. The frontend redirects unauthenticated users to `/login`, which sends them to the Cognito Hosted UI; the callback at `/auth/callback` exchanges the code for tokens and stores them in `localStorage`. The ID token rides on every `/api/*` request as `Authorization: Bearer <id_token>`; the api verifies it (RS256 + issuer + exp + client_id/aud) against the pool JWKS and upserts the user. GitHub accounts are linked separately from Settings → Integrations through `/auth/github`.
+Login mirrors sanplan: Cognito Hosted UI (OAuth2 authorization-code, no Amplify), stateless JWT verification in the api, and just-in-time user provisioning (the `USER#` items in `docs/architecture.md`). The frontend redirects unauthenticated users to `/login`, which sends them to the Cognito Hosted UI; the callback at `/auth/callback` exchanges the code for tokens and stores them in `localStorage`. The ID token rides on every `/api/*` request as `Authorization: Bearer <id_token>`; the api verifies it (RS256 + issuer + exp + client_id/aud) against the pool JWKS and upserts the user. GitHub accounts are linked separately from Settings → Integrations through `/auth/github`.
 
 > **Prerequisite (separate repo).** The shared Cognito app client
 > (`resource-user-pool-client` in aws-infra-k8s `cognito.clj`) must allow the
@@ -135,33 +140,18 @@ Login mirrors sanplan: Cognito Hosted UI (OAuth2 authorization-code, no Amplify)
 > `http://sanchoris.localhost:1355/login`, then redeploy the `dev-k8s-cognito`
 > stack. Until then the Hosted UI rejects the `redirect_uri`.
 
-### Offline dev with local docker Postgres
+### DynamoDB Local
 
-neon is the source of truth for dev. To work offline instead, leave `DATABASE_URL` **unset** in `.env.local`; the flake then defaults it to the local docker Postgres, which you start with:
-
-```sh
-docker compose up -d postgres
-```
-
-The default local `DATABASE_URL` is:
-
-```text
-postgres://sanchoris:sanchoris@127.0.0.1:54329/sanchoris
-```
-
-`docker-compose.yml` is retained for this offline path. The `devo.yaml` `db` pane skips itself automatically when `DATABASE_URL` is set (neon).
-
-### Applying the schema
-
-`pnpm dev` applies `db/schema.sql` at startup. To apply it manually to whichever `DATABASE_URL` is in effect (neon when set, local docker otherwise):
+Development runs against DynamoDB Local from the nix devShell (`dynamodb-local`, a Java jar with a bundled JRE). Start it on the worktree's port and create the tables:
 
 ```sh
-pnpm db:apply
+pnpm dynamo:local
+pnpm dynamo:create
 ```
 
-`db:apply` also grants `sanchoris_worker` to the connecting role, which the api and the worker need to read across tenants under row-level security, and grants `sanchoris_app` with `INHERIT FALSE, SET TRUE` so the GraphQL pool can switch to it without the worker pool picking up its policies.
+`dynamo:local` keeps its data under `.sanchoris/dynamodb`. `dynamo:create` (`sanchoris-dynamo-create`) creates the tables declared in `infra/tables.json` when they are missing and writes the plans from `infra/plans.json`. Point the SDK at DynamoDB Local with `AWS_ENDPOINT_URL_DYNAMODB` (the worktrunk block sets it); DynamoDB Local accepts any credentials, so set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` to any value when no AWS profile is configured. The `devo.yaml` `db` pane runs `dynamo:local`.
 
-The schema source of truth is `db/schema.sql`. `pnpm db:schema:check` starts a temporary PostgreSQL server, applies the schema, and verifies the required MVP tables exist.
+The Rust tests start their own in-memory DynamoDB Local on a free port (`sanchoris_core::testing::TestDynamo`) and create uniquely named tables per test.
 
 - Main worktree: `http://sanchoris.localhost:1355/`
 - Linked worktree, e.g. branch `fix-health`: `http://fix-health.sanchoris.localhost:1355/`
@@ -180,7 +170,7 @@ PORTLESS_HTTPS=1 PORTLESS_PORT=443 pnpm dev
 nix develop -c pnpm e2e
 ```
 
-The test (`crates/api/tests/e2e.rs`) starts a temporary Postgres, a fake GitHub (REST, GraphQL, and bare git repositories on disk), and `sanchoris all`. The worker starts the real `apps/workspace-agent` (with the scripted worker in `scripts/e2e/fake-agent.ts`) through `LocalProcessRunner`. It covers:
+The test (`crates/api/tests/e2e.rs`) starts DynamoDB Local, a fake GitHub (REST, GraphQL, and bare git repositories on disk), and `sanchoris all`. The worker starts the real `apps/workspace-agent` (with the scripted worker in `scripts/e2e/fake-agent.ts`) through `LocalProcessRunner`. It covers:
 
 - A signed `issues.labeled` webhook starts the task; the agent commits and runs `sanchoris skill run open-pr-green-ci`; the skill pushes the branch to the bare repository, opens a pull request, hands the failing check back to the agent, which fixes and continues; the passing check comments on the issue and the task succeeds.
 - Checks that keep failing put the task in `NEEDS_YOU` (`Skill.FixesExhausted`); a member's reply resumes it and the second skill run succeeds.
@@ -195,7 +185,7 @@ Use Worktrunk to manage parallel worktrees:
 
 ```sh
 wt switch -c fix-health
-docker-compose up -d postgres
+pnpm dynamo:local &
 pnpm dev
 ```
 
@@ -203,13 +193,14 @@ Worktrunk runs `scripts/worktrunk-env-sync.mjs` for new worktrees. The script up
 
 ```dotenv
 # BEGIN WORKTRUNK ENV
-COMPOSE_PROJECT_NAME=sanchoris_fix_health_abc123
-BIND_HOST=127.10.20.30
-DATABASE_URL=postgres://sanchoris:sanchoris@127.10.20.30:54329/sanchoris
+SANCHORIS_DYNAMO_PORT=8473
+AWS_ENDPOINT_URL_DYNAMODB=http://127.0.0.1:8473
+SANCHORIS_TABLE_MAIN=sanchoris-fix_health_abc123-main
+SANCHORIS_TABLE_AUDIT=sanchoris-fix_health_abc123-audit
 # END WORKTRUNK ENV
 ```
 
-Docker Compose reads `COMPOSE_PROJECT_NAME` and `BIND_HOST` from `.env`, so each worktree gets separate containers, networks, volumes, and loopback bind addresses while keeping service ports stable. portless detects linked git worktrees and prefixes the branch name into the hostname, so each worktree can run its own frontend and api without port collisions. Set `SANCHORIS_PUBLIC_URL` to the worktree's origin.
+Each worktree gets its own DynamoDB Local port and table names. portless detects linked git worktrees and prefixes the branch name into the hostname, so each worktree can run its own frontend and api without port collisions. Set `SANCHORIS_PUBLIC_URL` to the worktree's origin.
 
 ## Observing Codex runs
 
