@@ -1,0 +1,36 @@
+{
+  "action": "labeled",
+  "issue": {
+    "url": "https://api.github.com/repos/acme/shop-web/issues/35",
+    "html_url": "https://github.com/acme/shop-web/issues/35",
+    "id": 2001,
+    "node_id": "I_kwDOAAAAAAAAAA",
+    "number": 35,
+    "title": "Fix flaky checkout test",
+    "user": { "login": "sota-dev", "id": 102, "type": "User" },
+    "labels": [
+      { "id": 1, "name": "bug", "color": "d73a4a" },
+      { "id": 2, "name": "sanchoris", "color": "0e8a16" }
+    ],
+    "state": "open",
+    "locked": false,
+    "assignees": [],
+    "comments": 0,
+    "created_at": "2026-10-20T09:00:00Z",
+    "updated_at": "2026-10-20T09:05:00Z",
+    "author_association": "MEMBER",
+    "body": "checkout_spec fails about once in ten runs."
+  },
+  "label": { "id": 2, "name": "sanchoris", "color": "0e8a16" },
+  "repository": {
+    "id": 500,
+    "name": "shop-web",
+    "full_name": "acme/shop-web",
+    "private": true,
+    "owner": { "login": "acme", "id": 900, "type": "Organization" },
+    "default_branch": "main"
+  },
+  "organization": { "login": "acme", "id": 900 },
+  "sender": { "login": "mika-dev", "id": 101, "type": "User" },
+  "installation": { "id": 7001, "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9uNzAwMQ==" }
+}

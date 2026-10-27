@@ -1,0 +1,20 @@
+{
+  "action": "completed",
+  "check_run": {
+    "id": 4001,
+    "name": "test",
+    "head_sha": "0123456789abcdef0123456789abcdef01234567",
+    "status": "completed",
+    "conclusion": "failure",
+    "html_url": "https://github.com/acme/shop-web/runs/4001",
+    "started_at": "2026-10-20T10:10:00Z",
+    "completed_at": "2026-10-20T10:14:00Z",
+    "app": { "id": 15368, "slug": "github-actions", "name": "GitHub Actions" },
+    "pull_requests": [
+      { "id": 77, "number": 52, "head": { "ref": "sanchoris/35", "sha": "0123456789abcdef0123456789abcdef01234567" } }
+    ]
+  },
+  "repository": { "id": 500, "name": "shop-web", "full_name": "acme/shop-web" },
+  "sender": { "login": "github-actions[bot]", "id": 41898282, "type": "Bot" },
+  "installation": { "id": 7001 }
+}
