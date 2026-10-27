@@ -1,0 +1,86 @@
+Version: 1
+Projects:
+  shop:
+    SystemPrompt: |
+      You are working on the Acme shop. Always write tests for new endpoints.
+    Repos:
+      frontend:
+        Repo: github.com/acme/shop-web
+        WarmHook: { Commands: [pnpm install, pnpm build], TimeoutSeconds: 3600 }
+      backend:
+        Repo: github.com/acme/shop-api
+        WarmHook: { Commands: [cargo build], TimeoutSeconds: 3600 }
+        StartHook: { Commands: [./scripts/setup.sh], TimeoutSeconds: 300 }
+Sessions:
+  shop:
+    Worker: { Agent: claude, Model: claude-sonnet-5-5, Credential: acme-claude-team }
+    Project: shop
+    GitHub:
+      Repos: [acme/shop-web, acme/shop-api]
+      Permissions: { contents: write, pull_requests: write, issues: write, checks: read }
+    Network: { Allow: [github.com, registry.npmjs.org] }
+    UsageLimit: { Resume: auto }
+    Workspace: { Compute: standard, IdleSeconds: 900 }
+  all:
+    Worker: { Agent: claude, Model: claude-sonnet-5-5, Credential: acme-claude-team }
+    Repos: [acme/idea]
+    GitHub:
+      Repos: ["acme/*"]
+      Permissions: { contents: read, issues: write }
+    Network: { Allow: [github.com] }
+    UsageLimit: { Resume: auto }
+    Workspace: { Compute: standard, IdleSeconds: 900 }
+Triggers:
+  labeled-issue:
+    State: ENABLED
+    EventPattern:
+      source: [github]
+      detail-type: [Issue Labeled]
+      detail:
+        repository: [frontend, backend]
+        label: [sanchoris]
+        sender: { login: [mika-dev, sota-dev, "sanchoris[bot]"] }
+    InputTransformer:
+      InputPathsMap: { repository: $.detail.repository, number: $.detail.issue.number, title: $.detail.issue.title }
+      InputTemplate: '{ "repository": <repository>, "number": <number>, "title": <title> }'
+    Start:
+      Session: shop
+      Instruction: 'Resolve issue <number> in <repository>: <title>. Write tests for the change.'
+      Skills: [open-pr-green-ci]
+      RequiredSkills: [open-pr-green-ci]
+      MaxNudges: 2
+      Limits: { Turns: 60, CostUsd: 20, TimeoutSeconds: 14400, HeartbeatSeconds: 900, Children: { MaxDepth: 1, MaxCount: 5 } }
+  chat-all:
+    State: ENABLED
+    EventPattern:
+      source: [web]
+      detail-type: [Message]
+      detail:
+        scope: [all]
+    InputTransformer:
+      InputPathsMap: { text: $.detail.text }
+      InputTemplate: '{ "text": <text> }'
+    Start:
+      Session: all
+      Instruction: '<text>'
+      Skills: []
+      RequiredSkills: []
+      MaxNudges: 0
+      Limits: { Turns: 60, CostUsd: 10, TimeoutSeconds: 86400, HeartbeatSeconds: 900, Children: { MaxDepth: 1, MaxCount: 5 } }
+  chat-shop:
+    State: ENABLED
+    EventPattern:
+      source: [web]
+      detail-type: [Message]
+      detail:
+        scope: [shop]
+    InputTransformer:
+      InputPathsMap: { text: $.detail.text }
+      InputTemplate: '{ "text": <text> }'
+    Start:
+      Session: shop
+      Instruction: '<text>'
+      Skills: [open-pr-green-ci]
+      RequiredSkills: []
+      MaxNudges: 0
+      Limits: { Turns: 60, CostUsd: 10, TimeoutSeconds: 86400, HeartbeatSeconds: 900, Children: { MaxDepth: 1, MaxCount: 5 } }
