@@ -36,7 +36,7 @@ The api writes inbound items and delivers outbox items; it never drives the engi
 
 ### Deliveries
 
-Outbox items per run, ordered by `seq`, with `delivered_at` set through `mark_outbox_delivered(tx, run_id, seqs, at)` after the agent acknowledges. Send the latest undelivered `start` first. The api adds `runId`; for `user_message` it also adds `messageId` (the item id).
+Outbox items per run, ordered by `seq`, with `delivered_at` set through `mark_outbox_delivered(tx, run_id, seqs, at)` once the Run channel has posted them to the connection (`OutboxPusher`). Send the latest undelivered `start` first. The api adds `runId`; for `user_message` it also adds `messageId` (the item id).
 
 | `type` | `payload` |
 |---|---|

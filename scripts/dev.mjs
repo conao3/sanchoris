@@ -165,7 +165,7 @@ let shuttingDown = false;
 const backendPort = await findAvailablePort();
 const backendUrl = `http://127.0.0.1:${backendPort}`;
 const devDir = resolve('.sanchoris/dev');
-for (const dir of ['records', 'sockets', 'workspaces']) {
+for (const dir of ['docs', 'records', 'sockets', 'workspaces']) {
   mkdirSync(join(devDir, dir), { recursive: true });
 }
 
@@ -180,6 +180,7 @@ run(
     SANCHORIS_BIND_ADDR: `127.0.0.1:${backendPort}`,
     SANCHORIS_CONTROL_URL: `ws://127.0.0.1:${backendPort}/runs/channel`,
     SANCHORIS_WORKSPACE_COMMAND: `node --no-warnings ${resolve('apps/workspace-agent/src/bin/workspace-agent.ts')}`,
+    SANCHORIS_DOCS_DIR: join(devDir, 'docs'),
     SANCHORIS_SOCKET_DIR: join(devDir, 'sockets'),
     SANCHORIS_WORKSPACES_DIR: join(devDir, 'workspaces'),
     ...(process.env.SANCHORIS_RECORDS_STORE === 's3' ? {} : { SANCHORIS_RECORDS_DIR: join(devDir, 'records') }),

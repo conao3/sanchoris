@@ -6,7 +6,7 @@ Sanchoris is a pnpm + Vite frontend and Rust backend monorepo.
 
 - `apps/frontend`: Vite frontend package managed by pnpm
 - `apps/workspace-agent`: the agent that runs inside a Workspace, and the `sanchoris` command (`PROTOCOL.md` describes the Run channel)
-- `crates/api`: the `sanchoris` binary (HTTP API and background worker)
+- `crates/api`: the HTTP API, the Run channel, and their Lambda functions (`api`, `channel`, `channel-authorizer`, `worker`, `relay`), and the `sanchoris` binary that runs everything in one process for local development
 - `crates/config`, `crates/engine`, `crates/core`, `crates/worker`: configuration, the skill engine, persistence (DynamoDB, S3, and the queue and scheduler ports), and the worker's message handlers
 - `docs/architecture.md`: the serverless AWS architecture and the DynamoDB data model
 - `infra/tables.json`, `infra/plans.json`: the DynamoDB table definitions (CloudFormation properties) and the plan catalog, read by `sanchoris-dynamo-create` and the tests
@@ -42,10 +42,16 @@ A local workspace runs `apps/workspace-agent` with Claude Code, so the dev envir
 ## The `sanchoris` binary
 
 ```sh
-cargo run -p sanchoris-api --bin sanchoris -- serve   # HTTP API
-cargo run -p sanchoris-api --bin sanchoris -- worker  # background loops
-cargo run -p sanchoris-api --bin sanchoris -- all     # both in one process
+cargo run -p sanchoris-api --bin sanchoris -- all
 ```
+
+`sanchoris all` runs the HTTP API, the Run channel WebSocket, and the worker (`LocalDriver` over the in-memory queue and scheduler) in one process against DynamoDB Local, with offloaded attributes under `SANCHORIS_DOCS_DIR`. In AWS the same code runs as Lambda functions:
+
+```sh
+nix develop -c pnpm build:lambda
+```
+
+builds `target/lambda/{api,channel,channel-authorizer,worker,relay}/bootstrap.zip` for `provided.al2023` on `arm64` (static `aarch64-unknown-linux-musl` binaries cross-compiled by `cargo lambda` with the devShell's musl cross linker). `docs/architecture.md` ("Lambda functions") lists each function's trigger, variables, and IAM actions.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -59,7 +65,7 @@ cargo run -p sanchoris-api --bin sanchoris -- all     # both in one process
 | `GET /auth/github/callback` | GitHub App user-to-server OAuth callback. For account linking it stores `github_user_id` and `github_login` and records `integration.github_link`; for an installation it checks the installation is in the user's `GET /user/installations`, stores it in `integrations` with its repositories, and records `integration.github_install`. Redirects to `/settings?github=<outcome>` (`linked`, `installed`, `requested`, `denied`, `in_use`, `installation_in_use`, `not_accessible`, `not_member`, `not_admin`) |
 | `POST /webhooks/github` | GitHub App webhook. Verifies `X-Hub-Signature-256`; `installation` and `installation_repositories` events update `integrations`, every other event is recorded once per `X-GitHub-Delivery` |
 | `POST /webhooks/stripe` | Stripe webhook. Verifies `Stripe-Signature` (5 minute tolerance) and handles `checkout.session.completed` (activates the tenant on `metadata.plan_id`), `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, and `invoice.payment_failed` |
-| `GET /runs/channel` | Run channel WebSocket for `workspace-agent` (bearer Run token; see `apps/workspace-agent/PROTOCOL.md`) |
+| `GET /runs/channel` | Run channel WebSocket for `workspace-agent` in `sanchoris all` (bearer Run token; see `apps/workspace-agent/PROTOCOL.md`). In AWS the API Gateway WebSocket API serves the same protocol |
 | `PUT`/`GET /records/{key}` | Signed session record upload and download when `SANCHORIS_RECORDS_STORE=local` |
 
 ## Environment
@@ -74,35 +80,38 @@ cp .env.example .env.local
 
 | Variable | Used by | Value |
 | --- | --- | --- |
-| `SANCHORIS_TABLE_MAIN`, `SANCHORIS_TABLE_AUDIT` | serve, worker | DynamoDB table names (`docs/architecture.md`) |
-| `AWS_REGION`, `AWS_ENDPOINT_URL_DYNAMODB` | serve, worker | Region of the tables; the endpoint points at DynamoDB Local in development and is unset in AWS |
-| `SANCHORIS_DOCS_BUCKET` | serve, worker | Bucket for attributes larger than 32 KiB (config revisions, skill bodies, large events) |
+| `SANCHORIS_TABLE_MAIN`, `SANCHORIS_TABLE_AUDIT` | api, worker | DynamoDB table names (`docs/architecture.md`) |
+| `AWS_REGION`, `AWS_ENDPOINT_URL_DYNAMODB` | api, worker | Region of the tables; the endpoint points at DynamoDB Local in development and is unset in AWS |
+| `SANCHORIS_DOCS_BUCKET` | api, channel, worker (Lambda) | Bucket for attributes larger than 32 KiB (config revisions, skill bodies, large events) |
 | `SANCHORIS_WORK_QUEUE_URL`, `SANCHORIS_WORK_QUEUE_ARN`, `SANCHORIS_SCHEDULE_GROUP`, `SANCHORIS_SCHEDULER_ROLE_ARN` | worker (AWS) | The SQS FIFO work queue and the EventBridge Scheduler group and role that deliver delayed jobs to it |
-| `SANCHORIS_BIND_ADDR` | serve | Listen address, e.g. `127.0.0.1:8080` (set by `pnpm dev`) |
-| `SANCHORIS_PUBLIC_URL` | serve | Public origin, e.g. `http://sanchoris.localhost:1355`; OAuth redirects and local record URLs start with it |
-| `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` | serve | aws-infra-k8s exports `dev-k8s-UserPool` and `dev-k8s-UserPoolClient` (the region is the pool-id prefix) |
+| `SANCHORIS_BIND_ADDR` | `sanchoris all` | Listen address, e.g. `127.0.0.1:8080` (set by `pnpm dev`) |
+| `SANCHORIS_PUBLIC_URL` | api | Public origin, e.g. `http://sanchoris.localhost:1355`; OAuth redirects and local record URLs start with it |
+| `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` | api | aws-infra-k8s exports `dev-k8s-UserPool` and `dev-k8s-UserPoolClient` (the region is the pool-id prefix) |
 | `VITE_COGNITO_DOMAIN`, `VITE_COGNITO_CLIENT_ID` | frontend | Hosted UI domain (host only, dev `dev-auth-k8s.sancode.dev`) and the same client id |
-| `GITHUB_URL`, `GITHUB_API_URL` | serve, worker | `https://github.com` and `https://api.github.com` |
-| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | serve, worker | GitHub App id and private key (PEM) |
-| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` | serve | GitHub App OAuth client for account linking and installation checks |
-| `GITHUB_APP_SLUG` | serve | The App slug in `https://github.com/apps/<slug>`; the install URL is `<GITHUB_URL>/apps/<slug>/installations/new`. Set the App's Setup URL to `<SANCHORIS_PUBLIC_URL>/auth/github/setup` |
-| `GITHUB_WEBHOOK_SECRET` | serve | GitHub App webhook secret |
-| `STRIPE_API_URL` | serve | `https://api.stripe.com` |
-| `STRIPE_SECRET_KEY` | serve | Stripe secret key (Checkout, the customer portal, subscription changes) |
-| `STRIPE_WEBHOOK_SECRET` | serve | Stripe webhook signing secret |
-| `RUN_TOKEN_SIGNING_KEY` | serve, worker | Signs Run channel tokens (32+ bytes) |
-| `TASK_TOKEN_SIGNING_KEY` | serve | Signs approval tokens (32+ bytes) |
-| `OAUTH_STATE_SIGNING_KEY` | serve | Signs the GitHub OAuth and installation `state`, bound to the signed-in user and tenant (32+ bytes) |
-| `SANCHORIS_CREDENTIAL_KEY` | serve | AES-256-GCM key for stored API keys: 32 bytes in base64 (`openssl rand -base64 32`) |
-| `SANCHORIS_RECORDS_STORE` | serve | `s3` or `local` |
-| `AWS_REGION`, `S3_RECORDS_BUCKET`, `KMS_KEY_PREFIX` | serve (`s3`) | Records bucket; objects are encrypted with the KMS key `<KMS_KEY_PREFIX><tenant id>` |
-| `SANCHORIS_RECORDS_DIR`, `RECORDS_SIGNING_KEY` | serve (`local`) | Record directory (set by `pnpm dev`) and the URL signing key (32+ bytes) |
-| `SANCHORIS_WORKSPACE_COMMAND` | serve, worker | Command that starts the workspace agent (set by `pnpm dev`) |
-| `SANCHORIS_CONTROL_URL` | serve, worker | Run channel URL given to workspaces, e.g. `ws://127.0.0.1:8080/runs/channel` (set by `pnpm dev`) |
-| `SANCHORIS_SOCKET_DIR`, `SANCHORIS_WORKSPACES_DIR` | serve, worker | Directories for the `sanchoris` command sockets and the workspaces (set by `pnpm dev`) |
-| `SANCHORIS_GIT_URL` | serve, worker | Base URL the workspaces clone `<owner>/<name>.git` from, e.g. `https://github.com` |
+| `GITHUB_URL`, `GITHUB_API_URL` | api, worker | `https://github.com` and `https://api.github.com` |
+| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | api, worker | GitHub App id and private key (PEM) |
+| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` | api | GitHub App OAuth client for account linking and installation checks |
+| `GITHUB_APP_SLUG` | api | The App slug in `https://github.com/apps/<slug>`; the install URL is `<GITHUB_URL>/apps/<slug>/installations/new`. Set the App's Setup URL to `<SANCHORIS_PUBLIC_URL>/auth/github/setup` |
+| `GITHUB_WEBHOOK_SECRET` | api | GitHub App webhook secret |
+| `STRIPE_API_URL` | api | `https://api.stripe.com` |
+| `STRIPE_SECRET_KEY` | api | Stripe secret key (Checkout, the customer portal, subscription changes) |
+| `STRIPE_WEBHOOK_SECRET` | api | Stripe webhook signing secret |
+| `RUN_TOKEN_SIGNING_KEY` | channel, channel-authorizer, worker | Signs Run channel tokens (32+ bytes) |
+| `TASK_TOKEN_SIGNING_KEY` | api | Signs approval tokens (32+ bytes) |
+| `OAUTH_STATE_SIGNING_KEY` | api | Signs the GitHub OAuth and installation `state`, bound to the signed-in user and tenant (32+ bytes) |
+| `SANCHORIS_CREDENTIAL_KEY` | api | AES-256-GCM key for stored API keys: 32 bytes in base64 (`openssl rand -base64 32`) |
+| `SANCHORIS_RECORDS_STORE` | channel, worker | `s3` or `local` |
+| `AWS_REGION`, `S3_RECORDS_BUCKET`, `KMS_KEY_PREFIX` | channel, worker (`s3`) | Records bucket; objects are encrypted with the KMS key `<KMS_KEY_PREFIX><tenant id>` |
+| `SANCHORIS_RECORDS_DIR`, `RECORDS_SIGNING_KEY` | `sanchoris all` (`local`) | Record directory (set by `pnpm dev`) and the URL signing key (32+ bytes) |
+| `SANCHORIS_WORKSPACE_COMMAND` | `sanchoris all` | Command that starts the workspace agent (set by `pnpm dev`) |
+| `SANCHORIS_CONTROL_URL` | `sanchoris all`, worker | Run channel URL given to workspaces: locally `ws://127.0.0.1:8080/runs/channel` (set by `pnpm dev`), in AWS the `wss://` URL of the WebSocket API |
+| `SANCHORIS_SOCKET_DIR`, `SANCHORIS_WORKSPACES_DIR` | `sanchoris all` | Directories for the `sanchoris` command sockets and the workspaces (set by `pnpm dev`) |
+| `SANCHORIS_GIT_URL` | worker | Base URL the workspaces clone `<owner>/<name>.git` from, e.g. `https://github.com` |
+| `SANCHORIS_DOCS_DIR` | `sanchoris all` | Directory for attributes larger than 32 KiB (set by `pnpm dev`) |
+| `SANCHORIS_CHANNEL_ENDPOINT` | channel, worker | API Gateway Management API endpoint of the WebSocket stage |
+| `SANCHORIS_ECS_CLUSTER`, `SANCHORIS_ECS_TASK_DEFINITION`, `SANCHORIS_ECS_CONTAINER`, `SANCHORIS_ECS_SUBNETS`, `SANCHORIS_ECS_SECURITY_GROUPS` | worker | Fargate cluster, task definition, container name, and the comma-separated subnets and security groups of Workspaces |
 
-`serve` reads the worker variables too: the GraphQL API runs the trigger dispatcher and the config syncer inline (below).
+`sanchoris all` reads every variable of the api and the worker except the AWS-only ones. The functions and their variables and IAM actions are listed in `docs/architecture.md` ("Lambda functions").
 
 ### GraphQL API
 
@@ -170,12 +179,14 @@ PORTLESS_HTTPS=1 PORTLESS_PORT=443 pnpm dev
 nix develop -c pnpm e2e
 ```
 
-The test (`crates/api/tests/e2e.rs`) starts DynamoDB Local, a fake GitHub (REST, GraphQL, and bare git repositories on disk), and `sanchoris all`. The worker starts the real `apps/workspace-agent` (with the scripted worker in `scripts/e2e/fake-agent.ts`) through `LocalProcessRunner`. It covers:
+The test (`crates/api/tests/e2e.rs`) starts DynamoDB Local, a fake GitHub (REST, GraphQL, and bare git repositories on disk), and the same assembly as `sanchoris all` in process (`server::LocalServer` with a stub token verifier, so the member reply goes through `POST /api/tasks/{taskId}/replies`). The worker starts the real `apps/workspace-agent` (with the scripted worker in `scripts/e2e/fake-agent.ts`) through `LocalProcessRunner`. It covers:
 
 - A signed `issues.labeled` webhook starts the task; the agent commits and runs `sanchoris skill run open-pr-green-ci`; the skill pushes the branch to the bare repository, opens a pull request, hands the failing check back to the agent, which fixes and continues; the passing check comments on the issue and the task succeeds.
 - Checks that keep failing put the task in `NEEDS_YOU` (`Skill.FixesExhausted`); a member's reply resumes it and the second skill run succeeds.
 
 Run `pnpm install` first; the workspace agent runs from source with Node.
+
+`crates/api/tests/http.rs` covers the HTTP endpoints and the local Run channel (webhook signatures, duplicate deliveries, installation events, Stripe, replies and approvals, records, outbox delivery, sequence deduplication, and the close on an out-of-order message). `crates/api/tests/lambda.rs` drives the Lambda handlers with recorded API Gateway WebSocket and authorizer events, SQS batches, and DynamoDB Streams records (`crates/api/tests/fixtures/`), with a recording connection sender in place of the Management API.
 
 `crates/api/tests/graphql.rs` (part of `cargo test --workspace`) drives `POST /api/graphql` over HTTP with a stub token verifier and runs every operation in `apps/frontend/src/graphql/*.graphql` against the real ports: the config syncer and trigger dispatcher inline, the GitHub App client against the fake GitHub, Stripe against a fake Stripe API, and local records. It fails when an operation is added to the frontend without being exercised.
 
