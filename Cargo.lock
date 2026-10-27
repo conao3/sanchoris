@@ -299,6 +299,7 @@ checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
  "num-traits",
+ "serde",
  "windows-link",
 ]
 
@@ -1947,6 +1948,7 @@ dependencies = [
 name = "sanchoris-engine"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "sanchoris-config",
  "serde",
  "serde_json",
