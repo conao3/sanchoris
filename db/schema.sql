@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS sanchoris.plans (
 
 INSERT INTO sanchoris.plans (id, name, price_cents, currency, billing_unit, task_limit, task_limit_period, workspace_seconds_limit, workspace_limit_period, member_limit, max_concurrency, retention_days, audit_retention_days, max_task_turns, max_task_cost_usd, max_task_timeout_seconds, max_idle_seconds, max_children_depth, max_children_count, computes)
 VALUES
-    ('free', 'Free', 0, 'usd', 'tenant', 5, 'total', 36000, 'total', 1, 1, 30, 30, 100, 20, 14400, 1800, 1, 5, ARRAY['standard']),
+    ('free', 'Free', 0, 'usd', 'tenant', 5, 'total', 36000, 'total', 1, 1, 30, 30, 100, 20, 86400, 1800, 1, 5, ARRAY['standard']),
     ('starter', 'Starter', 2000, 'usd', 'tenant', 10, 'month', 180000, 'month', 3, 2, 90, 365, 200, 50, 86400, 3600, 2, 10, ARRAY['standard', 'docker']),
     ('pro', 'Pro', 10000, 'usd', 'tenant', 50, 'month', 900000, 'month', 10, 5, 90, 365, 200, 100, 86400, 3600, 3, 20, ARRAY['standard', 'docker']),
     ('max', 'Max', 20000, 'usd', 'tenant', 200, 'month', 1800000, 'month', 30, 10, 90, 365, 400, 200, 172800, 7200, 3, 50, ARRAY['standard', 'docker'])

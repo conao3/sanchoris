@@ -233,7 +233,7 @@ pub async fn dispatch_pending_tasks(
                 p.max_concurrency, p.task_limit, p.workspace_seconds_limit \
          FROM sanchoris.tenants t JOIN sanchoris.plans p ON p.id = t.plan_id \
          WHERE t.id = $1 \
-         FOR UPDATE OF t",
+         FOR NO KEY UPDATE OF t",
     )
     .bind(tenant_id)
     .fetch_optional(tx.conn())

@@ -229,7 +229,8 @@ pub async fn persist_step(
                         NotificationKind::NeedsAgent { .. } => "needs_agent",
                     };
                     let dedupe = format!("skill:{}:{}:{}", meta.number, run.next_sequence, kind);
-                    send_to_task(tx, meta.task_id, run_id, &notification.text, &dedupe).await?;
+                    send_to_task(tx, meta.task_id, run_id, &notification.text, &dedupe, now)
+                        .await?;
                 }
             }
         }

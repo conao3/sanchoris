@@ -23,12 +23,18 @@ pub async fn latest_run(tx: &mut TenantTx, task_id: Uuid) -> Result<Option<Uuid>
     .await?)
 }
 
-pub async fn wake_task(tx: &mut TenantTx, task_id: Uuid) -> Result<(), DbError> {
+pub async fn wake_task(
+    tx: &mut TenantTx,
+    task_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<(), DbError> {
     sqlx::query(
-        "UPDATE sanchoris.tasks SET status = 'RUNNING', wait_reason = NULL, updated_at = now() \
-         WHERE id = $1 AND status = 'WAITING' AND wait_reason IN ('skill', 'chat')",
+        "UPDATE sanchoris.tasks SET status = 'RUNNING', wait_reason = NULL, error = NULL, cause = NULL, \
+         updated_at = $2 \
+         WHERE id = $1 AND ((status = 'WAITING' AND wait_reason IN ('skill', 'chat')) OR status = 'RUNNING')",
     )
     .bind(task_id)
+    .bind(now)
     .execute(tx.conn())
     .await?;
     Ok(())
@@ -40,9 +46,10 @@ pub async fn send_to_task(
     run_id: Uuid,
     text: &str,
     dedupe_key: &str,
+    now: DateTime<Utc>,
 ) -> Result<bool, DbError> {
     let inserted = enqueue_user_message(tx, run_id, text, dedupe_key).await?;
-    wake_task(tx, task_id).await?;
+    wake_task(tx, task_id, now).await?;
     Ok(inserted)
 }
 
