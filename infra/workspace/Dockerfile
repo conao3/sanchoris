@@ -18,9 +18,10 @@ ENV NODE_ENV=production \
     CLAUDE_CONFIG_DIR=/home/node/.claude \
     SANCHORIS_CLAUDE_PATH=/opt/workspace-agent/claude
 COPY --from=build /out /opt/workspace-agent
-RUN printf '#!/bin/sh\nexec node /opt/workspace-agent/src/bin/sanchoris.ts "$@"\n' > /usr/local/bin/sanchoris \
+RUN printf '#!/bin/sh\nexec node --disable-warning=UNDICI-EHPA /opt/workspace-agent/src/bin/sanchoris.ts "$@"\n' > /usr/local/bin/sanchoris \
  && chmod 755 /usr/local/bin/sanchoris \
  && git config --system credential.helper '!sanchoris git-credential' \
+ && git config --system http.proxyAuthMethod basic \
  && git config --system user.name sanchoris \
  && git config --system user.email sanchoris@users.noreply.github.com \
  && mkdir -p /workspace /home/node/.claude \
@@ -28,4 +29,4 @@ RUN printf '#!/bin/sh\nexec node /opt/workspace-agent/src/bin/sanchoris.ts "$@"\
  && /opt/workspace-agent/claude --version
 USER node
 WORKDIR /workspace
-ENTRYPOINT ["node", "/opt/workspace-agent/src/bin/workspace-agent.ts"]
+ENTRYPOINT ["node", "--disable-warning=UNDICI-EHPA", "/opt/workspace-agent/src/bin/workspace-agent.ts"]
