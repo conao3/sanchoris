@@ -33,22 +33,31 @@ function loadDotenvIfExists(path = '.env') {
   }
 }
 
-function createTables() {
-  console.log('sanchoris dev database: creating the DynamoDB tables');
-  const result = spawnSync('pnpm', ['dynamo:create'], {
+function runStep(name, args) {
+  const result = spawnSync('pnpm', args, {
     env: process.env,
     stdio: 'inherit',
     shell: false,
   });
 
   if (result.error) {
-    console.error(`dynamo:create failed to start: ${result.error.message}`);
+    console.error(`${name} failed to start: ${result.error.message}`);
     process.exit(1);
   }
 
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
+}
+
+function createTables() {
+  console.log('sanchoris dev database: creating the DynamoDB tables');
+  runStep('dynamo:create', ['dynamo:create']);
+}
+
+function buildFrontend() {
+  console.log('sanchoris dev frontend: building apps/frontend/dist for the api fallback');
+  runStep('frontend build', ['--filter', '@sanchoris/frontend', 'build']);
 }
 
 async function findAvailablePort() {
@@ -145,7 +154,7 @@ const requiredEnv = [
   'SANCHORIS_RECORDS_STORE',
   'SANCHORIS_GIT_URL',
   ...(process.env.SANCHORIS_RECORDS_STORE === 's3'
-    ? ['AWS_REGION', 'S3_RECORDS_BUCKET', 'KMS_KEY_PREFIX']
+    ? ['AWS_REGION', 'SANCHORIS_RECORDS_BUCKET', 'SANCHORIS_RECORDS_KMS_KEY']
     : ['RECORDS_SIGNING_KEY']),
 ];
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);
@@ -158,6 +167,7 @@ if (missingEnv.length > 0) {
 }
 
 createTables();
+buildFrontend();
 
 const children = [];
 let shuttingDown = false;
@@ -181,6 +191,7 @@ run(
     SANCHORIS_CONTROL_URL: `ws://127.0.0.1:${backendPort}/runs/channel`,
     SANCHORIS_WORKSPACE_COMMAND: `node --no-warnings ${resolve('apps/workspace-agent/src/bin/workspace-agent.ts')}`,
     SANCHORIS_DOCS_DIR: join(devDir, 'docs'),
+    SANCHORIS_FRONTEND_DIR: resolve('apps/frontend/dist'),
     SANCHORIS_SOCKET_DIR: join(devDir, 'sockets'),
     SANCHORIS_WORKSPACES_DIR: join(devDir, 'workspaces'),
     ...(process.env.SANCHORIS_RECORDS_STORE === 's3' ? {} : { SANCHORIS_RECORDS_DIR: join(devDir, 'records') }),

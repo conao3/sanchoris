@@ -10,7 +10,7 @@
     "lint": "pnpm --filter @sanchoris/frontend lint",
     "check": "pnpm --filter @sanchoris/frontend check && pnpm --filter @sanchoris/workspace-agent check",
     "e2e": "cargo test -p sanchoris-api --test e2e",
-    "build:lambda": "cargo lambda build --release --compiler cargo --target aarch64-unknown-linux-musl --output-format zip -p sanchoris-api --bin api --bin channel --bin channel-authorizer --bin worker --bin relay"
+    "build:lambda": "node scripts/build-lambda.mjs"
   },
   "devDependencies": {
     "portless": "^0.15.11"
