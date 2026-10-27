@@ -367,13 +367,7 @@ async fn config_files_are_read_from_the_tree_at_a_commit() {
         token_exchange(),
         exchange(
             "GET",
-            "/repos/acme/config",
-            200,
-            json!({ "default_branch": "main" }),
-        ),
-        exchange(
-            "GET",
-            "/repos/acme/config/commits/main",
+            "/repos/acme/config/commits/release",
             200,
             json!({ "sha": "c0ffee" }),
         ),
@@ -401,7 +395,7 @@ async fn config_files_are_read_from_the_tree_at_a_commit() {
             json!({ "encoding": "base64", "content": encode("---\nname: lint\n---\n") }),
         ),
     ]);
-    let sha = api.head_commit(42, "acme/config").await.unwrap();
+    let sha = api.head_commit(42, "acme/config", "release").await.unwrap();
     assert_eq!(sha, "c0ffee");
     let files = api.fetch(42, "acme/config", "/", &sha).await.unwrap();
     assert_eq!(

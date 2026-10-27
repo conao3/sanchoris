@@ -6,6 +6,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::audit::{AuditEntry, record_audit};
+use crate::billing::PAYMENT_PENDING;
 use crate::db::{DbError, TenantTx};
 use crate::model::{ActorKind, AuditOrigin};
 
@@ -14,10 +15,12 @@ const SLUG_ATTEMPTS: u32 = 100;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewTenant<'a> {
+    pub id: Uuid,
     pub name: &'a str,
     pub plan_id: &'a str,
     pub user_id: Uuid,
     pub stripe_customer_id: Option<&'a str>,
+    pub payment_pending: bool,
     pub origin: AuditOrigin,
     pub source_ip: Option<IpAddr>,
     pub now: DateTime<Utc>,
@@ -54,7 +57,12 @@ pub async fn create_tenant(
     pool: &PgPool,
     tenant: &NewTenant<'_>,
 ) -> Result<CreatedTenant, DbError> {
-    let tenant_id = Uuid::new_v4();
+    let tenant_id = tenant.id;
+    let (status, reason) = if tenant.payment_pending {
+        ("suspended", Some(PAYMENT_PENDING))
+    } else {
+        ("active", None)
+    };
     let mut tx = TenantTx::begin(pool, tenant_id).await?;
     let base = slug_base(tenant.name);
     let mut slug = None;
@@ -66,8 +74,8 @@ pub async fn create_tenant(
         };
         let inserted = sqlx::query_scalar::<_, Uuid>(
             "INSERT INTO sanchoris.tenants \
-             (id, slug, name, plan_id, period_start, status, stripe_customer_id, created_by_user_id, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $5, $5) \
+             (id, slug, name, plan_id, period_start, status, suspended_reason, stripe_customer_id, created_by_user_id, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $5, $5) \
              ON CONFLICT (slug) DO NOTHING RETURNING id",
         )
         .bind(tenant_id)
@@ -75,6 +83,8 @@ pub async fn create_tenant(
         .bind(tenant.name)
         .bind(tenant.plan_id)
         .bind(tenant.now)
+        .bind(status)
+        .bind(reason)
         .bind(tenant.stripe_customer_id)
         .bind(tenant.user_id)
         .fetch_optional(tx.conn())
@@ -96,6 +106,9 @@ pub async fn create_tenant(
     .await?;
     let mut metadata = Map::new();
     metadata.insert("plan".into(), json!(tenant.plan_id));
+    if tenant.payment_pending {
+        metadata.insert("status".into(), json!(PAYMENT_PENDING));
+    }
     record_audit(
         &mut tx,
         &AuditEntry {

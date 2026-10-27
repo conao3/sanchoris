@@ -31,3 +31,4 @@ if (reset) {
 }
 psql(['--file', schemaPath]);
 psql(['--command', 'GRANT sanchoris_worker TO CURRENT_USER']);
+psql(['--command', 'GRANT sanchoris_app TO CURRENT_USER WITH INHERIT FALSE, SET TRUE']);

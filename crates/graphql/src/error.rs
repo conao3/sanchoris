@@ -1,6 +1,8 @@
 use async_graphql::{Error, ErrorExtensions, ID};
 use uuid::Uuid;
 
+use crate::ports::PortError;
+
 fn coded(code: &'static str, message: impl Into<String>) -> Error {
     Error::new(message.into()).extend_with(|_, e| e.set("code", code))
 }
@@ -19,6 +21,13 @@ pub fn bad_input(message: impl Into<String>) -> Error {
 
 pub fn conflict(message: impl Into<String>) -> Error {
     coded("CONFLICT", message)
+}
+
+pub fn port(error: PortError) -> Error {
+    match error {
+        PortError::Rejected(message) => bad_input(message),
+        PortError::Failed(message) => Error::new(message),
+    }
 }
 
 pub fn unauthenticated() -> Error {

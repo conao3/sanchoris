@@ -15,7 +15,7 @@ use sqlx::Row;
 use support::fake_github::FakeGitHub;
 use support::{
     CONFIG_YAML, REPO, Seeded, bare_repo, check_run_payload, eventually, free_port,
-    github_signature, labeled_payload, listen, run, seed,
+    github_signature, labeled_payload, listen, rsa_key, run, seed,
 };
 use uuid::Uuid;
 
@@ -27,21 +27,6 @@ fn repo_root() -> PathBuf {
         .join("../..")
         .canonicalize()
         .unwrap()
-}
-
-fn rsa_key() -> String {
-    let output = Command::new("openssl")
-        .args([
-            "genpkey",
-            "-algorithm",
-            "RSA",
-            "-pkeyopt",
-            "rsa_keygen_bits:2048",
-        ])
-        .output()
-        .expect("openssl is on PATH (run inside `nix develop`)");
-    assert!(output.status.success());
-    String::from_utf8(output.stdout).unwrap()
 }
 
 struct Api(Child);
@@ -117,9 +102,16 @@ impl World {
             .env("GITHUB_APP_PRIVATE_KEY", rsa_key())
             .env("GITHUB_APP_CLIENT_ID", "Iv1.e2e")
             .env("GITHUB_APP_CLIENT_SECRET", "e2e-client-secret")
+            .env("GITHUB_APP_SLUG", "sanchoris-e2e")
             .env("GITHUB_URL", &github_url)
             .env("GITHUB_API_URL", &github_url)
             .env("STRIPE_WEBHOOK_SECRET", "whsec_e2e")
+            .env("STRIPE_SECRET_KEY", "sk_test_e2e")
+            .env("STRIPE_API_URL", "https://api.stripe.invalid")
+            .env(
+                "SANCHORIS_CREDENTIAL_KEY",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            )
             .env(
                 "RUN_TOKEN_SIGNING_KEY",
                 "e2e-run-token-signing-key-0123456789",

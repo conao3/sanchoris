@@ -55,14 +55,45 @@ pub async fn tick(worker: &Worker) -> Result<usize> {
     Ok(usize::try_from(processed).expect("batch fits in usize"))
 }
 
+pub async fn dispatch_tenant(worker: &Worker, tenant_id: Uuid) -> Result<usize> {
+    let mut processed = 0;
+    loop {
+        if dispatch_next(worker, Some(tenant_id)).await? {
+            processed += 1;
+            continue;
+        }
+        let waiting = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM sanchoris.inbound_events WHERE tenant_id = $1 AND processed_at IS NULL)",
+        )
+        .bind(tenant_id)
+        .fetch_one(&worker.pool)
+        .await?;
+        if !waiting {
+            return Ok(processed);
+        }
+    }
+}
+
 async fn dispatch_one(worker: &Worker) -> Result<bool> {
+    dispatch_next(worker, None).await
+}
+
+async fn dispatch_next(worker: &Worker, tenant_id: Option<Uuid>) -> Result<bool> {
     let mut tx = worker.begin().await?;
-    let Some(row) = sqlx::query(
-        "SELECT id, tenant_id, source, key, event FROM sanchoris.inbound_events \
-         WHERE processed_at IS NULL ORDER BY received_at, id LIMIT 1 FOR UPDATE SKIP LOCKED",
-    )
-    .fetch_optional(&mut *tx)
-    .await?
+    let claim = match tenant_id {
+        Some(_) => {
+            "SELECT id, tenant_id, source, key, event FROM sanchoris.inbound_events \
+             WHERE processed_at IS NULL AND tenant_id = $1 ORDER BY received_at, id LIMIT 1 FOR UPDATE"
+        }
+        None => {
+            "SELECT id, tenant_id, source, key, event FROM sanchoris.inbound_events \
+             WHERE processed_at IS NULL AND $1::uuid IS NULL ORDER BY received_at, id LIMIT 1 FOR UPDATE SKIP LOCKED"
+        }
+    };
+    let Some(row) = sqlx::query(claim)
+        .bind(tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?
     else {
         return Ok(false);
     };

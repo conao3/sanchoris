@@ -293,7 +293,7 @@ impl GitHubReader for FakeGitHub {
 
 #[async_trait]
 impl ConfigSource for FakeGitHub {
-    async fn head_commit(&self, _: i64, _: &str) -> Result<String, GitHubError> {
+    async fn head_commit(&self, _: i64, _: &str, _: &str) -> Result<String, GitHubError> {
         Ok(self.state.lock().unwrap().head_sha.clone())
     }
 

@@ -26,28 +26,56 @@ pub async fn tick(worker: &Worker) -> Result<usize> {
 }
 
 async fn sync_one(worker: &Worker) -> Result<bool> {
-    let now = worker.now();
     let mut tx = worker.begin().await?;
     let Some(row) = sqlx::query(
-        "SELECT id, tenant_id, repository, root_path FROM sanchoris.configs \
+        "SELECT id, tenant_id, repository, root_path, branch FROM sanchoris.configs \
          WHERE synced_at IS NULL OR synced_at <= $1 \
          ORDER BY synced_at NULLS FIRST, id LIMIT 1 FOR UPDATE SKIP LOCKED",
     )
-    .bind(now - worker.settings.config_poll_interval)
+    .bind(worker.now() - worker.settings.config_poll_interval)
     .fetch_optional(&mut *tx)
     .await?
     else {
         return Ok(false);
     };
+    sync_locked(worker, tx, &row).await?;
+    Ok(true)
+}
+
+pub async fn sync_config(worker: &Worker, tenant_id: Uuid, config_id: Uuid) -> Result<()> {
+    let mut tx = worker.begin().await?;
+    let row = sqlx::query(
+        "SELECT id, tenant_id, repository, root_path, branch FROM sanchoris.configs \
+         WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+    )
+    .bind(config_id)
+    .bind(tenant_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| {
+        crate::error::WorkerError::Invalid(format!(
+            "config {config_id} of tenant {tenant_id} does not exist"
+        ))
+    })?;
+    sync_locked(worker, tx, &row).await
+}
+
+async fn sync_locked(
+    worker: &Worker,
+    tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    row: &sqlx::postgres::PgRow,
+) -> Result<()> {
+    let now = worker.now();
     let config_id: Uuid = row.try_get("id")?;
     let repository: String = row.try_get("repository")?;
     let root_path: String = row.try_get("root_path")?;
+    let branch: String = row.try_get("branch")?;
     let mut tx = adopt(tx, row.try_get("tenant_id")?).await?;
     let installation = installation_for(&installations(&mut tx).await?, &repository)?;
     let sha = worker
         .deps
         .config_source
-        .head_commit(installation, &repository)
+        .head_commit(installation, &repository, &branch)
         .await?;
     let known = sqlx::query_scalar::<_, Uuid>(
         "SELECT id FROM sanchoris.config_revisions WHERE config_id = $1 AND commit_sha = $2",
@@ -72,10 +100,10 @@ async fn sync_one(worker: &Worker) -> Result<bool> {
         .await?;
     worker.faults.check("config_sync.before_commit")?;
     tx.commit().await?;
-    Ok(true)
+    Ok(())
 }
 
-async fn validation_context(tx: &mut TenantTx) -> Result<ValidationContext> {
+pub async fn validation_context(tx: &mut TenantTx) -> Result<ValidationContext> {
     let tenant_id = tx.tenant_id();
     let credentials = sqlx::query_scalar::<_, String>(
         "SELECT name FROM sanchoris.credentials WHERE tenant_id = $1",

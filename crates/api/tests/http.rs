@@ -1,18 +1,11 @@
 mod support;
 
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
-use reqwest::redirect::Policy;
-use sanchoris_api::app::{AppState, router};
-use sanchoris_api::auth::{AuthError, Identity, IdentityVerifier};
-use sanchoris_api::config::{CognitoConfig, GitHubConfig, RecordsConfig, ServeConfig};
 use sanchoris_api::records::{LocalRecordStore, RecordStore, record_key};
 use sanchoris_api::signing::HmacKey;
 use sanchoris_core::billing::PAYMENT_PENDING;
@@ -22,27 +15,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use support::fake_github::FakeGitHub;
-use support::{Seeded, listen, seed};
+use support::{RUN_KEY, STRIPE_SECRET, Seeded, seed, start_api};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use uuid::Uuid;
-
-const RUN_KEY: &[u8] = b"http-test-run-token-signing-key-0123";
-const STRIPE_SECRET: &str = "whsec_http";
-
-struct StubVerifier;
-
-#[async_trait]
-impl IdentityVerifier for StubVerifier {
-    async fn verify(&self, token: &str) -> Result<Identity, AuthError> {
-        let subject = token.strip_prefix("user:").ok_or(AuthError::Unauthorized)?;
-        Ok(Identity {
-            subject: subject.to_string(),
-            email: Some(format!("{subject}@example.com")),
-            display_name: subject.to_string(),
-        })
-    }
-}
 
 struct Server {
     url: String,
@@ -58,58 +34,15 @@ impl Server {
     async fn start() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let github = FakeGitHub::new(&dir.path().join("git"), BTreeMap::new());
-        let github_url = listen(github.clone().router()).await;
         let pg = TestPostgres::start().await;
         let seeded = seed(&pg).await;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address: SocketAddr = listener.local_addr().unwrap();
-        let url = format!("http://{address}");
-        let records_key = HmacKey::strong(&[5u8; 32]).unwrap();
-        let records_dir: PathBuf = dir.path().join("records");
-        let config = ServeConfig {
-            bind_addr: address,
-            database_url: pg.url(sanchoris_core::testing::WORKER_ROLE),
-            public_url: url.clone(),
-            cognito: CognitoConfig {
-                user_pool_id: "us-east-1_http".into(),
-                client_id: "http-client".into(),
-            },
-            github: GitHubConfig {
-                webhook_secret: HmacKey::new(b"http-webhook").unwrap(),
-                client_id: "Iv1.http".into(),
-                client_secret: "http-secret".into(),
-                web_url: github_url.clone(),
-                api_url: github_url,
-            },
-            stripe_webhook_secret: HmacKey::new(STRIPE_SECRET.as_bytes()).unwrap(),
-            run_tokens: RunTokenSigner::new(Signer::new(RUN_KEY).unwrap()),
-            task_tokens: TaskTokenSigner::new(Signer::new(&[6u8; 32]).unwrap()),
-            oauth_state_key: HmacKey::strong(&[7u8; 32]).unwrap(),
-            records: RecordsConfig::Local {
-                dir: records_dir.clone(),
-                signing_key: records_key.clone(),
-            },
-        };
-        let records = Arc::new(LocalRecordStore::new(&records_dir, records_key, &url));
-        let http = reqwest::Client::builder()
-            .redirect(Policy::none())
-            .build()
-            .unwrap();
-        let state = AppState::new(
-            seeded.pool.clone(),
-            config,
-            Arc::new(StubVerifier),
-            records.clone() as Arc<dyn RecordStore>,
-            http.clone(),
-        );
-        let app = router(state, Some(records.clone()));
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = start_api(&pg, &seeded, github.clone(), dir.path()).await;
         Self {
-            url,
-            http,
+            url: api.url,
+            http: api.http,
             seeded,
             github,
-            records,
+            records: api.records,
             _pg: pg,
             _dir: dir,
         }
@@ -241,7 +174,7 @@ async fn github_linking_stores_the_account_bound_to_the_signed_in_user() {
     assert_eq!(linked.status(), StatusCode::SEE_OTHER);
     assert_eq!(
         linked.headers()["location"],
-        format!("{}/settings/integrations?github=linked", server.url).as_str()
+        format!("{}/settings?github=linked", server.url).as_str()
     );
     let me: Value = server
         .get("/api/me", Some("user:google_7"))
@@ -272,7 +205,7 @@ async fn github_linking_stores_the_account_bound_to_the_signed_in_user() {
         .await;
     assert_eq!(
         in_use.headers()["location"],
-        format!("{}/settings/integrations?github=in_use", server.url).as_str()
+        format!("{}/settings?github=in_use", server.url).as_str()
     );
     let denied = server
         .get(
@@ -282,7 +215,7 @@ async fn github_linking_stores_the_account_bound_to_the_signed_in_user() {
         .await;
     assert_eq!(
         denied.headers()["location"],
-        format!("{}/settings/integrations?github=denied", server.url).as_str()
+        format!("{}/settings?github=denied", server.url).as_str()
     );
 }
 
@@ -323,9 +256,15 @@ async fn stripe_webhooks_are_verified_and_update_the_tenant() {
     .execute(&server.seeded.admin)
     .await
     .unwrap();
+    sqlx::query("UPDATE sanchoris.plans SET stripe_price_id = 'price_pro' WHERE id = 'pro'")
+        .execute(&server.seeded.admin)
+        .await
+        .unwrap();
     let checkout = json!({
         "id": "evt_1", "type": "checkout.session.completed", "created": Utc::now().timestamp(),
-        "data": { "object": { "client_reference_id": tenant_id, "customer": "cus_http" } },
+        "data": { "object": {
+            "client_reference_id": tenant_id, "customer": "cus_http", "metadata": { "plan_id": "pro" },
+        } },
     });
     assert_eq!(
         stripe(&server, &checkout, Some("t=1,v1=00".into()))

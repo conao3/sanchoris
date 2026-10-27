@@ -27,8 +27,16 @@ pub struct GitHubConfig {
     pub webhook_secret: HmacKey,
     pub client_id: String,
     pub client_secret: String,
+    pub app_slug: String,
     pub web_url: String,
     pub api_url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct StripeConfig {
+    pub secret_key: String,
+    pub api_url: String,
+    pub webhook_secret: HmacKey,
 }
 
 #[derive(Debug, Clone)]
@@ -51,7 +59,7 @@ pub struct ServeConfig {
     pub public_url: String,
     pub cognito: CognitoConfig,
     pub github: GitHubConfig,
-    pub stripe_webhook_secret: HmacKey,
+    pub stripe: StripeConfig,
     pub run_tokens: RunTokenSigner,
     pub task_tokens: TaskTokenSigner,
     pub oauth_state_key: HmacKey,
@@ -124,9 +132,13 @@ impl ServeConfig {
         let webhook_secret = env.get("GITHUB_WEBHOOK_SECRET");
         let github_client_id = env.get("GITHUB_APP_CLIENT_ID");
         let github_client_secret = env.get("GITHUB_APP_CLIENT_SECRET");
+        let github_app_slug = env.get("GITHUB_APP_SLUG");
         let github_url = env.get("GITHUB_URL");
         let github_api_url = env.get("GITHUB_API_URL");
         let stripe_secret = env.get("STRIPE_WEBHOOK_SECRET");
+        let stripe_secret_key = env.get("STRIPE_SECRET_KEY");
+        let stripe_api_url = env.get("STRIPE_API_URL");
+        env.get(sanchoris_graphql::CREDENTIAL_KEY_ENV);
         let run_key = env.get(RUN_TOKEN_SIGNING_KEY_ENV);
         let task_key = env.get(TASK_TOKEN_SIGNING_KEY_ENV);
         let state_key = env.get("OAUTH_STATE_SIGNING_KEY");
@@ -177,10 +189,15 @@ impl ServeConfig {
                 webhook_secret: key("GITHUB_WEBHOOK_SECRET", &webhook_secret)?,
                 client_id: github_client_id,
                 client_secret: github_client_secret,
+                app_slug: github_app_slug,
                 web_url: url("GITHUB_URL", &github_url)?,
                 api_url: url("GITHUB_API_URL", &github_api_url)?,
             },
-            stripe_webhook_secret: key("STRIPE_WEBHOOK_SECRET", &stripe_secret)?,
+            stripe: StripeConfig {
+                secret_key: stripe_secret_key,
+                api_url: url("STRIPE_API_URL", &stripe_api_url)?,
+                webhook_secret: key("STRIPE_WEBHOOK_SECRET", &stripe_secret)?,
+            },
             run_tokens: RunTokenSigner::new(signer(RUN_TOKEN_SIGNING_KEY_ENV, &run_key)?),
             task_tokens: TaskTokenSigner::new(signer(TASK_TOKEN_SIGNING_KEY_ENV, &task_key)?),
             oauth_state_key: strong_key("OAUTH_STATE_SIGNING_KEY", &state_key)?,

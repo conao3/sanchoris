@@ -24,12 +24,12 @@ impl AesGcmEncryptor {
 
     pub fn from_env() -> Result<Self, PortError> {
         let encoded = std::env::var(CREDENTIAL_KEY_ENV)
-            .map_err(|_| PortError(format!("{CREDENTIAL_KEY_ENV} is not set")))?;
+            .map_err(|_| PortError::Failed(format!("{CREDENTIAL_KEY_ENV} is not set")))?;
         let bytes = STANDARD
             .decode(encoded.trim())
-            .map_err(|e| PortError(format!("{CREDENTIAL_KEY_ENV} is not base64: {e}")))?;
+            .map_err(|e| PortError::Failed(format!("{CREDENTIAL_KEY_ENV} is not base64: {e}")))?;
         let key: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-            PortError(format!(
+            PortError::Failed(format!(
                 "{CREDENTIAL_KEY_ENV} must decode to 32 bytes, got {}",
                 bytes.len()
             ))
@@ -39,7 +39,9 @@ impl AesGcmEncryptor {
 
     pub fn decrypt(&self, tenant_id: Uuid, data: &[u8]) -> Result<Vec<u8>, PortError> {
         if data.len() < NONCE_LEN {
-            return Err(PortError("the ciphertext is shorter than its nonce".into()));
+            return Err(PortError::Failed(
+                "the ciphertext is shorter than its nonce".into(),
+            ));
         }
         let (nonce, ciphertext) = data.split_at(NONCE_LEN);
         self.cipher
@@ -52,7 +54,7 @@ impl AesGcmEncryptor {
                     aad: tenant_id.as_bytes(),
                 },
             )
-            .map_err(|_| PortError("the credential does not decrypt with this key".into()))
+            .map_err(|_| PortError::Failed("the credential does not decrypt with this key".into()))
     }
 }
 
@@ -69,7 +71,7 @@ impl Encryptor for AesGcmEncryptor {
                     aad: tenant_id.as_bytes(),
                 },
             )
-            .map_err(|_| PortError("the credential could not be encrypted".into()))?;
+            .map_err(|_| PortError::Failed("the credential could not be encrypted".into()))?;
         let mut data = nonce.to_vec();
         data.extend(ciphertext);
         Ok(Encrypted {

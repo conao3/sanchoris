@@ -114,6 +114,41 @@ fn issue_ref(value: &Value) -> Result<IssueRef, GitHubError> {
     })
 }
 
+fn base64_text(path: &str, value: &Value) -> Result<String, GitHubError> {
+    if value.get("encoding").and_then(Value::as_str) != Some("base64") {
+        return Err(GitHubError::Decode(format!("{path} is not base64 encoded")));
+    }
+    let content: String = string(value, "/content")?
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(content)
+        .map_err(|error| GitHubError::Decode(format!("{path}: {error}")))?;
+    String::from_utf8(bytes).map_err(|_| GitHubError::Decode(format!("{path} is not UTF-8")))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallationAccount {
+    pub login: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoFile {
+    pub sha: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChange<'a> {
+    pub path: &'a str,
+    pub branch: &'a str,
+    pub message: &'a str,
+    pub text: &'a str,
+    pub previous_sha: Option<&'a str>,
+}
+
 fn split_repo(repo: &str) -> Result<(&str, &str), GitHubError> {
     repo.split_once('/')
         .ok_or_else(|| GitHubError::Decode(format!("{repo:?} is not owner/name")))
@@ -229,6 +264,120 @@ impl GitHubApi {
             }
         }
         Ok(items)
+    }
+
+    pub async fn app_installation(
+        &self,
+        installation: i64,
+    ) -> Result<InstallationAccount, GitHubError> {
+        let jwt = self.auth.app_jwt(Utc::now())?;
+        let response = self
+            .transport
+            .send(HttpRequest {
+                method: "GET",
+                url: format!("{}/app/installations/{installation}", self.base_url),
+                headers: Self::headers(&jwt),
+                body: None,
+            })
+            .await?;
+        let body: Value = Self::check(response)?;
+        Ok(InstallationAccount {
+            login: string(&body, "/account/login")?,
+            kind: string(&body, "/account/type")?,
+        })
+    }
+
+    pub async fn installation_repositories(
+        &self,
+        installation: i64,
+    ) -> Result<Vec<String>, GitHubError> {
+        let mut names = Vec::new();
+        for page in 1.. {
+            let value = self
+                .call(
+                    installation,
+                    "GET",
+                    &format!("/installation/repositories?per_page={PER_PAGE}&page={page}"),
+                    None,
+                )
+                .await?;
+            let batch = field(&value, "/repositories")?
+                .as_array()
+                .ok_or_else(|| GitHubError::Decode("repositories is not an array".into()))?;
+            for repository in batch {
+                names.push(string(repository, "/full_name")?);
+            }
+            if batch.len() < PER_PAGE {
+                break;
+            }
+        }
+        Ok(names)
+    }
+
+    pub async fn file(
+        &self,
+        installation: i64,
+        repo: &str,
+        path: &str,
+        reference: &str,
+    ) -> Result<Option<RepoFile>, GitHubError> {
+        let found = self
+            .call(
+                installation,
+                "GET",
+                &format!("/repos/{repo}/contents/{path}?ref={reference}"),
+                None,
+            )
+            .await;
+        match found {
+            Ok(value) => Ok(Some(RepoFile {
+                sha: string(&value, "/sha")?,
+                text: base64_text(path, &value)?,
+            })),
+            Err(error) if error.status() == Some(404) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub async fn create_branch(
+        &self,
+        installation: i64,
+        repo: &str,
+        branch: &str,
+        sha: &str,
+    ) -> Result<(), GitHubError> {
+        self.call(
+            installation,
+            "POST",
+            &format!("/repos/{repo}/git/refs"),
+            Some(json!({ "ref": format!("refs/heads/{branch}"), "sha": sha })),
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn put_file(
+        &self,
+        installation: i64,
+        repo: &str,
+        change: &FileChange<'_>,
+    ) -> Result<(), GitHubError> {
+        let mut body = json!({
+            "message": change.message,
+            "content": base64::engine::general_purpose::STANDARD.encode(change.text),
+            "branch": change.branch,
+        });
+        if let Some(sha) = change.previous_sha {
+            body["sha"] = json!(sha);
+        }
+        self.call(
+            installation,
+            "PUT",
+            &format!("/repos/{repo}/contents/{}", change.path),
+            Some(body),
+        )
+        .await?;
+        Ok(())
     }
 }
 
@@ -476,8 +625,12 @@ fn config_path(root_path: &str, path: &str) -> Option<String> {
 
 #[async_trait]
 impl ConfigSource for GitHubApi {
-    async fn head_commit(&self, installation: i64, repo: &str) -> Result<String, GitHubError> {
-        let branch = self.default_branch(installation, repo).await?;
+    async fn head_commit(
+        &self,
+        installation: i64,
+        repo: &str,
+        branch: &str,
+    ) -> Result<String, GitHubError> {
         let value = self
             .call(
                 installation,
@@ -528,18 +681,7 @@ impl ConfigSource for GitHubApi {
                     None,
                 )
                 .await?;
-            if blob.get("encoding").and_then(Value::as_str) != Some("base64") {
-                return Err(GitHubError::Decode(format!("{path} is not base64 encoded")));
-            }
-            let content: String = string(&blob, "/content")?
-                .chars()
-                .filter(|c| !c.is_whitespace())
-                .collect();
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(content)
-                .map_err(|error| GitHubError::Decode(format!("{path}: {error}")))?;
-            let text = String::from_utf8(bytes)
-                .map_err(|_| GitHubError::Decode(format!("{path} is not UTF-8")))?;
+            let text = base64_text(&path, &blob)?;
             files.insert(path, text);
         }
         Ok(files)

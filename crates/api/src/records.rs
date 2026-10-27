@@ -48,6 +48,14 @@ pub trait RecordStore: Send + Sync {
         sha256: &str,
     ) -> Result<PresignedPut, RecordError>;
     async fn presign_get(&self, tenant_id: Uuid, key: &str) -> Result<String, RecordError>;
+    async fn put(&self, tenant_id: Uuid, key: &str, body: Vec<u8>) -> Result<(), RecordError>;
+}
+
+pub fn audit_export_key(tenant_id: Uuid, file_name: &str) -> Result<String, RecordError> {
+    if !is_segment(file_name) {
+        return Err(RecordError::InvalidKey(format!("file name {file_name:?}")));
+    }
+    Ok(format!("t/{tenant_id}/audit/{file_name}"))
 }
 
 fn is_segment(segment: &str) -> bool {
@@ -156,6 +164,21 @@ impl RecordStore for S3RecordStore {
             .map_err(|error| RecordError::Storage(error.to_string()))?;
         Ok(request.uri().to_string())
     }
+
+    async fn put(&self, tenant_id: Uuid, key: &str, body: Vec<u8>) -> Result<(), RecordError> {
+        check_key(tenant_id, key)?;
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .server_side_encryption(ServerSideEncryption::AwsKms)
+            .ssekms_key_id(format!("{}{tenant_id}", self.kms_key_prefix))
+            .body(body.into())
+            .send()
+            .await
+            .map_err(|error| RecordError::Storage(error.to_string()))?;
+        Ok(())
+    }
 }
 
 pub struct LocalRecordStore {
@@ -230,6 +253,20 @@ impl RecordStore for LocalRecordStore {
             "{}/records/{key}?expires={expires}&signature={signature}",
             self.public_url
         ))
+    }
+
+    async fn put(&self, tenant_id: Uuid, key: &str, body: Vec<u8>) -> Result<(), RecordError> {
+        check_key(tenant_id, key)?;
+        let path = self.path(key)?;
+        let parent = path.parent().expect("record paths have a parent");
+        let partial = path.with_extension("partial");
+        let written = async {
+            tokio::fs::create_dir_all(parent).await?;
+            tokio::fs::write(&partial, &body).await?;
+            tokio::fs::rename(&partial, &path).await
+        }
+        .await;
+        written.map_err(|error| RecordError::Storage(format!("write {key}: {error}")))
     }
 }
 

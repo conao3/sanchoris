@@ -4,10 +4,12 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
+use sanchoris_core::audit::{AuditEntry, record_audit};
 use sanchoris_core::billing::{self, BillingError};
 use sanchoris_core::channel::{IngestError, ingest_github_delivery};
-use sanchoris_core::db::Recorded;
-use serde_json::{Value, json};
+use sanchoris_core::db::{Recorded, TenantTx};
+use sanchoris_core::model::{ActorKind, AuditOrigin};
+use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use crate::app::AppState;
@@ -50,6 +52,9 @@ pub async fn github(
     let delivery = header(&headers, "x-github-delivery")?;
     let payload: Value = serde_json::from_slice(&body)
         .map_err(|error| ApiError::BadRequest(format!("the body is not JSON: {error}")))?;
+    if matches!(event, "installation" | "installation_repositories") {
+        return installation_event(&state, event, &payload).await;
+    }
     match ingest_github_delivery(&state.pool, delivery, event, &payload).await {
         Ok(Some(Recorded::New(_))) => Ok(status(StatusCode::ACCEPTED, "accepted")),
         Ok(Some(Recorded::Duplicate(_))) => Ok(status(StatusCode::OK, "duplicate")),
@@ -61,6 +66,111 @@ pub async fn github(
         Err(IngestError::Event(error)) => Err(ApiError::BadRequest(error.to_string())),
         Err(IngestError::Db(error)) => Err(error.into()),
     }
+}
+
+fn repository_names(payload: &Value, key: &str) -> Result<Vec<String>, ApiError> {
+    payload
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::BadRequest(format!("the event has no {key}")))?
+        .iter()
+        .map(|repository| {
+            repository["full_name"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| ApiError::BadRequest(format!("{key} has no full_name")))
+        })
+        .collect()
+}
+
+async fn installation_event(
+    state: &AppState,
+    event: &str,
+    payload: &Value,
+) -> Result<Response, ApiError> {
+    let installation_id = payload
+        .pointer("/installation/id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| ApiError::BadRequest("the event has no installation.id".into()))?;
+    let action = text(payload, "/action")?;
+    let mut tx = state.pool.begin().await?;
+    let Some((tenant_id, current, mut details)) = sqlx::query_as::<_, (Uuid, String, Value)>(
+        "SELECT tenant_id, status, details FROM sanchoris.integrations \
+         WHERE github_installation_id = $1 FOR UPDATE",
+    )
+    .bind(installation_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        return Ok(status(StatusCode::OK, "ignored"));
+    };
+    let mut connected = current == "connected";
+    match (event, action) {
+        ("installation", "deleted" | "suspend") => connected = false,
+        ("installation", "unsuspend") => connected = true,
+        ("installation", "created" | "new_permissions_accepted") => {
+            connected = true;
+            details["account_login"] = json!(text(payload, "/installation/account/login")?);
+            details["account_type"] = json!(text(payload, "/installation/account/type")?);
+            if payload.get("repositories").is_some() {
+                details["repositories"] = json!(repository_names(payload, "repositories")?);
+            }
+        }
+        ("installation_repositories", "added" | "removed") => {
+            let removed = repository_names(payload, "repositories_removed")?;
+            let mut repositories = details["repositories"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .filter(|name| !removed.contains(name))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            repositories.extend(repository_names(payload, "repositories_added")?);
+            repositories.sort();
+            repositories.dedup();
+            details["repositories"] = json!(repositories);
+        }
+        _ => return Ok(status(StatusCode::OK, "ignored")),
+    }
+    sqlx::query(
+        "UPDATE sanchoris.integrations SET status = $2, details = $3, updated_at = now() \
+         WHERE github_installation_id = $1",
+    )
+    .bind(installation_id)
+    .bind(if connected {
+        "connected"
+    } else {
+        "not_connected"
+    })
+    .bind(&details)
+    .execute(&mut *tx)
+    .await?;
+    let mut tx = TenantTx::adopt(tx, tenant_id).await?;
+    let mut metadata = Map::new();
+    metadata.insert("event".into(), json!(event));
+    metadata.insert("action".into(), json!(action));
+    record_audit(
+        &mut tx,
+        &AuditEntry {
+            at: Utc::now(),
+            actor_kind: ActorKind::System,
+            actor_ref: "github",
+            action: "integration.github_installation_update",
+            target_kind: "github_installation",
+            target_ref: &installation_id.to_string(),
+            summary: &format!("GitHub sent {event}.{action} for installation {installation_id}"),
+            origin: AuditOrigin::Github,
+            source_ip: None,
+            metadata,
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(status(StatusCode::OK, "processed"))
 }
 
 pub fn verify_stripe_signature(
@@ -110,7 +220,9 @@ impl From<BillingError> for ApiError {
                 code: "tenant_not_payable",
                 message: error.to_string(),
             },
-            BillingError::UnknownPrice(_) => ApiError::Internal(error.to_string()),
+            BillingError::UnknownPrice(_) | BillingError::UnknownPlan(_) => {
+                ApiError::Internal(error.to_string())
+            }
         }
     }
 }
@@ -125,7 +237,7 @@ pub async fn stripe(
         .and_then(|value| value.to_str().ok())
         .ok_or(ApiError::Unauthorized)?;
     verify_stripe_signature(
-        &state.config.stripe_webhook_secret,
+        &state.config.stripe.webhook_secret,
         signature,
         &body,
         Utc::now(),
@@ -141,7 +253,13 @@ pub async fn stripe(
             let tenant_id: Uuid = text(object, "/client_reference_id")?.parse().map_err(|_| {
                 ApiError::BadRequest("client_reference_id is not a tenant id".into())
             })?;
-            billing::complete_checkout(&mut tx, tenant_id, text(object, "/customer")?).await?;
+            billing::complete_checkout(
+                &mut tx,
+                tenant_id,
+                text(object, "/customer")?,
+                text(object, "/metadata/plan_id")?,
+            )
+            .await?;
         }
         "customer.subscription.updated" => {
             let items = object

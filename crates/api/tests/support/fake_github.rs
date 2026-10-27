@@ -33,6 +33,15 @@ pub struct Comment {
     pub body: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct FileUpdate {
+    pub repo: String,
+    pub branch: String,
+    pub path: String,
+    pub text: String,
+    pub previous_sha: Option<String>,
+}
+
 #[derive(Debug, Default)]
 pub struct GitHubState {
     pub config_files: BTreeMap<String, String>,
@@ -40,6 +49,10 @@ pub struct GitHubState {
     pub comments: Vec<Comment>,
     pub checks: HashMap<String, String>,
     pub oauth_users: HashMap<String, (i64, String)>,
+    pub user_installations: HashMap<String, Vec<Value>>,
+    pub installation_repositories: HashMap<i64, Vec<String>>,
+    pub refs: HashMap<String, String>,
+    pub file_updates: Vec<FileUpdate>,
     next_number: i64,
     next_comment: i64,
 }
@@ -75,6 +88,18 @@ impl FakeGitHub {
     }
 
     pub fn branch_head(&self, repo: &str, branch: &str) -> Option<String> {
+        if let Some(sha) = self
+            .state
+            .lock()
+            .unwrap()
+            .refs
+            .get(&format!("{repo}:{branch}"))
+        {
+            return Some(sha.clone());
+        }
+        if !self.bare(repo).exists() {
+            return None;
+        }
         let output = Command::new("git")
             .arg("--git-dir")
             .arg(self.bare(repo))
@@ -137,6 +162,13 @@ impl FakeGitHub {
                 "/repos/{owner}/{repo}/commits/{reference}/check-runs",
                 get(check_runs),
             )
+            .route(
+                "/repos/{owner}/{repo}/contents/{*path}",
+                get(contents).put(put_contents),
+            )
+            .route("/repos/{owner}/{repo}/git/refs", post(create_ref))
+            .route("/user/installations", get(user_installations))
+            .route("/installation/repositories", get(installation_repositories))
             .route("/repos/{owner}/{repo}/git/trees/{sha}", get(tree))
             .route("/repos/{owner}/{repo}/git/blobs/{sha}", get(blob))
             .route(
@@ -387,5 +419,111 @@ async fn user(State(fake): Fake, headers: HeaderMap) -> Response {
             Json(json!({ "message": "Bad credentials" })),
         )
             .into_response(),
+    }
+}
+
+fn bearer(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_string)
+}
+
+fn file_sha(text: &str) -> String {
+    format!("{:040x}", text.len())
+}
+
+async fn contents(
+    State(fake): Fake,
+    UrlPath((_, _, path)): UrlPath<(String, String, String)>,
+) -> Response {
+    let state = fake.state.lock().unwrap();
+    match state.config_files.get(&path) {
+        Some(text) => Json(json!({
+            "path": path,
+            "sha": file_sha(text),
+            "encoding": "base64",
+            "content": base64::engine::general_purpose::STANDARD.encode(text),
+        }))
+        .into_response(),
+        None => not_found(&path),
+    }
+}
+
+async fn put_contents(
+    State(fake): Fake,
+    UrlPath((owner, repo, path)): UrlPath<(String, String, String)>,
+    Json(body): Json<Value>,
+) -> Response {
+    let text = String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(body["content"].as_str().unwrap_or_default())
+            .unwrap(),
+    )
+    .unwrap();
+    let update = FileUpdate {
+        repo: format!("{owner}/{repo}"),
+        branch: body["branch"].as_str().unwrap_or_default().to_string(),
+        path,
+        text,
+        previous_sha: body["sha"].as_str().map(str::to_string),
+    };
+    fake.state.lock().unwrap().file_updates.push(update);
+    (
+        StatusCode::CREATED,
+        Json(json!({ "commit": { "sha": "f11e" } })),
+    )
+        .into_response()
+}
+
+async fn create_ref(
+    State(fake): Fake,
+    UrlPath((owner, repo)): UrlPath<(String, String)>,
+    Json(body): Json<Value>,
+) -> Response {
+    let reference = body["ref"].as_str().unwrap_or_default();
+    let Some(branch) = reference.strip_prefix("refs/heads/") else {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "message": "bad ref" })),
+        )
+            .into_response();
+    };
+    fake.state.lock().unwrap().refs.insert(
+        format!("{owner}/{repo}:{branch}"),
+        body["sha"].as_str().unwrap_or_default().to_string(),
+    );
+    (StatusCode::CREATED, Json(json!({ "ref": reference }))).into_response()
+}
+
+async fn user_installations(State(fake): Fake, headers: HeaderMap) -> Response {
+    let state = fake.state.lock().unwrap();
+    match bearer(&headers).and_then(|token| state.user_installations.get(&token).cloned()) {
+        Some(installations) => Json(json!({
+            "total_count": installations.len(),
+            "installations": installations,
+        }))
+        .into_response(),
+        None => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "message": "Bad credentials" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn installation_repositories(State(fake): Fake, headers: HeaderMap) -> Response {
+    let installation = bearer(&headers)
+        .and_then(|token| token.strip_prefix("ghs_installation_").map(str::to_string))
+        .and_then(|id| id.parse::<i64>().ok());
+    let state = fake.state.lock().unwrap();
+    match installation.and_then(|id| state.installation_repositories.get(&id).cloned()) {
+        Some(names) => Json(json!({
+            "total_count": names.len(),
+            "repositories": names.iter().map(|name| json!({ "full_name": name })).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        None => not_found("installation"),
     }
 }

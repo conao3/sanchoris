@@ -18,7 +18,7 @@ use crate::context::{
 use crate::enums::{
     ApiKeyProvider, CredentialScope, EventSource, InvitationState, TaskStatus, TriggerState,
 };
-use crate::error::{bad_input, conflict, forbidden, not_found, parse_id};
+use crate::error::{bad_input, conflict, forbidden, not_found, parse_id, port};
 use crate::ports::{ConfigLocation, PlanChange, TenantCheckout, TriggerProposal};
 use crate::scalars::Timestamp;
 use crate::task::{ChatMessage, Run, Task};
@@ -208,7 +208,8 @@ impl MutationRoot {
                     tenant_name: name.to_string(),
                     plan_id: plan.0.id.clone(),
                 })
-                .await?;
+                .await
+                .map_err(port)?;
             return Ok(CreateTenantPayload {
                 tenant: None,
                 checkout_url: Some(url),
@@ -229,10 +230,12 @@ impl MutationRoot {
         let created = create_tenant(
             &state(ctx).pool,
             &NewTenant {
+                id: Uuid::new_v4(),
                 name,
                 plan_id: &plan.0.id,
                 user_id: user.user_id,
                 stripe_customer_id: None,
+                payment_pending: false,
                 origin: AuditOrigin::Web,
                 source_ip: ctx.data_opt::<ClientIp>().map(|ip| ip.0),
                 now: now(ctx),
@@ -356,6 +359,11 @@ impl MutationRoot {
     async fn connect_slack(&self, ctx: &Context<'_>, tenant_id: ID) -> Result<RedirectPayload> {
         let scope = tenant_scope(ctx, &tenant_id).await?;
         let member_id = scope.require(Role::Admin, "connecting Slack")?;
+        let url = state(ctx)
+            .deps
+            .slack
+            .install(scope.tenant_id)
+            .map_err(port)?;
         let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
         audit_member(
             ctx,
@@ -367,9 +375,7 @@ impl MutationRoot {
         )
         .await?;
         tx.commit().await?;
-        Ok(RedirectPayload {
-            url: state(ctx).deps.slack.install(scope.tenant_id),
-        })
+        Ok(RedirectPayload { url })
     }
 
     async fn invite_member(
@@ -790,7 +796,12 @@ impl MutationRoot {
         )
         .await?;
         tx.commit().await?;
-        state(ctx).deps.chat.dispatch(scope.tenant_id).await?;
+        state(ctx)
+            .deps
+            .chat
+            .dispatch(scope.tenant_id)
+            .await
+            .map_err(port)?;
         let task = match existing {
             Some(task_id) => Task::load(ctx, scope, task_id).await?,
             None => {
@@ -992,7 +1003,8 @@ impl MutationRoot {
             .deps
             .config_repository
             .check(scope.tenant_id, &location)
-            .await?;
+            .await
+            .map_err(port)?;
         let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
         if !problems.is_empty() {
             audit_member(
@@ -1053,7 +1065,8 @@ impl MutationRoot {
             .deps
             .config_sync
             .request_sync(scope.tenant_id, config_id)
-            .await?;
+            .await
+            .map_err(port)?;
         Ok(AddConfigPayload {
             config: Some(Config::load(ctx, scope, config_id).await?),
             errors: Vec::new(),
@@ -1080,7 +1093,8 @@ impl MutationRoot {
             .deps
             .config_sync
             .request_sync(scope.tenant_id, config_id)
-            .await?;
+            .await
+            .map_err(port)?;
         Config::load(ctx, scope, config_id).await
     }
 
@@ -1111,7 +1125,8 @@ impl MutationRoot {
             .deps
             .encryptor
             .encrypt(scope.tenant_id, key.as_bytes())
-            .await?;
+            .await
+            .map_err(port)?;
         let at = now(ctx);
         let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
         let credential_id = sqlx::query_scalar::<_, Uuid>(
@@ -1195,7 +1210,8 @@ impl MutationRoot {
             .deps
             .checkout
             .change_plan(scope.tenant_id, &plan.0.id)
-            .await?;
+            .await
+            .map_err(port)?;
         let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
         let checkout_url = match change {
             PlanChange::Applied => {
@@ -1252,7 +1268,8 @@ impl MutationRoot {
             .deps
             .checkout
             .billing_portal(scope.tenant_id)
-            .await?;
+            .await
+            .map_err(port)?;
         let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
         audit_member(
             ctx,
@@ -1291,7 +1308,8 @@ impl MutationRoot {
             .deps
             .audit_export
             .publish(scope.tenant_id, &file_name, body)
-            .await?;
+            .await
+            .map_err(port)?;
         let mut tx = tenant_tx(ctx, scope.tenant_id).await?;
         audit_member(
             ctx,

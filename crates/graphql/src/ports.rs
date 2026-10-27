@@ -6,8 +6,12 @@ use thiserror::Error;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("{0}")]
-pub struct PortError(pub String);
+pub enum PortError {
+    #[error("{0}")]
+    Failed(String),
+    #[error("{0}")]
+    Rejected(String),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenantCheckout {
@@ -32,11 +36,11 @@ pub trait CheckoutPort: Send + Sync {
 
 pub trait GithubConnectUrl: Send + Sync {
     fn link_account(&self, user_id: Uuid) -> String;
-    fn install_app(&self, tenant_id: Uuid) -> String;
+    fn install_app(&self, tenant_id: Uuid, user_id: Uuid) -> String;
 }
 
 pub trait SlackConnectUrl: Send + Sync {
-    fn install(&self, tenant_id: Uuid) -> String;
+    fn install(&self, tenant_id: Uuid) -> Result<String, PortError>;
 }
 
 #[async_trait]

@@ -167,7 +167,11 @@ impl Tenant {
 
     async fn github_app_install_url(&self, ctx: &Context<'_>) -> Result<String> {
         self.scope.member()?;
-        Ok(state(ctx).deps.github.install_app(self.row.id))
+        let user = crate::context::auth(ctx)?;
+        Ok(state(ctx)
+            .deps
+            .github
+            .install_app(self.row.id, user.user_id))
     }
 
     async fn viewer_member(&self, ctx: &Context<'_>) -> Result<Member> {

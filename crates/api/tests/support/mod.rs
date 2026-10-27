@@ -1,17 +1,182 @@
 #![allow(dead_code)]
 
 pub mod fake_github;
+pub mod fake_stripe;
 
 use std::future::Future;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use axum::Router;
+use reqwest::redirect::Policy;
+use sanchoris_api::app::{AppState, Services, router};
+use sanchoris_api::auth::{AuthError, Identity, IdentityVerifier};
+use sanchoris_api::config::{
+    CognitoConfig, GitHubConfig, RecordsConfig, ServeConfig, StripeConfig,
+};
+use sanchoris_api::records::{LocalRecordStore, RecordStore};
 use sanchoris_api::signing::HmacKey;
-use sanchoris_core::testing::{SeededTenant, TestPostgres};
+use sanchoris_core::testing::{SeededTenant, TestPostgres, WORKER_ROLE};
+use sanchoris_core::tokens::{RunTokenSigner, Signer, TaskTokenSigner};
+use sanchoris_graphql::AesGcmEncryptor;
+use sanchoris_worker::Deps;
+use sanchoris_worker::clock::SystemClock;
+use sanchoris_worker::github::transport::ReqwestTransport;
+use sanchoris_worker::github::{AppAuth, GitHubApi};
+use sanchoris_worker::ports::{RunnerError, RunnerPort, WorkspaceHandle, WorkspaceSpec};
+use sanchoris_worker::resources::GitHubResources;
 use serde_json::{Value, json};
 use sqlx::PgPool;
+use uuid::Uuid;
+
+use fake_github::FakeGitHub;
+use fake_stripe::FakeStripe;
+
+pub const RUN_KEY: &[u8] = b"http-test-run-token-signing-key-0123";
+pub const STRIPE_SECRET: &str = "whsec_http";
+pub const WEBHOOK_SECRET: &str = "http-webhook";
+
+pub struct StubVerifier;
+
+#[async_trait]
+impl IdentityVerifier for StubVerifier {
+    async fn verify(&self, token: &str) -> Result<Identity, AuthError> {
+        let subject = token.strip_prefix("user:").ok_or(AuthError::Unauthorized)?;
+        Ok(Identity {
+            subject: subject.to_string(),
+            email: Some(format!("{subject}@example.com")),
+            display_name: subject.to_string(),
+        })
+    }
+}
+
+pub struct NoWorkspaces;
+
+#[async_trait]
+impl RunnerPort for NoWorkspaces {
+    async fn start_workspace(&self, _spec: &WorkspaceSpec) -> Result<WorkspaceHandle, RunnerError> {
+        Err(RunnerError("the HTTP tests start no workspaces".into()))
+    }
+
+    async fn stop_workspace(&self, _run_id: Uuid, _platform_ref: &str) -> Result<(), RunnerError> {
+        Ok(())
+    }
+}
+
+pub fn rsa_key() -> String {
+    let output = Command::new("openssl")
+        .args([
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+        ])
+        .output()
+        .expect("openssl is on PATH (run inside `nix develop`)");
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap()
+}
+
+pub struct Api {
+    pub url: String,
+    pub http: reqwest::Client,
+    pub stripe: Arc<FakeStripe>,
+    pub records: Arc<LocalRecordStore>,
+}
+
+pub async fn start_api(
+    pg: &TestPostgres,
+    seeded: &Seeded,
+    github: Arc<FakeGitHub>,
+    dir: &Path,
+) -> Api {
+    let github_url = listen(github.router()).await;
+    let stripe = FakeStripe::new();
+    let stripe_url = listen(stripe.clone().router()).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address: SocketAddr = listener.local_addr().unwrap();
+    let url = format!("http://{address}");
+    let records_key = HmacKey::strong(&[5u8; 32]).unwrap();
+    let records_dir = dir.join("records");
+    let database_url = pg.url(WORKER_ROLE);
+    let config = ServeConfig {
+        bind_addr: address,
+        database_url: database_url.clone(),
+        public_url: url.clone(),
+        cognito: CognitoConfig {
+            user_pool_id: "us-east-1_http".into(),
+            client_id: "http-client".into(),
+        },
+        github: GitHubConfig {
+            webhook_secret: HmacKey::new(WEBHOOK_SECRET.as_bytes()).unwrap(),
+            client_id: "Iv1.http".into(),
+            client_secret: "http-secret".into(),
+            app_slug: "sanchoris-test".into(),
+            web_url: github_url.clone(),
+            api_url: github_url.clone(),
+        },
+        stripe: StripeConfig {
+            secret_key: fake_stripe::SECRET_KEY.into(),
+            api_url: stripe_url,
+            webhook_secret: HmacKey::new(STRIPE_SECRET.as_bytes()).unwrap(),
+        },
+        run_tokens: RunTokenSigner::new(Signer::new(RUN_KEY).unwrap()),
+        task_tokens: TaskTokenSigner::new(Signer::new(&[6u8; 32]).unwrap()),
+        oauth_state_key: HmacKey::strong(&[7u8; 32]).unwrap(),
+        records: RecordsConfig::Local {
+            dir: records_dir.clone(),
+            signing_key: records_key.clone(),
+        },
+    };
+    let records = Arc::new(LocalRecordStore::new(&records_dir, records_key, &url));
+    let http = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let github_app = Arc::new(GitHubApi::new(
+        &github_url,
+        Arc::new(ReqwestTransport::new()),
+        AppAuth::new("1", &rsa_key()).unwrap(),
+    ));
+    let state = AppState::new(Services {
+        pool: seeded.pool.clone(),
+        app_pool: sanchoris_api::app_pool(&database_url).await.unwrap(),
+        config: Arc::new(config),
+        verifier: Arc::new(StubVerifier),
+        records: records.clone() as Arc<dyn RecordStore>,
+        http: http.clone(),
+        worker_deps: Deps {
+            clock: Arc::new(SystemClock),
+            github: github_app.clone(),
+            reader: github_app.clone(),
+            config_source: github_app.clone(),
+            resources: Arc::new(GitHubResources::new(github_app.clone())),
+            runner: Arc::new(NoWorkspaces),
+        },
+        github_app,
+        encryptor: Arc::new(AesGcmEncryptor::new(&[3u8; 32])),
+    });
+    let app = router(state, Some(records.clone()));
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
+    Api {
+        url,
+        http,
+        stripe,
+        records,
+    }
+}
 
 pub const INSTALLATION: i64 = 42;
 pub const REPO: &str = "acme/shop-web";

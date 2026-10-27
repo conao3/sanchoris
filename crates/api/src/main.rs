@@ -42,9 +42,7 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if matches!(command.as_str(), "worker" | "all")
-        && let Err(error) = check_worker_env()
-    {
+    if let Err(error) = check_worker_env() {
         return fail(error);
     }
     let (sender, receiver) = watch::channel(false);

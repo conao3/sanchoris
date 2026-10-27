@@ -2796,6 +2796,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls 0.26.6",
@@ -2983,6 +2984,7 @@ dependencies = [
 name = "sanchoris-api"
 version = "0.1.0"
 dependencies = [
+ "async-graphql",
  "async-trait",
  "aws-config",
  "aws-sdk-s3",
@@ -2994,10 +2996,13 @@ dependencies = [
  "hmac",
  "jsonwebtoken",
  "reqwest",
+ "sanchoris-config",
  "sanchoris-core",
+ "sanchoris-graphql",
  "sanchoris-worker",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "sha2 0.11.1",
  "sqlx",
  "tempfile",

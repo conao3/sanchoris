@@ -168,14 +168,14 @@ impl GithubConnectUrl for Fakes {
         format!("https://sanchoris.test/auth/github?user={user_id}")
     }
 
-    fn install_app(&self, tenant_id: Uuid) -> String {
+    fn install_app(&self, tenant_id: Uuid, _user_id: Uuid) -> String {
         format!("https://github.com/apps/sanchoris/installations/new?state={tenant_id}")
     }
 }
 
 impl SlackConnectUrl for Fakes {
-    fn install(&self, tenant_id: Uuid) -> String {
-        format!("https://slack.test/oauth?state={tenant_id}")
+    fn install(&self, tenant_id: Uuid) -> Result<String, PortError> {
+        Ok(format!("https://slack.test/oauth?state={tenant_id}"))
     }
 }
 
@@ -234,7 +234,7 @@ impl ChatDispatcher for Fakes {
     async fn dispatch(&self, tenant_id: Uuid) -> Result<(), PortError> {
         dispatch_chat(&self.admin, tenant_id)
             .await
-            .map_err(|e| PortError(e.to_string()))
+            .map_err(|e| PortError::Failed(e.to_string()))
     }
 }
 

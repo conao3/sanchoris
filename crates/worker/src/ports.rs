@@ -152,7 +152,12 @@ pub trait GitHubReader: Send + Sync {
 
 #[async_trait]
 pub trait ConfigSource: Send + Sync {
-    async fn head_commit(&self, installation: i64, repo: &str) -> Result<String, GitHubError>;
+    async fn head_commit(
+        &self,
+        installation: i64,
+        repo: &str,
+        branch: &str,
+    ) -> Result<String, GitHubError>;
     async fn fetch(
         &self,
         installation: i64,

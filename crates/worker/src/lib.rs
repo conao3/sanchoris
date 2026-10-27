@@ -228,12 +228,12 @@ pub(crate) fn installation_for(installations: &[Installation], repo: &str) -> Re
     ports::installation_for(installations, repo).map_err(WorkerError::Invalid)
 }
 
-pub async fn run_from_env(shutdown: tokio::sync::watch::Receiver<bool>) {
+pub async fn installation_for_repo(tx: &mut TenantTx, repo: &str) -> Result<i64> {
+    installation_for(&installations(tx).await?, repo)
+}
+
+pub fn deps_from_env() -> (Deps, Arc<github::GitHubApi>) {
     let control = runner::LocalRunnerConfig::from_env();
-    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let pool = PgPool::connect(&database_url)
-        .await
-        .expect("connect to DATABASE_URL");
     let clock: Arc<dyn Clock> = Arc::new(clock::SystemClock);
     let api = Arc::new(github::GitHubApi::from_env());
     let deps = Deps {
@@ -241,9 +241,18 @@ pub async fn run_from_env(shutdown: tokio::sync::watch::Receiver<bool>) {
         github: api.clone(),
         reader: api.clone(),
         config_source: api.clone(),
-        resources: Arc::new(resources::GitHubResources::new(api)),
+        resources: Arc::new(resources::GitHubResources::new(api.clone())),
         runner: Arc::new(runner::LocalProcessRunner::new(control, clock)),
     };
+    (deps, api)
+}
+
+pub async fn run_from_env(shutdown: tokio::sync::watch::Receiver<bool>) {
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let pool = PgPool::connect(&database_url)
+        .await
+        .expect("connect to DATABASE_URL");
+    let (deps, _) = deps_from_env();
     let worker = Arc::new(Worker::new(pool, deps, Settings::default()));
     worker.run(shutdown).await;
 }

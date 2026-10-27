@@ -20,6 +20,8 @@ pub enum BillingError {
     UnknownCustomer(String),
     #[error("no plan has Stripe price {0}")]
     UnknownPrice(String),
+    #[error("no paid plan has id {0}")]
+    UnknownPlan(String),
 }
 
 impl From<sqlx::Error> for BillingError {
@@ -73,9 +75,10 @@ pub async fn complete_checkout(
     conn: &mut PgConnection,
     tenant_id: Uuid,
     customer_id: &str,
+    plan_id: &str,
 ) -> Result<(), BillingError> {
     let row = sqlx::query(
-        "SELECT status, suspended_reason, stripe_customer_id FROM sanchoris.tenants WHERE id = $1 FOR UPDATE",
+        "SELECT status, suspended_reason, stripe_customer_id, plan_id FROM sanchoris.tenants WHERE id = $1 FOR UPDATE",
     )
     .bind(tenant_id)
     .fetch_optional(&mut *conn)
@@ -84,29 +87,40 @@ pub async fn complete_checkout(
     let status: String = row.try_get("status")?;
     let reason: Option<String> = row.try_get("suspended_reason")?;
     let customer: Option<String> = row.try_get("stripe_customer_id")?;
+    let current: String = row.try_get("plan_id")?;
     if customer.as_deref().is_some_and(|c| c != customer_id) {
         return Err(BillingError::TenantNotPayable(tenant_id));
     }
-    if status == "active" && customer.is_some() {
+    if status == "active" && customer.is_some() && current == plan_id {
         return Ok(());
     }
     if status != "active" && reason.as_deref() != Some(PAYMENT_PENDING) {
         return Err(BillingError::TenantNotPayable(tenant_id));
     }
+    let known = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM sanchoris.plans WHERE id = $1 AND stripe_price_id IS NOT NULL)",
+    )
+    .bind(plan_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if !known {
+        return Err(BillingError::UnknownPlan(plan_id.to_string()));
+    }
     sqlx::query(
-        "UPDATE sanchoris.tenants SET stripe_customer_id = $2, status = 'active', suspended_reason = NULL, \
+        "UPDATE sanchoris.tenants SET stripe_customer_id = $2, plan_id = $3, status = 'active', suspended_reason = NULL, \
          updated_at = now() WHERE id = $1",
     )
     .bind(tenant_id)
     .bind(customer_id)
+    .bind(plan_id)
     .execute(&mut *conn)
     .await?;
     audit(
         conn,
         tenant_id,
         "tenant.activate",
-        "Checkout completed; the tenant is active",
-        json!({ "stripeCustomerId": customer_id }),
+        &format!("Checkout completed; the tenant is active on plan {plan_id}"),
+        json!({ "stripeCustomerId": customer_id, "from": current, "to": plan_id }),
     )
     .await
 }

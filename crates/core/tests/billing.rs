@@ -51,7 +51,7 @@ async fn stripe_events_drive_the_tenant_status_plan_and_period() {
     let admin = pg.admin_pool().await;
     let pool = pg.worker_pool().await;
     let seeded = pg.seed_tenant(&admin, "free").await;
-    sqlx::query("UPDATE sanchoris.plans SET stripe_price_id = 'price_pro' WHERE id = 'pro'")
+    sqlx::query("UPDATE sanchoris.plans SET stripe_price_id = 'price_' || id WHERE id IN ('starter', 'pro')")
         .execute(&admin)
         .await
         .unwrap();
@@ -66,15 +66,19 @@ async fn stripe_events_drive_the_tenant_status_plan_and_period() {
     .unwrap();
     let mut conn = pool.acquire().await.unwrap();
 
-    complete_checkout(&mut conn, seeded.tenant_id, "cus_1")
+    complete_checkout(&mut conn, seeded.tenant_id, "cus_1", "starter")
         .await
         .unwrap();
     let t = tenant(&pool, seeded.tenant_id).await;
     assert_eq!(
-        (t.status.as_str(), t.customer.as_deref()),
-        ("active", Some("cus_1"))
+        (t.status.as_str(), t.customer.as_deref(), t.plan_id.as_str()),
+        ("active", Some("cus_1"), "starter")
     );
-    complete_checkout(&mut conn, seeded.tenant_id, "cus_1")
+    assert!(matches!(
+        complete_checkout(&mut conn, seeded.tenant_id, "cus_1", "free").await,
+        Err(BillingError::UnknownPlan(_))
+    ));
+    complete_checkout(&mut conn, seeded.tenant_id, "cus_1", "starter")
         .await
         .unwrap();
 
@@ -133,7 +137,7 @@ async fn checkout_does_not_reactivate_a_tenant_suspended_for_another_reason() {
     .unwrap();
     let mut conn = pool.acquire().await.unwrap();
     assert!(matches!(
-        complete_checkout(&mut conn, seeded.tenant_id, "cus_1").await,
+        complete_checkout(&mut conn, seeded.tenant_id, "cus_1", "starter").await,
         Err(BillingError::TenantNotPayable(_))
     ));
     assert_eq!(tenant(&pool, seeded.tenant_id).await.status, "suspended");

@@ -27,7 +27,8 @@ impl TestPostgres {
             .expect("apply db/schema.sql");
         sqlx::raw_sql(
             "CREATE ROLE sanchoris_test_app LOGIN IN ROLE sanchoris_app; \
-             CREATE ROLE sanchoris_test_worker LOGIN IN ROLE sanchoris_worker;",
+             CREATE ROLE sanchoris_test_worker LOGIN IN ROLE sanchoris_worker; \
+             GRANT sanchoris_app TO sanchoris_test_worker WITH INHERIT FALSE, SET TRUE;",
         )
         .execute(&admin)
         .await

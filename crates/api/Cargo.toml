@@ -12,6 +12,10 @@ path = "src/main.rs"
 [dependencies]
 sanchoris-core.workspace = true
 sanchoris-worker.workspace = true
+sanchoris-graphql.workspace = true
+sanchoris-config.workspace = true
+serde_yaml_ng.workspace = true
+async-graphql = "7.2.1"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -21,7 +25,7 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net", "fs", "io-util"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "macros", "uuid", "chrono", "json", "tls-rustls"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "form", "query", "rustls"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 hmac = "0.13"
 sha2 = "0.11"
