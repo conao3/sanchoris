@@ -35,6 +35,17 @@ impl TenantTx {
         Ok(Self { tenant_id, tx })
     }
 
+    pub async fn adopt(
+        mut tx: Transaction<'static, Postgres>,
+        tenant_id: Uuid,
+    ) -> Result<Self, DbError> {
+        sqlx::query("SELECT set_config('app.tenant_id', $1, true)")
+            .bind(tenant_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        Ok(Self { tenant_id, tx })
+    }
+
     pub fn tenant_id(&self) -> Uuid {
         self.tenant_id
     }
@@ -212,7 +223,10 @@ pub struct DispatchedTask {
     pub run_id: Uuid,
 }
 
-pub async fn dispatch_pending_tasks(tx: &mut TenantTx) -> Result<Vec<DispatchedTask>, DbError> {
+pub async fn dispatch_pending_tasks(
+    tx: &mut TenantTx,
+    now: DateTime<Utc>,
+) -> Result<Vec<DispatchedTask>, DbError> {
     let tenant_id = tx.tenant_id();
     let tenant = sqlx::query(
         "SELECT t.status, t.tasks_this_period, t.workspace_seconds_this_period, \
@@ -265,10 +279,11 @@ pub async fn dispatch_pending_tasks(tx: &mut TenantTx) -> Result<Vec<DispatchedT
     }
     sqlx::query(
         "UPDATE sanchoris.tasks \
-         SET status = 'RUNNING', started_at = coalesce(started_at, now()), updated_at = now() \
+         SET status = 'RUNNING', started_at = coalesce(started_at, $2), updated_at = $2 \
          WHERE id = ANY($1)",
     )
     .bind(&task_ids)
+    .bind(now)
     .execute(tx.conn())
     .await?;
     sqlx::query(
@@ -281,17 +296,18 @@ pub async fn dispatch_pending_tasks(tx: &mut TenantTx) -> Result<Vec<DispatchedT
     .execute(tx.conn())
     .await?;
     let rows = sqlx::query(
-        "INSERT INTO sanchoris.runs (tenant_id, task_id, session_name, worker, model, status) \
+        "INSERT INTO sanchoris.runs (tenant_id, task_id, session_name, worker, model, status, started_at) \
          SELECT tenant_id, id, \
                 definition #>> '{Session,Name}', \
                 definition #>> '{Session,Definition,Worker,Agent}', \
                 definition #>> '{Session,Definition,Worker,Model}', \
-                'creating' \
+                'creating', $2 \
          FROM sanchoris.tasks WHERE id = ANY($1) \
          ORDER BY created_at, id \
          RETURNING task_id, id",
     )
     .bind(&task_ids)
+    .bind(now)
     .fetch_all(tx.conn())
     .await?;
     rows.iter()
