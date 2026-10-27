@@ -1,8 +1,3 @@
-//! Types for `skill.yaml`, the engine-executed part of a skill.
-//!
-//! The shape follows Amazon States Language (ASL). Fields that ASL makes optional but
-//! sanchoris requires to be explicit (`TimeoutSeconds`, every `Retry` field) are
-//! non-optional here so that a missing value fails to parse.
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -62,7 +57,6 @@ impl State {
         }
     }
 
-    /// Names of the states this state can move to, in declaration order.
     pub fn successors(&self) -> Vec<&str> {
         let mut out = Vec::new();
         match self {
@@ -81,7 +75,6 @@ impl State {
         out
     }
 
-    /// Whether the state ends the execution (`End: true`, `Succeed`, or `Fail`).
     pub fn is_terminal(&self) -> bool {
         match self {
             State::Task(s) => s.end == Some(true),
@@ -93,7 +86,6 @@ impl State {
     }
 }
 
-/// `ResultPath: null` discards the result; an absent `ResultPath` means `$`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ResultPath {
     #[default]
@@ -188,9 +180,6 @@ pub struct ChoiceState {
     pub default: Option<String>,
 }
 
-/// A choice rule. Top-level rules carry `Next`; nested rules inside `And`/`Or`/`Not`
-/// must not. A rule holds either one comparison (`Variable` plus exactly one operator)
-/// or one boolean combinator.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase", deny_unknown_fields)]
 pub struct ChoiceRule {
@@ -272,7 +261,6 @@ pub struct Catcher {
     pub result_path: ResultPath,
 }
 
-/// Error names defined by ASL.
 pub mod errors {
     pub const ALL: &str = "States.ALL";
     pub const TIMEOUT: &str = "States.Timeout";
