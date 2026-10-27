@@ -81,6 +81,21 @@ string_enum!(UsageLimitResume, "usage limit resume", {
     Manual => "manual",
 });
 
+string_enum!(ActorKind, "actor kind", {
+    Member => "member",
+    Agent => "agent",
+    Trigger => "trigger",
+    System => "system",
+    Operator => "operator",
+});
+
+string_enum!(AuditOrigin, "audit origin", {
+    Web => "web",
+    Github => "github",
+    Slack => "slack",
+    System => "system",
+});
+
 impl TaskStatus {
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Succeeded | Self::Failed | Self::Aborted)

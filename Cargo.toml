@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/api", "crates/config", "crates/engine", "crates/core", "crates/worker"]
+members = ["crates/api", "crates/config", "crates/engine", "crates/core", "crates/worker", "crates/graphql"]
 resolver = "2"
 
 [workspace.package]
@@ -12,6 +12,7 @@ sanchoris-config = { path = "crates/config" }
 sanchoris-engine = { path = "crates/engine" }
 sanchoris-core = { path = "crates/core" }
 sanchoris-worker = { path = "crates/worker" }
+sanchoris-graphql = { path = "crates/graphql" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml_ng = "0.10"
