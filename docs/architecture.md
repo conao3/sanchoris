@@ -137,7 +137,7 @@ The GitHub, Stripe, Cognito, signing-key, and local records variables are listed
 | `main` | `pk` (S), `sk` (S) | `gsi1` (`gsi1pk`, `gsi1sk`, ALL), `gsi2` (`gsi2pk`, `gsi2sk`, ALL) | TTL `expires_at`, stream `NEW_IMAGE`, PITR, deletion protection, on-demand |
 | `audit` | `pk` = `T#<tenant>`, `sk` = `<at>#<id>` | — | TTL `expires_at` (the plan's `audit_retention_days`), PITR, deletion protection; IAM denies `UpdateItem`, `DeleteItem`, `BatchWriteItem`, PartiQL updates and deletes, `DeleteTable`, and `UpdateTimeToLive` (`appendOnlyDeniedActions`) |
 
-Every item in `main` has `kind` (the entity), `v` (a version incremented by every write), and its own attributes. Times are strings `YYYY-MM-DDTHH:MM:SS.ffffffZ` (UTC, microseconds), which sort by time; numbers in keys are zero-padded to 12 digits. JSON values are stored as JSON strings. A string attribute longer than 32 KiB is stored in the `docs` bucket at `docs/<tenant>/<sha256>` and replaced by `{"$blob": "<key>"}`; reads restore it. No other attribute may make an item exceed 400 KB.
+Every item in `main` has `kind` (the entity), `v` (a version incremented by every write), and its own attributes. Times are strings `YYYY-MM-DDTHH:MM:SS.ffffffZ` (UTC, microseconds), which sort by time; numbers in keys are zero-padded to 12 digits. JSON values are stored as JSON strings. A string attribute longer than 32 KiB is stored in the `docs` bucket at `docs/<tenant>/<sha256>` and replaced by `{"$blob": "<key>"}`; reads restore it. Message items (`MSG#`) are written inline: a `Relayed` body carries ids, times, and schedule names, well under 1 KiB, so the relay reads it from the stream image and needs no access to the `docs` bucket. No other attribute may make an item exceed 400 KB.
 
 ### Partitions
 
