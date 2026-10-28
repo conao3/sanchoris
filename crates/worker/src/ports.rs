@@ -148,6 +148,7 @@ pub trait GitHubReader: Send + Sync {
         repo: &str,
         number: i64,
     ) -> Result<IssueRelations, GitHubError>;
+    async fn app_login(&self) -> Result<String, GitHubError>;
 }
 
 #[async_trait]

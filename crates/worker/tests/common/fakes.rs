@@ -14,6 +14,7 @@ use uuid::Uuid;
 pub const CONFIG_YAML: &str = include_str!("../../../config/tests/fixtures/example.sanchoris.yaml");
 pub const INSTALLATION: i64 = 42;
 pub const REPO: &str = "acme/shop-web";
+pub const APP_LOGIN: &str = "sanchoris[bot]";
 
 pub fn epoch() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 10, 27, 9, 0, 0).unwrap()
@@ -32,6 +33,7 @@ pub struct GitHubState {
     pub check_script: VecDeque<&'static str>,
     pub check_results: HashMap<(String, String), Vec<CheckRun>>,
     pub relations: HashMap<(String, i64), IssueRelations>,
+    pub relation_errors: HashMap<(String, i64), GitHubError>,
     pub created_pulls: Vec<(String, String)>,
     pub created_comments: Vec<(String, i64)>,
     pub updated_comments: Vec<i64>,
@@ -269,14 +271,19 @@ impl GitHubReader for FakeGitHub {
         repo: &str,
         number: i64,
     ) -> Result<IssueRelations, GitHubError> {
-        Ok(self
-            .state
-            .lock()
-            .unwrap()
+        let state = self.state.lock().unwrap();
+        if let Some(error) = state.relation_errors.get(&(repo.to_string(), number)) {
+            return Err(error.clone());
+        }
+        Ok(state
             .relations
             .get(&(repo.to_string(), number))
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn app_login(&self) -> Result<String, GitHubError> {
+        Ok(APP_LOGIN.to_string())
     }
 }
 
