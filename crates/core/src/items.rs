@@ -1957,6 +1957,46 @@ impl Entity for TimerItem {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct HeldMessage {
+    pub tenant_id: Uuid,
+    pub task_id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub dedupe_key: String,
+    pub text: String,
+}
+
+impl Entity for HeldMessage {
+    const KIND: &'static str = "held_message";
+
+    fn key(&self) -> Key {
+        keys::held_message_key(
+            self.tenant_id,
+            self.task_id,
+            self.created_at,
+            &self.dedupe_key,
+        )
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .uuid("task_id", self.task_id)
+            .time("created_at", self.created_at)
+            .s("dedupe_key", &self.dedupe_key)
+            .s("text", &self.text);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            task_id: r.uuid("task_id")?,
+            created_at: r.time("created_at")?,
+            dedupe_key: r.s("dedupe_key")?,
+            text: r.s("text")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct UsageRecord {
     pub id: Uuid,
     pub tenant_id: Uuid,

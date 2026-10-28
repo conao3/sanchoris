@@ -295,6 +295,18 @@ pub fn timer_key(tenant_id: Uuid, task_id: Uuid, number: i32, timer_id: Uuid) ->
     )
 }
 
+pub fn held_message_key(
+    tenant_id: Uuid,
+    task_id: Uuid,
+    created_at: DateTime<Utc>,
+    dedupe_key: &str,
+) -> Key {
+    Key::main(
+        task_pk(tenant_id, task_id),
+        format!("HELD#{}#{dedupe_key}", format_time(created_at)),
+    )
+}
+
 pub fn usage_key(tenant_id: Uuid, task_id: Uuid, recorded_at: DateTime<Utc>, id: Uuid) -> Key {
     Key::main(
         task_pk(tenant_id, task_id),

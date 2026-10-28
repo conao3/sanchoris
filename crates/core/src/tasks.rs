@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::channel::{OutboxType, enqueue_outbox, enqueue_user_message};
 use crate::db::{DbError, REF_RUN, TenantTx, locate};
 use crate::item::Entity;
-use crate::items::{Run, Task};
+use crate::items::{HeldMessage, Run, Task};
 use crate::jobs::Job;
 use crate::keys;
 use crate::lifecycle::TaskDecision;
@@ -109,6 +109,41 @@ pub async fn wake_task(
     store_task(tx, &task, now).await
 }
 
+pub fn holds_messages(task: &Task) -> bool {
+    task.status == TaskStatus::NeedsYou && task.error.as_deref() != Some(ERROR_APPROVAL_REQUESTED)
+}
+
+pub fn hold_message(
+    tx: &mut TenantTx,
+    task_id: Uuid,
+    text: &str,
+    dedupe_key: &str,
+    now: DateTime<Utc>,
+) -> Result<(), DbError> {
+    tx.insert(&HeldMessage {
+        tenant_id: tx.tenant_id(),
+        task_id,
+        created_at: now,
+        dedupe_key: dedupe_key.to_string(),
+        text: text.to_string(),
+    })
+}
+
+async fn deliver_held_messages(
+    tx: &mut TenantTx,
+    task_id: Uuid,
+    run_id: Uuid,
+) -> Result<(), DbError> {
+    let held = tx
+        .query::<HeldMessage>(&keys::task_pk(tx.tenant_id(), task_id), "HELD#")
+        .await?;
+    for message in held {
+        enqueue_user_message(tx, run_id, &message.text, &message.dedupe_key).await?;
+        tx.delete(&message.key())?;
+    }
+    Ok(())
+}
+
 pub async fn send_to_task(
     tx: &mut TenantTx,
     task_id: Uuid,
@@ -191,6 +226,7 @@ pub async fn apply_decision(
                 task.nudges = 0;
             }
             store_task(tx, &task, now).await?;
+            deliver_held_messages(tx, task_id, run_id).await?;
             enqueue_user_message(tx, run_id, message, dedupe_key).await?;
         }
     }

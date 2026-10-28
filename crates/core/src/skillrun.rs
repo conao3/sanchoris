@@ -18,7 +18,10 @@ use crate::jobs::Job;
 use crate::keys;
 use crate::lifecycle::decide_skill_run_finished;
 use crate::model::{SkillRunStatus, TaskDefinition, TaskStatus, WaitReason};
-use crate::tasks::{ERROR_APPROVAL_REQUESTED, apply_decision, load_task, send_to_task, store_task};
+use crate::tasks::{
+    ERROR_APPROVAL_REQUESTED, apply_decision, hold_message, holds_messages, load_task,
+    send_to_task, store_task,
+};
 use crate::tokens::{TaskTokenSigner, TokenError};
 
 #[derive(Debug, Error)]
@@ -389,8 +392,12 @@ pub async fn persist_step(
                         NotificationKind::NeedsAgent { .. } => "needs_agent",
                     };
                     let dedupe = format!("skill:{}:{}:{}", meta.number, run.next_sequence, kind);
-                    send_to_task(tx, meta.task_id, run_id, &notification.text, &dedupe, now)
-                        .await?;
+                    if holds_messages(&load_task(tx, meta.task_id).await?) {
+                        hold_message(tx, meta.task_id, &notification.text, &dedupe, now)?;
+                    } else {
+                        send_to_task(tx, meta.task_id, run_id, &notification.text, &dedupe, now)
+                            .await?;
+                    }
                 }
             }
         }
