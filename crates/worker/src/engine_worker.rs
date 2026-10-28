@@ -13,7 +13,7 @@ use sanchoris_core::model::TaskStatus;
 use sanchoris_core::skillrun::{SkillRunError, apply_event, lock_skill_run, skill_run_item};
 use sanchoris_core::store::{Index, SortKey};
 use sanchoris_core::tasks::{ERROR_APPROVAL_REQUESTED, load_task, store_task, task_branch};
-use sanchoris_engine::{Event, Invocation, ResourceOutcome, Timer};
+use sanchoris_engine::{Disposition, Event, IgnoreReason, Invocation, ResourceOutcome, Timer};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -39,18 +39,42 @@ pub async fn fire_timer(
         return Ok(0);
     };
     let key = keys::timer_key(tenant_id, task_id, skill_run.number, timer_id);
-    let Some(timer) = tx
+    let Some(item) = tx
         .get::<TimerItem>(&key)
         .await?
         .filter(|t| t.message_id == message_id)
     else {
         return Ok(0);
     };
-    tx.delete(&key)?;
-    let timer: Timer = serde_json::from_value(timer.timer)?;
-    match apply_event(&mut tx, skill_run_id, Event::TimerDue { timer }, now).await {
-        Ok(_) | Err(SkillRunError::NotFound(_)) => {}
-        Err(error) => return Err(error.into()),
+    let timer: Timer = serde_json::from_value(item.timer.clone())?;
+    let disposition = if load_task(&mut tx, task_id).await?.status.is_terminal() {
+        None
+    } else {
+        match apply_event(&mut tx, skill_run_id, Event::TimerDue { timer }, now).await {
+            Ok(disposition) => Some(disposition),
+            Err(SkillRunError::NotFound(_)) => None,
+            Err(error) => return Err(error.into()),
+        }
+    };
+    if let Some(mut item) = tx
+        .get::<TimerItem>(&key)
+        .await?
+        .filter(|t| t.message_id == message_id)
+    {
+        if disposition == Some(Disposition::Ignored(IgnoreReason::TimerNotDue)) {
+            item.message_id = tx.emit_at(
+                Job::EngineTimer {
+                    tenant_id,
+                    task_id,
+                    skill_run_id,
+                    timer_id,
+                },
+                item.due_at,
+            );
+            tx.put(&item)?;
+        } else {
+            tx.delete(&key)?;
+        }
     }
     worker.faults.check("timer.before_commit")?;
     tx.commit().await?;

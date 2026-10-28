@@ -1,8 +1,11 @@
 mod common;
 
 use common::World;
-use sanchoris_core::items::{SkillRunItem, StateEntryItem, Task};
+use sanchoris_core::item::Entity;
+use sanchoris_core::items::{SkillRunItem, StateEntryItem, Task, TimerItem};
+use sanchoris_core::jobs::schedule_name;
 use sanchoris_core::keys;
+use sanchoris_worker::engine_worker::fire_timer;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -65,4 +68,70 @@ async fn a_long_inline_loop_fails_with_a_runtime_error_and_commits() {
         .filter(|e| e.skill_run_id == accepted.id)
         .count();
     assert_eq!(entries, sanchoris_engine::MAX_TRANSITIONS_PER_STEP);
+}
+
+const PAUSE: &str = "Inputs: {}\nStartAt: Pause\nTimeoutSeconds: 600\nStates:\n  Pause:\n    Type: Wait\n    Seconds: 30\n    End: true\n";
+
+#[tokio::test]
+async fn an_early_timer_is_kept_and_scheduled_again() {
+    let world = World::new("pro").await;
+    let task = world.started_task(35).await;
+    let run_id = task.run_id.unwrap();
+    add_skill(&world, task.id, "pause", PAUSE).await;
+    let accepted = world
+        .try_request_skill(run_id, "pause", json!({}))
+        .await
+        .unwrap();
+    world.worker.settle().await.unwrap();
+    let timer = world
+        .dynamo
+        .all::<TimerItem>()
+        .await
+        .into_iter()
+        .find(|t| t.timer["kind"] == "wait_elapsed")
+        .unwrap();
+    world
+        .clock
+        .set(timer.due_at - chrono::Duration::milliseconds(300));
+    let fired = fire_timer(
+        &world.worker.worker,
+        world.tenant(),
+        task.id,
+        accepted.id,
+        timer.id,
+        timer.message_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(fired, 1);
+    let kept = world
+        .store
+        .get::<TimerItem>(&timer.key())
+        .await
+        .unwrap()
+        .expect("the timer is kept");
+    assert_ne!(kept.message_id, timer.message_id);
+    assert_eq!(kept.due_at, timer.due_at);
+    assert!(
+        world
+            .scheduler
+            .pending()
+            .contains(&(schedule_name(kept.message_id), timer.due_at))
+    );
+    assert_eq!(
+        skill_run(&world, task.id, accepted.number)
+            .await
+            .status
+            .as_str(),
+        "WAITING"
+    );
+    world.clock.set(timer.due_at);
+    world.worker.settle().await.unwrap();
+    assert_eq!(
+        skill_run(&world, task.id, accepted.number)
+            .await
+            .status
+            .as_str(),
+        "SUCCEEDED"
+    );
 }

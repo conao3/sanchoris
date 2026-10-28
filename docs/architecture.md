@@ -53,7 +53,7 @@ Each rate schedule sends the same body every time except for the scheduled time,
 
 ### Jobs and messages
 
-A job is emitted inside the `TenantTx` that causes it (`tx.emit(job)`, `tx.emit_at(job, at)`, `tx.cancel_schedule(message_id)`). Commit writes one message item per job (`pk = MSG#<uuid>`, `kind = msg`, `body` = the `Relayed` JSON, TTL 24 h) in the same `TransactWriteItems`, so state and follow-up work commit together. In AWS the stream delivers the message items to the relay (`Relay::Stream`); locally the transaction hands them to the in-memory queue and scheduler right after commit (`Relay::Direct`). Delivery is at least once; the FIFO deduplication id is the envelope id, and every handler re-reads state and ignores messages that a newer one superseded (timers compare `message_id`, trigger schedules compare `schedule_message_id`, resumes compare `resume_at`, check polls compare `next_poll_at`).
+A job is emitted inside the `TenantTx` that causes it (`tx.emit(job)`, `tx.emit_at(job, at)`, `tx.cancel_schedule(message_id)`). Commit writes one message item per job (`pk = MSG#<uuid>`, `kind = msg`, `body` = the `Relayed` JSON, TTL 24 h) in the same `TransactWriteItems`, so state and follow-up work commit together. In AWS the stream delivers the message items to the relay (`Relay::Stream`); locally the transaction hands them to the in-memory queue and scheduler right after commit (`Relay::Direct`). Delivery is at least once; the FIFO deduplication id is the envelope id, and every handler re-reads state and ignores messages that a newer one superseded (timers compare `message_id` and are scheduled again at their `due_at` when they arrive before it, trigger schedules compare `schedule_message_id`, resumes compare `resume_at`, check polls compare `next_poll_at`).
 
 The SQS body is the `Envelope` JSON: `{"id": "<uuid>", "job": {"type": "<job>", ...}}`. Job types and their fields are `sanchoris_core::jobs::Job`.
 
@@ -66,7 +66,7 @@ The SQS body is the `Envelope` JSON: `{"id": "<uuid>", "job": {"type": "<job>", 
 | Port | Production | Local and tests |
 |---|---|---|
 | `sanchoris_core::ports::Queue` (`send` with group, deduplication id and optional delay; `receive`, `delete`, `release`) | `aws::SqsQueue` | `local::MemoryQueue` (FIFO per group, one message in flight per group, deduplication by id, delays on the `Clock`) |
-| `sanchoris_core::ports::Scheduler` (`schedule(name, at, message)`, `cancel(name)`) | `aws::EventBridgeScheduler` (`at()` expression in UTC, SQS FIFO target, delete after completion; an existing name counts as scheduled) | `local::MemoryScheduler` (`take_due(now)`) |
+| `sanchoris_core::ports::Scheduler` (`schedule(name, at, message)`, `cancel(name)`) | `aws::EventBridgeScheduler` (`at()` expression in UTC, rounded up to the next whole second, SQS FIFO target, delete after completion; an existing name counts as scheduled) | `local::MemoryScheduler` (`take_due(now)`) |
 | `sanchoris_core::ports::BlobStore` (`put`, `get`, `delete`) | `aws::S3BlobStore` | `local::MemoryBlobStore`, `local::DirBlobStore` |
 | `sanchoris_core::clock::Clock` | `SystemClock` | `FakeClock` |
 | `sanchoris_worker::ports::OutboxPusher` (`push(tenant, run)`) | `channel::Channel` over `channel::gateway::GatewaySender` (`PostToConnection`, `DeleteConnection`; `GoneException` clears the run's connection) | `Channel` over `channel::local::LocalConnections`; recording fake in the worker tests |

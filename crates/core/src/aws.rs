@@ -3,7 +3,7 @@ use aws_sdk_scheduler::types::{
     ActionAfterCompletion, FlexibleTimeWindow, FlexibleTimeWindowMode, SqsParameters, Target,
 };
 use aws_sdk_sqs::types::MessageSystemAttributeName;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Timelike, Utc};
 use thiserror::Error;
 
 use crate::ports::{BlobStore, OutgoingMessage, PortError, Queue, ReceivedMessage, Scheduler};
@@ -173,6 +173,12 @@ impl EventBridgeScheduler {
 }
 
 pub fn at_expression(at: DateTime<Utc>) -> String {
+    let whole = at.with_nanosecond(0).expect("zero nanoseconds are valid");
+    let at = if whole < at {
+        whole + Duration::seconds(1)
+    } else {
+        whole
+    };
     format!("at({})", at.format("%Y-%m-%dT%H:%M:%S"))
 }
 
@@ -332,5 +338,9 @@ mod tests {
     fn at_expressions_use_utc_seconds() {
         let at = Utc.with_ymd_and_hms(2026, 10, 27, 9, 30, 5).unwrap();
         assert_eq!(at_expression(at), "at(2026-10-27T09:30:05)");
+        assert_eq!(
+            at_expression(at + Duration::milliseconds(1)),
+            "at(2026-10-27T09:30:06)"
+        );
     }
 }

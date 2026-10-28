@@ -10,7 +10,7 @@ Jobs are written as message items in the same DynamoDB transaction as the state 
 | `Dispatch` | `create_task`, a task leaving `RUNNING`, billing changes | Starts pending tasks while the plan's concurrency and task limits allow |
 | `RunEvents` | `record_run_event` | Processes the run's pending events in order: `ready`, `heartbeat`, `session_record`, `turn_end`, `rate_limit`, `exec_result`, `human_reply` |
 | `Invoke` | the engine's `InvokeResource` effect | Runs the resource and feeds `ResourceResult` back, or sends an `exec` and waits for `exec_result` |
-| `EngineTimer` | the engine's `ScheduleTimer` effect, at the due time | Feeds `TimerDue` to the engine unless the timer was cancelled or re-armed |
+| `EngineTimer` | the engine's `ScheduleTimer` effect, at the due time | Feeds `TimerDue` to the engine unless the timer was cancelled or re-armed or the task is finished; a timer that arrives before its due time keeps its item and is scheduled again |
 | `CheckPoll` | `github:checks`, check-run webhooks, `SweepChecks` | Reads the PR head and its check runs; completes the wait with `TaskSuccess` |
 | `TaskResume` | a usage-limit wait, at `ResumeAt` | Sends "Continue where you left off." |
 | `Reconcile` | a run being created, finished, or sent a `user_message`/`exec`; a task becoming idle, at the idle deadline | Starts a workspace for a run that needs one, stops a finished or idle one |
