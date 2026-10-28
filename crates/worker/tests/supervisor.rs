@@ -219,6 +219,25 @@ async fn workspaces(world: &World) -> Vec<Workspace> {
 }
 
 #[tokio::test]
+async fn the_plan_decides_the_workspace_size() {
+    for (plan, cpu) in [("starter", 1024), ("pro", 2048)] {
+        let world = World::new(plan).await;
+        world.started_task(35).await;
+        let specs = world.runner.specs.lock().unwrap().clone();
+        assert_eq!(
+            specs
+                .iter()
+                .map(|s| (s.cpu, s.memory_mib))
+                .collect::<Vec<_>>(),
+            vec![(cpu, 4096)],
+            "{plan}"
+        );
+        let recorded = workspaces(&world).await;
+        assert_eq!((recorded[0].cpu, recorded[0].memory_mib), (cpu, 4096));
+    }
+}
+
+#[tokio::test]
 async fn a_spot_interruption_restores_the_session_in_a_new_workspace() {
     let world = World::new("pro").await;
     let task = world.started_task(35).await;

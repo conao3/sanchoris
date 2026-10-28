@@ -1182,6 +1182,8 @@ impl World {
             run_id: issue_run,
             compute: "standard".into(),
             architecture: "arm64".into(),
+            cpu: 2048,
+            memory_mib: 4096,
             platform: "fargate".into(),
             platform_ref: None,
             capacity_provider: Some("FARGATE_SPOT".into()),

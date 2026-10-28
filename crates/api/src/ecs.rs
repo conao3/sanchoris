@@ -266,6 +266,8 @@ impl EcsRunner {
             )
             .overrides(
                 TaskOverride::builder()
+                    .cpu(spec.cpu.to_string())
+                    .memory(spec.memory_mib.to_string())
                     .container_overrides(
                         ContainerOverride::builder()
                             .name(&self.config.container)
@@ -809,6 +811,8 @@ mod tests {
             branch: "sanchoris/x".into(),
             compute: "standard".into(),
             architecture: "arm64".into(),
+            cpu: 1024,
+            memory_mib: 4096,
             repositories: vec![],
             network_allow: vec![],
         }
@@ -969,6 +973,8 @@ mod tests {
         assert_ne!(requests[0]["clientToken"], requests[1]["clientToken"]);
         for request in requests.iter() {
             assert_eq!(request["taskDefinition"], "p-sanchoris-workspace-arm64");
+            assert_eq!(request["overrides"]["cpu"], "1024");
+            assert_eq!(request["overrides"]["memory"], "4096");
             assert!(request.get("launchType").is_none());
         }
     }

@@ -775,6 +775,7 @@ async fn start_workspace(
     let definition = definition_of(&task)?;
     let repositories = checkout_repositories(&mut tx, &task, &session).await?;
     let branch = task_branch(task.id);
+    let (_, plan) = db::tenant_plan(&mut tx).await?;
     let workspace = Workspace {
         id: Uuid::new_v4(),
         tenant_id,
@@ -782,6 +783,8 @@ async fn start_workspace(
         run_id: run.id,
         compute: session.workspace.compute.as_str().to_string(),
         architecture: session.workspace.architecture.as_str().to_string(),
+        cpu: plan.workspace_cpu,
+        memory_mib: plan.workspace_memory_mib,
         platform: worker.deps.runner.platform().to_string(),
         platform_ref: None,
         capacity_provider: None,
@@ -850,6 +853,8 @@ async fn launch_workspace(worker: &Worker, task: &Task, workspace: Workspace) ->
             branch: workspace.branch.clone(),
             compute: workspace.compute.clone(),
             architecture: workspace.architecture.clone(),
+            cpu: workspace.cpu,
+            memory_mib: workspace.memory_mib,
             repositories: workspace.repositories.clone(),
             network_allow: session.network.allow.clone(),
         })

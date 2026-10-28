@@ -28,9 +28,6 @@ use crate::scalars::{Timestamp, ts, ts_opt};
 use crate::skill::{Skill, SkillRun};
 use crate::trigger::{TaskLimits, Trigger, TriggerEvent, sender_login};
 
-const WORKSPACE_VCPU: i32 = 2;
-const WORKSPACE_MEMORY_MIB: i32 = 4096;
-
 #[derive(InputObject, Default)]
 pub(crate) struct TaskFilter {
     pub statuses: Option<Vec<TaskStatus>>,
@@ -740,8 +737,10 @@ impl Run {
                 0,
                 LogLineKind::System,
                 format!(
-                    "workspace started · {} · {} · {WORKSPACE_VCPU} vCPU",
-                    workspace.platform, workspace.compute
+                    "workspace started · {} · {} · {} vCPU",
+                    workspace.platform,
+                    workspace.compute,
+                    workspace.cpu / 1024
                 ),
             ));
             if let Some(stopped) = workspace.stopped_at {
@@ -924,6 +923,8 @@ impl Run {
                 compute: WorkspaceCompute::from_db(&latest.compute)?,
                 architecture: WorkspaceArchitecture::from_db(&latest.architecture)?,
                 capacity_provider: latest.capacity_provider,
+                cpu: latest.cpu,
+                memory_mib: latest.memory_mib,
                 repositories: latest.repositories,
                 branch: latest.branch,
                 base_commit: latest.base_commit.unwrap_or_default(),
@@ -932,11 +933,14 @@ impl Run {
         let task = Task::load(ctx, self.scope, self.row.task_id).await?;
         let session = task.session_data(ctx).await?;
         let parsed = session.parsed()?;
+        let (_, plan) = db::tenant_plan(&mut tx(ctx, self.scope.tenant_id)).await?;
         Ok(Workspace {
             platform: "pending".to_string(),
             compute: WorkspaceCompute::from_db(parsed.workspace.compute.as_str())?,
             architecture: WorkspaceArchitecture::from_db(parsed.workspace.architecture.as_str())?,
             capacity_provider: None,
+            cpu: plan.workspace_cpu,
+            memory_mib: plan.workspace_memory_mib,
             repositories: session.repository_names(ctx).await?,
             branch: task_branch(task.row.id),
             base_commit: String::new(),
@@ -971,6 +975,8 @@ pub(crate) struct Workspace {
     compute: WorkspaceCompute,
     architecture: WorkspaceArchitecture,
     capacity_provider: Option<String>,
+    cpu: i64,
+    memory_mib: i64,
     repositories: Vec<String>,
     branch: String,
     base_commit: String,
@@ -994,12 +1000,12 @@ impl Workspace {
         self.capacity_provider.as_deref()
     }
 
-    async fn vcpu(&self) -> i32 {
-        WORKSPACE_VCPU
+    async fn vcpu(&self) -> Result<i32> {
+        Ok(i32::try_from(self.cpu / 1024)?)
     }
 
-    async fn memory_mib(&self) -> i32 {
-        WORKSPACE_MEMORY_MIB
+    async fn memory_mib(&self) -> Result<i32> {
+        Ok(i32::try_from(self.memory_mib)?)
     }
 
     async fn repositories(&self) -> &[String] {

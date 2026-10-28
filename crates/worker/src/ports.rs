@@ -235,6 +235,8 @@ pub struct WorkspaceSpec {
     pub branch: String,
     pub compute: String,
     pub architecture: String,
+    pub cpu: i64,
+    pub memory_mib: i64,
     pub repositories: Vec<String>,
     pub network_allow: Vec<String>,
 }

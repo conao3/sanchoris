@@ -376,6 +376,8 @@ mod tests {
             branch: "sanchoris/x".into(),
             compute: "standard".into(),
             architecture: "arm64".into(),
+            cpu: 1024,
+            memory_mib: 4096,
             repositories,
             network_allow: vec!["github.com".into()],
         }

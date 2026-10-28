@@ -60,6 +60,8 @@ struct PlanSpec {
     max_children_depth: i64,
     max_children_count: i64,
     computes: Vec<String>,
+    workspace_cpu: i64,
+    workspace_memory_mib: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -92,6 +94,8 @@ pub fn plans() -> Vec<Plan> {
             max_children_depth: p.max_children_depth,
             max_children_count: p.max_children_count,
             computes: p.computes,
+            workspace_cpu: p.workspace_cpu,
+            workspace_memory_mib: p.workspace_memory_mib,
             stripe_price_id: None,
         })
         .collect()

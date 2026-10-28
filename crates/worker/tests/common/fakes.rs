@@ -307,6 +307,7 @@ pub const FAKE_CAPACITY_PROVIDER: &str = "FARGATE_SPOT";
 #[derive(Debug, Default)]
 pub struct FakeRunner {
     pub started: Mutex<Vec<Uuid>>,
+    pub specs: Mutex<Vec<WorkspaceSpec>>,
     pub launches: Mutex<usize>,
     pub stopped: Mutex<Vec<Uuid>>,
     pub refs: Mutex<Vec<String>>,
@@ -323,6 +324,7 @@ impl RunnerPort for FakeRunner {
 
     async fn start_workspace(&self, spec: &WorkspaceSpec) -> Result<WorkspaceHandle, RunnerError> {
         *self.launches.lock().unwrap() += 1;
+        self.specs.lock().unwrap().push(spec.clone());
         let mut running = self.running.lock().unwrap();
         if let Some(existing) = running
             .iter()

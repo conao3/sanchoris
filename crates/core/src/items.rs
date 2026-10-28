@@ -33,6 +33,8 @@ pub struct Plan {
     pub max_children_depth: i64,
     pub max_children_count: i64,
     pub computes: Vec<String>,
+    pub workspace_cpu: i64,
+    pub workspace_memory_mib: i64,
     pub stripe_price_id: Option<String>,
 }
 
@@ -64,6 +66,8 @@ impl Entity for Plan {
             .n("max_children_depth", self.max_children_depth)
             .n("max_children_count", self.max_children_count)
             .strs("computes", &self.computes)
+            .n("workspace_cpu", self.workspace_cpu)
+            .n("workspace_memory_mib", self.workspace_memory_mib)
             .opt_s("stripe_price_id", self.stripe_price_id.as_ref());
     }
 
@@ -89,6 +93,8 @@ impl Entity for Plan {
             max_children_depth: r.n("max_children_depth")?,
             max_children_count: r.n("max_children_count")?,
             computes: r.strs("computes")?,
+            workspace_cpu: r.n("workspace_cpu")?,
+            workspace_memory_mib: r.n("workspace_memory_mib")?,
             stripe_price_id: r.opt_s("stripe_price_id")?,
         })
     }
@@ -1425,6 +1431,8 @@ pub struct Workspace {
     pub run_id: Uuid,
     pub compute: String,
     pub architecture: String,
+    pub cpu: i64,
+    pub memory_mib: i64,
     pub platform: String,
     pub platform_ref: Option<String>,
     pub capacity_provider: Option<String>,
@@ -1450,6 +1458,8 @@ impl Entity for Workspace {
             .uuid("run_id", self.run_id)
             .s("compute", &self.compute)
             .s("architecture", &self.architecture)
+            .n("cpu", self.cpu)
+            .n("memory_mib", self.memory_mib)
             .s("platform", &self.platform)
             .opt_s("platform_ref", self.platform_ref.as_ref())
             .opt_s("capacity_provider", self.capacity_provider.as_ref())
@@ -1471,6 +1481,8 @@ impl Entity for Workspace {
             run_id: r.uuid("run_id")?,
             compute: r.s("compute")?,
             architecture: r.s("architecture")?,
+            cpu: r.n("cpu")?,
+            memory_mib: r.n("memory_mib")?,
             platform: r.s("platform")?,
             platform_ref: r.opt_s("platform_ref")?,
             capacity_provider: r.opt_s("capacity_provider")?,
