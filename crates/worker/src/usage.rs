@@ -81,7 +81,7 @@ pub async fn record_rate_limit(
         })?;
     }
     credential.last_used_at = Some(now);
-    credential.updated_at = Utc::now();
+    credential.updated_at = now;
     tx.put(&credential)?;
     Ok(())
 }

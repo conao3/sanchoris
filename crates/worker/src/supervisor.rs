@@ -109,14 +109,14 @@ async fn handle(
                 run.status = "running".into();
                 run.agent_session_id = payload["sessionId"].as_str().map(str::to_string);
                 run.last_heartbeat_at = Some(worker.now());
-                run.updated_at = Utc::now();
+                run.updated_at = worker.now();
                 tx.put(&run)?;
             }
         }
         RunEventType::Heartbeat => {
             let mut run = require_run(tx, event.run_id).await?;
             run.last_heartbeat_at = Some(worker.now());
-            run.updated_at = Utc::now();
+            run.updated_at = worker.now();
             tx.put(&run)?;
         }
         RunEventType::SessionRecord => {
@@ -128,7 +128,7 @@ async fn handle(
             if let Some(session) = payload["sessionId"].as_str() {
                 run.agent_session_id = Some(session.to_string());
             }
-            run.updated_at = Utc::now();
+            run.updated_at = worker.now();
             tx.put(&run)?;
         }
         RunEventType::ExecResult => exec_result(worker, tx, payload).await?,
@@ -240,7 +240,7 @@ async fn turn_end(
         run.agent_session_id = Some(session.to_string());
     }
     run.last_heartbeat_at = Some(now);
-    run.updated_at = Utc::now();
+    run.updated_at = now;
     tx.put(&run)?;
     tx.insert(&UsageRecord {
         id: Uuid::new_v4(),

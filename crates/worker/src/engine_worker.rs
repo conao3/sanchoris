@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sanchoris_core::channel::{OutboxType, enqueue_outbox};
 use sanchoris_core::db::{REF_CHECK_WAIT, REF_INVOCATION, TenantTx, insert_ref, locate};
 use sanchoris_core::item::{Entity, Key, format_time};
@@ -132,7 +132,7 @@ pub(crate) async fn complete_invocation(
     tx.put(&item)?;
     let invocation: Invocation = serde_json::from_value(item.invocation.clone())?;
     if let ResourceOutcome::Succeeded { output } = &outcome {
-        record_outputs(tx, &item, &invocation, output).await?;
+        record_outputs(tx, &item, &invocation, output, worker.now()).await?;
     }
     apply_event(
         tx,
@@ -165,6 +165,7 @@ async fn record_outputs(
     item: &InvocationItem,
     invocation: &Invocation,
     output: &Value,
+    now: DateTime<Utc>,
 ) -> Result<()> {
     let items = match invocation.resource.name().as_str() {
         "github:createPullRequests" => output
@@ -190,7 +191,6 @@ async fn record_outputs(
         )],
         _ => return Ok(()),
     };
-    let now = Utc::now();
     for (kind, repo, number, url) in items {
         let (Some(repo), Some(number), Some(url)) = (repo.as_str(), number.as_i64(), url.as_str())
         else {
