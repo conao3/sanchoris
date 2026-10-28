@@ -141,7 +141,7 @@ All variables are required where they are used; nothing has a default.
 | `SANCHORIS_FRONTEND_DIR` | `sanchoris all` | Built frontend; the `api` function embeds it |
 | `SANCHORIS_WORK_QUEUE_URL` | relay | Work queue URL |
 | `SANCHORIS_WORK_QUEUE_ARN`, `SANCHORIS_SCHEDULE_GROUP`, `SANCHORIS_SCHEDULER_ROLE_ARN` | relay | Target, group, and execution role of one-time schedules |
-| `SANCHORIS_CHANNEL_ENDPOINT` | channel, worker | API Gateway Management API endpoint of the WebSocket stage |
+| `SANCHORIS_CHANNEL_ENDPOINT` | channel, worker | API Gateway Management API endpoint of the WebSocket stage: `https://<channel custom domain>` when the stack has custom domains (the `execute-api` endpoint is disabled then), otherwise `https://<api id>.execute-api.<region>.amazonaws.com/prod` |
 | `SANCHORIS_RELAY_SERVICE`, `SANCHORIS_RELAY_PORT` | worker | ECS service and port of the egress relay that Workspaces use as `HTTPS_PROXY` |
 | `SANCHORIS_ECS_ASSIGN_PUBLIC_IP` | worker | `ENABLED` for Workspaces in the public subnet, `DISABLED` in the strict subnet |
 | `AWS_REGION` | all | Region |

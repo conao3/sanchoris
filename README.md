@@ -124,7 +124,7 @@ Secrets (the rows marked *secret*) come from the environment in `sanchoris all` 
 | `SANCHORIS_SOCKET_DIR`, `SANCHORIS_WORKSPACES_DIR` | `sanchoris all` | Directories for the `sanchoris` command sockets and the workspaces (set by `pnpm dev`) |
 | `SANCHORIS_GIT_URL` | worker | Base URL the workspaces clone `<owner>/<name>.git` from, e.g. `https://github.com` |
 | `SANCHORIS_DOCS_DIR` | `sanchoris all` | Directory for attributes larger than 32 KiB (set by `pnpm dev`) |
-| `SANCHORIS_CHANNEL_ENDPOINT` | channel, worker | API Gateway Management API endpoint of the WebSocket stage |
+| `SANCHORIS_CHANNEL_ENDPOINT` | channel, worker | API Gateway Management API endpoint of the WebSocket stage: `https://<channel custom domain>` when the stack has custom domains (the `execute-api` endpoint is disabled then), otherwise `https://<api id>.execute-api.<region>.amazonaws.com/prod` |
 | `SANCHORIS_ECS_CLUSTER`, `SANCHORIS_ECS_TASK_DEFINITION`, `SANCHORIS_ECS_CONTAINER`, `SANCHORIS_ECS_SUBNETS`, `SANCHORIS_ECS_SECURITY_GROUPS`, `SANCHORIS_ECS_ASSIGN_PUBLIC_IP` | worker | Fargate cluster, task definition (family), container name, the comma-separated subnets and security groups of Workspaces, and `ENABLED` or `DISABLED` for their public IP |
 | `SANCHORIS_RELAY_SERVICE`, `SANCHORIS_RELAY_PORT` | worker | ECS service of the egress relay (`apps/egress-relay`) in the same cluster and its port; the worker scales the service between 0 and 1 and puts the relay task's private IP into the Workspaces' `HTTPS_PROXY` |
 | `RELAY_TOKEN_SIGNING_KEY` | worker (*secret*) | Signs the relay tokens that carry each Run's `Network.Allow` (32+ bytes) |
