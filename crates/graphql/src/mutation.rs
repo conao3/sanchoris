@@ -3,6 +3,7 @@ use aws_sdk_dynamodb::types::AttributeValue;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Duration;
+use sanchoris_core::billing::{FREE_PLAN, stage_plan_change};
 use sanchoris_core::channel::{RunEventType, record_inbound_event, record_run_event};
 use sanchoris_core::db::{self, REF_RUN, REF_TRIGGER, TenantTx};
 use sanchoris_core::item::format_time;
@@ -14,7 +15,7 @@ use sanchoris_core::keys;
 use sanchoris_core::model::{AuditOrigin, TaskStatus as CoreStatus, WaitReason};
 use sanchoris_core::store::Update;
 use sanchoris_core::tasks::{abort_task, latest_run, load_task, stop_run};
-use sanchoris_core::tenants::{NewTenant, create_tenant};
+use sanchoris_core::tenants::{NewTenant, TenantError, create_tenant, free_tenant_key};
 use sanchoris_worker::dispatcher::schedule_trigger;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -281,14 +282,6 @@ impl MutationRoot {
                 checkout_url: Some(url),
             });
         }
-        for membership in memberships(ctx).await? {
-            let tenant = Tenant::load(ctx, membership.scope()).await?;
-            if tenant.row.created_by_user_id == user.user_id
-                && Plan::load(ctx, &tenant.row.plan_id).await?.0.price_cents == 0
-            {
-                return Err(conflict("a user can create one tenant on a free plan"));
-            }
-        }
         let created = create_tenant(
             store(ctx),
             &NewTenant {
@@ -296,14 +289,19 @@ impl MutationRoot {
                 name,
                 plan_id: &plan.0.id,
                 user_id: user.user_id,
-                stripe_customer_id: None,
-                payment_pending: false,
+                checkout: None,
                 origin: AuditOrigin::Web,
                 source_ip: ctx.data_opt::<ClientIp>().map(|ip| ip.0),
                 now: now(ctx),
             },
         )
-        .await?;
+        .await
+        .map_err(|error| match error {
+            TenantError::Db(error) => Error::from(error),
+            TenantError::FreeTenantTaken | TenantError::CheckoutPending(_) => {
+                conflict(error.to_string())
+            }
+        })?;
         let tenant = Tenant::load(ctx, member_scope(ctx, created.tenant_id).await?).await?;
         Ok(CreateTenantPayload {
             tenant: Some(tenant),
@@ -1389,6 +1387,14 @@ impl MutationRoot {
                 plan.0.name
             )));
         }
+        if plan.0.id == FREE_PLAN
+            && store(ctx)
+                .get::<Guard>(&free_tenant_key(tenant.row.created_by_user_id))
+                .await?
+                .is_some_and(|guard| guard.target != scope.tenant_id)
+        {
+            return Err(conflict(TenantError::FreeTenantTaken.to_string()));
+        }
         let change = state(ctx)
             .deps
             .checkout
@@ -1400,12 +1406,10 @@ impl MutationRoot {
             let mut tx = tx(ctx, scope.tenant_id);
             let checkout_url = match change {
                 PlanChange::Applied => {
-                    tx.update(
-                        &keys::tenant_key(scope.tenant_id),
-                        Update::new()
-                            .set("plan_id", s(&plan.0.id))
-                            .set("updated_at", s(&format_time(now(ctx)))),
-                    )?;
+                    let current = db::tenant(&mut tx).await?;
+                    if !stage_plan_change(&mut tx, &current, &plan.0.id, now(ctx), true).await? {
+                        return Err(conflict(TenantError::FreeTenantTaken.to_string()).into());
+                    }
                     audit_member(
                         ctx,
                         &mut tx,
@@ -1428,6 +1432,21 @@ impl MutationRoot {
                         "tenant.plan_checkout_start",
                         target("tenant", scope.tenant_id, tenant.row.name.clone()),
                         &format!("Started the checkout for {}", plan.0.id),
+                    )
+                    .await?;
+                    Some(url.clone())
+                }
+                PlanChange::Portal { url } => {
+                    audit_member(
+                        ctx,
+                        &mut tx,
+                        member_id,
+                        "billing.portal_open",
+                        target("tenant", scope.tenant_id, "billing"),
+                        &format!(
+                            "Opened the billing portal to settle the subscription before {}",
+                            plan.0.id
+                        ),
                     )
                     .await?;
                     Some(url.clone())

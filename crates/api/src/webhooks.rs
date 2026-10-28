@@ -5,7 +5,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use sanchoris_core::audit::{AuditEntry, record_audit};
-use sanchoris_core::billing::{self, BillingError};
+use sanchoris_core::billing::{self, BillingError, Invoice, Outcome, Payer};
 use sanchoris_core::channel::{IngestError, ingest_github_delivery};
 use sanchoris_core::db::{DbError, Recorded};
 use sanchoris_core::items::{Guard, Integration, uniq};
@@ -237,20 +237,135 @@ fn text<'a>(value: &'a Value, pointer: &str) -> Result<&'a str, ApiError> {
         .ok_or_else(|| ApiError::BadRequest(format!("the event has no {pointer}")))
 }
 
-impl From<BillingError> for ApiError {
-    fn from(error: BillingError) -> Self {
-        match error {
-            BillingError::Db(error) => error.into(),
-            BillingError::UnknownCustomer(_) => ApiError::Conflict(error.to_string()),
-            BillingError::TenantNotPayable(_) => ApiError::Unprocessable {
-                code: "tenant_not_payable",
-                message: error.to_string(),
-            },
-            BillingError::UnknownPrice(_) | BillingError::UnknownPlan(_) => {
-                ApiError::Internal(error.to_string())
-            }
-        }
+fn stripe_time(value: &Value, pointer: &str) -> Result<DateTime<Utc>, ApiError> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_i64)
+        .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+        .ok_or_else(|| ApiError::BadRequest(format!("the event has no {pointer}")))
+}
+
+fn tenant_ref(value: &Value, pointer: &str) -> Result<Uuid, ApiError> {
+    text(value, pointer)?
+        .parse()
+        .map_err(|_| ApiError::BadRequest(format!("{pointer} is not a tenant id")))
+}
+
+fn tenant_hint(value: &Value, pointer: &str) -> Result<Option<Uuid>, ApiError> {
+    match value.pointer(pointer) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => tenant_ref(value, pointer).map(Some),
     }
+}
+
+fn subscription_price(subscription: &Value) -> Result<&str, ApiError> {
+    let items = subscription
+        .pointer("/items/data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::BadRequest("the subscription has no items".into()))?;
+    let [item] = items.as_slice() else {
+        return Err(ApiError::BadRequest(
+            "the subscription must have exactly one item".into(),
+        ));
+    };
+    text(item, "/price/id")
+}
+
+fn invoice_period_start(invoice: &Value) -> Result<Option<DateTime<Utc>>, ApiError> {
+    let lines = invoice
+        .pointer("/lines/data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::BadRequest("the invoice has no lines".into()))?;
+    Ok(lines
+        .iter()
+        .map(|line| stripe_time(line, "/period/start"))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .max())
+}
+
+fn payer<'a>(object: &'a Value, tenant_pointer: &str) -> Result<Payer<'a>, ApiError> {
+    Ok(Payer {
+        customer_id: text(object, "/customer")?,
+        tenant_id: tenant_hint(object, tenant_pointer)?,
+    })
+}
+
+fn checkout<'a>(session: &'a Value) -> Result<billing::Checkout<'a>, ApiError> {
+    Ok(billing::Checkout {
+        tenant_id: tenant_ref(session, "/client_reference_id")?,
+        customer_id: text(session, "/customer")?,
+        plan_id: text(session, "/metadata/plan_id")?,
+        paid: text(session, "/payment_status")? == "paid",
+    })
+}
+
+enum StripeFailure {
+    Request(ApiError),
+    Billing(BillingError),
+}
+
+impl From<ApiError> for StripeFailure {
+    fn from(error: ApiError) -> Self {
+        Self::Request(error)
+    }
+}
+
+impl From<BillingError> for StripeFailure {
+    fn from(error: BillingError) -> Self {
+        Self::Billing(error)
+    }
+}
+
+async fn apply_stripe_event(
+    state: &AppState,
+    event: billing::StripeEvent<'_>,
+    object: &Value,
+) -> Result<Option<Outcome>, StripeFailure> {
+    let store = &state.store;
+    let outcome = match event.kind {
+        "checkout.session.completed" | "checkout.session.async_payment_succeeded" => {
+            billing::complete_checkout(store, event, checkout(object)?).await?
+        }
+        "checkout.session.async_payment_failed" | "checkout.session.expired" => {
+            billing::end_checkout(store, event, tenant_ref(object, "/client_reference_id")?).await?
+        }
+        "customer.subscription.updated" => {
+            billing::change_plan(
+                store,
+                event,
+                payer(object, "/metadata/tenant_id")?,
+                text(object, "/status")?,
+                subscription_price(object)?,
+            )
+            .await?
+        }
+        "customer.subscription.deleted" => {
+            billing::end_subscription(store, event, payer(object, "/metadata/tenant_id")?).await?
+        }
+        "invoice.paid" => {
+            billing::start_period(
+                store,
+                event,
+                payer(object, "/parent/subscription_details/metadata/tenant_id")?,
+                Invoice {
+                    billing_reason: text(object, "/billing_reason")?,
+                    period_start: invoice_period_start(object)?,
+                },
+            )
+            .await?
+        }
+        "invoice.payment_failed" => {
+            billing::fail_payment(
+                store,
+                event,
+                payer(object, "/parent/subscription_details/metadata/tenant_id")?,
+            )
+            .await?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(outcome))
 }
 
 pub async fn stripe(
@@ -271,55 +386,41 @@ pub async fn stripe(
     .map_err(|_| ApiError::Unauthorized)?;
     let event: Value = serde_json::from_slice(&body)
         .map_err(|error| ApiError::BadRequest(format!("the body is not JSON: {error}")))?;
-    let kind = text(&event, "/type")?;
-    let object = &event["data"]["object"];
-    match kind {
-        "checkout.session.completed" => {
-            let tenant_id: Uuid = text(object, "/client_reference_id")?.parse().map_err(|_| {
-                ApiError::BadRequest("client_reference_id is not a tenant id".into())
-            })?;
-            billing::complete_checkout(
-                &state.store,
-                tenant_id,
-                text(object, "/customer")?,
-                text(object, "/metadata/plan_id")?,
-            )
-            .await?;
-        }
-        "customer.subscription.updated" => {
-            let items = object
-                .pointer("/items/data")
-                .and_then(Value::as_array)
-                .ok_or_else(|| ApiError::BadRequest("the subscription has no items".into()))?;
-            let [item] = items.as_slice() else {
-                return Err(ApiError::BadRequest(
-                    "the subscription must have exactly one item".into(),
-                ));
-            };
-            billing::change_plan(
-                &state.store,
-                text(object, "/customer")?,
-                text(item, "/price/id")?,
-            )
-            .await?;
-        }
-        "customer.subscription.deleted" => {
-            billing::end_subscription(&state.store, text(object, "/customer")?).await?;
-        }
-        "invoice.paid" => {
-            let created = event
-                .get("created")
-                .and_then(Value::as_i64)
-                .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
-                .ok_or_else(|| ApiError::BadRequest("the event has no created".into()))?;
-            billing::start_period(&state.store, text(object, "/customer")?, created).await?;
-        }
-        "invoice.payment_failed" => {
-            billing::fail_payment(&state.store, text(object, "/customer")?).await?;
-        }
-        _ => return Ok(status(StatusCode::OK, "ignored")),
+    let event_ref = billing::StripeEvent {
+        id: text(&event, "/id")?,
+        kind: text(&event, "/type")?,
+        created: stripe_time(&event, "/created")?,
+    };
+    if billing::recorded(&state.store, event_ref.id)
+        .await?
+        .is_some()
+    {
+        return Ok(status(StatusCode::OK, "duplicate"));
     }
-    Ok(status(StatusCode::OK, "processed"))
+    let object = &event["data"]["object"];
+    let (tenant_id, reason) = match apply_stripe_event(&state, event_ref, object).await {
+        Ok(None) => return Ok(status(StatusCode::OK, "ignored")),
+        Ok(Some(Outcome::Processed)) => return Ok(status(StatusCode::OK, "processed")),
+        Ok(Some(Outcome::Duplicate)) => return Ok(status(StatusCode::OK, "duplicate")),
+        Ok(Some(Outcome::Ignored(reason))) => (None, reason),
+        Err(StripeFailure::Request(error)) => return Err(error),
+        Err(StripeFailure::Billing(error)) => match error {
+            BillingError::TenantNotPayable(id) | BillingError::TenantGone(id) => {
+                (Some(id), error.to_string())
+            }
+            BillingError::UnknownCustomer(_) => return Err(ApiError::Conflict(error.to_string())),
+            BillingError::Db(error) => return Err(error.into()),
+            BillingError::UnknownPrice(_) | BillingError::UnknownPlan(_) => {
+                return Err(ApiError::Internal(error.to_string()));
+            }
+        },
+    };
+    billing::acknowledge(&state.store, event_ref, tenant_id, &reason).await?;
+    Ok((
+        StatusCode::OK,
+        Json(json!({ "status": "ignored", "reason": reason })),
+    )
+        .into_response())
 }
 
 #[cfg(test)]

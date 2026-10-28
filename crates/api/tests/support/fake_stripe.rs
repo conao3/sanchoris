@@ -22,6 +22,7 @@ pub struct StripeRequest {
 pub struct StripeState {
     pub requests: Vec<StripeRequest>,
     pub subscriptions: HashMap<String, Vec<Value>>,
+    pub sessions: BTreeMap<String, String>,
     next_session: u32,
 }
 
@@ -73,6 +74,11 @@ impl FakeStripe {
     pub fn router(self: Arc<Self>) -> Router {
         Router::new()
             .route("/v1/checkout/sessions", post(checkout_session))
+            .route(
+                "/v1/checkout/sessions/{id}",
+                axum::routing::get(retrieve_session),
+            )
+            .route("/v1/checkout/sessions/{id}/expire", post(expire_session))
             .route("/v1/billing_portal/sessions", post(portal_session))
             .route("/v1/subscriptions", axum::routing::get(list_subscriptions))
             .route(
@@ -91,9 +97,66 @@ async fn checkout_session(State(fake): Fake, headers: HeaderMap, Form(form): Fie
     let id = {
         let mut state = fake.state.lock().unwrap();
         state.next_session += 1;
-        format!("cs_test_{}", state.next_session)
+        let id = format!("cs_test_{}", state.next_session);
+        state.sessions.insert(id.clone(), "open".into());
+        id
     };
     Json(json!({ "id": id, "url": format!("https://checkout.stripe.test/{id}") })).into_response()
+}
+
+fn missing_session(id: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": { "message": format!("No such checkout.session: '{id}'") } })),
+    )
+        .into_response()
+}
+
+async fn retrieve_session(
+    State(fake): Fake,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+) -> Response {
+    if !authorized(&headers) {
+        return unauthorized();
+    }
+    fake.record(
+        "GET",
+        format!("/v1/checkout/sessions/{id}"),
+        BTreeMap::new(),
+    );
+    match fake.state.lock().unwrap().sessions.get(&id) {
+        Some(status) => Json(json!({ "id": id, "status": status })).into_response(),
+        None => missing_session(&id),
+    }
+}
+
+async fn expire_session(
+    State(fake): Fake,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+) -> Response {
+    if !authorized(&headers) {
+        return unauthorized();
+    }
+    fake.record(
+        "POST",
+        format!("/v1/checkout/sessions/{id}/expire"),
+        BTreeMap::new(),
+    );
+    let mut state = fake.state.lock().unwrap();
+    match state.sessions.get_mut(&id) {
+        Some(status) if status == "open" => {
+            *status = "expired".into();
+            Json(json!({ "id": id, "status": "expired" })).into_response()
+        }
+        Some(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": { "message": "Only open sessions can be expired" } })),
+        )
+            .into_response(),
+        None => missing_session(&id),
+    }
 }
 
 async fn portal_session(State(fake): Fake, headers: HeaderMap, Form(form): Fields) -> Response {
