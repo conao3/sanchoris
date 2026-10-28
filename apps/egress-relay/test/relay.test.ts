@@ -54,6 +54,11 @@ test("treats private and link-local addresses as private", () => {
   assert.equal(isPrivateAddress("169.254.170.2"), true);
   assert.equal(isPrivateAddress("10.1.0.5"), true);
   assert.equal(isPrivateAddress("::1"), true);
+  assert.equal(isPrivateAddress("64:ff9b::a9fe:a902"), true);
+  assert.equal(isPrivateAddress("224.0.0.251"), true);
+  assert.equal(isPrivateAddress("240.0.0.1"), true);
+  assert.equal(isPrivateAddress("192.0.0.170"), true);
+  assert.equal(isPrivateAddress("198.19.0.1"), true);
   assert.equal(isPrivateAddress("140.82.112.3"), false);
 });
 
@@ -95,11 +100,14 @@ test("tunnels allowed hosts and refuses the rest", async (t) => {
     resolve: async (host) => (host === "metadata.example" ? "169.254.170.2" : "140.82.112.3"),
     connect: () => connect(echoPort, "127.0.0.1"),
     now: () => 1_000_000,
+    maxConnections: 100,
+    maxTunnelsPerRun: 10,
+    idleTimeoutMs: 60_000,
   };
   const relay = createRelay(options);
-  const port = await listen(relay);
-  t.after(() => {
-    relay.close();
+  const port = await listen(relay.server);
+  t.after(async () => {
+    await relay.shutdown();
     echo.close();
   });
   const token = sign({ run: "run-1", exp: 2_000, allow: ["github.com", "metadata.example"] });
@@ -135,4 +143,108 @@ test("tunnels allowed hosts and refuses the rest", async (t) => {
       ["github.com", false, "proxy authentication"],
     ],
   );
+});
+
+function relayOptions(echoPort: number, logs: Record<string, unknown>[], overrides: Partial<RelayOptions> = {}): RelayOptions {
+  return {
+    signingKey: KEY,
+    platformHosts: ["api.anthropic.com"],
+    denyHosts: [],
+    log: (entry) => logs.push(entry),
+    resolve: async () => "140.82.112.3",
+    connect: () => connect(echoPort, "127.0.0.1"),
+    now: () => 1_000_000,
+    maxConnections: 100,
+    maxTunnelsPerRun: 10,
+    idleTimeoutMs: 60_000,
+    ...overrides,
+  };
+}
+
+function authFor(run: string): string {
+  const token = sign({ run, exp: 2_000, allow: ["github.com"] });
+  return `Proxy-Authorization: Basic ${Buffer.from(`run:${token}`).toString("base64")}\r\n`;
+}
+
+async function open(port: number, run: string): Promise<{ socket: Socket; status: string }> {
+  const socket = connect(port, "127.0.0.1");
+  await once(socket, "connect");
+  socket.setEncoding("utf8");
+  socket.write(`CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n${authFor(run)}\r\n`);
+  let received = "";
+  await new Promise<void>((resolve) => {
+    const onData = (chunk: string) => {
+      received += chunk;
+      if (received.includes("\r\n\r\n")) {
+        socket.off("data", onData);
+        resolve();
+      }
+    };
+    socket.on("data", onData);
+    socket.on("close", () => resolve());
+  });
+  return { socket, status: received.split("\r\n")[0] ?? "" };
+}
+
+test("caps the open tunnels of one run without affecting other runs", async (t) => {
+  const echo = createServer((socket) => socket.pipe(socket));
+  const echoPort = await listen(echo);
+  const logs: Record<string, unknown>[] = [];
+  const relay = createRelay(relayOptions(echoPort, logs, { maxTunnelsPerRun: 2 }));
+  const port = await listen(relay.server);
+  t.after(async () => {
+    await relay.shutdown();
+    echo.close();
+  });
+
+  const first = await open(port, "run-1");
+  const second = await open(port, "run-1");
+  assert.equal(first.status, "HTTP/1.1 200 Connection Established");
+  assert.equal(second.status, "HTTP/1.1 200 Connection Established");
+  assert.equal(relay.tunnels("run-1"), 2);
+
+  const third = await open(port, "run-1");
+  assert.equal(third.status, "HTTP/1.1 429 Too Many Requests");
+  const other = await open(port, "run-2");
+  assert.equal(other.status, "HTTP/1.1 200 Connection Established");
+
+  const firstClosed = once(first.socket, "close");
+  first.socket.destroy();
+  await firstClosed;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(relay.tunnels("run-1"), 1);
+  const again = await open(port, "run-1");
+  assert.equal(again.status, "HTTP/1.1 200 Connection Established");
+  assert.ok(logs.some((entry) => entry.run === "run-1" && entry.reason === "the run has 2 open tunnels"));
+  for (const tunnel of [second, third, other, again]) tunnel.socket.destroy();
+});
+
+test("closes tunnels that stay idle", async (t) => {
+  const echo = createServer((socket) => socket.pipe(socket));
+  const echoPort = await listen(echo);
+  const relay = createRelay(relayOptions(echoPort, [], { idleTimeoutMs: 100 }));
+  const port = await listen(relay.server);
+  t.after(async () => {
+    await relay.shutdown();
+    echo.close();
+  });
+  const tunnel = await open(port, "run-1");
+  assert.equal(tunnel.status, "HTTP/1.1 200 Connection Established");
+  await once(tunnel.socket, "close");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(relay.tunnels("run-1"), 0);
+});
+
+test("shutdown closes open tunnels and the listener", async (t) => {
+  const echo = createServer((socket) => socket.pipe(socket));
+  const echoPort = await listen(echo);
+  const relay = createRelay(relayOptions(echoPort, []));
+  const port = await listen(relay.server);
+  t.after(() => echo.close());
+  const tunnel = await open(port, "run-1");
+  assert.equal(tunnel.status, "HTTP/1.1 200 Connection Established");
+  const closed = once(tunnel.socket, "close");
+  await relay.shutdown();
+  await closed;
+  assert.equal(relay.server.listening, false);
 });
