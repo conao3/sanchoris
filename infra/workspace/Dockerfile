@@ -1,6 +1,6 @@
 FROM --platform=$BUILDPLATFORM node:26-bookworm@sha256:52dd743dc3b494cba5bc8c13507ac984507addb8a087c626dc98dcffa53133d4 AS build
 ARG TARGETARCH
-RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
+RUN npm install --global pnpm@12.9.0
 WORKDIR /src
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps ./apps
