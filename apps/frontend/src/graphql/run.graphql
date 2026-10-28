@@ -21,6 +21,8 @@ query Run($tenant: String!, $task: ID!, $number: Int!) {
         costUsd
         workspace {
           platform
+          architecture
+          capacityProvider
           vcpu
           repositories
           branch

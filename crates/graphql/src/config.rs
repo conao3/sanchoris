@@ -14,7 +14,8 @@ use uuid::Uuid;
 use crate::account::{Credential, Member};
 use crate::context::{Scope, tx};
 use crate::enums::{
-    ChangeRequestState, ConfigObjectKind, Provider, UsageLimitResume, WorkspaceCompute,
+    ChangeRequestState, ConfigObjectKind, Provider, UsageLimitResume, WorkspaceArchitecture,
+    WorkspaceCompute,
 };
 use crate::error::not_found;
 use crate::scalars::{Timestamp, ts, ts_opt};
@@ -602,6 +603,10 @@ impl Session {
 
     async fn compute(&self) -> Result<WorkspaceCompute> {
         WorkspaceCompute::from_db(self.parsed()?.workspace.compute.as_str())
+    }
+
+    async fn architecture(&self) -> Result<WorkspaceArchitecture> {
+        WorkspaceArchitecture::from_db(self.parsed()?.workspace.architecture.as_str())
     }
 
     async fn idle_seconds(&self) -> Result<i32> {

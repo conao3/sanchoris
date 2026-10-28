@@ -1,5 +1,5 @@
 use sanchoris_config::{
-    Compute, ConfigFiles, PlanLimits, SkillOrigin, TriggerSource, ValidationContext,
+    Architecture, Compute, ConfigFiles, PlanLimits, SkillOrigin, TriggerSource, ValidationContext,
     ValidationErrors, builtin_skill, builtin_skills, load_repository, parse_repository,
     read_config_dir,
 };
@@ -509,8 +509,8 @@ fn plan_limits_are_enforced() {
         },
     };
     let config = replaced(
-        "    Workspace: { Compute: standard, IdleSeconds: 900 }\n  all:",
-        "    Workspace: { Compute: docker, IdleSeconds: 900 }\n  all:",
+        "    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }\n  all:",
+        "    Workspace: { Compute: docker, Architecture: arm64, IdleSeconds: 900 }\n  all:",
     );
     let errors = errors_with(&example_files(&config), &context);
     for location in [
@@ -530,10 +530,50 @@ fn plan_limits_are_enforced() {
 }
 
 #[test]
+fn the_workspace_architecture_is_required_and_docker_runs_on_arm64() {
+    config_error(
+        &replaced(
+            "    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }\n  all:",
+            "    Workspace: { Compute: standard, IdleSeconds: 900 }\n  all:",
+        ),
+        "Sessions.shop.Workspace.Architecture",
+    );
+    config_error(
+        &replaced(
+            "    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }\n  all:",
+            "    Workspace: { Compute: standard, Architecture: i386, IdleSeconds: 900 }\n  all:",
+        ),
+        "Sessions.shop.Workspace.Architecture",
+    );
+    let x86 = replaced(
+        "    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }\n  all:",
+        "    Workspace: { Compute: standard, Architecture: x86_64, IdleSeconds: 900 }\n  all:",
+    );
+    let repository = load_repository(&example_files(&x86), &context()).unwrap();
+    assert_eq!(
+        repository.config.sessions["shop"].workspace.architecture,
+        Architecture::X86_64
+    );
+    let mut context = context();
+    context.plan.computes.insert(Compute::Docker);
+    let docker_x86 = replaced(
+        "    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }\n  all:",
+        "    Workspace: { Compute: docker, Architecture: x86_64, IdleSeconds: 900 }\n  all:",
+    );
+    let errors = errors_with(&example_files(&docker_x86), &context);
+    assert_error(&errors, "Sessions.shop.Workspace.Architecture");
+    let docker_arm = replaced(
+        "    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }\n  all:",
+        "    Workspace: { Compute: docker, Architecture: arm64, IdleSeconds: 900 }\n  all:",
+    );
+    load_repository(&example_files(&docker_arm), &context).unwrap();
+}
+
+#[test]
 fn docker_compute_counts_three_times() {
     let config = replaced(
-        "    Workspace: { Compute: standard, IdleSeconds: 900 }\n  all:",
-        "    Workspace: { Compute: docker, IdleSeconds: 900 }\n  all:",
+        "    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }\n  all:",
+        "    Workspace: { Compute: docker, Architecture: arm64, IdleSeconds: 900 }\n  all:",
     );
     let mut context = context();
     context.plan.max_timeout_seconds = 86_400;

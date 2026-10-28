@@ -70,6 +70,26 @@ db_enum!(WorkspaceCompute, "workspace compute", {
     Docker => "docker",
 });
 
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceArchitecture {
+    #[graphql(name = "ARM64")]
+    Arm64,
+    #[graphql(name = "X86_64")]
+    X86_64,
+}
+
+impl WorkspaceArchitecture {
+    pub fn from_db(text: &str) -> Result<Self, Error> {
+        match text {
+            "arm64" => Ok(Self::Arm64),
+            "x86_64" => Ok(Self::X86_64),
+            other => Err(Error::new(format!(
+                "unknown workspace architecture {other:?}"
+            ))),
+        }
+    }
+}
+
 db_enum!(UsageLimitResume, "usage limit resume", {
     Auto => "auto",
     Manual => "manual",

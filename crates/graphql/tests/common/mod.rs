@@ -53,7 +53,7 @@ Sessions:
       Permissions: { contents: write, pull_requests: write, issues: write, checks: read }
     Network: { Allow: [github.com] }
     UsageLimit: { Resume: auto }
-    Workspace: { Compute: standard, IdleSeconds: 900 }
+    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }
   all:
     Worker: { Agent: claude, Model: claude-sonnet-5-5, Credential: acme-claude-team }
     Repos: [acme/idea]
@@ -62,7 +62,7 @@ Sessions:
       Permissions: { contents: read, issues: write }
     Network: { Allow: [github.com] }
     UsageLimit: { Resume: manual }
-    Workspace: { Compute: standard, IdleSeconds: 900 }
+    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }
 Triggers:
   labeled-issue:
     State: ENABLED
@@ -1181,12 +1181,15 @@ impl World {
             task_id: issue_task,
             run_id: issue_run,
             compute: "standard".into(),
+            architecture: "arm64".into(),
             platform: "fargate".into(),
             platform_ref: None,
+            capacity_provider: Some("FARGATE_SPOT".into()),
             repositories: vec!["acme/shop-web".into(), "acme/shop-api".into()],
             branch: format!("sanchoris/{issue_task}"),
             base_commit: Some("abc123".into()),
             started_at: now - Duration::hours(2),
+            signaled_at: None,
             stopped_at: Some(now - Duration::minutes(30)),
         })
         .unwrap();

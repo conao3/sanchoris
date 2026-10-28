@@ -322,6 +322,7 @@ impl Channel {
             | "record_upload_request"
             | "session_record"
             | "turn_end"
+            | "stopping"
             | "exec_result"
             | "git_token_request"
             | "worker_credential_request" => {

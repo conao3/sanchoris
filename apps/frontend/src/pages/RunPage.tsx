@@ -7,7 +7,7 @@ import { Button } from '../components/Button';
 import { Cols, Page } from '../components/Shell';
 import { RunState, SkillRunState } from '../components/status';
 import { Dim, Empty, ErrorNote, ExternalLk, Kv, Lk, Row, Section, Skeleton, Sub, Title } from '../components/ui';
-import { type LogLineKind, RunDocument, SendChatMessageDocument, StopRunDocument } from '../graphql/generated/graphql';
+import { type LogLineKind, RunDocument, SendChatMessageDocument, StopRunDocument, type WorkspaceArchitecture } from '../graphql/generated/graphql';
 import { type MessageKey, t } from '../i18n';
 import { clock } from '../lib/format';
 import { useKeys } from '../lib/keys';
@@ -22,6 +22,11 @@ const lineClass: Record<LogLineKind, string> = {
   EVENT: 'text-term-event',
   USER: 'text-term-user',
   ERROR: 'text-term-error',
+};
+
+const architectureName: Record<WorkspaceArchitecture, string> = {
+  ARM64: 'arm64',
+  X86_64: 'x86_64',
 };
 
 const linePrefix: Partial<Record<LogLineKind, MessageKey>> = {
@@ -160,7 +165,17 @@ export function RunPage() {
             [t('run.credential'), <span className="font-mono text-sm">{run.credentialName}</span>],
             [t('run.repos'), <span className="font-mono text-sm">{run.workspace.repositories.join(', ')}</span>],
             [t('run.branch'), <span className="font-mono text-sm">{run.workspace.branch}</span>],
-            [t('run.workspace'), t('run.workspaceSize', { platform: run.workspace.platform, vcpu: run.workspace.vcpu })],
+            [
+              t('run.workspace'),
+              run.workspace.capacityProvider === null
+                ? t('run.workspaceSize', { platform: run.workspace.platform, architecture: architectureName[run.workspace.architecture], vcpu: run.workspace.vcpu })
+                : t('run.workspaceSizeOn', {
+                    platform: run.workspace.platform,
+                    capacity: run.workspace.capacityProvider,
+                    architecture: architectureName[run.workspace.architecture],
+                    vcpu: run.workspace.vcpu,
+                  }),
+            ],
           ]}
         />
         <Section count={run.skillRuns.length}>{t('run.skillsCalled')}</Section>

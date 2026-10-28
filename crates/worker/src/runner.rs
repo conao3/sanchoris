@@ -195,7 +195,10 @@ impl RunnerPort for LocalProcessRunner {
             .find(|(_, workspace)| workspace.running.workspace_id == spec.workspace_id)
             .map(|(platform_ref, _)| platform_ref.clone())
         {
-            return Ok(WorkspaceHandle { platform_ref });
+            return Ok(WorkspaceHandle {
+                platform_ref,
+                capacity_provider: None,
+            });
         }
         let dir = self.config.workspaces_dir.join(Uuid::new_v4().to_string());
         tokio::fs::create_dir_all(&dir)
@@ -259,7 +262,10 @@ impl RunnerPort for LocalProcessRunner {
                 dir,
             },
         );
-        Ok(WorkspaceHandle { platform_ref })
+        Ok(WorkspaceHandle {
+            platform_ref,
+            capacity_provider: None,
+        })
     }
 
     async fn running_workspaces(&self) -> Result<Vec<RunningWorkspace>, RunnerError> {
@@ -297,6 +303,7 @@ impl RunnerPort for LocalProcessRunner {
         let Some(workspace) = workspaces.get_mut(platform_ref) else {
             return Ok(Some(WorkspaceExit {
                 reason: format!("the workspace process {platform_ref} is gone"),
+                interrupted_at: None,
             }));
         };
         let status = workspace
@@ -314,6 +321,7 @@ impl RunnerPort for LocalProcessRunner {
             .map_err(|error| RunnerError(format!("remove {}: {error}", workspace.dir.display())))?;
         Ok(Some(WorkspaceExit {
             reason: format!("the workspace process exited with {status}"),
+            interrupted_at: None,
         }))
     }
 
@@ -367,6 +375,7 @@ mod tests {
             started_at: chrono::Utc::now(),
             branch: "sanchoris/x".into(),
             compute: "standard".into(),
+            architecture: "arm64".into(),
             repositories,
             network_allow: vec!["github.com".into()],
         }

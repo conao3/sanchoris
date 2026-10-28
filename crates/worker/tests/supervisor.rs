@@ -3,8 +3,9 @@ mod common;
 use chrono::Duration;
 use common::{REPO, World, turn_end_payload};
 use sanchoris_core::channel::RunEventType;
-use sanchoris_core::items::{Tenant, UsageAlert, UsageSnapshot};
+use sanchoris_core::items::{Tenant, UsageAlert, UsageSnapshot, Workspace};
 use sanchoris_core::keys;
+use sanchoris_core::store::{Index, SortKey};
 use serde_json::json;
 
 async fn tenant(world: &World) -> Tenant {
@@ -189,6 +190,7 @@ async fn a_workspace_that_stops_on_its_own_needs_you_with_the_reason() {
         platform_ref,
         sanchoris_worker::ports::WorkspaceExit {
             reason: reason.into(),
+            interrupted_at: None,
         },
     );
     world.clock.advance(Duration::seconds(120));
@@ -200,6 +202,132 @@ async fn a_workspace_that_stops_on_its_own_needs_you_with_the_reason() {
     assert!(*world.runner.sweeps.lock().unwrap() > sweeps);
     assert!(world.runner.stopped.lock().unwrap().is_empty());
     assert_eq!(tenant(&world).await.workspace_seconds_this_period, 120);
+}
+
+async fn workspaces(world: &World) -> Vec<Workspace> {
+    let mut workspaces = world
+        .store
+        .query_index::<Workspace>(
+            Index::Gsi1,
+            &keys::workspaces_index(world.tenant()),
+            SortKey::All,
+        )
+        .await
+        .unwrap();
+    workspaces.sort_by_key(|w| w.started_at);
+    workspaces
+}
+
+#[tokio::test]
+async fn a_spot_interruption_restores_the_session_in_a_new_workspace() {
+    let world = World::new("pro").await;
+    let task = world.started_task(35).await;
+    let run_id = task.run_id.unwrap();
+    world
+        .run_event(
+            run_id,
+            RunEventType::SessionRecord,
+            json!({ "sessionId": "session-1", "turn": 1, "key": "records/run/1.jsonl" }),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    let first = workspaces(&world).await;
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].architecture, "arm64");
+    assert_eq!(
+        first[0].capacity_provider.as_deref(),
+        Some(common::FAKE_CAPACITY_PROVIDER)
+    );
+
+    world.clock.advance(Duration::seconds(300));
+    let interrupted_at = world.clock_now();
+    let platform_ref = world.runner.refs.lock().unwrap()[0].clone();
+    world.runner.exits.lock().unwrap().insert(
+        platform_ref,
+        sanchoris_worker::ports::WorkspaceExit {
+            reason: "Your Spot Task was interrupted. (SpotInterruption)".into(),
+            interrupted_at: Some(interrupted_at),
+        },
+    );
+    world.clock.advance(Duration::seconds(150));
+    world.worker.settle().await.unwrap();
+
+    let task = world.task(&format!("{REPO}#35")).await;
+    assert_eq!(task.status, "RUNNING");
+    assert_eq!(task.error, None);
+    assert_eq!(world.runner.started.lock().unwrap().len(), 2);
+    let starts = world.outbox(run_id, "start").await;
+    assert_eq!(starts.len(), 2);
+    assert_eq!(
+        starts[1]["resume"],
+        json!({ "sessionId": "session-1", "recordKey": "records/run/1.jsonl", "lastTurn": 0 })
+    );
+    assert_eq!(
+        world.messages(run_id).await.last().map(String::as_str),
+        Some(sanchoris_core::messages::restored_message().as_str())
+    );
+    let all = workspaces(&world).await;
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].stopped_at, Some(interrupted_at));
+    assert_eq!(all[1].stopped_at, None);
+    assert_eq!(tenant(&world).await.workspace_seconds_this_period, 300);
+}
+
+#[tokio::test]
+async fn a_workspace_whose_agent_reported_sigterm_restores_and_counts_until_the_signal() {
+    let world = World::new("pro").await;
+    let task = world.started_task(35).await;
+    let run_id = task.run_id.unwrap();
+    world.clock.advance(Duration::seconds(200));
+    world
+        .sequenced_event(
+            run_id,
+            1,
+            RunEventType::Stopping,
+            json!({ "signal": "SIGTERM" }),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    let signaled = workspaces(&world).await;
+    assert_eq!(signaled[0].signaled_at, Some(world.clock_now()));
+    world
+        .sequenced_event(
+            run_id,
+            2,
+            RunEventType::TurnEnd,
+            json!({
+                "turn": 1,
+                "result": "interrupted",
+                "summary": "",
+                "error": null,
+                "usage": {},
+                "totalCostUsd": 0.01,
+                "sessionId": "session-1",
+            }),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    assert!(world.messages(run_id).await.is_empty());
+    assert_eq!(world.task(&format!("{REPO}#35")).await.nudges, 0);
+
+    let platform_ref = world.runner.refs.lock().unwrap()[0].clone();
+    world.runner.exits.lock().unwrap().insert(
+        platform_ref,
+        sanchoris_worker::ports::WorkspaceExit {
+            reason: "Task stopped by user (UserInitiated); container exit code 0".into(),
+            interrupted_at: None,
+        },
+    );
+    world.clock.advance(Duration::seconds(90));
+    world.worker.settle().await.unwrap();
+    let task = world.task(&format!("{REPO}#35")).await;
+    assert_eq!(task.status, "RUNNING");
+    assert_eq!(world.runner.started.lock().unwrap().len(), 2);
+    assert_eq!(
+        world.messages(run_id).await,
+        vec![sanchoris_core::messages::restored_message()]
+    );
+    assert_eq!(tenant(&world).await.workspace_seconds_this_period, 200);
 }
 
 #[tokio::test]
@@ -223,6 +351,7 @@ async fn a_workspace_that_stops_before_the_session_starts_gets_the_instruction_a
         platform_ref,
         sanchoris_worker::ports::WorkspaceExit {
             reason: "CannotPullContainerError".into(),
+            interrupted_at: None,
         },
     );
     world.clock.advance(Duration::seconds(120));

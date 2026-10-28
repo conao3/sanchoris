@@ -352,6 +352,11 @@ enum WorkspaceCompute {
   DOCKER
 }
 
+enum WorkspaceArchitecture {
+  ARM64
+  X86_64
+}
+
 enum UsageLimitResume {
   AUTO
   MANUAL
@@ -371,6 +376,7 @@ type Session {
   "Repositories the GitHub token can reach, as owner/name or owner/*."
   githubRepositories: [String!]!
   compute: WorkspaceCompute!
+  architecture: WorkspaceArchitecture!
   idleSeconds: Int!
   usageLimitResume: UsageLimitResume!
 }
@@ -871,6 +877,9 @@ enum RunStatus {
 type Workspace {
   platform: String!
   compute: WorkspaceCompute!
+  architecture: WorkspaceArchitecture!
+  "The ECS capacity provider the workspace runs on (FARGATE_SPOT or FARGATE); null before it launches and for local workspaces."
+  capacityProvider: String
   vcpu: Int!
   memoryMib: Int!
   "Repository names cloned into the workspace."

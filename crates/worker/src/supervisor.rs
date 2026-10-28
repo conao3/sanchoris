@@ -5,7 +5,7 @@ use sanchoris_core::db::{self, REF_TRIGGER, TenantTx, locate};
 use sanchoris_core::items::{
     OutboxItem, Pending, Repository, Run, RunEventItem, SkillRunItem, Task, UsageRecord, Workspace,
 };
-use sanchoris_core::keys;
+use sanchoris_core::jobs::Job;
 use sanchoris_core::lifecycle::{
     ERROR_WORKSPACE_STOPPED, RequiredSkill, TaskDecision, TaskLimits, TaskProgress, TurnEnd,
     check_limits, decide_human_reply, decide_turn_end, decide_usage_limit,
@@ -20,6 +20,7 @@ use sanchoris_core::tasks::{
     apply_decision, idle_seconds, latest_run, load_run, load_task, runs_of, send_to_task,
     task_branch,
 };
+use sanchoris_core::{keys, messages};
 use sanchoris_engine::ResourceOutcome;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -144,14 +145,29 @@ async fn handle(
         }
         RunEventType::TurnEnd => turn_end(worker, tx, task_id, event).await?,
         RunEventType::HumanReply => human_reply(worker, tx, task_id, event).await?,
+        RunEventType::Stopping => signaled(worker, tx, task_id, event.run_id).await?,
     }
     let agent_active = match kind {
-        RunEventType::HumanReply => false,
+        RunEventType::HumanReply | RunEventType::Stopping => false,
         RunEventType::Heartbeat => payload["busy"].as_bool() == Some(true),
         _ => true,
     };
     if agent_active {
         heartbeat_agent_skill_runs(tx, task_id, event.run_id, worker.now()).await?;
+    }
+    Ok(())
+}
+
+async fn signaled(worker: &Worker, tx: &mut TenantTx, task_id: Uuid, run_id: Uuid) -> Result<()> {
+    let now = worker.now();
+    let open = tx
+        .query::<Workspace>(&keys::task_pk(tx.tenant_id(), task_id), "WS#")
+        .await?
+        .into_iter()
+        .filter(|w| w.run_id == run_id && w.stopped_at.is_none() && w.signaled_at.is_none());
+    for mut workspace in open {
+        workspace.signaled_at = Some(now);
+        tx.put(&workspace)?;
     }
     Ok(())
 }
@@ -262,7 +278,7 @@ async fn turn_end(
         recorded_at: now,
     })?;
     let task = load_task(tx, task_id).await?;
-    if task.status != TaskStatus::Running {
+    if task.status != TaskStatus::Running || payload["result"] == "interrupted" {
         return Ok(());
     }
     let start = start_of(&task)?;
@@ -439,55 +455,147 @@ async fn observe_workspaces(worker: &Worker, tenant_id: Uuid, task_id: Uuid) -> 
         .collect::<Vec<_>>();
     let mut stopped = Vec::new();
     for mut workspace in open {
-        let reason = match workspace.platform_ref.clone() {
-            None if workspace.started_at + Duration::minutes(LAUNCH_TIMEOUT_MINUTES) <= now => {
-                format!("the workspace did not launch within {LAUNCH_TIMEOUT_MINUTES} minutes")
-            }
+        let (reason, interrupted_at) = match workspace.platform_ref.clone() {
+            None if workspace.started_at + Duration::minutes(LAUNCH_TIMEOUT_MINUTES) <= now => (
+                format!("the workspace did not launch within {LAUNCH_TIMEOUT_MINUTES} minutes"),
+                None,
+            ),
             None => continue,
             Some(platform_ref) => {
                 let Some(exit) = worker.deps.runner.workspace_exit(&platform_ref).await? else {
                     continue;
                 };
-                exit.reason
+                (exit.reason, exit.interrupted_at)
             }
         };
-        close_workspace(&mut tx, &mut workspace, now)?;
-        stopped.push((workspace.run_id, reason));
+        let interrupted_at = match (interrupted_at, workspace.signaled_at) {
+            (Some(platform), Some(agent)) => Some(platform.min(agent)),
+            (platform, agent) => platform.or(agent),
+        };
+        close_workspace(&mut tx, &mut workspace, interrupted_at.unwrap_or(now))?;
+        stopped.push(Stopped {
+            workspace_id: workspace.id,
+            run_id: workspace.run_id,
+            reason,
+            interrupted_at,
+        });
     }
-    let Some((last_run_id, last_reason)) = stopped.last().cloned() else {
+    if stopped.is_empty() {
         return Ok(0);
-    };
-    for (run_id, reason) in &stopped {
+    }
+    for stop in &stopped {
         let Some(mut run) = tx
-            .get::<Run>(&keys::run_key(tenant_id, task_id, *run_id))
+            .get::<Run>(&keys::run_key(tenant_id, task_id, stop.run_id))
             .await?
         else {
             continue;
         };
         if !run.is_finished() {
             run.status = "idle".into();
-            run.error = Some(reason.clone());
+            run.error = stop.interrupted_at.is_none().then(|| stop.reason.clone());
             run.updated_at = now;
             tx.put(&run)?;
         }
     }
     let task = load_task(&mut tx, task_id).await?;
-    if task.status == TaskStatus::Running {
-        apply_decision(
-            &mut tx,
-            task_id,
-            last_run_id,
-            &TaskDecision::NeedsYou {
-                error: ERROR_WORKSPACE_STOPPED.into(),
-                cause: last_reason,
-            },
-            "workspace-stopped",
-            now,
-        )
-        .await?;
+    if let Some(failed) = stopped
+        .iter()
+        .rev()
+        .find(|stop| stop.interrupted_at.is_none())
+    {
+        if task.status == TaskStatus::Running {
+            apply_decision(
+                &mut tx,
+                task_id,
+                failed.run_id,
+                &TaskDecision::NeedsYou {
+                    error: ERROR_WORKSPACE_STOPPED.into(),
+                    cause: failed.reason.clone(),
+                },
+                "workspace-stopped",
+                now,
+            )
+            .await?;
+        }
+    } else if !task.status.is_terminal() {
+        for stop in &stopped {
+            restore_after_interruption(&mut tx, &task, stop, now).await?;
+        }
     }
     tx.commit().await?;
     Ok(stopped.len())
+}
+
+struct Stopped {
+    workspace_id: Uuid,
+    run_id: Uuid,
+    reason: String,
+    interrupted_at: Option<DateTime<Utc>>,
+}
+
+async fn restore_after_interruption(
+    tx: &mut TenantTx,
+    task: &Task,
+    stop: &Stopped,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let Some(run) = load_run(tx, stop.run_id).await? else {
+        return Ok(());
+    };
+    if run.is_finished() {
+        return Ok(());
+    }
+    let mut redelivered = false;
+    for mut item in outbox(tx, run.id).await? {
+        let Some(delivered_at) = item.delivered_at else {
+            continue;
+        };
+        if item.kind == "user_message"
+            && stop
+                .interrupted_at
+                .is_some_and(|interrupted_at| delivered_at >= interrupted_at)
+        {
+            item.delivered_at = None;
+            tx.put(&item)?;
+            redelivered = true;
+            continue;
+        }
+        if item.kind != "exec" {
+            continue;
+        }
+        let Some(request_id) = item.payload["requestId"]
+            .as_str()
+            .and_then(|id| id.parse::<Uuid>().ok())
+        else {
+            continue;
+        };
+        let awaiting = invocation_by_id(tx, request_id)
+            .await?
+            .is_some_and(|(_, invocation)| invocation.status == "awaiting");
+        if awaiting {
+            item.delivered_at = None;
+            tx.put(&item)?;
+            redelivered = true;
+        }
+    }
+    if task.status == TaskStatus::Running {
+        send_to_task(
+            tx,
+            task.id,
+            run.id,
+            &messages::restored_message(),
+            &format!("restore:{}", stop.workspace_id),
+            now,
+        )
+        .await?;
+    } else if redelivered {
+        tx.emit(Job::Reconcile {
+            tenant_id: tx.tenant_id(),
+            task_id: task.id,
+            run_id: run.id,
+        });
+    }
+    Ok(())
 }
 
 pub async fn sweep_limits(worker: &Worker) -> Result<usize> {
@@ -673,12 +781,15 @@ async fn start_workspace(
         task_id: task.id,
         run_id: run.id,
         compute: session.workspace.compute.as_str().to_string(),
+        architecture: session.workspace.architecture.as_str().to_string(),
         platform: worker.deps.runner.platform().to_string(),
         platform_ref: None,
+        capacity_provider: None,
         repositories: repositories.clone(),
         branch: branch.clone(),
         base_commit: None,
         started_at: now,
+        signaled_at: None,
         stopped_at: None,
     };
     tx.insert(&workspace)?;
@@ -738,6 +849,7 @@ async fn launch_workspace(worker: &Worker, task: &Task, workspace: Workspace) ->
             started_at: workspace.started_at,
             branch: workspace.branch.clone(),
             compute: workspace.compute.clone(),
+            architecture: workspace.architecture.clone(),
             repositories: workspace.repositories.clone(),
             network_allow: session.network.allow.clone(),
         })
@@ -757,18 +869,23 @@ async fn launch_workspace(worker: &Worker, task: &Task, workspace: Workspace) ->
         return Ok(1);
     }
     recorded.platform_ref = Some(handle.platform_ref);
+    recorded.capacity_provider = handle.capacity_provider;
     tx.put(&recorded)?;
     tx.commit().await?;
     Ok(1)
 }
 
-fn close_workspace(tx: &mut TenantTx, workspace: &mut Workspace, now: DateTime<Utc>) -> Result<()> {
+fn close_workspace(
+    tx: &mut TenantTx,
+    workspace: &mut Workspace,
+    counted_until: DateTime<Utc>,
+) -> Result<()> {
     let weight = match workspace.compute.as_str() {
         "docker" => 3,
         _ => 1,
     };
-    let seconds = (now - workspace.started_at).num_seconds().max(0) * weight;
-    workspace.stopped_at = Some(now.max(workspace.started_at));
+    let seconds = (counted_until - workspace.started_at).num_seconds().max(0) * weight;
+    workspace.stopped_at = Some(counted_until.max(workspace.started_at));
     tx.put(workspace)?;
     tx.update(
         &keys::tenant_key(tx.tenant_id()),

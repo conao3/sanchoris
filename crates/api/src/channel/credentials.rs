@@ -220,7 +220,7 @@ mod tests {
             "GitHub": { "Repos": repos, "Permissions": { "contents": "write", "issues": "read" } },
             "Network": { "Allow": [] },
             "UsageLimit": { "Resume": "auto" },
-            "Workspace": { "Compute": "standard", "IdleSeconds": 60 },
+            "Workspace": { "Compute": "standard", "Architecture": "arm64", "IdleSeconds": 60 },
         }))
         .unwrap()
     }

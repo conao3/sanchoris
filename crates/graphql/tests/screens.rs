@@ -142,6 +142,8 @@ async fn every_screen_query_validates_and_executes() {
     assert_eq!(run["credentialName"], "acme-claude-team");
     assert_eq!(run["workspace"]["platform"], "fargate");
     assert_eq!(run["workspace"]["vcpu"], 2);
+    assert_eq!(run["workspace"]["architecture"], "ARM64");
+    assert_eq!(run["workspace"]["capacityProvider"], "FARGATE_SPOT");
     let kinds = run["log"]
         .as_array()
         .unwrap()

@@ -12,7 +12,7 @@ pub mod validate;
 
 pub use builtin::{builtin_skill, builtin_skills};
 pub use config::{
-    Agent, CONFIG_FILE, Checkout, ChildLimits, Compute, Config, GitHubAccess, Hook,
+    Agent, Architecture, CONFIG_FILE, Checkout, ChildLimits, Compute, Config, GitHubAccess, Hook,
     InputTransformer, Limits, Network, PermissionLevel, Project, ProjectRepo, REQUESTER,
     ResumeMode, Session, Start, Trigger, TriggerSource, TriggerState, UsageLimit, Worker,
     Workspace, parse_config_yaml,

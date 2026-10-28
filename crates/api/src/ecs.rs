@@ -6,8 +6,9 @@ use aws_sdk_dynamodb::types::{AttributeValue, ReturnValue};
 use aws_sdk_ecs::error::DisplayErrorContext;
 use aws_sdk_ecs::operation::run_task::RunTaskError;
 use aws_sdk_ecs::types::{
-    AssignPublicIp, AwsVpcConfiguration, ContainerOverride, DesiredStatus, KeyValuePair,
-    LaunchType, NetworkConfiguration, Tag, Task, TaskField, TaskOverride,
+    AssignPublicIp, AwsVpcConfiguration, CapacityProviderStrategyItem, ContainerOverride,
+    DesiredStatus, KeyValuePair, NetworkConfiguration, Tag, Task, TaskField, TaskOverride,
+    TaskStopCode,
 };
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use sanchoris_core::clock::Clock;
@@ -39,7 +40,8 @@ const POLL_MILLIS: u64 = 3000;
 #[derive(Debug, Clone)]
 pub struct EcsRunnerConfig {
     pub cluster: String,
-    pub task_definition: String,
+    pub task_definition_arm64: String,
+    pub task_definition_x86_64: String,
     pub container: String,
     pub subnets: Vec<String>,
     pub security_groups: Vec<String>,
@@ -62,10 +64,25 @@ fn list(value: &str) -> Vec<String> {
 }
 
 impl EcsRunnerConfig {
+    pub fn task_definition(&self, architecture: &str) -> Result<&str, RunnerError> {
+        match architecture {
+            "arm64" => Ok(&self.task_definition_arm64),
+            "x86_64" => Ok(&self.task_definition_x86_64),
+            other => Err(RunnerError(format!(
+                "architecture {other:?} has no Fargate task definition"
+            ))),
+        }
+    }
+
+    fn families(&self) -> [&str; 2] {
+        [&self.task_definition_arm64, &self.task_definition_x86_64]
+    }
+
     pub fn load(secrets: &Secrets) -> Result<Self, ConfigError> {
         let mut env = Reader::new();
         let cluster = env.get("SANCHORIS_ECS_CLUSTER");
-        let task_definition = env.get("SANCHORIS_ECS_TASK_DEFINITION");
+        let task_definition_arm64 = env.get("SANCHORIS_ECS_TASK_DEFINITION_ARM64");
+        let task_definition_x86_64 = env.get("SANCHORIS_ECS_TASK_DEFINITION_X86_64");
         let container = env.get("SANCHORIS_ECS_CONTAINER");
         let subnets = env.get("SANCHORIS_ECS_SUBNETS");
         let security_groups = env.get("SANCHORIS_ECS_SECURITY_GROUPS");
@@ -94,7 +111,8 @@ impl EcsRunnerConfig {
             })?;
         Ok(Self {
             cluster,
-            task_definition,
+            task_definition_arm64,
+            task_definition_x86_64,
             container,
             subnets: list(&subnets),
             security_groups: list(&security_groups),
@@ -130,7 +148,7 @@ impl EcsRunner {
                 table: store.tables().main.clone(),
                 cluster: config.cluster.clone(),
                 service: config.relay_service.clone(),
-                workspace_family: config.task_definition.clone(),
+                workspace_families: config.families().map(str::to_string).to_vec(),
                 clock,
             },
             client,
@@ -173,6 +191,40 @@ impl EcsRunner {
         spec: &WorkspaceSpec,
         relay_host: &str,
     ) -> Result<WorkspaceHandle, RunnerError> {
+        let family = self.config.task_definition(&spec.architecture)?;
+        let spot = match self
+            .run_task_on(spec, relay_host, family, CapacityProvider::Spot)
+            .await?
+        {
+            Launch::Started(handle) => return Ok(handle),
+            Launch::NoCapacity(reason) => reason,
+        };
+        eprintln!(
+            "sanchoris worker: {} has no capacity for workspace {} ({spot}); starting it on {}",
+            CapacityProvider::Spot.name(),
+            spec.workspace_id,
+            CapacityProvider::OnDemand.name()
+        );
+        match self
+            .run_task_on(spec, relay_host, family, CapacityProvider::OnDemand)
+            .await?
+        {
+            Launch::Started(handle) => Ok(handle),
+            Launch::NoCapacity(reason) => Err(RunnerError(format!(
+                "RunTask found no capacity on {} ({spot}) or on {} ({reason})",
+                CapacityProvider::Spot.name(),
+                CapacityProvider::OnDemand.name()
+            ))),
+        }
+    }
+
+    async fn run_task_on(
+        &self,
+        spec: &WorkspaceSpec,
+        relay_host: &str,
+        family: &str,
+        provider: CapacityProvider,
+    ) -> Result<Launch, RunnerError> {
         let environment = self
             .environment(spec, relay_host)
             .into_iter()
@@ -193,13 +245,18 @@ impl EcsRunner {
         .into_iter()
         .map(|(key, id)| Tag::builder().key(key).value(id.to_string()).build())
         .collect::<Vec<_>>();
+        let strategy = CapacityProviderStrategyItem::builder()
+            .capacity_provider(provider.name())
+            .weight(1)
+            .build()
+            .map_err(runner_error)?;
         let result = self
             .client
             .run_task()
             .cluster(&self.config.cluster)
-            .task_definition(&self.config.task_definition)
-            .launch_type(LaunchType::Fargate)
-            .client_token(client_token(spec))
+            .task_definition(family)
+            .capacity_provider_strategy(strategy)
+            .client_token(client_token(spec, provider))
             .started_by(holder(spec.run_id))
             .set_tags(Some(tags))
             .network_configuration(
@@ -219,39 +276,88 @@ impl EcsRunner {
             )
             .send()
             .await;
+        let handle = |task: &str| {
+            Launch::Started(WorkspaceHandle {
+                platform_ref: task.to_string(),
+                capacity_provider: Some(provider.name().to_string()),
+            })
+        };
         let output = match result {
             Ok(output) => output,
             Err(error) => {
                 if let Some(RunTaskError::ConflictException(conflict)) = error.as_service_error()
                     && let Some(task) = conflict.resource_ids().first()
                 {
-                    return Ok(WorkspaceHandle {
-                        platform_ref: task.clone(),
-                    });
+                    return Ok(handle(task));
                 }
                 return Err(runner_error(error));
             }
         };
         if let Some(failure) = output.failures().first() {
-            return Err(RunnerError(format!(
-                "RunTask failed: {} {}",
-                failure.reason().unwrap_or("without a reason"),
-                failure.detail().unwrap_or_default()
-            )));
+            let reason = failure.reason().unwrap_or("without a reason");
+            let detail = failure.detail().unwrap_or_default();
+            if capacity_unavailable(reason) {
+                return Ok(Launch::NoCapacity(
+                    format!("{reason} {detail}").trim().to_string(),
+                ));
+            }
+            return Err(RunnerError(format!("RunTask failed: {reason} {detail}")));
         }
         let task = output
             .tasks()
             .first()
             .and_then(|task| task.task_arn())
             .ok_or_else(|| RunnerError("RunTask returned no task".into()))?;
-        Ok(WorkspaceHandle {
-            platform_ref: task.to_string(),
-        })
+        Ok(handle(task))
     }
 }
 
-pub fn client_token(spec: &WorkspaceSpec) -> String {
-    format!("{}{}", spec.run_id.simple(), spec.workspace_id.simple())
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapacityProvider {
+    Spot,
+    OnDemand,
+}
+
+impl CapacityProvider {
+    pub fn name(self) -> &'static str {
+        match self {
+            CapacityProvider::Spot => "FARGATE_SPOT",
+            CapacityProvider::OnDemand => "FARGATE",
+        }
+    }
+
+    fn token_prefix(self) -> &'static str {
+        match self {
+            CapacityProvider::Spot => "spot",
+            CapacityProvider::OnDemand => "ondemand",
+        }
+    }
+}
+
+enum Launch {
+    Started(WorkspaceHandle),
+    NoCapacity(String),
+}
+
+pub fn capacity_unavailable(reason: &str) -> bool {
+    reason.starts_with("Capacity is unavailable") || reason.starts_with("RESOURCE:")
+}
+
+pub fn client_token(spec: &WorkspaceSpec, provider: CapacityProvider) -> String {
+    format!("{}-{}", provider.token_prefix(), spec.workspace_id.simple())
+}
+
+pub fn interrupted_at(task: &Task) -> Option<DateTime<Utc>> {
+    let interrupted = matches!(
+        task.stop_code(),
+        Some(TaskStopCode::SpotInterruption | TaskStopCode::TerminationNotice)
+    );
+    if !interrupted {
+        return None;
+    }
+    task.stopping_at()
+        .or(task.stopped_at())
+        .and_then(|at| DateTime::from_timestamp(at.secs(), at.subsec_nanos()))
 }
 
 pub fn running_workspace(task: &Task) -> Option<RunningWorkspace> {
@@ -323,7 +429,7 @@ struct RelayLease {
     table: String,
     cluster: String,
     service: String,
-    workspace_family: String,
+    workspace_families: Vec<String>,
     clock: Arc<dyn Clock>,
 }
 
@@ -506,9 +612,17 @@ impl RelayLease {
         self.tasks(arns).await
     }
 
+    async fn workspace_tasks(&self) -> Result<Vec<Task>, RunnerError> {
+        let mut tasks = Vec::new();
+        for family in &self.workspace_families {
+            tasks.extend(self.list(Some(family), None).await?);
+        }
+        Ok(tasks)
+    }
+
     async fn running_workspaces(&self) -> Result<BTreeSet<String>, RunnerError> {
         Ok(self
-            .list(Some(&self.workspace_family), None)
+            .workspace_tasks()
             .await?
             .iter()
             .filter_map(|task| task.started_by().map(str::to_string))
@@ -581,7 +695,7 @@ impl RunnerPort for EcsRunner {
     async fn running_workspaces(&self) -> Result<Vec<RunningWorkspace>, RunnerError> {
         Ok(self
             .relay
-            .list(Some(&self.config.task_definition), None)
+            .workspace_tasks()
             .await?
             .iter()
             .filter_map(running_workspace)
@@ -635,10 +749,12 @@ impl RunnerPort for EcsRunner {
             }
             return Ok(Some(WorkspaceExit {
                 reason: exit_reason(task, &self.config.container),
+                interrupted_at: interrupted_at(task),
             }));
         }
         Ok(Some(WorkspaceExit {
             reason: format!("the ECS task {platform_ref} is gone"),
+            interrupted_at: None,
         }))
     }
 
@@ -654,6 +770,7 @@ impl RunnerPort for EcsRunner {
 mod tests {
     use super::*;
     use aws_sdk_ecs::types::{Attachment, Container, KeyValuePair, TaskStopCode};
+    use serde_json::{Value, json};
 
     #[test]
     fn the_exit_reason_names_the_stop_and_the_container() {
@@ -691,20 +808,194 @@ mod tests {
             started_at: Utc::now(),
             branch: "sanchoris/x".into(),
             compute: "standard".into(),
+            architecture: "arm64".into(),
             repositories: vec![],
             network_allow: vec![],
         }
     }
 
     #[test]
-    fn the_client_token_is_the_run_and_the_workspace_within_the_ecs_limit() {
-        let token = client_token(&spec());
+    fn each_capacity_provider_has_its_own_client_token_for_the_workspace() {
+        let spot = client_token(&spec(), CapacityProvider::Spot);
+        let on_demand = client_token(&spec(), CapacityProvider::OnDemand);
+        assert_eq!(spot, "spot-000000000000400080000000000000ff");
+        assert_eq!(on_demand, "ondemand-000000000000400080000000000000ff");
+        assert!(on_demand.len() <= 64);
+        assert_eq!(client_token(&spec(), CapacityProvider::Spot), spot);
+    }
+
+    #[test]
+    fn spot_capacity_failures_are_told_apart_from_other_failures() {
+        assert!(capacity_unavailable(
+            "Capacity is unavailable at this time. Please try again later or in a different availability zone"
+        ));
+        assert!(capacity_unavailable("RESOURCE:FARGATE"));
+        assert!(!capacity_unavailable("MISSING"));
+        assert!(!capacity_unavailable("ATTRIBUTE"));
+    }
+
+    #[test]
+    fn only_platform_stops_are_interruptions() {
+        let stopping = aws_sdk_ecs::primitives::DateTime::from_secs(1_800_000_000);
+        let spot = Task::builder()
+            .stop_code(TaskStopCode::SpotInterruption)
+            .stopping_at(stopping)
+            .stopped_at(aws_sdk_ecs::primitives::DateTime::from_secs(1_800_000_060))
+            .build();
         assert_eq!(
-            token,
-            "00000000000040008000000000000001000000000000400080000000000000ff"
+            interrupted_at(&spot),
+            DateTime::from_timestamp(1_800_000_000, 0)
         );
-        assert_eq!(token.len(), 64);
-        assert_eq!(client_token(&spec()), token);
+        let user = Task::builder()
+            .stop_code(TaskStopCode::UserInitiated)
+            .stopping_at(stopping)
+            .build();
+        assert_eq!(interrupted_at(&user), None);
+        let exited = Task::builder()
+            .stop_code(TaskStopCode::EssentialContainerExited)
+            .build();
+        assert_eq!(interrupted_at(&exited), None);
+    }
+
+    fn runner_config() -> EcsRunnerConfig {
+        let signer =
+            || sanchoris_core::tokens::Signer::new(b"0123456789abcdef0123456789abcdef").unwrap();
+        EcsRunnerConfig {
+            cluster: "c".into(),
+            task_definition_arm64: "p-sanchoris-workspace-arm64".into(),
+            task_definition_x86_64: "p-sanchoris-workspace-x86_64".into(),
+            container: "workspace".into(),
+            subnets: vec!["subnet-1".into()],
+            security_groups: vec!["sg-1".into()],
+            assign_public_ip: AssignPublicIp::Enabled,
+            control_url: "wss://channel.example".into(),
+            git_url: "https://github.com".into(),
+            relay_service: "p-sanchoris-relay".into(),
+            relay_port: 3128,
+            run_tokens: RunTokenSigner::new(signer()),
+            relay_tokens: RelayTokenSigner::new(signer()),
+        }
+    }
+
+    #[test]
+    fn the_session_architecture_picks_the_task_definition() {
+        let config = runner_config();
+        assert_eq!(
+            config.task_definition("arm64").unwrap(),
+            "p-sanchoris-workspace-arm64"
+        );
+        assert_eq!(
+            config.task_definition("x86_64").unwrap(),
+            "p-sanchoris-workspace-x86_64"
+        );
+        assert!(config.task_definition("riscv64").is_err());
+    }
+
+    fn fake_ecs(spot: Value) -> (EcsRunner, Arc<std::sync::Mutex<Vec<Value>>>) {
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let http = aws_smithy_http_client::test_util::infallible_client_fn(move |request| {
+            let body: Value =
+                serde_json::from_slice(request.body().bytes().expect("a JSON body")).unwrap();
+            let provider = body["capacityProviderStrategy"][0]["capacityProvider"].clone();
+            seen.lock().unwrap().push(body);
+            let response = if provider == "FARGATE_SPOT" {
+                spot.clone()
+            } else {
+                json!({
+                    "tasks": [{ "taskArn": "arn:aws:ecs:ap-northeast-1:1:task/c/on-demand" }],
+                    "failures": []
+                })
+            };
+            http::Response::builder()
+                .status(200)
+                .body(aws_smithy_types::body::SdkBody::from(response.to_string()))
+                .unwrap()
+        });
+        let credentials = aws_sdk_ecs::config::Credentials::new("a", "b", None, None, "test");
+        let sdk = aws_config::SdkConfig::builder()
+            .http_client(http)
+            .region(aws_sdk_ecs::config::Region::new("ap-northeast-1"))
+            .credentials_provider(aws_sdk_ecs::config::SharedCredentialsProvider::new(
+                credentials,
+            ))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = aws_sdk_ecs::Client::new(&sdk);
+        let config = runner_config();
+        let runner = EcsRunner {
+            relay: RelayLease {
+                ecs: client.clone(),
+                dynamodb: aws_sdk_dynamodb::Client::new(&sdk),
+                table: "t".into(),
+                cluster: config.cluster.clone(),
+                service: config.relay_service.clone(),
+                workspace_families: config.families().map(str::to_string).to_vec(),
+                clock: Arc::new(sanchoris_core::clock::SystemClock),
+            },
+            client,
+            config,
+        };
+        (runner, requests)
+    }
+
+    #[tokio::test]
+    async fn a_spot_capacity_failure_starts_the_workspace_on_fargate_and_records_it() {
+        let (runner, requests) = fake_ecs(json!({
+            "tasks": [],
+            "failures": [{
+                "arn": "arn:aws:ecs:ap-northeast-1:1:task-definition/p-sanchoris-workspace-arm64",
+                "reason": "Capacity is unavailable at this time. Please try again later or in a different availability zone"
+            }]
+        }));
+        let handle = runner.run_task(&spec(), "10.1.0.5").await.unwrap();
+        assert_eq!(
+            handle,
+            WorkspaceHandle {
+                platform_ref: "arn:aws:ecs:ap-northeast-1:1:task/c/on-demand".into(),
+                capacity_provider: Some("FARGATE".into()),
+            }
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0]["capacityProviderStrategy"],
+            json!([{ "capacityProvider": "FARGATE_SPOT", "weight": 1 }])
+        );
+        assert_eq!(
+            requests[1]["capacityProviderStrategy"],
+            json!([{ "capacityProvider": "FARGATE", "weight": 1 }])
+        );
+        assert_ne!(requests[0]["clientToken"], requests[1]["clientToken"]);
+        for request in requests.iter() {
+            assert_eq!(request["taskDefinition"], "p-sanchoris-workspace-arm64");
+            assert!(request.get("launchType").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn spot_capacity_starts_the_workspace_on_spot_and_other_failures_fail_fast() {
+        let (runner, requests) = fake_ecs(json!({
+            "tasks": [{ "taskArn": "arn:aws:ecs:ap-northeast-1:1:task/c/spot" }],
+            "failures": []
+        }));
+        let mut x86 = spec();
+        x86.architecture = "x86_64".into();
+        let handle = runner.run_task(&x86, "10.1.0.5").await.unwrap();
+        assert_eq!(handle.capacity_provider.as_deref(), Some("FARGATE_SPOT"));
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert_eq!(
+            requests.lock().unwrap()[0]["taskDefinition"],
+            "p-sanchoris-workspace-x86_64"
+        );
+
+        let (runner, requests) = fake_ecs(json!({
+            "tasks": [],
+            "failures": [{ "arn": "arn:aws:ecs:ap-northeast-1:1:task-definition/x", "reason": "MISSING" }]
+        }));
+        let error = runner.run_task(&spec(), "10.1.0.5").await.unwrap_err();
+        assert!(error.0.contains("MISSING"), "{}", error.0);
+        assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
     #[test]

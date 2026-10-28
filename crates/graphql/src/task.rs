@@ -21,7 +21,7 @@ use crate::context::{Scope, tx};
 use crate::enums::{
     ChannelKind, ChatAuthorKind, LogLineKind, NeedsYouReason, OutputKind, OutputState,
     PendingReason, Provider, RequesterKind, RequiredSkillState, RunStatus, TaskStatus, WaitReason,
-    WorkspaceCompute,
+    WorkspaceArchitecture, WorkspaceCompute,
 };
 use crate::error::{not_found, parse_id};
 use crate::scalars::{Timestamp, ts, ts_opt};
@@ -922,6 +922,8 @@ impl Run {
             return Ok(Workspace {
                 platform: latest.platform,
                 compute: WorkspaceCompute::from_db(&latest.compute)?,
+                architecture: WorkspaceArchitecture::from_db(&latest.architecture)?,
+                capacity_provider: latest.capacity_provider,
                 repositories: latest.repositories,
                 branch: latest.branch,
                 base_commit: latest.base_commit.unwrap_or_default(),
@@ -933,6 +935,8 @@ impl Run {
         Ok(Workspace {
             platform: "pending".to_string(),
             compute: WorkspaceCompute::from_db(parsed.workspace.compute.as_str())?,
+            architecture: WorkspaceArchitecture::from_db(parsed.workspace.architecture.as_str())?,
+            capacity_provider: None,
             repositories: session.repository_names(ctx).await?,
             branch: task_branch(task.row.id),
             base_commit: String::new(),
@@ -965,6 +969,8 @@ impl Run {
 pub(crate) struct Workspace {
     platform: String,
     compute: WorkspaceCompute,
+    architecture: WorkspaceArchitecture,
+    capacity_provider: Option<String>,
     repositories: Vec<String>,
     branch: String,
     base_commit: String,
@@ -978,6 +984,14 @@ impl Workspace {
 
     async fn compute(&self) -> WorkspaceCompute {
         self.compute
+    }
+
+    async fn architecture(&self) -> WorkspaceArchitecture {
+        self.architecture
+    }
+
+    async fn capacity_provider(&self) -> Option<&str> {
+        self.capacity_provider.as_deref()
     }
 
     async fn vcpu(&self) -> i32 {

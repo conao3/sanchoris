@@ -502,6 +502,8 @@ function buildAcme(): Obj {
     run.workspace = {
       platform: 'Fargate',
       compute: 'STANDARD',
+      architecture: 'ARM64',
+      capacityProvider: 'FARGATE_SPOT',
       vcpu: 2,
       memoryMib: 4096,
       repositories: task.session.project ? task.session.project.repositories.map((repository: Obj) => repository.name) : task.session.repositories,

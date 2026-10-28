@@ -740,7 +740,7 @@ fn with_extra_sessions(count: usize) -> String {
     let extra = (0..count)
         .map(|i| {
             format!(
-                "  extra-{i:03}:\n    Worker: {{ Agent: claude, Model: claude-sonnet-5-5, Credential: acme-claude-team }}\n    Repos: [acme/idea]\n    GitHub: {{ Repos: [acme/idea], Permissions: {{ contents: read }} }}\n    Network: {{ Allow: [github.com] }}\n    UsageLimit: {{ Resume: auto }}\n    Workspace: {{ Compute: standard, IdleSeconds: 900 }}\n"
+                "  extra-{i:03}:\n    Worker: {{ Agent: claude, Model: claude-sonnet-5-5, Credential: acme-claude-team }}\n    Repos: [acme/idea]\n    GitHub: {{ Repos: [acme/idea], Permissions: {{ contents: read }} }}\n    Network: {{ Allow: [github.com] }}\n    UsageLimit: {{ Resume: auto }}\n    Workspace: {{ Compute: standard, Architecture: arm64, IdleSeconds: 900 }}\n"
             )
         })
         .collect::<String>();

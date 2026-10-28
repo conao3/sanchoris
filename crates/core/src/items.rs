@@ -1424,12 +1424,15 @@ pub struct Workspace {
     pub task_id: Uuid,
     pub run_id: Uuid,
     pub compute: String,
+    pub architecture: String,
     pub platform: String,
     pub platform_ref: Option<String>,
+    pub capacity_provider: Option<String>,
     pub repositories: Vec<String>,
     pub branch: String,
     pub base_commit: Option<String>,
     pub started_at: DateTime<Utc>,
+    pub signaled_at: Option<DateTime<Utc>>,
     pub stopped_at: Option<DateTime<Utc>>,
 }
 
@@ -1446,12 +1449,15 @@ impl Entity for Workspace {
             .uuid("task_id", self.task_id)
             .uuid("run_id", self.run_id)
             .s("compute", &self.compute)
+            .s("architecture", &self.architecture)
             .s("platform", &self.platform)
             .opt_s("platform_ref", self.platform_ref.as_ref())
+            .opt_s("capacity_provider", self.capacity_provider.as_ref())
             .strs("repositories", &self.repositories)
             .s("branch", &self.branch)
             .opt_s("base_commit", self.base_commit.as_ref())
             .time("started_at", self.started_at)
+            .opt_time("signaled_at", self.signaled_at)
             .opt_time("stopped_at", self.stopped_at)
             .s("gsi1pk", keys::workspaces_index(self.tenant_id))
             .s("gsi1sk", keys::time_id(self.started_at, self.id));
@@ -1464,12 +1470,15 @@ impl Entity for Workspace {
             task_id: r.uuid("task_id")?,
             run_id: r.uuid("run_id")?,
             compute: r.s("compute")?,
+            architecture: r.s("architecture")?,
             platform: r.s("platform")?,
             platform_ref: r.opt_s("platform_ref")?,
+            capacity_provider: r.opt_s("capacity_provider")?,
             repositories: r.strs("repositories")?,
             branch: r.s("branch")?,
             base_commit: r.opt_s("base_commit")?,
             started_at: r.time("started_at")?,
+            signaled_at: r.opt_time("signaled_at")?,
             stopped_at: r.opt_time("stopped_at")?,
         })
     }

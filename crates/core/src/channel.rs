@@ -45,6 +45,7 @@ pub enum RunEventType {
     SessionRecord,
     ExecResult,
     HumanReply,
+    Stopping,
 }
 
 impl RunEventType {
@@ -57,6 +58,7 @@ impl RunEventType {
             Self::SessionRecord => "session_record",
             Self::ExecResult => "exec_result",
             Self::HumanReply => "human_reply",
+            Self::Stopping => "stopping",
         }
     }
 
@@ -69,6 +71,7 @@ impl RunEventType {
             "session_record" => Self::SessionRecord,
             "exec_result" => Self::ExecResult,
             "human_reply" => Self::HumanReply,
+            "stopping" => Self::Stopping,
             _ => return None,
         })
     }

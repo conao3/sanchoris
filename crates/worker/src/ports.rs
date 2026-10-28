@@ -234,6 +234,7 @@ pub struct WorkspaceSpec {
     pub started_at: DateTime<Utc>,
     pub branch: String,
     pub compute: String,
+    pub architecture: String,
     pub repositories: Vec<String>,
     pub network_allow: Vec<String>,
 }
@@ -241,6 +242,7 @@ pub struct WorkspaceSpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceHandle {
     pub platform_ref: String,
+    pub capacity_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,6 +257,7 @@ pub struct RunningWorkspace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceExit {
     pub reason: String,
+    pub interrupted_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]

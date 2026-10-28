@@ -353,7 +353,7 @@ Sessions:
       Permissions: { contents: write, pull_requests: write, issues: write, checks: read }
     Network: { Allow: [github.com] }
     UsageLimit: { Resume: auto }
-    Workspace: { Compute: standard, IdleSeconds: 900 }
+    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }
 Triggers:
   labeled-issue:
     State: ENABLED

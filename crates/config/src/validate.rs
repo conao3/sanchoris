@@ -1,5 +1,6 @@
 use crate::config::{
-    Checkout, Compute, Config, PermissionLevel, Session, Trigger, TriggerSource, is_repo_name,
+    Architecture, Checkout, Compute, Config, PermissionLevel, Session, Trigger, TriggerSource,
+    is_repo_name,
 };
 use crate::error::{ValidationError, ValidationErrors, at, index};
 use crate::repository::{ConfigFiles, ConfigRepository, Skill, parse_repository};
@@ -214,6 +215,17 @@ impl Validator<'_> {
                 format!(
                     "compute {} is not available on the plan",
                     session.workspace.compute.as_str()
+                ),
+            );
+        }
+        if session.workspace.compute == Compute::Docker
+            && session.workspace.architecture != Architecture::Arm64
+        {
+            self.error(
+                at(&workspace, "Architecture"),
+                format!(
+                    "compute docker runs on arm64 only, not {}",
+                    session.workspace.architecture.as_str()
                 ),
             );
         }

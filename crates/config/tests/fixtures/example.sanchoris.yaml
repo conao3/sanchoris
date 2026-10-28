@@ -20,7 +20,7 @@ Sessions:
       Permissions: { contents: write, pull_requests: write, issues: write, checks: read }
     Network: { Allow: [github.com, registry.npmjs.org] }
     UsageLimit: { Resume: auto }
-    Workspace: { Compute: standard, IdleSeconds: 900 }
+    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }
   all:
     Worker: { Agent: claude, Model: claude-sonnet-5-5, Credential: acme-claude-team }
     Repos: [acme/idea]
@@ -29,7 +29,7 @@ Sessions:
       Permissions: { contents: read, issues: write }
     Network: { Allow: [github.com] }
     UsageLimit: { Resume: auto }
-    Workspace: { Compute: standard, IdleSeconds: 900 }
+    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }
 Triggers:
   labeled-issue:
     State: ENABLED

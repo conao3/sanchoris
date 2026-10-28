@@ -125,7 +125,25 @@ pub enum ResumeMode {
 #[serde(rename_all = "PascalCase", deny_unknown_fields)]
 pub struct Workspace {
     pub compute: Compute,
+    pub architecture: Architecture,
     pub idle_seconds: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Architecture {
+    #[serde(rename = "arm64")]
+    Arm64,
+    #[serde(rename = "x86_64")]
+    X86_64,
+}
+
+impl Architecture {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Architecture::Arm64 => "arm64",
+            Architecture::X86_64 => "x86_64",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -395,7 +413,7 @@ fn decode_session(d: &mut Decoder, v: &Value, loc: &str) -> Option<Session> {
         Some(UsageLimit { resume: resume? })
     });
     let workspace = d.field(m, loc, "Workspace", |d, v, loc| {
-        let m = d.object(v, loc, &["Compute", "IdleSeconds"])?;
+        let m = d.object(v, loc, &["Compute", "Architecture", "IdleSeconds"])?;
         let compute = d.field(m, loc, "Compute", |d, v, loc| {
             d.enumeration(
                 v,
@@ -403,9 +421,20 @@ fn decode_session(d: &mut Decoder, v: &Value, loc: &str) -> Option<Session> {
                 &[("standard", Compute::Standard), ("docker", Compute::Docker)],
             )
         });
+        let architecture = d.field(m, loc, "Architecture", |d, v, loc| {
+            d.enumeration(
+                v,
+                loc,
+                &[
+                    ("arm64", Architecture::Arm64),
+                    ("x86_64", Architecture::X86_64),
+                ],
+            )
+        });
         let idle_seconds = d.field(m, loc, "IdleSeconds", |d, v, loc| d.positive(v, loc));
         Some(Workspace {
             compute: compute?,
+            architecture: architecture?,
             idle_seconds: idle_seconds?,
         })
     });

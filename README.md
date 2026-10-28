@@ -7,7 +7,7 @@ Sanchoris is a pnpm + Vite frontend and Rust backend monorepo.
 - `apps/frontend`: Vite frontend package managed by pnpm
 - `apps/workspace-agent`: the agent that runs inside a Workspace, and the `sanchoris` command (`PROTOCOL.md` describes the Run channel)
 - `apps/egress-relay`: the Workspaces' egress proxy (`CONNECT` to port 443 after the operator deny list, the platform hosts, and the Run's `Network.Allow`)
-- `infra/workspace/Dockerfile`, `infra/relay/Dockerfile`: the Workspace image (`linux/amd64`) and the relay image (`linux/arm64`; it only copies files, so it builds without emulation)
+- `infra/workspace/Dockerfile`, `infra/relay/Dockerfile`: the Workspace image (`linux/arm64` and `linux/amd64`, built without emulation: every `RUN` step runs on the build platform and installs the target's packages) and the relay image (`linux/arm64`; it only copies files)
 - `crates/api`: the HTTP API, the Run channel, and their Lambda functions (`api`, `channel`, `channel-authorizer`, `worker`, `relay`), and the `sanchoris` binary that runs everything in one process for local development
 - `crates/config`, `crates/engine`, `crates/core`, `crates/worker`: configuration, the skill engine, persistence (DynamoDB, S3, and the queue and scheduler ports), and the worker's message handlers
 - `crates/graphql`: the GraphQL schema of the web app (`apps/frontend/src/graphql/schema.graphql`) over the DynamoDB store
@@ -125,7 +125,7 @@ Secrets (the rows marked *secret*) come from the environment in `sanchoris all` 
 | `SANCHORIS_GIT_URL` | worker | Base URL the workspaces clone `<owner>/<name>.git` from, e.g. `https://github.com` |
 | `SANCHORIS_DOCS_DIR` | `sanchoris all` | Directory for attributes larger than 32 KiB (set by `pnpm dev`) |
 | `SANCHORIS_CHANNEL_ENDPOINT` | channel, worker | API Gateway Management API endpoint of the WebSocket stage: `https://<channel custom domain>` when the stack has custom domains (the `execute-api` endpoint is disabled then), otherwise `https://<api id>.execute-api.<region>.amazonaws.com/prod` |
-| `SANCHORIS_ECS_CLUSTER`, `SANCHORIS_ECS_TASK_DEFINITION`, `SANCHORIS_ECS_CONTAINER`, `SANCHORIS_ECS_SUBNETS`, `SANCHORIS_ECS_SECURITY_GROUPS`, `SANCHORIS_ECS_ASSIGN_PUBLIC_IP` | worker | Fargate cluster, task definition (family), container name, the comma-separated subnets and security groups of Workspaces, and `ENABLED` or `DISABLED` for their public IP |
+| `SANCHORIS_ECS_CLUSTER`, `SANCHORIS_ECS_TASK_DEFINITION_ARM64`, `SANCHORIS_ECS_TASK_DEFINITION_X86_64`, `SANCHORIS_ECS_CONTAINER`, `SANCHORIS_ECS_SUBNETS`, `SANCHORIS_ECS_SECURITY_GROUPS`, `SANCHORIS_ECS_ASSIGN_PUBLIC_IP` | worker | Fargate cluster, the task definition families for `arm64` and `x86_64` Sessions, container name, the comma-separated subnets and security groups of Workspaces, and `ENABLED` or `DISABLED` for their public IP |
 | `SANCHORIS_RELAY_SERVICE`, `SANCHORIS_RELAY_PORT` | worker | ECS service of the egress relay (`apps/egress-relay`) in the same cluster and its port; the worker scales the service between 0 and 1 and puts the relay task's private IP into the Workspaces' `HTTPS_PROXY` |
 | `RELAY_TOKEN_SIGNING_KEY` | worker (*secret*) | Signs the relay tokens that carry each Run's `Network.Allow` (32+ bytes) |
 

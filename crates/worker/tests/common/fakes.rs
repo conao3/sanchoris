@@ -302,6 +302,8 @@ impl ConfigSource for FakeGitHub {
     }
 }
 
+pub const FAKE_CAPACITY_PROVIDER: &str = "FARGATE_SPOT";
+
 #[derive(Debug, Default)]
 pub struct FakeRunner {
     pub started: Mutex<Vec<Uuid>>,
@@ -328,6 +330,7 @@ impl RunnerPort for FakeRunner {
         {
             return Ok(WorkspaceHandle {
                 platform_ref: existing.platform_ref.clone(),
+                capacity_provider: Some(FAKE_CAPACITY_PROVIDER.into()),
             });
         }
         let mut started = self.started.lock().unwrap();
@@ -341,7 +344,10 @@ impl RunnerPort for FakeRunner {
             run_id: spec.run_id,
             workspace_id: spec.workspace_id,
         });
-        Ok(WorkspaceHandle { platform_ref })
+        Ok(WorkspaceHandle {
+            platform_ref,
+            capacity_provider: Some(FAKE_CAPACITY_PROVIDER.into()),
+        })
     }
 
     async fn running_workspaces(&self) -> Result<Vec<RunningWorkspace>, RunnerError> {
