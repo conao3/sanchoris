@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Duration;
 use sanchoris_core::tokens::RunTokenSigner;
+use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -103,20 +105,18 @@ impl LocalProcessRunner {
         self.config.socket_dir.join(format!("{run_id}.sock"))
     }
 
-    pub fn environment(
-        &self,
-        tenant_id: Uuid,
-        run_id: Uuid,
-        workspace_dir: &Path,
-    ) -> Vec<(&'static str, String)> {
+    pub fn secrets(&self, tenant_id: Uuid, run_id: Uuid) -> String {
         let token = self.config.run_tokens.sign(
             tenant_id,
             run_id,
             self.clock.now() + self.config.token_ttl,
         );
+        serde_json::json!({ "runToken": token }).to_string()
+    }
+
+    pub fn environment(&self, run_id: Uuid, workspace_dir: &Path) -> Vec<(&'static str, String)> {
         vec![
             ("SANCHORIS_RUN_ID", run_id.to_string()),
-            ("SANCHORIS_RUN_TOKEN", token),
             ("SANCHORIS_CONTROL_URL", self.config.control_url.clone()),
             (
                 "SANCHORIS_SOCKET_PATH",
@@ -192,11 +192,12 @@ impl RunnerPort for LocalProcessRunner {
         command
             .args(&self.config.args)
             .current_dir(&dir)
+            .stdin(Stdio::piped())
             .kill_on_drop(true);
-        for (name, value) in self.environment(spec.tenant_id, spec.run_id, &dir) {
+        for (name, value) in self.environment(spec.run_id, &dir) {
             command.env(name, value);
         }
-        let child = match command.spawn() {
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
                 let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -210,6 +211,23 @@ impl RunnerPort for LocalProcessRunner {
             .id()
             .map(|pid| format!("pid:{pid}"))
             .ok_or_else(|| RunnerError("the workspace process exited at once".into()))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| RunnerError("the workspace process has no stdin".into()))?;
+        match stdin
+            .write_all(self.secrets(spec.tenant_id, spec.run_id).as_bytes())
+            .await
+        {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(error) => {
+                return Err(RunnerError(format!(
+                    "write the secrets of {platform_ref}: {error}"
+                )));
+            }
+        }
+        drop(stdin);
         self.workspaces
             .lock()
             .await
@@ -367,13 +385,12 @@ mod tests {
     }
 
     #[test]
-    fn environment_carries_a_verifiable_run_token() {
+    fn the_run_token_goes_to_stdin_and_not_to_the_environment() {
         let fixture = fixture("true", &[]);
         let run_id = Uuid::new_v4();
         let tenant_id = Uuid::new_v4();
-        let env = fixture
-            .runner
-            .environment(tenant_id, run_id, Path::new("/w/1"));
+        let env = fixture.runner.environment(run_id, Path::new("/w/1"));
+        assert!(env.iter().all(|(name, _)| *name != "SANCHORIS_RUN_TOKEN"));
         let get = |name: &str| env.iter().find(|(k, _)| *k == name).unwrap().1.clone();
         assert_eq!(get("SANCHORIS_RUN_ID"), run_id.to_string());
         assert_eq!(
@@ -393,10 +410,12 @@ mod tests {
         let now = chrono::Utc
             .with_ymd_and_hms(2026, 10, 27, 9, 30, 0)
             .unwrap();
+        let secrets: serde_json::Value =
+            serde_json::from_str(&fixture.runner.secrets(tenant_id, run_id)).unwrap();
         assert_eq!(
             fixture
                 .tokens
-                .verify(&get("SANCHORIS_RUN_TOKEN"), now)
+                .verify(secrets["runToken"].as_str().unwrap(), now)
                 .unwrap(),
             sanchoris_core::tokens::RunClaims { tenant_id, run_id }
         );

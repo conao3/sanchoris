@@ -3,6 +3,8 @@ import type { Server } from "node:net";
 
 import { RunChannel } from "./channel.ts";
 import { type Checkout, checkout } from "./checkout.ts";
+import { type CredentialProxy, providerCredential, startCredentialProxy } from "./credential-proxy.ts";
+import { type EgressForwarder, type Relay, startEgressForwarder } from "./egress-forwarder.ts";
 import { runCommands } from "./exec.ts";
 import type { Logger } from "./log.ts";
 import type { ExecMessage, InboundMessage, SocketRequest, SocketResponse, StartMessage } from "./protocol.ts";
@@ -22,6 +24,8 @@ export interface AgentConfig {
   socketPath: string;
   workspaceDir: string;
   credentialSource: CredentialSource;
+  egress: { relay: Relay; port: number } | null;
+  providerUpstream: string;
   env: NodeJS.ProcessEnv;
   createWorker: WorkerFactory;
   logger: Logger;
@@ -35,6 +39,8 @@ export class WorkspaceAgent {
   private readonly config: AgentConfig;
   private readonly channel: RunChannel;
   private server: Server | null = null;
+  private forwarder: EgressForwarder | null = null;
+  private credentialProxy: CredentialProxy | null = null;
   private start: StartMessage | null = null;
   private worker: Worker | null = null;
   private sessionId: string | null = null;
@@ -70,6 +76,12 @@ export class WorkspaceAgent {
   }
 
   async run(): Promise<number> {
+    const egress = this.config.egress;
+    if (egress) {
+      this.forwarder = await startEgressForwarder(egress.relay, egress.port, (error) =>
+        this.config.logger("warn", "relay connection failed", { error: error.message }),
+      );
+    }
     this.server = await listenSocket(this.config.socketPath, (request) => this.handleSocket(request));
     this.channel.connect();
     return this.exitCode;
@@ -128,7 +140,13 @@ export class WorkspaceAgent {
     let env = this.config.env;
     const source = this.config.credentialSource;
     if (source.kind === "channel") {
-      env = { ...env, ...(await this.workerCredential()) };
+      this.credentialProxy = await startCredentialProxy({
+        upstream: this.config.providerUpstream,
+        credential: providerCredential(await this.workerCredential()),
+        proxyEnv: this.config.env,
+        onError: (error) => this.config.logger("warn", "provider request failed", { error: error.message }),
+      });
+      env = { ...env, ...this.credentialProxy.workerEnv };
       await checkout(source, this.config.workspaceDir, this.config.env);
       this.config.logger("info", "repositories checked out", { repositories: source.repositories, branch: source.branch });
     }
@@ -319,6 +337,8 @@ export class WorkspaceAgent {
       await new Promise<void>((resolve) => this.server?.close(() => resolve()));
       await unlink(this.config.socketPath).catch(() => {});
     }
+    await this.credentialProxy?.close();
+    await this.forwarder?.close();
     this.resolveExit(code);
   }
 }

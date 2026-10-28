@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { type CredentialSource, WorkspaceAgent } from "../src/agent.ts";
+import { type AgentConfig, type CredentialSource, WorkspaceAgent } from "../src/agent.ts";
 import type { Logger } from "../src/log.ts";
 import type { StartMessage } from "../src/protocol.ts";
 import { writeCliWrapper } from "../src/testing/cli-wrapper.ts";
@@ -49,7 +49,7 @@ export function startAgent(
   sandbox: Sandbox,
   control: FakeControl,
   createWorker: WorkerFactory,
-  overrides: { token?: string; credentialSource?: CredentialSource } = {},
+  overrides: { token?: string; credentialSource?: CredentialSource; egress?: AgentConfig["egress"]; providerUpstream?: string } = {},
 ): { agent: WorkspaceAgent; exitCode: Promise<number> } {
   const agent = new WorkspaceAgent({
     runId: RUN_ID,
@@ -58,6 +58,8 @@ export function startAgent(
     socketPath: sandbox.socketPath,
     workspaceDir: sandbox.workspaceDir,
     credentialSource: overrides.credentialSource ?? { kind: "environment" },
+    egress: overrides.egress ?? null,
+    providerUpstream: overrides.providerUpstream ?? "http://127.0.0.1:9",
     env: sandbox.env,
     createWorker,
     logger: silentLogger,

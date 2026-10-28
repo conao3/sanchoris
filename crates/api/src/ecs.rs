@@ -148,7 +148,7 @@ impl EcsRunner {
             self.config
                 .relay_tokens
                 .sign(spec.run_id, &spec.network_allow, expires_at);
-        let proxy = format!(
+        let relay = format!(
             "http://run:{relay_token}@{relay_host}:{}",
             self.config.relay_port
         );
@@ -160,8 +160,7 @@ impl EcsRunner {
             ("SANCHORIS_BRANCH", spec.branch.clone()),
             ("SANCHORIS_REPOSITORIES", spec.repositories.join(",")),
             ("SANCHORIS_CREDENTIAL_SOURCE", "channel".to_string()),
-            ("HTTPS_PROXY", proxy.clone()),
-            ("HTTP_PROXY", proxy),
+            ("SANCHORIS_RELAY_URL", relay),
         ]
     }
 

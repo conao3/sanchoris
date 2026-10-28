@@ -4,22 +4,23 @@ The Run channel connects one `workspace-agent` process (inside a Workspace) to t
 
 ## Environment
 
-The `runner` starts `workspace-agent` with these variables. A missing or empty one stops the agent with an error.
+The `runner` starts `workspace-agent` with one JSON document on stdin and these variables. A missing or empty one stops the agent with an error.
+
+The JSON document carries the secrets, so that they never sit in an environment that the worker or `exec` commands inherit: `runToken` (the Run's short-lived bearer token, always) and `relayUrl` (Fargate workspaces: the egress relay with the Run's relay token as the password, `http://run:<token>@<relay>:3128`). The agent reads stdin to its end before it starts. The Fargate image's entrypoint (`infra/workspace/entrypoint.sh`) receives `SANCHORIS_RUN_TOKEN` and `SANCHORIS_RELAY_URL` from the task, removes them from the environment, and `exec`s the agent with the document on stdin, so `/proc/1/environ` of the agent holds neither.
 
 | Variable | When | Value |
 |---|---|---|
 | `SANCHORIS_RUN_ID` | always | The Run id (`runId` in every message) |
-| `SANCHORIS_RUN_TOKEN` | always | The Run's short-lived bearer token |
 | `SANCHORIS_CONTROL_URL` | always | WebSocket URL of the Run channel (`ws://` or `wss://`) |
 | `SANCHORIS_SOCKET_PATH` | always | Unix socket path for the `sanchoris` command (also set in the worker's environment) |
 | `SANCHORIS_WORKSPACE_DIR` | always | Working directory of the agent session |
 | `SANCHORIS_CREDENTIAL_SOURCE` | always | `environment`: the worker's credentials are already in its environment and the runner checked out the repositories (local workspaces). `channel`: the agent asks the control plane for the worker credential and GitHub tokens over the Run channel and checks out the repositories itself (Fargate workspaces) |
 | `SANCHORIS_GIT_URL`, `SANCHORIS_BRANCH`, `SANCHORIS_REPOSITORIES` | `channel` | Git origin (`https://github.com`), the task branch, and the comma-separated `owner/name` repositories to check out |
-| `HTTPS_PROXY` | Fargate workspaces | The network relay with the Run's relay token as the password (`http://run:<token>@<relay>:3128`). The agent sends the Run channel, record uploads (with `NODE_USE_ENV_PROXY=1`), and the worker's traffic through it |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | with `relayUrl` | `http://127.0.0.1:<port>` and `127.0.0.1,localhost` (the image sets port 3129). The agent listens on that port and forwards each `CONNECT` to `relayUrl` with the relay token as `Proxy-Authorization`, so the Run channel, record uploads (with `NODE_USE_ENV_PROXY=1`), `git`, and the worker reach the relay without holding its token |
 | `CLAUDE_CONFIG_DIR`, `SANCHORIS_CLAUDE_PATH` | `agent: "claude"` | Claude config directory (credentials, session records) and the `claude` executable |
 | `CODEX_HOME`, `SANCHORIS_CODEX_PATH` | `agent: "codex"` | Codex home (credentials, session records) and the `codex` executable |
 
-The worker runs with the agent's environment, so `sanchoris` must be on `PATH`.
+The worker and `exec` commands run with the agent's environment, which holds neither the Run token nor the relay token (with the `environment` source it holds the worker's own credentials), plus, for the worker with the `channel` source, the credential proxy's variables. `sanchoris` must be on `PATH`.
 
 ## Transport
 
@@ -278,7 +279,7 @@ The control plane sends `exec` when a skill state runs commands in the workspace
 
 ## Credentials (`channel` source)
 
-A Fargate workspace holds no credentials when it starts. After `start` and before it starts the worker, the agent sends `worker_credential_request`; the control plane decrypts the Session's `Worker.Credential` and answers with the environment variables to add to the worker's environment (an Anthropic API key as `ANTHROPIC_API_KEY`, a Claude Code OAuth token from `claude setup-token` as `CLAUDE_CODE_OAUTH_TOKEN`). A refusal stops the agent with exit code 1. The agent then clones `SANCHORIS_REPOSITORIES` from `SANCHORIS_GIT_URL` into `SANCHORIS_WORKSPACE_DIR` and checks out `SANCHORIS_BRANCH` (from `origin` when it exists, otherwise a new branch).
+A Fargate workspace holds no provider credential when it starts. After `start` and before it starts the worker, the agent sends `worker_credential_request`; the control plane decrypts the Session's `Worker.Credential` and answers with one variable (an Anthropic API key as `ANTHROPIC_API_KEY`, a Claude Code OAuth token from `claude setup-token` as `CLAUDE_CODE_OAUTH_TOKEN`). The agent keeps the value in memory and starts a credential proxy on `127.0.0.1` with an ephemeral port: the worker gets `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` and the same variable with a placeholder value, and the proxy forwards each request to `https://api.anthropic.com` (through the relay) after it replaces the client's `Authorization` or `x-api-key` with the real credential (`Authorization: Bearer <token>` and the `oauth-2025-04-20` beta for an OAuth token, `x-api-key` for an API key). Claude Code sends every model request to `ANTHROPIC_BASE_URL` with an OAuth token as well as with an API key. Any other variable, or more than one, stops the agent. A refusal stops the agent with exit code 1. The agent then clones `SANCHORIS_REPOSITORIES` from `SANCHORIS_GIT_URL` into `SANCHORIS_WORKSPACE_DIR` and checks out `SANCHORIS_BRANCH` (from `origin` when it exists, otherwise a new branch).
 
 Git asks for credentials through the helper `sanchoris git-credential` (the workspace image configures it). The helper sends `git_credential` with the host over the command socket; the agent answers only for the host of `SANCHORIS_GIT_URL`, with `x-access-token` and a token from `git_token_request`, which it reuses until five minutes before `expiresAt`. The control plane issues a GitHub App installation token narrowed to the Session's `GitHub.Repos` (all repositories of the installation when a pattern is `owner/*`) and `GitHub.Permissions`; it expires after one hour.
 

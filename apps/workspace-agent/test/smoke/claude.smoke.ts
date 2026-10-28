@@ -42,12 +42,12 @@ async function run(label: string, control: FakeControl, root: string, workspaceD
     {
       ...workerEnv(),
       SANCHORIS_RUN_ID: "smoke-run",
-      SANCHORIS_RUN_TOKEN: "smoke-token",
       SANCHORIS_CONTROL_URL: control.url,
       SANCHORIS_SOCKET_PATH: join(root, "agent.sock"),
       SANCHORIS_WORKSPACE_DIR: workspaceDir,
       SANCHORIS_CREDENTIAL_SOURCE: "environment",
     },
+    "smoke-token",
     (line) => process.stderr.write(`[${label}] ${line}\n`),
   );
 }

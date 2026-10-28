@@ -10,6 +10,9 @@ RUN pnpm install --frozen-lockfile --filter @sanchoris/workspace-agent \
 FROM node:22-bookworm
 ENV NODE_ENV=production \
     NODE_USE_ENV_PROXY=1 \
+    HTTPS_PROXY=http://127.0.0.1:3129 \
+    HTTP_PROXY=http://127.0.0.1:3129 \
+    NO_PROXY=127.0.0.1,localhost \
     GIT_TERMINAL_PROMPT=0 \
     DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
@@ -18,10 +21,10 @@ ENV NODE_ENV=production \
     CLAUDE_CONFIG_DIR=/home/node/.claude \
     SANCHORIS_CLAUDE_PATH=/opt/workspace-agent/claude
 COPY --from=build /out /opt/workspace-agent
+COPY infra/workspace/entrypoint.sh /usr/local/bin/workspace-entrypoint
 RUN printf '#!/bin/sh\nexec node --disable-warning=UNDICI-EHPA /opt/workspace-agent/src/bin/sanchoris.ts "$@"\n' > /usr/local/bin/sanchoris \
- && chmod 755 /usr/local/bin/sanchoris \
+ && chmod 755 /usr/local/bin/sanchoris /usr/local/bin/workspace-entrypoint \
  && git config --system credential.helper '!sanchoris git-credential' \
- && git config --system http.proxyAuthMethod basic \
  && git config --system user.name sanchoris \
  && git config --system user.email sanchoris@users.noreply.github.com \
  && mkdir -p /workspace /home/node/.claude \
@@ -29,4 +32,4 @@ RUN printf '#!/bin/sh\nexec node --disable-warning=UNDICI-EHPA /opt/workspace-ag
  && /opt/workspace-agent/claude --version
 USER node
 WORKDIR /workspace
-ENTRYPOINT ["node", "--disable-warning=UNDICI-EHPA", "/opt/workspace-agent/src/bin/workspace-agent.ts"]
+ENTRYPOINT ["/usr/local/bin/workspace-entrypoint"]
