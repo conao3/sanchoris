@@ -330,7 +330,8 @@ async fn approval_requests_wait_for_a_signed_decision() {
     let signer = TaskTokenSigner::new(Signer::new(&[9u8; 32]).unwrap());
     let signed = signer.sign(accepted.id, &token);
     let mut tx = world.store.tx(world.tenant());
-    let forged = format!("{}0", &signed[..signed.len() - 1]);
+    let last = if signed.ends_with('0') { '1' } else { '0' };
+    let forged = format!("{}{last}", &signed[..signed.len() - 1]);
     assert!(
         sanchoris_core::skillrun::resolve_approval(
             &mut tx,

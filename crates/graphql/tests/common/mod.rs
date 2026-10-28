@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use async_graphql::{Request, Variables};
 use async_trait::async_trait;
-use chrono::{DateTime, Duration, SubsecRound, Utc};
+use chrono::{DateTime, Duration, DurationRound, Utc};
 use sanchoris_config::{Skill, builtin_skill, parse_config_yaml};
 use sanchoris_core::db::{
     self, DbError, NewTask, REF_CONFIG_REVISION, REF_RUN, REF_SKILL_RUN, REF_TRIGGER,
@@ -861,7 +861,7 @@ impl World {
     pub async fn new() -> Self {
         let dynamo = TestDynamo::start().await;
         let store = dynamo.store(Relay::Stream);
-        let now = Utc::now().trunc_subsecs(6);
+        let now = Utc::now().duration_trunc(Duration::days(1)).unwrap() - Duration::hours(2);
         let config = config();
         let skill = skill();
 
