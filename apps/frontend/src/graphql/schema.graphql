@@ -108,9 +108,9 @@ type Member {
   role: Role!
   joinedAt: DateTime!
   lastActiveAt: DateTime
-  "Tasks this member requested."
+  "Tasks this member requested, counted up to 200."
   tasksStarted: Int!
-  "Personal credentials of this member."
+  "Personal credentials of this member. Empty unless the viewer is this member or an admin or owner."
   credentials: [Credential!]!
 }
 
@@ -204,10 +204,10 @@ type Tenant {
   skills: [Skill!]!
   skill(name: String!): Skill
 
-  "Tasks ordered with NEEDS_YOU first, then by last update, newest first."
+  "The latest 200 tasks that match the filter, ordered with NEEDS_YOU first, then by last update, newest first."
   tasks(filter: TaskFilter): [Task!]!
   task(id: ID!): Task
-  "Chat tasks (threads), newest first."
+  "The latest 200 chat tasks (threads), newest first."
   chats: [Task!]!
   "Audit events, newest first."
   auditEvents(filter: AuditFilter, limit: Int = 100): [AuditEvent!]!
@@ -530,7 +530,7 @@ type Trigger {
   config: Config!
   editUrl: String!
   tasksLast7d: Int!
-  "Tasks of this trigger that are not finished."
+  "Tasks of this trigger that are not finished, counted up to 200."
   activeTasks: Int!
   openChangeRequest: ChangeRequest
   events(limit: Int = 20): [TriggerEvent!]!

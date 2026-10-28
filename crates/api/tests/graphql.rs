@@ -663,7 +663,10 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .await;
     w.api.stripe.state.lock().unwrap().subscriptions.insert(
         "cus_acme".into(),
-        vec![json!({ "id": "sub_acme", "items": { "data": [{ "id": "si_acme" }] } })],
+        vec![
+            json!({ "id": "sub_old", "status": "canceled", "items": { "data": [{ "id": "si_old" }] } }),
+            json!({ "id": "sub_acme", "status": "active", "items": { "data": [{ "id": "si_acme" }] } }),
+        ],
     );
     let applied = w
         .ok(
@@ -689,6 +692,37 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         portals[0].form["configuration"],
         support::fake_stripe::PORTAL_CONFIGURATION
     );
+    assert_eq!(
+        w.api.stripe.requests("/v1/subscriptions")[0].form["status"],
+        "all"
+    );
+
+    w.api
+        .stripe
+        .state
+        .lock()
+        .unwrap()
+        .subscriptions
+        .get_mut("cus_acme")
+        .unwrap()[1]["status"] = json!("past_due");
+    let sessions_before = w.api.stripe.requests("/v1/checkout/sessions").len();
+    let settle = w
+        .ok(
+            owner,
+            "ChangePlan",
+            json!({ "tenantId": tenant, "planId": "pro" }),
+        )
+        .await;
+    assert_eq!(
+        settle["changePlan"]["checkoutUrl"],
+        "https://billing.stripe.test/cus_acme"
+    );
+    assert_eq!(settle["changePlan"]["tenant"]["plan"]["id"], "starter");
+    assert_eq!(
+        w.api.stripe.requests("/v1/checkout/sessions").len(),
+        sessions_before
+    );
+    assert_eq!(w.api.stripe.requests("/v1/subscriptions/sub_acme").len(), 1);
 
     let free = w
         .ok(
@@ -707,24 +741,76 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .await;
     assert_eq!(paid["createTenant"]["tenant"], Value::Null);
     assert!(paid["createTenant"]["checkoutUrl"].is_string());
+    let abandoned: Uuid = w
+        .api
+        .stripe
+        .requests("/v1/checkout/sessions")
+        .last()
+        .unwrap()
+        .form["client_reference_id"]
+        .parse()
+        .unwrap();
+    let retried = w
+        .ok(
+            newbie,
+            "CreateTenant",
+            json!({ "input": { "name": "Newbie Pro", "planId": "pro" } }),
+        )
+        .await;
+    let retried_url = retried["createTenant"]["checkoutUrl"].as_str().unwrap();
     let sessions = w.api.stripe.requests("/v1/checkout/sessions");
     let session = sessions.last().unwrap().form.clone();
     assert_eq!(session["customer_email"], "newbie@example.com");
+    assert!(session.contains_key("expires_at"));
     let pending: Uuid = session["client_reference_id"].parse().unwrap();
+    assert_ne!(pending, abandoned);
+    let first_session = format!("cs_test_{}", sessions.len() - 1);
+    assert_eq!(
+        w.api.stripe.state.lock().unwrap().sessions[&first_session],
+        "expired"
+    );
+    assert!(
+        w.api
+            .store
+            .get::<Tenant>(&keys::tenant_key(abandoned))
+            .await
+            .unwrap()
+            .is_none()
+    );
     let held = World::tenant_of(&w.dynamo, pending).await;
     assert_eq!(
         (held.status.as_str(), held.suspended_reason.as_deref()),
         ("suspended", Some("payment_pending"))
     );
-    let completed = w
-        .stripe_webhook(&json!({
-            "id": "evt_new", "type": "checkout.session.completed", "created": Utc::now().timestamp(),
+    let paid_session = retried_url.rsplit('/').next().unwrap().to_string();
+    w.api
+        .stripe
+        .state
+        .lock()
+        .unwrap()
+        .sessions
+        .insert(paid_session, "complete".into());
+    let checkout_completed = |payment_status: &str| {
+        json!({
+            "id": format!("evt_new_{payment_status}"), "type": "checkout.session.completed",
+            "created": Utc::now().timestamp(),
             "data": { "object": {
                 "client_reference_id": pending, "customer": "cus_newbie",
+                "payment_status": payment_status,
                 "metadata": { "plan_id": session["metadata[plan_id]"] },
             } },
-        }))
-        .await;
+        })
+    };
+    let unpaid = w.stripe_webhook(&checkout_completed("unpaid")).await;
+    assert_eq!(unpaid.status(), StatusCode::OK);
+    assert_eq!(
+        World::tenant_of(&w.dynamo, pending)
+            .await
+            .suspended_reason
+            .as_deref(),
+        Some("payment_pending")
+    );
+    let completed = w.stripe_webhook(&checkout_completed("paid")).await;
     assert_eq!(completed.status(), StatusCode::OK);
     assert_eq!(World::tenant_of(&w.dynamo, pending).await.status, "active");
 

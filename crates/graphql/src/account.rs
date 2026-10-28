@@ -6,18 +6,19 @@ use sanchoris_core::items::{
     Tenant as TenantItem, UsageSnapshot as SnapshotItem, User as UserItem,
 };
 use sanchoris_core::keys;
-use sanchoris_core::store::{Index, Listing};
+use sanchoris_core::store::Listing;
 use uuid::Uuid;
 
 use crate::context::{
     Access, Role, Scope, auth, is_operator, memberships, now, store, tx, viewer_user,
 };
 use crate::enums::{
-    BillingUnit, CredentialKind, CredentialScope, CredentialStatus, InvitationState, LimitPeriod,
-    Provider,
+    ApiKeyProvider, BillingUnit, CredentialKind, CredentialScope, CredentialStatus,
+    InvitationState, LimitPeriod, Provider,
 };
 use crate::error::not_found;
 use crate::scalars::{Timestamp, ts, ts_opt};
+use crate::task::latest_tasks;
 use crate::tenant::Tenant;
 
 pub(crate) struct User(pub UserItem);
@@ -249,17 +250,19 @@ impl Member {
         self.scope.member()?;
         let member_id = self.row.id;
         let tasks = tx(ctx, self.scope.tenant_id)
-            .list::<TaskItem>(
-                &Listing::index(Index::Gsi1, keys::tasks_index(self.scope.tenant_id)),
-                |task| task.requested_by_member_id == Some(member_id),
-            )
+            .list::<TaskItem>(&latest_tasks(self.scope.tenant_id), |task| {
+                task.requested_by_member_id == Some(member_id)
+            })
             .await?;
         Ok(i32::try_from(tasks.len())?)
     }
 
     async fn credentials(&self, ctx: &Context<'_>) -> Result<Vec<Credential>> {
-        self.scope.member()?;
+        let (viewer, role) = self.scope.member()?;
         let member_id = self.row.id;
+        if viewer != member_id && !role.at_least(Role::Admin) {
+            return Ok(Vec::new());
+        }
         Credential::filtered(ctx, self.scope, |c| {
             c.scope == "personal" && c.member_id == Some(member_id)
         })
@@ -497,9 +500,19 @@ pub(crate) fn mask_key(key: &str) -> String {
     if chars.len() <= 12 {
         return "…".to_string();
     }
-    let head = chars[..7].iter().collect::<String>();
+    let head = chars[..4].iter().collect::<String>();
     let tail = chars[chars.len() - 4..].iter().collect::<String>();
     format!("{head}…{tail}")
+}
+
+pub(crate) fn key_matches_provider(provider: ApiKeyProvider, key: &str) -> bool {
+    match provider {
+        ApiKeyProvider::Anthropic => ["sk-ant-oat", "sk-ant-api"]
+            .iter()
+            .any(|prefix| key.starts_with(prefix)),
+        ApiKeyProvider::Openai => key.starts_with("sk-") && !key.starts_with("sk-ant-"),
+        ApiKeyProvider::Bedrock => true,
+    }
 }
 
 #[cfg(test)]
@@ -508,7 +521,30 @@ mod tests {
 
     #[test]
     fn masks_keys() {
-        assert_eq!(mask_key("sk-ant-api03-abcdef9f2c"), "sk-ant-…9f2c");
+        assert_eq!(mask_key("sk-ant-api03-abcdef9f2c"), "sk-a…9f2c");
         assert_eq!(mask_key("short"), "…");
+    }
+
+    #[test]
+    fn keys_carry_their_provider_prefix() {
+        assert!(key_matches_provider(
+            ApiKeyProvider::Anthropic,
+            "sk-ant-api03-abc"
+        ));
+        assert!(key_matches_provider(
+            ApiKeyProvider::Anthropic,
+            "sk-ant-oat01-abc"
+        ));
+        assert!(!key_matches_provider(
+            ApiKeyProvider::Anthropic,
+            "sk-proj-abc"
+        ));
+        assert!(key_matches_provider(ApiKeyProvider::Openai, "sk-proj-abc"));
+        assert!(!key_matches_provider(
+            ApiKeyProvider::Openai,
+            "sk-ant-api03-abc"
+        ));
+        assert!(!key_matches_provider(ApiKeyProvider::Openai, "not-a-key"));
+        assert!(key_matches_provider(ApiKeyProvider::Bedrock, "ABSKexample"));
     }
 }

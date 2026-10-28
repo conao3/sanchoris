@@ -148,6 +148,9 @@ pub mod uniq {
     pub const GITHUB_LOGIN: &str = "ghlogin";
     pub const SLUG: &str = "slug";
     pub const STRIPE_CUSTOMER: &str = "stripe";
+    pub const STRIPE_EVENT: &str = "stripe_event";
+    pub const FREE_TENANT: &str = "free_tenant";
+    pub const PENDING_CHECKOUT: &str = "pending_checkout";
     pub const INSTALLATION: &str = "installation";
     pub const SLACK_TEAM: &str = "slack";
 }

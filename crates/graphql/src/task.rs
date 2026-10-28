@@ -45,6 +45,14 @@ pub(crate) struct Task {
     pub row: TaskItem,
 }
 
+pub(crate) const TASK_LISTING_LIMIT: usize = 200;
+
+pub(crate) fn latest_tasks(tenant_id: Uuid) -> Listing {
+    Listing::index(Index::Gsi1, keys::tasks_index(tenant_id))
+        .descending()
+        .limit(TASK_LISTING_LIMIT)
+}
+
 fn offers_skill(task: &TaskItem, name: &str) -> bool {
     task.definition["Skills"]
         .as_array()
@@ -58,10 +66,7 @@ impl Task {
         keep: impl Fn(&TaskItem) -> bool,
     ) -> Result<Vec<Self>> {
         Ok(tx(ctx, scope.tenant_id)
-            .list::<TaskItem>(
-                &Listing::index(Index::Gsi1, keys::tasks_index(scope.tenant_id)),
-                keep,
-            )
+            .list::<TaskItem>(&latest_tasks(scope.tenant_id), keep)
             .await?
             .into_iter()
             .map(|row| Task { scope, row })

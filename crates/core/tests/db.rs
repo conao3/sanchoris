@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use aws_sdk_dynamodb::types::AttributeValue;
 use chrono::{Duration, TimeZone, Utc};
 use sanchoris_core::audit::{AuditEntry, audit_events, record_audit};
 use sanchoris_core::clock::FakeClock;
@@ -581,4 +582,58 @@ async fn reads_inside_a_transaction_see_its_own_writes() {
     racing.commit().await.unwrap();
     assert!(matches!(tx.commit().await, Err(DbError::Conflict)));
     assert_eq!(tenant(&store, seeded.tenant_id).await.running_tasks, 0);
+}
+
+#[tokio::test]
+async fn unread_deletes_require_the_item_to_exist() {
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("pro").await;
+    let id = create_task(&store, &seeded, "deleted", &[]).await.id();
+    let mut tx = store.tx(seeded.tenant_id);
+    tx.delete(&keys::task_key(seeded.tenant_id, Uuid::new_v4()))
+        .unwrap();
+    assert!(matches!(tx.commit().await, Err(DbError::Conflict)));
+
+    let key = keys::task_key(seeded.tenant_id, id);
+    let mut tx = store.tx(seeded.tenant_id);
+    tx.delete(&key).unwrap();
+    tx.commit().await.unwrap();
+    assert!(store.get::<Task>(&key).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn conditional_updates_of_a_staged_put_are_rejected() {
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("pro").await;
+    let key = keys::tenant_key(seeded.tenant_id);
+    let mut tx = store.tx(seeded.tenant_id);
+    let mut tenant = tx.require::<Tenant>(&key).await.unwrap();
+    tenant.name = "Renamed".into();
+    tx.put(&tenant).unwrap();
+    assert!(matches!(
+        tx.update(
+            &key,
+            Update::new()
+                .add("tasks_this_period", 1)
+                .cap_after("tasks_this_period", 5)
+        ),
+        Err(DbError::ConditionOnStagedPut(_))
+    ));
+    assert!(matches!(
+        tx.update(
+            &key,
+            Update::new().require("status", AttributeValue::S("active".into()))
+        ),
+        Err(DbError::ConditionOnStagedPut(_))
+    ));
+    tx.update(&key, Update::new().add("tasks_this_period", 1))
+        .unwrap();
+    tx.commit().await.unwrap();
+    let stored = store.get::<Tenant>(&key).await.unwrap().unwrap();
+    assert_eq!(
+        (stored.name.as_str(), stored.tasks_this_period),
+        ("Renamed", 1)
+    );
 }

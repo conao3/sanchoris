@@ -343,19 +343,27 @@ async fn stripe_webhooks_are_verified_and_update_the_tenant() {
         })
         .await;
     server.dynamo.set_stripe_price("pro", "price_pro").await;
-    let checkout = json!({
-        "id": "evt_1", "type": "checkout.session.completed", "created": Utc::now().timestamp(),
-        "data": { "object": {
-            "client_reference_id": tenant_id, "customer": "cus_http", "metadata": { "plan_id": "pro" },
-        } },
-    });
+    let now = Utc::now().timestamp();
+    let checkout = |id: &str, tenant: Uuid, payment_status: &str| {
+        json!({
+            "id": id, "type": "checkout.session.completed", "created": now,
+            "data": { "object": {
+                "client_reference_id": tenant, "customer": "cus_http",
+                "payment_status": payment_status, "metadata": { "plan_id": "pro" },
+            } },
+        })
+    };
+    let paid = checkout("evt_1", tenant_id, "paid");
     assert_eq!(
-        stripe(&server, &checkout, Some("t=1,v1=00".into()))
+        stripe(&server, &paid, Some("t=1,v1=00".into()))
             .await
             .status(),
         StatusCode::UNAUTHORIZED
     );
-    let response = stripe(&server, &checkout, None).await;
+    let unpaid = stripe(&server, &checkout("evt_0", tenant_id, "unpaid"), None).await;
+    assert_eq!(unpaid.status(), StatusCode::OK);
+    assert_eq!(tenant_item(&server).await.status, "suspended");
+    let response = stripe(&server, &paid, None).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.json::<Value>().await.unwrap()["status"],
@@ -364,9 +372,40 @@ async fn stripe_webhooks_are_verified_and_update_the_tenant() {
     let tenant = tenant_item(&server).await;
     assert_eq!(tenant.status, "active");
     assert_eq!(tenant.stripe_customer_id.as_deref(), Some("cus_http"));
+    assert_eq!(
+        stripe(&server, &paid, None)
+            .await
+            .json::<Value>()
+            .await
+            .unwrap()["status"],
+        "duplicate"
+    );
+
+    let stranger = checkout("evt_stranger", Uuid::new_v4(), "paid");
+    for expected in ["ignored", "duplicate"] {
+        let response = stripe(&server, &stranger, None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.json::<Value>().await.unwrap()["status"], expected);
+    }
+    let incomplete = json!({
+        "id": "evt_incomplete", "type": "customer.subscription.updated", "created": now,
+        "data": { "object": {
+            "customer": "cus_http", "status": "incomplete", "metadata": { "tenant_id": tenant_id },
+            "items": { "data": [{ "price": { "id": "price_pro" } }] },
+        } },
+    });
+    let body = stripe(&server, &incomplete, None)
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(
+        (body["status"].as_str(), body["reason"].as_str()),
+        (Some("ignored"), Some("the subscription is incomplete"))
+    );
 
     let failed = json!({
-        "id": "evt_2", "type": "invoice.payment_failed", "created": Utc::now().timestamp(),
+        "id": "evt_2", "type": "invoice.payment_failed", "created": now,
         "data": { "object": { "customer": "cus_http" } },
     });
     assert_eq!(
@@ -375,15 +414,53 @@ async fn stripe_webhooks_are_verified_and_update_the_tenant() {
     );
     assert_eq!(tenant_item(&server).await.status, "suspended");
 
+    server
+        .dynamo
+        .modify::<Tenant>(&keys::tenant_key(tenant_id), |tenant| {
+            tenant.tasks_this_period = 3;
+        })
+        .await;
+    let renewal = now + 30 * 86_400;
+    let invoice = |id: &str, reason: &str| {
+        json!({
+            "id": id, "type": "invoice.paid", "created": now,
+            "data": { "object": {
+                "customer": "cus_http", "billing_reason": reason,
+                "parent": { "subscription_details": { "metadata": { "tenant_id": tenant_id } } },
+                "lines": { "data": [
+                    { "period": { "start": now, "end": renewal } },
+                    { "period": { "start": renewal, "end": renewal + 30 * 86_400 } },
+                ] },
+            } },
+        })
+    };
+    let proration = stripe(&server, &invoice("evt_3", "subscription_update"), None).await;
+    assert_eq!(proration.status(), StatusCode::OK);
+    let tenant = tenant_item(&server).await;
+    assert_eq!(
+        (tenant.status.as_str(), tenant.tasks_this_period),
+        ("active", 3)
+    );
+    stripe(&server, &invoice("evt_4", "subscription_cycle"), None).await;
+    let tenant = tenant_item(&server).await;
+    assert_eq!(
+        (tenant.tasks_this_period, tenant.period_start.timestamp()),
+        (0, renewal)
+    );
+
     let unknown = json!({
-        "id": "evt_3", "type": "invoice.paid", "created": Utc::now().timestamp(),
-        "data": { "object": { "customer": "cus_unknown" } },
+        "id": "evt_5", "type": "invoice.paid", "created": now,
+        "data": { "object": {
+            "customer": "cus_unknown", "billing_reason": "subscription_cycle", "lines": { "data": [] },
+        } },
     });
     assert_eq!(
         stripe(&server, &unknown, None).await.status(),
         StatusCode::CONFLICT
     );
-    let ignored = json!({ "id": "evt_4", "type": "customer.created", "data": { "object": {} } });
+    let ignored = json!({
+        "id": "evt_6", "type": "customer.created", "created": now, "data": { "object": {} },
+    });
     assert_eq!(
         stripe(&server, &ignored, None)
             .await

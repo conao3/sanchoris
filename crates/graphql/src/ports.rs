@@ -25,6 +25,7 @@ pub struct TenantCheckout {
 pub enum PlanChange {
     Applied,
     Checkout { url: String },
+    Portal { url: String },
 }
 
 #[async_trait]

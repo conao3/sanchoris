@@ -11,7 +11,10 @@ use sanchoris_core::items::{
 };
 use sanchoris_core::jobs::{Job, Relayed};
 use sanchoris_core::keys;
-use sanchoris_core::model::TaskStatus;
+use sanchoris_core::model::{AuditOrigin, TaskStatus};
+use sanchoris_core::tenants::{
+    NewTenant, PendingSession, create_tenant, free_tenant_key, pending_checkout,
+};
 use sanchoris_graphql::{ConfigProblem, PlanChange};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -461,7 +464,7 @@ async fn credentials_are_encrypted_and_removable_by_their_owner() {
     assert_eq!(row.scope, "personal");
     assert_eq!(row.provider, "claude");
     assert_eq!(row.kind, "api_key");
-    assert_eq!(row.account, "sk-ant-…9f2c");
+    assert_eq!(row.account, "sk-a…9f2c");
     assert_eq!(row.kms_key_id, sanchoris_graphql::LOCAL_KEY_ID);
     assert!(!row.encrypted_value.contains(key));
     let encrypted = STANDARD.decode(&row.encrypted_value).unwrap();
@@ -490,11 +493,33 @@ async fn credentials_are_encrypted_and_removable_by_their_owner() {
         w.error_code(
             &w.mika,
             "AddCredential",
-            json!({ "input": { "tenantId": w.acme, "name": "ken-key", "provider": "OPENAI", "key": "not-a-real-key", "scope": "ORGANIZATION" } }),
+            json!({ "input": { "tenantId": w.acme, "name": "ken-key", "provider": "OPENAI", "key": "sk-proj-example", "scope": "ORGANIZATION" } }),
         )
         .await,
         "CONFLICT"
     );
+    for (provider, wrong) in [
+        ("OPENAI", "not-a-real-key"),
+        ("OPENAI", "sk-ant-api03-0123456789"),
+        ("ANTHROPIC", "sk-proj-0123456789abcdef"),
+    ] {
+        assert_eq!(
+            w.error_code(
+                &w.ken,
+                "AddCredential",
+                json!({ "input": { "tenantId": w.acme, "name": "wrong-key", "provider": provider, "key": wrong, "scope": "PERSONAL" } }),
+            )
+            .await,
+            "BAD_USER_INPUT",
+            "{provider} {wrong}"
+        );
+    }
+    w.ok(
+        &w.ken,
+        "AddCredential",
+        json!({ "input": { "tenantId": w.acme, "name": "ken-oauth", "provider": "ANTHROPIC", "key": "sk-ant-oat01-0123456789abcd", "scope": "PERSONAL" } }),
+    )
+    .await;
     let org = w
         .ok(
             &w.sota,
@@ -537,7 +562,7 @@ async fn credentials_are_encrypted_and_removable_by_their_owner() {
         .into_iter()
         .filter(|credential| credential.tenant_id == w.acme)
         .count();
-    assert_eq!(left, 3);
+    assert_eq!(left, 4);
     assert!(
         w.get::<Guard>(&keys::credential_name_key(w.acme, "ken-key"))
             .await
@@ -934,4 +959,134 @@ async fn tenants_billing_and_operator_actions() {
         w.audit(w.acme, "tenant.unsuspend").await.actor_kind,
         "operator"
     );
+}
+
+async fn pending_tenant(w: &World, name: &str, plan_id: &str, session_id: &str) -> Uuid {
+    create_tenant(
+        &w.store,
+        &NewTenant {
+            id: Uuid::new_v4(),
+            name,
+            plan_id,
+            user_id: w.ren.user_id,
+            checkout: Some(PendingSession {
+                session_id,
+                expires_at: w.now + Duration::hours(1),
+            }),
+            origin: AuditOrigin::Web,
+            source_ip: None,
+            now: w.now,
+        },
+    )
+    .await
+    .unwrap()
+    .tenant_id
+}
+
+#[tokio::test]
+async fn changing_to_free_activates_a_pending_tenant_and_resets_the_period() {
+    let w = World::new().await;
+    *w.recorder.plan_change.lock().unwrap() = Some(PlanChange::Applied);
+    let pending = pending_tenant(&w, "Ren Pro", "pro", "cs_ren").await;
+    w.dynamo
+        .modify::<Tenant>(&keys::tenant_key(pending), |tenant| {
+            tenant.tasks_this_period = 2;
+            tenant.workspace_seconds_this_period = 50;
+            tenant.period_start = w.now - Duration::days(9);
+        })
+        .await;
+    let changed = w
+        .ok(
+            &w.ren,
+            "ChangePlan",
+            json!({ "tenantId": pending, "planId": "free" }),
+        )
+        .await;
+    assert_eq!(changed["changePlan"]["tenant"]["plan"]["id"], "free");
+    let tenant: Tenant = w.get(&keys::tenant_key(pending)).await.unwrap();
+    assert_eq!(
+        (
+            tenant.status.as_str(),
+            tenant.suspended_reason.as_deref(),
+            tenant.tasks_this_period,
+            tenant.workspace_seconds_this_period,
+            tenant.period_start
+        ),
+        ("active", None, 0, 0, w.now)
+    );
+    let guard: Guard = w.get(&free_tenant_key(w.ren.user_id)).await.unwrap();
+    assert_eq!(guard.target, pending);
+    assert!(
+        pending_checkout(&w.store, w.ren.user_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        w.error_code(
+            &w.ren,
+            "CreateTenant",
+            json!({ "input": { "name": "Ren Free", "planId": "free" } })
+        )
+        .await,
+        "CONFLICT"
+    );
+
+    let other = pending_tenant(&w, "Ren Max", "max", "cs_ren_2").await;
+    assert_eq!(
+        w.error_code(
+            &w.ren,
+            "ChangePlan",
+            json!({ "tenantId": other, "planId": "free" })
+        )
+        .await,
+        "CONFLICT"
+    );
+    let still: Tenant = w.get(&keys::tenant_key(other)).await.unwrap();
+    assert_eq!(
+        (still.status.as_str(), still.plan_id.as_str()),
+        ("suspended", "max")
+    );
+
+    w.dynamo
+        .modify::<Tenant>(&keys::tenant_key(w.acme), |tenant| {
+            tenant.tasks_this_period = 9;
+        })
+        .await;
+    w.ok(
+        &w.mika,
+        "ChangePlan",
+        json!({ "tenantId": w.acme, "planId": "free" }),
+    )
+    .await;
+    let acme: Tenant = w.get(&keys::tenant_key(w.acme)).await.unwrap();
+    assert_eq!(
+        (
+            acme.plan_id.as_str(),
+            acme.tasks_this_period,
+            acme.period_start
+        ),
+        ("free", 0, w.now)
+    );
+}
+
+#[tokio::test]
+async fn a_portal_redirect_keeps_the_plan_and_returns_the_portal_url() {
+    let w = World::new().await;
+    *w.recorder.plan_change.lock().unwrap() = Some(PlanChange::Portal {
+        url: "https://billing.stripe.test/settle".into(),
+    });
+    let changed = w
+        .ok(
+            &w.mika,
+            "ChangePlan",
+            json!({ "tenantId": w.acme, "planId": "max" }),
+        )
+        .await;
+    assert_eq!(
+        changed["changePlan"]["checkoutUrl"],
+        "https://billing.stripe.test/settle"
+    );
+    assert_eq!(changed["changePlan"]["tenant"]["plan"]["id"], "pro");
+    w.audit(w.acme, "billing.portal_open").await;
 }
