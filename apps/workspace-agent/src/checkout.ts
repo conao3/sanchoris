@@ -11,7 +11,7 @@ export interface Checkout {
 }
 
 function repositoryDir(workspaceDir: string, repo: string): string {
-  const match = /^[^/\s]+\/([^/\s]+)$/.exec(repo);
+  const match = /^[^/\s-][^/\s]*\/([^/\s-][^/\s]*)$/.exec(repo);
   const name = match?.[1];
   if (name === undefined || name === "." || name === "..") throw new Error(`${JSON.stringify(repo)} is not owner/name`);
   return join(workspaceDir, name);
@@ -28,7 +28,7 @@ async function git(args: string[], env: NodeJS.ProcessEnv): Promise<void> {
 
 async function hasRef(dir: string, ref: string, env: NodeJS.ProcessEnv): Promise<boolean> {
   try {
-    await run("git", ["-C", dir, "rev-parse", "--verify", "--quiet", ref], { env });
+    await run("git", ["-C", dir, "rev-parse", "--verify", "--quiet", "--end-of-options", ref], { env });
     return true;
   } catch {
     return false;
@@ -38,12 +38,12 @@ async function hasRef(dir: string, ref: string, env: NodeJS.ProcessEnv): Promise
 export async function checkout(spec: Checkout, workspaceDir: string, env: NodeJS.ProcessEnv): Promise<void> {
   for (const repo of spec.repositories) {
     const dir = repositoryDir(workspaceDir, repo);
-    await git(["clone", "--quiet", `${spec.gitUrl}/${repo}.git`, dir], env);
+    await git(["clone", "--quiet", "--", `${spec.gitUrl}/${repo}.git`, dir], env);
     const remote = `refs/remotes/origin/${spec.branch}`;
     if (await hasRef(dir, remote, env)) {
-      await git(["-C", dir, "checkout", "--quiet", "-B", spec.branch, remote], env);
+      await git(["-C", dir, "checkout", "--quiet", "-B", spec.branch, "--end-of-options", remote, "--"], env);
     } else {
-      await git(["-C", dir, "checkout", "--quiet", "-b", spec.branch], env);
+      await git(["-C", dir, "checkout", "--quiet", "-b", spec.branch, "--"], env);
     }
   }
 }
@@ -56,5 +56,7 @@ export function parseCheckout(read: (name: string) => string): Checkout {
     .map((repo) => repo.trim())
     .filter((repo) => repo !== "");
   for (const repo of repositories) repositoryDir("/", repo);
-  return { gitUrl, branch: read("SANCHORIS_BRANCH"), repositories };
+  const branch = read("SANCHORIS_BRANCH");
+  if (branch.startsWith("-")) throw new Error(`SANCHORIS_BRANCH ${JSON.stringify(branch)} must not start with -`);
+  return { gitUrl, branch, repositories };
 }
