@@ -31,6 +31,12 @@ use crate::{Worker, usage};
 
 pub const ERROR_USAGE_LIMIT: &str = "Worker.UsageLimit";
 const LAUNCH_TIMEOUT_MINUTES: i64 = 15;
+const HANDOFF_HEARTBEAT_SECONDS: u64 = 900;
+const MIN_HEARTBEAT_INTERVAL_SECONDS: u64 = 30;
+
+pub fn heartbeat_interval(limit_seconds: u64) -> u64 {
+    (limit_seconds.min(HANDOFF_HEARTBEAT_SECONDS) / 3).max(MIN_HEARTBEAT_INTERVAL_SECONDS)
+}
 
 fn definition_of(task: &Task) -> Result<TaskDefinition> {
     Ok(serde_json::from_value(task.definition.clone())?)
@@ -682,7 +688,7 @@ async fn start_workspace(
         "skills": skills_payload(&definition, &start.required_skills)?,
         "instruction": if instructed { start_payload["instruction"].clone() } else { Value::Null },
         "resume": resume,
-        "heartbeatSeconds": start.limits.heartbeat_seconds,
+        "heartbeatSeconds": heartbeat_interval(start.limits.heartbeat_seconds),
         "branch": branch,
         "repositories": repositories,
     });
@@ -695,7 +701,7 @@ async fn start_workspace(
     )
     .await?;
     run.status = "creating".into();
-    run.updated_at = Utc::now();
+    run.updated_at = now;
     tx.put(&run)?;
     worker.faults.check("workspace_start.before_commit")?;
     tx.commit().await?;
@@ -771,7 +777,7 @@ async fn stop_workspace(
     close_workspace(&mut tx, &mut workspace, now)?;
     if !run.is_finished() {
         run.status = "idle".into();
-        run.updated_at = Utc::now();
+        run.updated_at = now;
         tx.put(&run)?;
         enqueue_outbox(
             &mut tx,

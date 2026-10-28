@@ -63,7 +63,7 @@ The worker and `exec` commands run with the agent's environment, which holds nei
 - `skills`: the Trigger's `Start.Skills` that have `skill.yaml`. Each has `name`, `required` (in `Start.RequiredSkills`), and `inputs` (the skill's `Inputs`: field name to `"string" | "number" | "boolean" | "array" | "object"`).
 - `instruction`: the first user turn, or `null` to wait for `user_message`.
 - `resume`: `null` for a new session, or the last saved record: `sessionId`, `url` (presigned GET), `relativePath` and `sha256` (from the `session_record` being restored), `lastTurn` (the `turn` of that record; new turns continue from `lastTurn + 1`).
-- `heartbeatSeconds`: interval of `heartbeat`.
+- `heartbeatSeconds`: interval of `heartbeat`. The control plane sends a third of the Session's `Limits.HeartbeatSeconds`, capped at a third of 900 s (the `HeartbeatSeconds` of the built-in HandOff states) and at least 30 s, so one late heartbeat trips neither the Task's heartbeat limit nor a waiting HandOff's `States.HeartbeatTimeout`.
 
 ```json
 {

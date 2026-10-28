@@ -212,6 +212,9 @@ async fn a_workspace_that_stops_before_the_session_starts_gets_the_instruction_a
     let first = world.outbox(run_id, "start").await;
     assert_eq!(first.len(), 1);
     assert_ne!(first[0]["instruction"], serde_json::Value::Null);
+    assert_eq!(first[0]["heartbeatSeconds"], json!(300));
+    assert_eq!(sanchoris_worker::supervisor::heartbeat_interval(60), 30);
+    assert_eq!(sanchoris_worker::supervisor::heartbeat_interval(3600), 300);
 
     let platform_ref = world.runner.refs.lock().unwrap()[0].clone();
     world.runner.exits.lock().unwrap().insert(
