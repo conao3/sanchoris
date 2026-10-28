@@ -6,11 +6,12 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use sanchoris_core::audit::{AuditEntry, record_audit};
 use sanchoris_core::billing::{self, BillingError, Invoice, Outcome, Payer};
-use sanchoris_core::channel::{IngestError, ingest_github_delivery};
+use sanchoris_core::channel::{IngestError, ingest_github_delivery, tenant_for_installation};
 use sanchoris_core::db::{DbError, Recorded};
 use sanchoris_core::items::{
     Config, GitHubRepository, Guard, Integration, github_repositories, uniq,
 };
+use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
 use sanchoris_worker::config_sync::{disable_config, rename_repository};
@@ -65,9 +66,15 @@ pub async fn github(
     ) {
         return installation_event(&state, event, &payload).await;
     }
+    let syncs = if event == "push" {
+        sync_pushed_configs(&state, &payload).await?
+    } else {
+        0
+    };
     match ingest_github_delivery(&state.store, delivery, event, &payload).await {
         Ok(Some(Recorded::New(_))) => Ok(status(StatusCode::ACCEPTED, "accepted")),
         Ok(Some(Recorded::Duplicate(_))) => Ok(status(StatusCode::OK, "duplicate")),
+        Ok(None) if syncs > 0 => Ok(status(StatusCode::ACCEPTED, "config_sync")),
         Ok(None) => Ok(status(StatusCode::OK, "ignored")),
         Err(IngestError::UnknownInstallation(id)) => {
             eprintln!("sanchoris api: GitHub delivery {delivery} is for unknown installation {id}");
@@ -76,6 +83,42 @@ pub async fn github(
         Err(IngestError::Event(error)) => Err(ApiError::BadRequest(error.to_string())),
         Err(IngestError::Db(error)) => Err(error.into()),
     }
+}
+
+async fn sync_pushed_configs(state: &AppState, payload: &Value) -> Result<usize, ApiError> {
+    let number = |pointer: &str| {
+        payload
+            .pointer(pointer)
+            .and_then(Value::as_i64)
+            .ok_or_else(|| ApiError::BadRequest(format!("the event has no {pointer}")))
+    };
+    let installation_id = number("/installation/id")?;
+    let repository_id = number("/repository/id")?;
+    let Some(branch) = text(payload, "/ref")?.strip_prefix("refs/heads/") else {
+        return Ok(0);
+    };
+    let Some(tenant_id) = tenant_for_installation(&state.store, installation_id).await? else {
+        return Ok(0);
+    };
+    let configs: Vec<Config> = state
+        .store
+        .query::<Config>(&keys::tenant_pk(tenant_id), "CONFIG#")
+        .await?
+        .into_iter()
+        .filter(|c| c.is_active() && c.repository_id == Some(repository_id) && c.branch == branch)
+        .collect();
+    if configs.is_empty() {
+        return Ok(0);
+    }
+    let mut tx = state.store.tx(tenant_id);
+    for config in &configs {
+        tx.emit(Job::ConfigSync {
+            tenant_id,
+            config_id: config.id,
+        });
+    }
+    tx.commit().await?;
+    Ok(configs.len())
 }
 
 fn repository_of(value: &Value, key: &str) -> Result<GitHubRepository, ApiError> {

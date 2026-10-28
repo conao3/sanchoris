@@ -12,12 +12,13 @@ use sanchoris_api::signing::HmacKey;
 use sanchoris_core::audit::audit_events;
 use sanchoris_core::billing::PAYMENT_PENDING;
 use sanchoris_core::items::{
-    ApprovalWait, ChatMessage, Integration, Member, OutboxItem, RunEventItem, RunLogEntry, Task,
-    Tenant,
+    ApprovalWait, ChatMessage, Config, Integration, Member, OutboxItem, RunEventItem, RunLogEntry,
+    Task, Tenant,
 };
+use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
 use sanchoris_core::skillrun::accept_skill_request;
-use sanchoris_core::testing::TestDynamo;
+use sanchoris_core::testing::{SEED_CONFIG_REPOSITORY_ID, TestDynamo};
 use sanchoris_core::tokens::{RunTokenSigner, Signer, TaskTokenSigner};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -293,6 +294,75 @@ async fn github_webhooks_are_verified_recorded_once_and_update_installations() {
             .iter()
             .any(|event| event.action == "integration.github_installation_update")
     );
+}
+
+fn push_payload(repository_id: i64, git_ref: &str) -> Value {
+    json!({
+        "ref": git_ref,
+        "after": "c0ff1ce0000000000000000000000000000000c2",
+        "repository": { "id": repository_id, "full_name": "acme/sanchoris-config" },
+        "installation": { "id": support::INSTALLATION },
+    })
+}
+
+fn queued_config_syncs(server: &Server) -> Vec<Uuid> {
+    server
+        .api
+        .driver
+        .queue
+        .bodies()
+        .iter()
+        .filter_map(|body| match Envelope::parse(body).unwrap().job {
+            Job::ConfigSync { config_id, .. } => Some(config_id),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_push_to_the_config_branch_syncs_the_config_right_away() {
+    let server = Server::start().await;
+    let config_id = server.seeded.tenant.config_id;
+
+    let other_branch = server
+        .webhook(
+            "push",
+            "push-feature",
+            &push_payload(SEED_CONFIG_REPOSITORY_ID, "refs/heads/feature"),
+        )
+        .await;
+    assert_eq!(
+        other_branch.json::<Value>().await.unwrap()["status"],
+        "ignored"
+    );
+    let other_repository = server
+        .webhook("push", "push-other", &push_payload(9999, "refs/heads/main"))
+        .await;
+    assert_eq!(
+        other_repository.json::<Value>().await.unwrap()["status"],
+        "ignored"
+    );
+    assert!(queued_config_syncs(&server).is_empty());
+
+    let pushed = server
+        .webhook(
+            "push",
+            "push-main",
+            &push_payload(SEED_CONFIG_REPOSITORY_ID, "refs/heads/main"),
+        )
+        .await;
+    assert_eq!(pushed.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        pushed.json::<Value>().await.unwrap()["status"],
+        "config_sync"
+    );
+    assert_eq!(queued_config_syncs(&server), vec![config_id]);
+
+    server.api.driver.drain().await.unwrap();
+    let configs = server.dynamo.all::<Config>().await;
+    let config = configs.iter().find(|c| c.id == config_id).unwrap();
+    assert!(config.synced_at.is_some());
+    assert_eq!(config.sync_error, None);
 }
 
 fn stripe_header(body: &[u8]) -> String {

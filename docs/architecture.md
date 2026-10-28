@@ -45,7 +45,7 @@ Each rate schedule sends the same body every time except for the scheduled time,
 
 | Job | Rate | Does |
 |---|---|---|
-| `sweep_configs` | 5 minutes | `ConfigSync` for configs not synced in 5 minutes (config polling) |
+| `sweep_configs` | 5 minutes | `ConfigSync` for configs not synced in 5 minutes (config polling); a `push` webhook to a config's branch emits `ConfigSync` for it at once |
 | `sweep_checks` | 1 minute | `CheckPoll` for check waits whose `next_poll_at` passed (check polling) |
 | `sweep_task_limits` | 1 minute | `Start.Limits` (turns, cost, timeout, heartbeat) on `RUNNING`/`WAITING` tasks |
 | `usage_alerts` | 15 minutes | 80% plan usage alerts (usage refresh) |
