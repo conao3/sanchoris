@@ -47,7 +47,7 @@ The worker and `exec` commands run with the agent's environment, which holds nei
 | `user_message` | `messageId`, `text` | A user turn: `[sanchoris]` notifications, a person's reply, "Continue where you left off.", chat messages |
 | `interrupt` | | Interrupt the current turn. The turn ends with `turn_end` `result: "interrupted"` |
 | `shutdown` | `reason` | Finish: the agent waits for the in-flight record upload and commands, stops the worker, waits up to 10 s for all `ack`s, closes with code 1000, and exits 0 |
-| `exec` | `requestId`, `purpose`, `commands` | Run shell commands in the workspace for a skill (`purpose`: `git_push` for `git:push`, `exec` for `workspace:exec`). The agent answers with `exec_result` |
+| `exec` | `requestId`, `purpose`, `commands` | Run shell commands in the workspace for a skill (`purpose`: `git_push` for `git:push`, `exec` for `workspace:exec`). The agent runs them after the session of `start` is ready and answers with `exec_result` |
 | `skill_response` | `requestId`, `ok`, `result` or `error` | Reply to `skill_request` |
 | `record_upload_response` | `requestId`, `ok`, `url`, `headers`, `key` or `error` | Reply to `record_upload_request` |
 | `git_token_response` | `requestId`, `ok`, `token` and `expiresAt` or `error` | Reply to `git_token_request` |
@@ -160,6 +160,7 @@ The worker and `exec` commands run with the agent's environment, which holds nei
 | `record_upload_request` | yes | `requestId`, `sessionId`, `turn`, `contentLength`, `sha256` | Asks for a presigned PUT URL for the session record after a turn |
 | `session_record` | yes | `sessionId`, `turn`, `key`, `relativePath`, `contentLength`, `sha256` | The record of `turn` has been uploaded to `key` |
 | `turn_end` | yes | `turn`, `sessionId`, `result`, `summary`, `error`, `usage`, `totalCostUsd`, `durationMs` | A turn ended |
+| `stopping` | yes | `signal` (`"SIGTERM"`) | The agent received the signal and is stopping (see "Stopping on SIGTERM") |
 | `exec_result` | yes | `requestId`, `ok`, `results` | The outcome of `exec` |
 | `git_token_request` | yes | `requestId` | Asks for a GitHub token for `git` (`channel` source only) |
 | `worker_credential_request` | yes | `requestId` | Asks for the worker credential before the session starts (`channel` source only) |
@@ -272,6 +273,22 @@ Field details:
   "results": [{ "command": "git -C 'shop-web' push origin 'HEAD:refs/heads/sanchoris/7c1e2d3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f'", "exitCode": 0, "stdout": "", "stderr": "" }]
 }
 ```
+
+```json
+{ "type": "stopping", "runId": "42", "seq": 31, "signal": "SIGTERM" }
+```
+
+## Stopping on SIGTERM
+
+ECS sends `SIGTERM` to a Workspace two minutes before a Fargate Spot interruption, and when someone stops the task; the image's `tini` passes it to the agent only, so the worker process does not receive it. The agent then:
+
+1. Sends `stopping`, and from then on drops `user_message` and `exec` (the control plane delivers them again to the next Workspace).
+2. If a turn is running, interrupts it through the worker (`interrupt` in the Claude Agent SDK, `turn/interrupt` in the Codex app-server) and waits up to 60 s for it to end. The turn ends as usual: the record upload, `session_record`, and `turn_end` with `result: "interrupted"`.
+3. Waits for an in-flight record upload, stops the worker without waiting for running `exec` commands, waits up to 10 s for all `ack`s, closes with code 1000, and exits 0.
+
+Claude Code 2.1.311 ends an interrupted turn within about 0.1 s, records the running tool call as rejected (`tool_result` "The user doesn't want to proceed with this tool use...") followed by "[Request interrupted by user for tool use]", and a later `resume` of that record sends the whole conversation, the interrupted tool call included (`test/smoke/sigterm.smoke.ts`, run in a Debian container because the bundled binary needs a glibc loader).
+
+The control plane treats a Workspace whose agent sent `stopping`, or whose ECS task stopped with `SpotInterruption` or `TerminationNotice`, as interrupted by the platform: it restores the session from the latest `session_record` and the Task branch in a new Workspace instead of stopping the Task.
 
 ## Commands (`exec`)
 

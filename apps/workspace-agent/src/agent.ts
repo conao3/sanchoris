@@ -33,6 +33,7 @@ export interface AgentConfig {
   maxBackoffMs: number;
   requestTimeoutMs: number;
   drainTimeoutMs: number;
+  stopTurnTimeoutMs: number;
 }
 
 export class WorkspaceAgent {
@@ -52,6 +53,8 @@ export class WorkspaceAgent {
   private readonly seenMessageIds = new Set<string>();
   private readonly seenExecRequestIds = new Set<string>();
   private finished = false;
+  private stopping = false;
+  private turnEnded: (() => void) | null = null;
   private gitToken: { token: string; expiresAt: number } | null = null;
   private resolveExit: (code: number) => void = () => {};
   readonly exitCode: Promise<number>;
@@ -104,6 +107,10 @@ export class WorkspaceAgent {
         this.ready.catch((error: Error) => this.fail(error));
         return;
       case "user_message":
+        if (this.stopping) {
+          this.config.logger("info", "message ignored while stopping", { messageId: message.messageId });
+          return;
+        }
         if (this.seenMessageIds.has(message.messageId)) return;
         this.seenMessageIds.add(message.messageId);
         void this.whenReady(() => this.deliver(message.text));
@@ -112,6 +119,10 @@ export class WorkspaceAgent {
         void this.whenReady(() => this.requireWorker().interrupt());
         return;
       case "exec":
+        if (this.stopping) {
+          this.config.logger("info", "command ignored while stopping", { requestId: message.requestId });
+          return;
+        }
         if (this.seenExecRequestIds.has(message.requestId)) return;
         this.seenExecRequestIds.add(message.requestId);
         this.exec(message);
@@ -214,6 +225,7 @@ export class WorkspaceAgent {
   private exec(message: ExecMessage): void {
     this.config.logger("info", "exec requested", { requestId: message.requestId, purpose: message.purpose });
     this.execChain = this.execChain
+      .then(() => this.ready)
       .then(() => runCommands(message.commands, this.config.workspaceDir, this.config.env))
       .then((outcome) => {
         this.channel.send({ type: "exec_result", requestId: message.requestId, ...outcome });
@@ -236,6 +248,37 @@ export class WorkspaceAgent {
         this.channel.send({ type: "turn_end", turn, sessionId: this.requireSessionId(), ...result });
       })
       .catch((error: Error) => this.fail(error));
+    this.turnEnded?.();
+    this.turnEnded = null;
+  }
+
+  async stop(signal: "SIGTERM"): Promise<void> {
+    if (this.finished || this.stopping) return;
+    this.stopping = true;
+    this.config.logger("info", "stopping on signal", { signal, busy: this.busy });
+    this.channel.send({ type: "stopping", signal });
+    try {
+      await this.ready;
+      if (this.busy && this.worker) {
+        const ended = new Promise<void>((resolve) => {
+          this.turnEnded = resolve;
+        });
+        await this.worker.interrupt();
+        let timer: NodeJS.Timeout | undefined;
+        const timedOut = new Promise<"timeout">((resolve) => {
+          timer = setTimeout(() => resolve("timeout"), this.config.stopTurnTimeoutMs);
+        });
+        const outcome = await Promise.race([ended.then(() => "ended" as const), timedOut]);
+        clearTimeout(timer);
+        if (outcome === "timeout") {
+          throw new Error(`The interrupted turn did not end within ${this.config.stopTurnTimeoutMs} ms`);
+        }
+      }
+    } catch (error) {
+      await this.fail(error as Error);
+      return;
+    }
+    await this.shutdown(false);
   }
 
   private async saveRecord(turn: number): Promise<void> {
@@ -308,11 +351,11 @@ export class WorkspaceAgent {
     return this.sessionId;
   }
 
-  private async shutdown(): Promise<void> {
+  private async shutdown(waitForCommands = true): Promise<void> {
     if (this.finished) return;
     try {
       await this.turnChain;
-      await this.execChain;
+      if (waitForCommands) await this.execChain;
       await this.worker?.close();
       await this.channel.drain(this.config.drainTimeoutMs);
     } catch (error) {

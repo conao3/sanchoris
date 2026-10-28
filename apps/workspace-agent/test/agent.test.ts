@@ -46,8 +46,8 @@ async function setup(script: FakeScript, worker = "home") {
   const sandbox = await makeSandbox();
   cleanups.push(sandbox.cleanup);
   sandbox.env.FAKE_WORKER_HOME = join(sandbox.root, worker);
-  const { exitCode } = startAgent(sandbox, control, fakeWorkerFactory(script));
-  return { control, sandbox, exitCode };
+  const { agent, exitCode } = startAgent(sandbox, control, fakeWorkerFactory(script));
+  return { agent, control, sandbox, exitCode };
 }
 
 describe("workspace agent with a fake worker", () => {
@@ -125,6 +125,42 @@ describe("workspace agent with a fake worker", () => {
 
     control.send({ type: "shutdown", reason: "task completed" });
     expect(await exitCode).toBe(0);
+  });
+
+  it("on SIGTERM reports stopping, interrupts the turn, uploads the record, and exits 0", async () => {
+    const never = new Promise<string>(() => {});
+    const { agent, control, exitCode } = await setup(async (text) => (text === "long" ? never : `echo ${text}`));
+    await control.waitFor("hello");
+    control.send(startMessage());
+    await control.waitFor("ready");
+    control.send({ type: "user_message", messageId: "m-1", text: "first" });
+    await control.waitFor("turn_end", (message) => message.turn === 1);
+    control.send({ type: "user_message", messageId: "m-2", text: "long" });
+    await control.waitFor("heartbeat", (message) => message.busy);
+    void agent.stop("SIGTERM");
+    const stopping = await control.waitFor("stopping");
+    expect(stopping.signal).toBe("SIGTERM");
+    control.send({ type: "user_message", messageId: "m-3", text: "after" });
+    const interrupted = await control.waitFor("turn_end", (message) => message.turn === 2);
+    expect(interrupted.result).toBe("interrupted");
+    const record = await control.waitFor("session_record", (message) => message.turn === 2);
+    expect(control.received.indexOf(stopping)).toBeLessThan(control.received.indexOf(record));
+    expect(control.received.indexOf(record)).toBeLessThan(control.received.indexOf(interrupted));
+    const lines = (control.records.get(record.key) as Buffer).toString("utf8");
+    expect(lines).toContain('"text":"long"');
+    expect(await exitCode).toBe(0);
+    expect(control.received.filter((message) => message.type === "turn_end")).toHaveLength(2);
+  });
+
+  it("on SIGTERM between turns reports stopping and exits 0", async () => {
+    const { agent, control, exitCode } = await setup(async (text) => `echo ${text}`);
+    await control.waitFor("hello");
+    control.send(startMessage());
+    await control.waitFor("ready");
+    void agent.stop("SIGTERM");
+    await control.waitFor("stopping");
+    expect(await exitCode).toBe(0);
+    expect(control.received.filter((message) => message.type === "turn_end")).toHaveLength(0);
   });
 
   it("ignores a repeated user_message with the same messageId", async () => {

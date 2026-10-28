@@ -67,6 +67,7 @@ export function startAgent(
     maxBackoffMs: 200,
     requestTimeoutMs: 5_000,
     drainTimeoutMs: 5_000,
+    stopTurnTimeoutMs: 5_000,
   });
   return { agent, exitCode: agent.run() };
 }

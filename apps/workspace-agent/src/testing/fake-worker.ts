@@ -38,6 +38,7 @@ class FakeWorker implements Worker {
   private sessionId: string | null = null;
   private history: TranscriptLine[] = [];
   private chain: Promise<void> = Promise.resolve();
+  private interruptTurn: (() => void) | null = null;
 
   constructor(context: WorkerContext, script: FakeScript) {
     this.context = context;
@@ -66,7 +67,9 @@ class FakeWorker implements Worker {
     this.chain = this.chain.then(() => this.turn(text)).catch((error: Error) => this.context.handlers.onFatal(error));
   }
 
-  async interrupt(): Promise<void> {}
+  async interrupt(): Promise<void> {
+    this.interruptTurn?.();
+  }
 
   async readRecord(): Promise<WorkerRecord> {
     return { relativePath: this.relativePath(), bytes: await readFile(this.recordPath()) };
@@ -93,10 +96,28 @@ class FakeWorker implements Worker {
   private async turn(text: string): Promise<void> {
     const started = Date.now();
     await this.append({ role: "user", text });
-    const reply = await this.script(text, {
-      history: this.history,
-      exec: (command, args) => this.exec(command, args),
+    const interrupted = new Promise<null>((resolve) => {
+      this.interruptTurn = () => resolve(null);
     });
+    const reply = await Promise.race([
+      this.script(text, {
+        history: this.history,
+        exec: (command, args) => this.exec(command, args),
+      }),
+      interrupted,
+    ]);
+    this.interruptTurn = null;
+    if (reply === null) {
+      this.context.handlers.onTurnEnd({
+        result: "interrupted",
+        summary: "",
+        error: null,
+        usage: emptyUsage(),
+        totalCostUsd: 0,
+        durationMs: Date.now() - started,
+      });
+      return;
+    }
     await this.append({ role: "assistant", text: reply });
     this.context.handlers.onEvent("text", { text: reply });
     this.context.handlers.onTurnEnd({

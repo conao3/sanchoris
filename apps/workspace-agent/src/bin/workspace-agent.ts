@@ -44,7 +44,9 @@ const agent = new WorkspaceAgent({
   maxBackoffMs: 30_000,
   requestTimeoutMs: 30_000,
   drainTimeoutMs: 10_000,
+  stopTurnTimeoutMs: 60_000,
 });
 
+process.once("SIGTERM", () => void agent.stop("SIGTERM"));
 process.exitCode = await agent.run();
 process.exit();

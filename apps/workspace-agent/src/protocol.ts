@@ -254,6 +254,12 @@ export const TurnEndMessage = z.strictObject({
   durationMs: z.number().int().nonnegative(),
 });
 
+export const StoppingMessage = z.strictObject({
+  type: z.literal("stopping"),
+  ...sequenced,
+  signal: z.enum(["SIGTERM"]),
+});
+
 export const RateLimitMessage = z.strictObject({
   type: z.literal("rate_limit"),
   ...sequenced,
@@ -344,6 +350,7 @@ export const OutboundMessage = z.union([
   ReadyMessage,
   EventMessage,
   TurnEndMessage,
+  StoppingMessage,
   RateLimitMessage,
   SkillRequestMessage,
   RecordUploadRequestMessage,
