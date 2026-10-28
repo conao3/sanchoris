@@ -22,6 +22,9 @@ ENV NODE_ENV=production \
     SANCHORIS_CLAUDE_PATH=/opt/workspace-agent/claude
 COPY --from=build /out /opt/workspace-agent
 COPY infra/workspace/entrypoint.sh /usr/local/bin/workspace-entrypoint
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tini \
+ && rm -rf /var/lib/apt/lists/*
 RUN printf '#!/bin/sh\nexec node --disable-warning=UNDICI-EHPA /opt/workspace-agent/src/bin/sanchoris.ts "$@"\n' > /usr/local/bin/sanchoris \
  && chmod 755 /usr/local/bin/sanchoris /usr/local/bin/workspace-entrypoint \
  && git config --system credential.helper '!sanchoris git-credential' \

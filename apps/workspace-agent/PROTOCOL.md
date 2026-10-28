@@ -6,7 +6,7 @@ The Run channel connects one `workspace-agent` process (inside a Workspace) to t
 
 The `runner` starts `workspace-agent` with one JSON document on stdin and these variables. A missing or empty one stops the agent with an error.
 
-The JSON document carries the secrets, so that they never sit in an environment that the worker or `exec` commands inherit: `runToken` (the Run's short-lived bearer token, always) and `relayUrl` (Fargate workspaces: the egress relay with the Run's relay token as the password, `http://run:<token>@<relay>:3128`). The agent reads stdin to its end before it starts. The Fargate image's entrypoint (`infra/workspace/entrypoint.sh`) receives `SANCHORIS_RUN_TOKEN` and `SANCHORIS_RELAY_URL` from the task, removes them from the environment, and `exec`s the agent with the document on stdin, so `/proc/1/environ` of the agent holds neither.
+The JSON document carries the secrets, so that they never sit in an environment that the worker or `exec` commands inherit: `runToken` (the Run's short-lived bearer token, always) and `relayUrl` (Fargate workspaces: the egress relay with the Run's relay token as the password, `http://run:<token>@<relay>:3128`). The agent reads stdin to its end before it starts. The Fargate image's entrypoint (`infra/workspace/entrypoint.sh`) receives `SANCHORIS_RUN_TOKEN` and `SANCHORIS_RELAY_URL` from the task, removes them from the environment, and `exec`s `tini` with the agent as its child and the document on stdin, so no `/proc/<pid>/environ` in the Workspace holds them.
 
 | Variable | When | Value |
 |---|---|---|
