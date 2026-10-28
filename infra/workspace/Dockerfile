@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM node:22-bookworm@sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384 AS build
+FROM --platform=$BUILDPLATFORM node:26-bookworm@sha256:52dd743dc3b494cba5bc8c13507ac984507addb8a087c626dc98dcffa53133d4 AS build
 ARG TARGETARCH
 RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
 WORKDIR /src
@@ -30,7 +30,7 @@ RUN printf '#!/bin/sh\nexec node --disable-warning=UNDICI-EHPA /opt/workspace-ag
  && git config --file /rootfs/etc/gitconfig user.name sanchoris \
  && git config --file /rootfs/etc/gitconfig user.email sanchoris@users.noreply.github.com
 
-FROM node:22-bookworm@sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384
+FROM node:26-bookworm@sha256:52dd743dc3b494cba5bc8c13507ac984507addb8a087c626dc98dcffa53133d4
 ENV NODE_ENV=production \
     NODE_USE_ENV_PROXY=1 \
     HTTPS_PROXY=http://127.0.0.1:3129 \

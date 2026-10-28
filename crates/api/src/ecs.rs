@@ -964,11 +964,11 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(
             requests[0]["capacityProviderStrategy"],
-            json!([{ "capacityProvider": "FARGATE_SPOT", "weight": 1 }])
+            json!([{ "capacityProvider": "FARGATE_SPOT", "weight": 1, "base": 0 }])
         );
         assert_eq!(
             requests[1]["capacityProviderStrategy"],
-            json!([{ "capacityProvider": "FARGATE", "weight": 1 }])
+            json!([{ "capacityProvider": "FARGATE", "weight": 1, "base": 0 }])
         );
         assert_ne!(requests[0]["clientToken"], requests[1]["clientToken"]);
         for request in requests.iter() {
