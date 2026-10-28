@@ -9,18 +9,21 @@ use reqwest::StatusCode;
 use sanchoris_api::channel::{CLOSE_PROTOCOL_ERROR, SEQ_STRIDE};
 use sanchoris_api::records::{RecordStore, record_key};
 use sanchoris_api::signing::HmacKey;
+use sanchoris_core::audit::audit_events;
 use sanchoris_core::billing::PAYMENT_PENDING;
 use sanchoris_core::items::{
-    ChatMessage, Integration, OutboxItem, RunEventItem, RunLogEntry, Tenant,
+    ApprovalWait, ChatMessage, Integration, Member, OutboxItem, RunEventItem, RunLogEntry, Task,
+    Tenant,
 };
 use sanchoris_core::keys;
+use sanchoris_core::skillrun::accept_skill_request;
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_core::tokens::{RunTokenSigner, Signer, TaskTokenSigner};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use support::fake_github::FakeGitHub;
 use support::{
-    Api, Driving, RUN_KEY, STRIPE_SECRET, Seeded, TASK_KEY, WEBHOOK_SECRET, Workspaces,
+    Api, Driving, RUN_KEY, STRIPE_SECRET, Seeded, TASK_KEY, WEBHOOK_SECRET, Workspaces, eventually,
     github_signature, labeled_payload, seed, start_api, task_with_run,
 };
 use tokio_tungstenite::tungstenite::Message;
@@ -456,6 +459,85 @@ async fn replies_and_approvals_need_a_member_of_the_tenant() {
             .status(),
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn approvals_need_an_owner_an_admin_or_the_requester_and_are_audited() {
+    let server = Server::start().await;
+    let (task_id, run_id) = server.task_with_run().await;
+    let tenant = server.tenant();
+    let member_id = server.seeded.tenant.member_id;
+    let yaml = "Inputs: {}\nStartAt: Ask\nTimeoutSeconds: 600\nStates:\n  Ask:\n    Type: Task\n    Resource: sanchoris:::approval:request.waitForTaskToken\n    Parameters: { Message: Ship it?, TaskToken.$: $$.Task.Token }\n    TimeoutSeconds: 300\n    End: true\n";
+    let skill = sanchoris_config::Skill {
+        name: "ship".into(),
+        description: "Ship".into(),
+        body: String::new(),
+        skill_md: String::new(),
+        skill_yaml: Some(yaml.into()),
+        definition: Some(sanchoris_config::skill::parse_skill_yaml(yaml).unwrap()),
+        origin: sanchoris_config::SkillOrigin::Repository,
+    };
+    server
+        .dynamo
+        .modify::<Task>(&keys::task_key(tenant, task_id), |task| {
+            task.definition["Skills"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({ "Name": "ship", "Definition": skill }));
+        })
+        .await;
+    let mut tx = server.api.store.tx(tenant);
+    let accepted = accept_skill_request(&mut tx, run_id, "ship", json!({}), Utc::now())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let wait = eventually(
+        "the approval wait",
+        std::time::Duration::from_secs(10),
+        || async { server.dynamo.all::<ApprovalWait>().await.pop() },
+    )
+    .await;
+    let token =
+        TaskTokenSigner::new(Signer::new(&TASK_KEY).unwrap()).sign(accepted.id, &wait.task_token);
+    let body = json!({ "token": token, "approved": true });
+    let member = server.seeded.member_token();
+    server
+        .dynamo
+        .modify::<Member>(&keys::member_key(tenant, member_id), |m| {
+            m.role = "member".into()
+        })
+        .await;
+    assert_eq!(
+        server
+            .post("/api/approvals", Some(&member), &body)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    server
+        .dynamo
+        .modify::<Task>(&keys::task_key(tenant, task_id), |task| {
+            task.requested_by_member_id = Some(member_id)
+        })
+        .await;
+    assert_eq!(
+        server
+            .post("/api/approvals", Some(&member), &body)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let mut tx = server.api.store.tx(tenant);
+    let audits = audit_events(&mut tx)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.action == "approval.resolve")
+        .collect::<Vec<_>>();
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0].actor_ref, member_id.to_string());
+    assert_eq!(audits[0].target_ref, task_id.to_string());
+    assert_eq!(audits[0].metadata["approved"], json!(true));
 }
 
 #[tokio::test]
