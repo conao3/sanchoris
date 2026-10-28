@@ -78,7 +78,7 @@ pub fn skill_needs_agent_message(skill_name: &str, run_number: i32, instruction:
 
 pub fn restored_message() -> String {
     format!(
-        "{PREFIX} Your workspace was interrupted by the platform and restored in a new workspace from the saved session and the task branch. Changes that were not pushed to the task branch are gone. Continue where you left off."
+        "{PREFIX} Your workspace was interrupted by the platform and restored in a new workspace from the saved session and the task branch. The platform stopped the tool call that was running, nobody refused it: run it again if you still need it. Changes that were not pushed to the task branch are gone. Continue where you left off."
     )
 }
 
