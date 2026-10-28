@@ -186,7 +186,7 @@ Every item in `main` has `kind` (the entity), `v` (a version incremented by ever
 | `T#<t>#TRIGGER#<trigger>` | `TASK#<name>` | `task_name` | Unique per (trigger, task name); `task_id`, `created_at`; `gsi1` = (`T#<t>#TASKNAME#<name>`, `<created_at>#<task>`) |
 | `T#<t>#TASK#<task>` | `#TASK` | `task` | Every `tasks` column, `definition` (offloaded when large), counters `runs`, `skill_runs`; `gsi1` = (`T#<t>#TASKS`, `<created_at>#<task>`); `gsi2` = (`SWEEP#ACTIVETASK`, `<t>#<task>`) while `RUNNING` or `WAITING` |
 | `T#<t>#TASK#<task>` | `DEP#<blocker>`, `CHILD#<created_at>#<child>` | `task_dependency`, `task_child` | `blocked_by` and children |
-| `T#<t>#TASK#<task>` | `RUN#<run>` | `run` | `number`, status, turns, cost, record key; `gsi1` = (`T#<t>#RUNS`, `<started_at>#<run>`); `gsi2` = (`T#<t>#OPENRUNS`, `<started_at>#<run>`) until the status is `completed` or `failed` |
+| `T#<t>#TASK#<task>` | `RUN#<run>` | `run` | `number`, status, turns, `cost_usd`, `instance_costs` (the last cumulative `turn_end.totalCostUsd` of each agent instance, keyed by the instance index `seq / SEQ_STRIDE`; a `turn_end` adds the increase to `cost_usd` and to its `usage` item), record key; `gsi1` = (`T#<t>#RUNS`, `<started_at>#<run>`); `gsi2` = (`T#<t>#OPENRUNS`, `<started_at>#<run>`) until the status is `completed` or `failed` |
 | `T#<t>#TASK#<task>` | `WS#<workspace>` | `workspace` | `run_id`, platform, `started_at`, `stopped_at`; `gsi1` = (`T#<t>#WORKSPACES`, `<started_at>#<id>`) |
 | `T#<t>#TASK#<task>` | `SR#<number>` | `skill_run` | `state` (the engine's `SkillRun`), status, output; `gsi1` = (`T#<t>#SKILLRUNS#<skill>`, `<started_at>#<id>`) |
 | `T#<t>#TASK#<task>` | `SR#<number>#E#<sequence>` | `state_entry` | Unique per (skill run, sequence) |
@@ -194,7 +194,7 @@ Every item in `main` has `kind` (the entity), `v` (a version incremented by ever
 | `T#<t>#TASK#<task>` | `SR#<number>#INV#<idempotency key>` | `resource_invocation` | `pending` → `awaiting` → `done` |
 | `T#<t>#TASK#<task>` | `SR#<number>#CHECK#<token>`, `SR#<number>#APPROVAL#<token>` | `check_wait`, `approval_wait` | Check waits carry `gsi2` = (`SWEEP#CHECKWAIT`, `<next_poll_at>#<t>#<wait>`) while waiting |
 | `T#<t>#TASK#<task>` | `SR#<number>#TIMER#<timer id>` | `engine_timer` | `timer_id = uuid v5(skill run, timer)`, `due_at`, `message_id` of the scheduled job |
-| `T#<t>#TASK#<task>` | `USAGE#<recorded_at>#<id>` | `usage` | Tokens and cost per turn; `gsi1` = (`T#<t>#USAGE`, `<recorded_at>#<id>`) |
+| `T#<t>#TASK#<task>` | `USAGE#<recorded_at>#<id>` | `usage` | Tokens and the cost added by each turn; `gsi1` = (`T#<t>#USAGE`, `<recorded_at>#<id>`) |
 | `T#<t>#TASK#<task>` | `CHAT#<created_at>#<id>` | `chat_message` | The agent's posts to the task's chat thread: `run_id`, `outbox_id`, `channel`, `author_kind`, `text`; written when the run's `chat_post` outbox items are delivered. Members' messages are the thread's inbound events |
 | `T#<t>#RUN#<run>` | `#CHANNEL` | `run_channel` | `task_id`, `next_outbox_seq` (outbox order), `instances` (agent instances), the WebSocket connection id |
 | `T#<t>#RUN#<run>` | `EVT#<seq, 20 digits>` or `EVT#~<received_at>#<id>` | `run_event` | Unique per (run, seq); events without a seq (`human_reply`) get a time key |

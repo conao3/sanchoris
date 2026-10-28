@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 use uuid::Uuid;
@@ -1326,6 +1328,7 @@ pub struct Run {
     pub status: String,
     pub turns: i64,
     pub cost_usd: f64,
+    pub instance_costs: BTreeMap<String, f64>,
     pub summary: Option<String>,
     pub error: Option<String>,
     pub resume_branch: Option<String>,
@@ -1362,6 +1365,10 @@ impl Entity for Run {
             .s("status", &self.status)
             .n("turns", self.turns)
             .f("cost_usd", self.cost_usd)
+            .json(
+                "instance_costs",
+                &serde_json::to_value(&self.instance_costs).expect("costs serialize"),
+            )
             .opt_s("summary", self.summary.as_ref())
             .opt_s("error", self.error.as_ref())
             .opt_s("resume_branch", self.resume_branch.as_ref())
@@ -1392,6 +1399,8 @@ impl Entity for Run {
             status: r.s("status")?,
             turns: r.n("turns")?,
             cost_usd: r.f("cost_usd")?,
+            instance_costs: serde_json::from_value(r.json("instance_costs")?)
+                .map_err(|e| DbError::Decode(format!("attribute instance_costs: {e}")))?,
             summary: r.opt_s("summary")?,
             error: r.opt_s("error")?,
             resume_branch: r.opt_s("resume_branch")?,

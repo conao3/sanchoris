@@ -217,9 +217,26 @@ impl World {
         .unwrap();
     }
 
+    pub async fn sequenced_event(
+        &self,
+        run_id: Uuid,
+        seq: i64,
+        kind: RunEventType,
+        payload: Value,
+    ) {
+        retry(20, || async {
+            let mut tx = self.store.tx(self.tenant());
+            record_run_event(&mut tx, run_id, Some(seq), kind, &payload).await?;
+            tx.commit().await
+        })
+        .await
+        .unwrap();
+    }
+
     pub async fn turn_end(&self, run_id: Uuid, turn: i64) {
-        self.run_event(
+        self.sequenced_event(
             run_id,
+            turn,
             RunEventType::TurnEnd,
             turn_end_payload(turn, Value::Null),
         )

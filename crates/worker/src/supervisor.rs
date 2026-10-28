@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use sanchoris_config::{Session, Start};
-use sanchoris_core::channel::{OutboxType, RunEventType, enqueue_outbox, outbox};
+use sanchoris_core::channel::{OutboxType, RunEventType, SEQ_STRIDE, enqueue_outbox, outbox};
 use sanchoris_core::db::{self, REF_TRIGGER, TenantTx, locate};
 use sanchoris_core::items::{
     OutboxItem, Pending, Repository, Run, RunEventItem, SkillRunItem, Task, UsageRecord, Workspace,
@@ -220,10 +220,19 @@ async fn turn_end(
     let turn = payload["turn"]
         .as_i64()
         .ok_or_else(|| invalid("turn_end needs turn"))?;
-    let cost = payload["totalCostUsd"].as_f64().unwrap_or(0.0);
+    let total_cost = payload["totalCostUsd"].as_f64().unwrap_or(0.0);
+    let instance = event
+        .seq
+        .ok_or_else(|| invalid("turn_end needs a seq"))?
+        .div_euclid(SEQ_STRIDE)
+        .to_string();
     let usage = &payload["usage"];
     let tokens = |name: &str| usage[name].as_i64().unwrap_or(0);
     let mut run = require_run(tx, event.run_id).await?;
+    let previous = run.instance_costs.get(&instance).copied().unwrap_or(0.0);
+    let cost = (total_cost - previous).max(0.0);
+    run.instance_costs
+        .insert(instance, total_cost.max(previous));
     run.turns += 1;
     run.cost_usd += cost;
     run.summary = payload["summary"].as_str().map(str::to_string);

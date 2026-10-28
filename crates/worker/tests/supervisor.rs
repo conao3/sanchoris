@@ -62,8 +62,9 @@ async fn usage_limits_wait_and_resume_automatically() {
     let run_id = task.run_id.unwrap();
     let reset_at = world.clock_now() + Duration::hours(2);
     world
-        .run_event(
+        .sequenced_event(
             run_id,
+            1,
             RunEventType::TurnEnd,
             turn_end_payload(
                 1,
@@ -112,8 +113,9 @@ async fn manual_usage_limits_need_you() {
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     world
-        .run_event(
+        .sequenced_event(
             run_id,
+            1,
             RunEventType::TurnEnd,
             turn_end_payload(
                 1,

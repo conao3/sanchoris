@@ -29,7 +29,7 @@ use uuid::Uuid;
 use crate::records::{RecordError, RecordStore, record_key};
 use credentials::{CredentialError, RunCredentials};
 
-pub const SEQ_STRIDE: i64 = 1_000_000_000;
+pub use sanchoris_core::channel::SEQ_STRIDE;
 pub const CLOSE_PROTOCOL_ERROR: u16 = 4000;
 pub const CLOSE_INTERNAL_ERROR: u16 = 1011;
 const ATTEMPTS: u32 = 20;

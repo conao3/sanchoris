@@ -11,6 +11,8 @@ use crate::jobs::Job;
 use crate::keys;
 use crate::store::retry;
 
+pub const SEQ_STRIDE: i64 = 1_000_000_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutboxType {
     Start,

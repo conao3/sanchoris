@@ -741,6 +741,7 @@ fn run_item(
         status: "idle".into(),
         turns: 0,
         cost_usd: 0.0,
+        instance_costs: Default::default(),
         summary: None,
         error: None,
         resume_branch: None,
