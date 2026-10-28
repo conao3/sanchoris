@@ -1,4 +1,4 @@
-FROM node:22-bookworm AS build
+FROM node:22-bookworm@sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384 AS build
 RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
 WORKDIR /src
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -7,7 +7,7 @@ RUN pnpm install --frozen-lockfile --filter @sanchoris/workspace-agent \
  && pnpm --filter @sanchoris/workspace-agent deploy --legacy --prod /out \
  && node -e "const sdk = require.resolve('@anthropic-ai/claude-agent-sdk', { paths: ['/out'] }); const bin = require.resolve('@anthropic-ai/claude-agent-sdk-linux-x64/claude', { paths: [sdk] }); require('fs').symlinkSync(require('path').relative('/out', bin), '/out/claude');"
 
-FROM node:22-bookworm
+FROM node:22-bookworm@sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384
 ENV NODE_ENV=production \
     NODE_USE_ENV_PROXY=1 \
     HTTPS_PROXY=http://127.0.0.1:3129 \
