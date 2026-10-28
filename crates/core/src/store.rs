@@ -54,6 +54,8 @@ pub enum DbError {
     ConflictNotVisible(&'static str),
     #[error("no free tenant slug starts with {0}")]
     SlugExhausted(String),
+    #[error("{0} is staged as a put; a conditional update cannot apply to it")]
+    ConditionOnStagedPut(String),
 }
 
 impl DbError {
@@ -702,6 +704,10 @@ impl Update {
         self.adds.get(name).copied().unwrap_or(0)
     }
 
+    fn has_conditions(&self) -> bool {
+        !self.caps.is_empty() || !self.equals.is_empty()
+    }
+
     fn build(&self, table: &str, key: &Key) -> Result<UpdateOp, DbError> {
         let mut names = HashMap::from([("#pk".to_string(), "pk".to_string())]);
         let mut values = HashMap::new();
@@ -1027,6 +1033,12 @@ impl TenantTx {
         self.guard_mutable(key)?;
         let slot = self.slots.entry(key.clone()).or_insert_with(Slot::unread);
         match &mut slot.op {
+            Op::Put(..) if update.has_conditions() => {
+                return Err(DbError::ConditionOnStagedPut(format!(
+                    "{}/{}",
+                    key.pk, key.sk
+                )));
+            }
             Op::Put(item, _) => update.apply(item),
             Op::Update(existing) => existing.merge(update),
             Op::None | Op::Check(_) => slot.op = Op::Update(update),
@@ -1144,7 +1156,9 @@ impl TenantTx {
                                 ":v",
                                 AttributeValue::N(version.to_string()),
                             ),
-                        None => delete,
+                        None => delete
+                            .condition_expression("attribute_exists(#pk)")
+                            .expression_attribute_names("#pk", "pk"),
                     };
                     TransactWriteItem::builder()
                         .delete(delete.build().map_err(dynamo_error)?)
