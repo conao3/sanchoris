@@ -14,7 +14,7 @@ Read this file instead of reading `README.md` and `docs/architecture.md` in full
 
 | Command | Runs | When |
 |---|---|---|
-| `scripts/verify.sh quick` | Against `origin/master`: `cargo fmt --check` when Rust changed; clippy `-D warnings` on the changed crates and their dependents; nextest on the changed crates; the e2e test when only the workspace agent or `scripts/e2e` changed; `pnpm --filter <package> check` for each changed TS app | While working |
+| `scripts/verify.sh quick` | Against the merge base with the local `master`: `cargo fmt --check` when Rust changed; clippy `-D warnings` on the changed crates and their dependents; nextest on the changed crates; the e2e test when only the workspace agent or `scripts/e2e` changed; `pnpm --filter <package> check` for each changed TS app | While working |
 | `scripts/verify.sh full` | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo nextest run --workspace` (with the e2e test), `pnpm check` | Before each commit and merge |
 | `scripts/verify.sh test <nextest arguments>` | `cargo nextest run <arguments>`, e.g. `-p sanchoris-worker --test supervisor` or `-p sanchoris-core -E 'test(/plan/)'` | One test while iterating |
 

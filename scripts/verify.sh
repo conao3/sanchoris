@@ -111,16 +111,12 @@ dependents_closure() {
 }
 
 quick() {
-  git rev-parse --verify --quiet origin/master >/dev/null || {
-    echo "verify.sh quick: origin/master not found; run git fetch origin" >&2
-    exit 1
-  }
   local base
-  base=$(git merge-base HEAD origin/master)
+  base=$(git merge-base HEAD master)
   local changed
   changed=$({ git diff --name-only "$base"; git ls-files --others --exclude-standard; } | sort -u)
   if [ -z "$changed" ]; then
-    echo "verify.sh quick: no changes against origin/master"
+    echo "verify.sh quick: no changes against master"
     return
   fi
 
