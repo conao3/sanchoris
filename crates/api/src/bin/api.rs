@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use sanchoris_api::app::{AppState, http_client, router};
 use sanchoris_api::auth::cognito::CognitoVerifier;
-use sanchoris_api::config::{API_SECRETS, ApiConfig, Secrets};
+use sanchoris_api::config::{API_SECRETS, AllowedSources, ApiConfig, Secrets};
 use sanchoris_api::frontend::Frontend;
 use sanchoris_api::graphql::{self, GraphqlPorts};
 use sanchoris_api::lambda;
@@ -14,6 +14,7 @@ use sanchoris_worker::{Deps, Settings, Worker};
 
 #[tokio::main]
 async fn main() -> Result<(), lambda_http::Error> {
+    let allowed_sources = AllowedSources::load()?;
     let sdk = aws_config::load_from_env().await;
     let secrets = Secrets::from_ssm(&sdk, &API_SECRETS).await?;
     let config = Arc::new(ApiConfig::load(&secrets)?);
@@ -55,6 +56,13 @@ async fn main() -> Result<(), lambda_http::Error> {
         github_app,
         schema,
     };
-    lambda_http::run(router(state, frontend).layer(axum::middleware::from_fn(graphql::gateway_ip)))
-        .await
+    lambda_http::run(
+        router(state, frontend)
+            .layer(axum::middleware::from_fn(graphql::gateway_ip))
+            .layer(axum::middleware::from_fn_with_state(
+                allowed_sources,
+                graphql::admit_sources,
+            )),
+    )
+    .await
 }

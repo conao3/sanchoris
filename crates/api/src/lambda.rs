@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::channel::{Admission, Channel, admit};
+use crate::config::AllowedSources;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +52,18 @@ pub struct AuthorizerEvent {
     pub method_arn: String,
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    pub request_context: AuthorizerRequestContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AuthorizerRequestContext {
+    pub identity: AuthorizerIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorizerIdentity {
+    pub source_ip: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -134,9 +147,14 @@ fn policy(principal: &str, effect: &str, resource: &str, context: Value) -> Valu
 pub async fn authorize(
     store: &Store,
     run_tokens: &RunTokenSigner,
+    allowed_sources: AllowedSources,
     event: &AuthorizerEvent,
     now: DateTime<Utc>,
 ) -> Result<Value, LambdaError> {
+    let source = event.request_context.identity.source_ip.parse().ok();
+    if !allowed_sources.admits(source) {
+        return Ok(policy("forbidden", "Deny", &event.method_arn, json!({})));
+    }
     let token = header(&event.headers, "authorization")
         .and_then(|value| value.strip_prefix("Bearer "))
         .map(str::trim)

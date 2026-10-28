@@ -2,8 +2,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, Request, State};
+use axum::http::StatusCode;
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use lambda_http::RequestExt;
 use lambda_http::request::RequestContext;
@@ -14,7 +15,7 @@ use sanchoris_worker::github::GitHubApi;
 
 use crate::app::AppState;
 use crate::auth::CurrentUser;
-use crate::config::ApiConfig;
+use crate::config::{AllowedSources, ApiConfig};
 use crate::github_oauth::GitHubLinks;
 use crate::ports::{
     GitHubConfigRepository, InlineChatDispatcher, InlineConfigSync, RecordsAuditExport,
@@ -155,6 +156,18 @@ pub async fn gateway_ip(mut request: Request, next: Next) -> Response {
             .and_then(|value| value.to_str().ok());
         let ip = client_ip(source, forwarded);
         request.extensions_mut().insert(ClientIp(ip));
+    }
+    next.run(request).await
+}
+
+pub async fn admit_sources(
+    State(allowed): State<AllowedSources>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let source = request.request_context_ref().and_then(gateway_source_ip);
+    if !allowed.admits(source) {
+        return StatusCode::FORBIDDEN.into_response();
     }
     next.run(request).await
 }

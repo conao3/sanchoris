@@ -1,10 +1,11 @@
 use chrono::Utc;
 use lambda_runtime::{LambdaEvent, service_fn};
-use sanchoris_api::config::{RUN_TOKEN_SECRETS, Secrets, run_tokens};
+use sanchoris_api::config::{AllowedSources, RUN_TOKEN_SECRETS, Secrets, run_tokens};
 use sanchoris_api::lambda::{self, AuthorizerEvent};
 
 #[tokio::main]
 async fn main() -> Result<(), lambda_runtime::Error> {
+    let allowed_sources = AllowedSources::load()?;
     let sdk = aws_config::load_from_env().await;
     let run_tokens = run_tokens(&Secrets::from_ssm(&sdk, &RUN_TOKEN_SECRETS).await?)?;
     let store = lambda::store(&sdk)?;
@@ -14,6 +15,7 @@ async fn main() -> Result<(), lambda_runtime::Error> {
             Box::pin(lambda::authorize(
                 store,
                 run_tokens,
+                allowed_sources,
                 &event.payload,
                 Utc::now(),
             ))

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -13,6 +13,7 @@ use sanchoris_worker::github::transport::ReqwestTransport;
 use sanchoris_worker::github::{AppAuth, GitHubApi};
 use thiserror::Error;
 
+use crate::graphql::is_cloudflare;
 use crate::signing::HmacKey;
 
 #[derive(Debug, Error)]
@@ -318,6 +319,41 @@ fn url(name: &'static str, value: &str) -> Result<String, ConfigError> {
     Ok(trimmed.to_string())
 }
 
+pub const ALLOWED_SOURCES_ENV: &str = "SANCHORIS_ALLOWED_SOURCES";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllowedSources {
+    Any,
+    Cloudflare,
+}
+
+impl AllowedSources {
+    pub fn parse(value: &str) -> Result<Self, ConfigError> {
+        match value {
+            "any" => Ok(Self::Any),
+            "cloudflare" => Ok(Self::Cloudflare),
+            _ => Err(ConfigError::Invalid {
+                name: ALLOWED_SOURCES_ENV,
+                message: format!("{value:?} is neither any nor cloudflare"),
+            }),
+        }
+    }
+
+    pub fn load() -> Result<Self, ConfigError> {
+        let mut env = Reader::new();
+        let value = env.get(ALLOWED_SOURCES_ENV);
+        env.finish()?;
+        Self::parse(&value)
+    }
+
+    pub fn admits(self, source: Option<IpAddr>) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Cloudflare => source.is_some_and(is_cloudflare),
+        }
+    }
+}
+
 pub fn credential_key_of(value: &str) -> Result<CredentialKey, ConfigError> {
     Ok(CredentialKey(Arc::new(
         AesGcmEncryptor::from_base64(value).map_err(|message| ConfigError::Invalid {
@@ -477,6 +513,18 @@ pub const WORKER_ENV: [&str; 9] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allowed_sources_admit_cloudflare_only_when_set_to_cloudflare() {
+        let cloudflare = AllowedSources::parse("cloudflare").unwrap();
+        assert!(cloudflare.admits(Some("172.70.1.2".parse().unwrap())));
+        assert!(!cloudflare.admits(Some("203.0.113.7".parse().unwrap())));
+        assert!(!cloudflare.admits(None));
+        let any = AllowedSources::parse("any").unwrap();
+        assert!(any.admits(Some("203.0.113.7".parse().unwrap())));
+        assert!(any.admits(None));
+        assert!(AllowedSources::parse("true").is_err());
+    }
 
     #[test]
     fn every_function_secret_has_a_parameter() {

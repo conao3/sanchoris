@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use sanchoris_api::channel::credentials::NoRunCredentials;
 use sanchoris_api::channel::{Channel, ConnectionSender, SendError};
+use sanchoris_api::config::AllowedSources;
 use sanchoris_api::graphql;
 use sanchoris_api::lambda::{
     self, AuthorizerEvent, BatchResponse, ItemFailure, LambdaError, SqsEvent, StreamEvent,
@@ -183,9 +184,15 @@ async fn the_lambda_handlers_run_the_channel_from_recorded_events() {
     ];
     let authorizer: AuthorizerEvent =
         serde_json::from_value(fixture("authorizer.json", &vars)).unwrap();
-    let allowed = lambda::authorize(&direct.store, &run_tokens, &authorizer, Utc::now())
-        .await
-        .unwrap();
+    let allowed = lambda::authorize(
+        &direct.store,
+        &run_tokens,
+        AllowedSources::Any,
+        &authorizer,
+        Utc::now(),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         allowed["policyDocument"]["Statement"][0],
         json!({ "Action": "execute-api:Invoke", "Effect": "Allow", "Resource": authorizer.method_arn })
@@ -202,7 +209,14 @@ async fn the_lambda_handlers_run_the_channel_from_recorded_events() {
         ],
     ))
     .unwrap();
-    let rejected = lambda::authorize(&direct.store, &run_tokens, &forged, Utc::now()).await;
+    let rejected = lambda::authorize(
+        &direct.store,
+        &run_tokens,
+        AllowedSources::Any,
+        &forged,
+        Utc::now(),
+    )
+    .await;
     assert!(matches!(rejected, Err(LambdaError::Unauthorized)));
     assert_eq!(rejected.unwrap_err().to_string(), "Unauthorized");
     let other_run = run_tokens.sign(tenant, Uuid::new_v4(), Utc::now() + Duration::hours(1));
@@ -211,12 +225,46 @@ async fn the_lambda_handlers_run_the_channel_from_recorded_events() {
         &[("token", other_run), ("connectionId", connection.clone())],
     ))
     .unwrap();
-    let denied = lambda::authorize(&direct.store, &run_tokens, &unknown, Utc::now())
-        .await
-        .unwrap();
+    let denied = lambda::authorize(
+        &direct.store,
+        &run_tokens,
+        AllowedSources::Any,
+        &unknown,
+        Utc::now(),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         denied["policyDocument"]["Statement"][0]["Effect"],
         json!("Deny")
+    );
+    let direct_source = lambda::authorize(
+        &direct.store,
+        &run_tokens,
+        AllowedSources::Cloudflare,
+        &authorizer,
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        direct_source["policyDocument"]["Statement"][0]["Effect"],
+        json!("Deny")
+    );
+    let mut via_cloudflare = authorizer.clone();
+    via_cloudflare.request_context.identity.source_ip = "172.70.1.2".into();
+    let admitted = lambda::authorize(
+        &direct.store,
+        &run_tokens,
+        AllowedSources::Cloudflare,
+        &via_cloudflare,
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        admitted["policyDocument"]["Statement"][0]["Effect"],
+        json!("Allow")
     );
 
     let ok = WebSocketResponse { status_code: 200 };
@@ -460,6 +508,32 @@ async fn the_api_function_takes_the_client_ip_from_the_http_api_request_context(
     let mut forged = fixture("http.json", &[("sourceIp", "203.0.113.7".to_string())]);
     forged["headers"]["cf-connecting-ip"] = json!("198.51.100.4");
     assert_eq!(client_ip_of(forged).await, (200, "203.0.113.7".to_string()));
+}
+
+async fn status_with_sources(allowed: AllowedSources, source_ip: &str) -> u16 {
+    let event = fixture("http.json", &[("sourceIp", source_ip.to_string())]);
+    let request: lambda_http::request::LambdaRequest = serde_json::from_value(event).unwrap();
+    let request =
+        lambda_http::Request::from(request).map(|body| axum::body::Body::from(body.to_vec()));
+    let router = axum::Router::new()
+        .route("/ip", axum::routing::get(|| async { "ok" }))
+        .layer(axum::middleware::from_fn_with_state(
+            allowed,
+            graphql::admit_sources,
+        ));
+    router.oneshot(request).await.unwrap().status().as_u16()
+}
+
+#[tokio::test]
+async fn the_api_function_admits_only_cloudflare_when_its_sources_are_cloudflare() {
+    let cloudflare = AllowedSources::Cloudflare;
+    assert_eq!(status_with_sources(cloudflare, "172.70.1.2").await, 200);
+    assert_eq!(status_with_sources(cloudflare, "203.0.113.7").await, 403);
+    assert_eq!(status_with_sources(cloudflare, "not-an-ip").await, 403);
+    assert_eq!(
+        status_with_sources(AllowedSources::Any, "203.0.113.7").await,
+        200
+    );
 }
 
 #[test]
