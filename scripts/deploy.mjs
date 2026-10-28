@@ -364,6 +364,18 @@ async function deployStack(jar) {
   return { result: changed ? 'updated' : 'unchanged', stack: { name: stackName, ...after } };
 }
 
+async function buildSeeder() {
+  if (planOnly) {
+    return { result: 'would build' };
+  }
+  await runLogged('cargo', ['build', '-q', '-p', 'sanchoris-core', '--bin', 'sanchoris-dynamo-create'], {
+    cwd: root,
+    env: process.env,
+    logFile: join(logDir, 'build-seeder.log'),
+  });
+  return { result: 'built' };
+}
+
 async function seedPlans(exports) {
   if (planOnly) {
     return { result: 'would seed' };
@@ -378,7 +390,7 @@ async function seedPlans(exports) {
     throw new Error(`missing SSM parameters: ${prices.InvalidParameters.join(' ')}`);
   }
   const price = (plan) => prices.Parameters.find((p) => p.Name.endsWith(`stripe-price-${plan}`)).Value;
-  await runLogged('cargo', ['run', '-q', '-p', 'sanchoris-core', '--bin', 'sanchoris-dynamo-create'], {
+  await runLogged(join(root, 'target', 'debug', 'sanchoris-dynamo-create'), [], {
     cwd: root,
     env: awsProcessEnv(env, {
       SANCHORIS_TABLE_MAIN: exports.get('SanchorisMainTable'),
@@ -415,7 +427,7 @@ try {
         return detail;
       }),
     ),
-    step('build lambda', () => buildLambda(cognito)),
+    step('build lambda', () => buildLambda(cognito)).then(() => step('build seeder', buildSeeder)),
     ...images(exports).map((image) => step(`image ${image.name}`, () => pushImage(image))),
   ]);
   const failed = artifacts.filter((artifact) => artifact.status === 'rejected');
