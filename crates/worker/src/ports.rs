@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use sanchoris_config::ConfigFiles;
 use sanchoris_engine::{Invocation, ResourceOutcome};
 use serde::{Deserialize, Serialize};
@@ -222,6 +223,8 @@ pub struct WorkspaceSpec {
     pub run_id: Uuid,
     pub tenant_id: Uuid,
     pub task_id: Uuid,
+    pub workspace_id: Uuid,
+    pub started_at: DateTime<Utc>,
     pub branch: String,
     pub compute: String,
     pub repositories: Vec<String>,
@@ -230,8 +233,16 @@ pub struct WorkspaceSpec {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceHandle {
-    pub platform: &'static str,
     pub platform_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningWorkspace {
+    pub platform_ref: String,
+    pub tenant_id: Uuid,
+    pub task_id: Uuid,
+    pub run_id: Uuid,
+    pub workspace_id: Uuid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,7 +256,9 @@ pub struct RunnerError(pub String);
 
 #[async_trait]
 pub trait RunnerPort: Send + Sync {
+    fn platform(&self) -> &'static str;
     async fn start_workspace(&self, spec: &WorkspaceSpec) -> Result<WorkspaceHandle, RunnerError>;
+    async fn running_workspaces(&self) -> Result<Vec<RunningWorkspace>, RunnerError>;
     async fn stop_workspace(&self, run_id: Uuid, platform_ref: &str) -> Result<(), RunnerError>;
     async fn workspace_exit(
         &self,

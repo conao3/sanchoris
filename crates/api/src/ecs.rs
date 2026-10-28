@@ -4,22 +4,28 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use aws_sdk_dynamodb::types::{AttributeValue, ReturnValue};
 use aws_sdk_ecs::error::DisplayErrorContext;
+use aws_sdk_ecs::operation::run_task::RunTaskError;
 use aws_sdk_ecs::types::{
     AssignPublicIp, AwsVpcConfiguration, ContainerOverride, DesiredStatus, KeyValuePair,
-    LaunchType, NetworkConfiguration, Task, TaskOverride,
+    LaunchType, NetworkConfiguration, Tag, Task, TaskField, TaskOverride,
 };
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use sanchoris_core::clock::Clock;
 use sanchoris_core::store::Store;
 use sanchoris_core::tokens::{RELAY_TOKEN_SIGNING_KEY_ENV, RelayTokenSigner, RunTokenSigner};
+use sanchoris_worker::deadline;
 use sanchoris_worker::ports::{
-    RunnerError, RunnerPort, WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
+    RunnerError, RunnerPort, RunningWorkspace, WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
 };
 use uuid::Uuid;
 
 use crate::config::{ConfigError, Reader, Secrets, run_tokens, signer};
 
 pub const PLATFORM: &str = "ecs";
+const TAG_TENANT: &str = "sanchoris:tenant";
+const TAG_TASK: &str = "sanchoris:task";
+const TAG_RUN: &str = "sanchoris:run";
+const TAG_WORKSPACE: &str = "sanchoris:workspace";
 const TOKEN_TTL_HOURS: i64 = 12;
 const RELAY_LEASE_PK: &str = "RELAY";
 const RELAY_LEASE_SK: &str = "#";
@@ -107,7 +113,6 @@ pub struct EcsRunner {
     client: aws_sdk_ecs::Client,
     relay: RelayLease,
     config: EcsRunnerConfig,
-    clock: Arc<dyn Clock>,
 }
 
 impl EcsRunner {
@@ -126,11 +131,10 @@ impl EcsRunner {
                 cluster: config.cluster.clone(),
                 service: config.relay_service.clone(),
                 workspace_family: config.task_definition.clone(),
-                clock: clock.clone(),
+                clock,
             },
             client,
             config,
-            clock,
         }
     }
 
@@ -139,7 +143,7 @@ impl EcsRunner {
         spec: &WorkspaceSpec,
         relay_host: &str,
     ) -> Vec<(&'static str, String)> {
-        let expires_at = self.clock.now() + Duration::hours(TOKEN_TTL_HOURS);
+        let expires_at = spec.started_at + Duration::hours(TOKEN_TTL_HOURS);
         let token = self
             .config
             .run_tokens
@@ -180,13 +184,24 @@ impl EcsRunner {
             .assign_public_ip(self.config.assign_public_ip.clone())
             .build()
             .map_err(runner_error)?;
-        let output = self
+        let tags = [
+            (TAG_TENANT, spec.tenant_id),
+            (TAG_TASK, spec.task_id),
+            (TAG_RUN, spec.run_id),
+            (TAG_WORKSPACE, spec.workspace_id),
+        ]
+        .into_iter()
+        .map(|(key, id)| Tag::builder().key(key).value(id.to_string()).build())
+        .collect::<Vec<_>>();
+        let result = self
             .client
             .run_task()
             .cluster(&self.config.cluster)
             .task_definition(&self.config.task_definition)
             .launch_type(LaunchType::Fargate)
+            .client_token(client_token(spec))
             .started_by(holder(spec.run_id))
+            .set_tags(Some(tags))
             .network_configuration(
                 NetworkConfiguration::builder()
                     .awsvpc_configuration(network)
@@ -203,8 +218,20 @@ impl EcsRunner {
                     .build(),
             )
             .send()
-            .await
-            .map_err(runner_error)?;
+            .await;
+        let output = match result {
+            Ok(output) => output,
+            Err(error) => {
+                if let Some(RunTaskError::ConflictException(conflict)) = error.as_service_error()
+                    && let Some(task) = conflict.resource_ids().first()
+                {
+                    return Ok(WorkspaceHandle {
+                        platform_ref: task.clone(),
+                    });
+                }
+                return Err(runner_error(error));
+            }
+        };
         if let Some(failure) = output.failures().first() {
             return Err(RunnerError(format!(
                 "RunTask failed: {} {}",
@@ -218,10 +245,30 @@ impl EcsRunner {
             .and_then(|task| task.task_arn())
             .ok_or_else(|| RunnerError("RunTask returned no task".into()))?;
         Ok(WorkspaceHandle {
-            platform: PLATFORM,
             platform_ref: task.to_string(),
         })
     }
+}
+
+pub fn client_token(spec: &WorkspaceSpec) -> String {
+    format!("{}{}", spec.run_id.simple(), spec.workspace_id.simple())
+}
+
+pub fn running_workspace(task: &Task) -> Option<RunningWorkspace> {
+    let tag = |key: &str| {
+        task.tags()
+            .iter()
+            .find(|tag| tag.key() == Some(key))
+            .and_then(|tag| tag.value())
+            .and_then(|value| Uuid::parse_str(value).ok())
+    };
+    Some(RunningWorkspace {
+        platform_ref: task.task_arn()?.to_string(),
+        tenant_id: tag(TAG_TENANT)?,
+        task_id: tag(TAG_TASK)?,
+        run_id: tag(TAG_RUN)?,
+        workspace_id: tag(TAG_WORKSPACE)?,
+    })
 }
 
 fn runner_error(error: impl std::error::Error) -> RunnerError {
@@ -295,7 +342,7 @@ impl RelayLease {
 
     async fn lock(&self) -> Result<Lock, RunnerError> {
         let owner = Uuid::new_v4().to_string();
-        let deadline = self.clock.now() + Duration::seconds(LOCK_WAIT_SECONDS);
+        let deadline = deadline::bounded(self.clock.now() + Duration::seconds(LOCK_WAIT_SECONDS));
         loop {
             let now = self.clock.now();
             let result = self
@@ -341,7 +388,8 @@ impl RelayLease {
                 {
                     if self.clock.now() >= deadline {
                         return Err(RunnerError(format!(
-                            "the relay lease stayed locked for {LOCK_WAIT_SECONDS} s"
+                            "the relay lease stayed locked until {}",
+                            timestamp(deadline)
                         )));
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -421,6 +469,7 @@ impl RelayLease {
                 .describe_tasks()
                 .cluster(&self.cluster)
                 .set_tasks(Some(chunk.to_vec()))
+                .include(TaskField::Tags)
                 .send()
                 .await
                 .map_err(runner_error)?;
@@ -479,7 +528,7 @@ impl RelayLease {
     }
 
     async fn relay_address(&self) -> Result<String, RunnerError> {
-        let deadline = self.clock.now() + Duration::seconds(RELAY_START_SECONDS);
+        let deadline = deadline::bounded(self.clock.now() + Duration::seconds(RELAY_START_SECONDS));
         loop {
             let tasks = self.list(None, Some(&self.service)).await?;
             if let Some(ip) = tasks
@@ -491,7 +540,8 @@ impl RelayLease {
             }
             if self.clock.now() >= deadline {
                 return Err(RunnerError(format!(
-                    "the egress relay did not reach RUNNING within {RELAY_START_SECONDS} s"
+                    "the egress relay did not reach RUNNING by {}",
+                    timestamp(deadline)
                 )));
             }
             tokio::time::sleep(std::time::Duration::from_millis(POLL_MILLIS)).await;
@@ -524,6 +574,20 @@ impl RelayLease {
 
 #[async_trait]
 impl RunnerPort for EcsRunner {
+    fn platform(&self) -> &'static str {
+        PLATFORM
+    }
+
+    async fn running_workspaces(&self) -> Result<Vec<RunningWorkspace>, RunnerError> {
+        Ok(self
+            .relay
+            .list(Some(&self.config.task_definition), None)
+            .await?
+            .iter()
+            .filter_map(running_workspace)
+            .collect())
+    }
+
     async fn start_workspace(&self, spec: &WorkspaceSpec) -> Result<WorkspaceHandle, RunnerError> {
         if spec.compute != "standard" {
             return Err(RunnerError(format!(
@@ -616,6 +680,58 @@ mod tests {
             exit_reason(&pull, "workspace"),
             "CannotPullContainerError: pull access denied (TaskFailedToStart); the container did not start: CannotPullContainerError"
         );
+    }
+
+    fn spec() -> WorkspaceSpec {
+        WorkspaceSpec {
+            run_id: Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap(),
+            tenant_id: Uuid::new_v4(),
+            task_id: Uuid::new_v4(),
+            workspace_id: Uuid::parse_str("00000000-0000-4000-8000-0000000000ff").unwrap(),
+            started_at: Utc::now(),
+            branch: "sanchoris/x".into(),
+            compute: "standard".into(),
+            repositories: vec![],
+            network_allow: vec![],
+        }
+    }
+
+    #[test]
+    fn the_client_token_is_the_run_and_the_workspace_within_the_ecs_limit() {
+        let token = client_token(&spec());
+        assert_eq!(
+            token,
+            "00000000000040008000000000000001000000000000400080000000000000ff"
+        );
+        assert_eq!(token.len(), 64);
+        assert_eq!(client_token(&spec()), token);
+    }
+
+    #[test]
+    fn running_workspaces_come_from_the_task_tags() {
+        let spec = spec();
+        let tag = |key: &str, id: Uuid| Tag::builder().key(key).value(id.to_string()).build();
+        let task = Task::builder()
+            .task_arn("arn:aws:ecs:ap-northeast-1:1:task/c/abc")
+            .tags(tag(TAG_TENANT, spec.tenant_id))
+            .tags(tag(TAG_TASK, spec.task_id))
+            .tags(tag(TAG_RUN, spec.run_id))
+            .tags(tag(TAG_WORKSPACE, spec.workspace_id))
+            .build();
+        assert_eq!(
+            running_workspace(&task),
+            Some(RunningWorkspace {
+                platform_ref: "arn:aws:ecs:ap-northeast-1:1:task/c/abc".into(),
+                tenant_id: spec.tenant_id,
+                task_id: spec.task_id,
+                run_id: spec.run_id,
+                workspace_id: spec.workspace_id,
+            })
+        );
+        let untagged = Task::builder()
+            .task_arn("arn:aws:ecs:ap-northeast-1:1:task/c/def")
+            .build();
+        assert_eq!(running_workspace(&untagged), None);
     }
 
     #[test]

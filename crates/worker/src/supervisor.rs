@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sanchoris_config::{Session, Start};
 use sanchoris_core::channel::{OutboxType, RunEventType, enqueue_outbox, outbox};
 use sanchoris_core::db::{self, REF_TRIGGER, TenantTx, locate};
@@ -30,6 +30,7 @@ use crate::ports::WorkspaceSpec;
 use crate::{Worker, usage};
 
 pub const ERROR_USAGE_LIMIT: &str = "Worker.UsageLimit";
+const LAUNCH_TIMEOUT_MINUTES: i64 = 15;
 
 fn definition_of(task: &Task) -> Result<TaskDefinition> {
     Ok(serde_json::from_value(task.definition.clone())?)
@@ -373,8 +374,35 @@ pub async fn sweep_workspaces(worker: &Worker) -> Result<usize> {
     for task in active {
         changed += observe_workspaces(worker, task.tenant_id, task.id).await?;
     }
+    changed += stop_unrecorded_workspaces(worker).await?;
     worker.deps.runner.sweep().await?;
     Ok(changed)
+}
+
+async fn stop_unrecorded_workspaces(worker: &Worker) -> Result<usize> {
+    let mut stopped = 0;
+    for running in worker.deps.runner.running_workspaces().await? {
+        let mut tx = worker.tx(running.tenant_id);
+        let key = keys::workspace_key(running.tenant_id, running.task_id, running.workspace_id);
+        let recorded = tx.get::<Workspace>(&key).await?.is_some_and(|workspace| {
+            workspace.run_id == running.run_id
+                && workspace.stopped_at.is_none()
+                && workspace
+                    .platform_ref
+                    .as_deref()
+                    .is_none_or(|platform_ref| platform_ref == running.platform_ref)
+        });
+        if recorded {
+            continue;
+        }
+        worker
+            .deps
+            .runner
+            .stop_workspace(running.run_id, &running.platform_ref)
+            .await?;
+        stopped += 1;
+    }
+    Ok(stopped)
 }
 
 async fn observe_workspaces(worker: &Worker, tenant_id: Uuid, task_id: Uuid) -> Result<usize> {
@@ -388,14 +416,20 @@ async fn observe_workspaces(worker: &Worker, tenant_id: Uuid, task_id: Uuid) -> 
         .collect::<Vec<_>>();
     let mut stopped = Vec::new();
     for mut workspace in open {
-        let Some(platform_ref) = workspace.platform_ref.clone() else {
-            continue;
-        };
-        let Some(exit) = worker.deps.runner.workspace_exit(&platform_ref).await? else {
-            continue;
+        let reason = match workspace.platform_ref.clone() {
+            None if workspace.started_at + Duration::minutes(LAUNCH_TIMEOUT_MINUTES) <= now => {
+                format!("the workspace did not launch within {LAUNCH_TIMEOUT_MINUTES} minutes")
+            }
+            None => continue,
+            Some(platform_ref) => {
+                let Some(exit) = worker.deps.runner.workspace_exit(&platform_ref).await? else {
+                    continue;
+                };
+                exit.reason
+            }
         };
         close_workspace(&mut tx, &mut workspace, now)?;
-        stopped.push((workspace.run_id, exit.reason));
+        stopped.push((workspace.run_id, reason));
     }
     let Some((last_run_id, last_reason)) = stopped.last().cloned() else {
         return Ok(0);
@@ -549,6 +583,13 @@ pub async fn reconcile(
             }
             start_workspace(worker, tx, task, run).await
         }
+        Some(workspace) if workspace.platform_ref.is_none() => {
+            if run.is_finished() || task.status.is_terminal() {
+                return stop_workspace(worker, tx, run, workspace).await;
+            }
+            drop(tx);
+            launch_workspace(worker, &task, workspace).await
+        }
         Some(workspace) => {
             let idle = matches!(task.status, TaskStatus::Waiting | TaskStatus::NeedsYou)
                 && idle_seconds(&task).is_some_and(|idle| task.updated_at + idle <= now)
@@ -603,34 +644,21 @@ async fn start_workspace(
     let definition = definition_of(&task)?;
     let repositories = checkout_repositories(&mut tx, &task, &session).await?;
     let branch = task_branch(task.id);
-    let handle = worker
-        .deps
-        .runner
-        .start_workspace(&WorkspaceSpec {
-            run_id: run.id,
-            tenant_id,
-            task_id: task.id,
-            branch: branch.clone(),
-            compute: session.workspace.compute.as_str().to_string(),
-            repositories: repositories.clone(),
-            network_allow: session.network.allow.clone(),
-        })
-        .await?;
-    let workspace_id = Uuid::new_v4();
-    tx.insert(&Workspace {
-        id: workspace_id,
+    let workspace = Workspace {
+        id: Uuid::new_v4(),
         tenant_id,
         task_id: task.id,
         run_id: run.id,
         compute: session.workspace.compute.as_str().to_string(),
-        platform: handle.platform.to_string(),
-        platform_ref: Some(handle.platform_ref.clone()),
+        platform: worker.deps.runner.platform().to_string(),
+        platform_ref: None,
         repositories: repositories.clone(),
         branch: branch.clone(),
         base_commit: None,
         started_at: now,
         stopped_at: None,
-    })?;
+    };
+    tx.insert(&workspace)?;
     for mut item in outbox(&mut tx, run.id).await? {
         if item.delivered_at.is_none() && matches!(item.kind.as_str(), "start" | "shutdown") {
             item.delivered_at = Some(now);
@@ -646,13 +674,13 @@ async fn start_workspace(
         _ => Value::Null,
     };
     let start_payload = task.start_payload.clone().unwrap_or(Value::Null);
-    let first = run.status == "creating";
+    let instructed = run.status == "creating" || (run.record_s3_key.is_none() && run.turns == 0);
     let payload = json!({
         "agent": task.definition["Session"]["Definition"]["Worker"]["Agent"],
         "model": task.definition["Session"]["Definition"]["Worker"]["Model"],
         "systemPrompt": start_payload["systemPrompt"],
         "skills": skills_payload(&definition, &start.required_skills)?,
-        "instruction": if first { start_payload["instruction"].clone() } else { Value::Null },
+        "instruction": if instructed { start_payload["instruction"].clone() } else { Value::Null },
         "resume": resume,
         "heartbeatSeconds": start.limits.heartbeat_seconds,
         "branch": branch,
@@ -663,13 +691,50 @@ async fn start_workspace(
         run.id,
         OutboxType::Start,
         &payload,
-        &format!("start:{workspace_id}"),
+        &format!("start:{}", workspace.id),
     )
     .await?;
     run.status = "creating".into();
     run.updated_at = Utc::now();
     tx.put(&run)?;
     worker.faults.check("workspace_start.before_commit")?;
+    tx.commit().await?;
+    launch_workspace(worker, &task, workspace).await
+}
+
+async fn launch_workspace(worker: &Worker, task: &Task, workspace: Workspace) -> Result<usize> {
+    let session = session_of(task)?;
+    let handle = worker
+        .deps
+        .runner
+        .start_workspace(&WorkspaceSpec {
+            run_id: workspace.run_id,
+            tenant_id: workspace.tenant_id,
+            task_id: workspace.task_id,
+            workspace_id: workspace.id,
+            started_at: workspace.started_at,
+            branch: workspace.branch.clone(),
+            compute: workspace.compute.clone(),
+            repositories: workspace.repositories.clone(),
+            network_allow: session.network.allow.clone(),
+        })
+        .await?;
+    worker.faults.check("workspace_start.after_launch")?;
+    let mut tx = worker.tx(workspace.tenant_id);
+    let key = keys::workspace_key(workspace.tenant_id, workspace.task_id, workspace.id);
+    let Some(mut recorded) = tx.get::<Workspace>(&key).await? else {
+        return Err(invalid(format!("workspace {} disappeared", workspace.id)));
+    };
+    if recorded.stopped_at.is_some() {
+        worker
+            .deps
+            .runner
+            .stop_workspace(workspace.run_id, &handle.platform_ref)
+            .await?;
+        return Ok(1);
+    }
+    recorded.platform_ref = Some(handle.platform_ref);
+    tx.put(&recorded)?;
     tx.commit().await?;
     Ok(1)
 }

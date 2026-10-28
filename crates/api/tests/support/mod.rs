@@ -37,7 +37,7 @@ use sanchoris_core::tokens::{RunTokenSigner, Signer, TaskTokenSigner};
 use sanchoris_graphql::AesGcmEncryptor;
 use sanchoris_worker::driver::LocalDriver;
 use sanchoris_worker::ports::{
-    RunnerError, RunnerPort, WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
+    RunnerError, RunnerPort, RunningWorkspace, WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
 };
 use sanchoris_worker::resources::GitHubResources;
 use sanchoris_worker::runner::{LocalProcessRunner, LocalRunnerConfig};
@@ -74,8 +74,16 @@ pub struct NoWorkspaces;
 
 #[async_trait]
 impl RunnerPort for NoWorkspaces {
+    fn platform(&self) -> &'static str {
+        "local"
+    }
+
     async fn start_workspace(&self, _spec: &WorkspaceSpec) -> Result<WorkspaceHandle, RunnerError> {
         Err(RunnerError("the HTTP tests start no workspaces".into()))
+    }
+
+    async fn running_workspaces(&self) -> Result<Vec<RunningWorkspace>, RunnerError> {
+        Ok(Vec::new())
     }
 
     async fn stop_workspace(&self, _run_id: Uuid, _platform_ref: &str) -> Result<(), RunnerError> {

@@ -13,7 +13,7 @@ Jobs are written as message items in the same DynamoDB transaction as the state 
 | `EngineTimer` | the engine's `ScheduleTimer` effect, at the due time | Feeds `TimerDue` to the engine unless the timer was cancelled or re-armed |
 | `CheckPoll` | `github:checks`, check-run webhooks, `SweepChecks` | Reads the PR head and its check runs; completes the wait with `TaskSuccess` |
 | `TaskResume` | a usage-limit wait, at `ResumeAt` | Sends "Continue where you left off." |
-| `Reconcile` | a run being created, finished, or sent a `user_message`/`exec`; a task becoming idle, at the idle deadline | Starts a workspace for a run that needs one, stops a finished or idle one |
+| `Reconcile` | a run being created, finished, or sent a `user_message`/`exec`; a task becoming idle, at the idle deadline | Starts a workspace for a run that needs one, stops a finished or idle one. A start commits the workspace item without `platform_ref` and the `start` outbox item first, then calls `RunnerPort::start_workspace` (idempotent per workspace id) and records the `platform_ref`; an open workspace without `platform_ref` is launched again. The `start` carries the task's instruction for a new run and for a run that has no session record and no turn yet |
 | `DeliverOutbox` | `enqueue_outbox` | Calls `OutboxPusher` so the Run channel delivers the run's outbox |
 | `ConfigSync` | `SweepConfigs`, the config screen, push webhooks | Reads the head commit through `ConfigSource`, validates it, stores the revision, and on success activates projects, repositories, sessions, skills, and triggers (Project repo keys in `detail.repository` become `owner/name`) and schedules `rate`/`cron` triggers |
 | `TriggerSchedule` | trigger activation, the previous firing | Writes a `schedule` inbound event and schedules the next firing |
@@ -21,7 +21,7 @@ Jobs are written as message items in the same DynamoDB transaction as the state 
 | `SweepChecks` | rate schedule | Emits `CheckPoll` for check waits whose poll is due |
 | `SweepTaskLimits` | rate schedule | Applies `Start.Limits` to `RUNNING`/`WAITING` tasks; over the limit, `NEEDS_YOU` and an `interrupt` |
 | `UsageAlerts` | rate schedule | Writes `usage_alerts` at 80% of the plan |
-| `SweepWorkspaces` | rate schedule | Asks `RunnerPort::workspace_exit` about the open workspaces of `RUNNING`/`WAITING` tasks; a workspace that stopped on its own is closed, its run goes `idle` with the reason as `error`, and a `RUNNING` task goes `NEEDS_YOU` (`Workspace.Stopped`, the reason as `cause`). Then `RunnerPort::sweep` (the ECS runner scales the egress relay to 0 when no Workspace runs) |
+| `SweepWorkspaces` | rate schedule | Asks `RunnerPort::workspace_exit` about the open workspaces of `RUNNING`/`WAITING` tasks; a workspace that stopped on its own is closed, its run goes `idle` with the reason as `error`, and a `RUNNING` task goes `NEEDS_YOU` (`Workspace.Stopped`, the reason as `cause`); a workspace without `platform_ref` 15 minutes after it started is closed the same way. Then it stops every workspace in `RunnerPort::running_workspaces` that no open workspace item records with that `platform_ref`, and calls `RunnerPort::sweep` (the ECS runner scales the egress relay to 0 when no Workspace runs) |
 
 ## Contract with the api
 

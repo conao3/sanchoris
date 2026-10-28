@@ -10,7 +10,7 @@ use sanchoris_worker::error::WorkerError;
 use sanchoris_worker::github::{FileChange, GitHubApi};
 use sanchoris_worker::ports::{
     ConfigSource, GitHubClient, NewPullRequest, OutboxPusher, RunnerError, RunnerPort,
-    WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
+    RunningWorkspace, WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
 };
 use sanchoris_worker::{Worker, config_sync, dispatcher, installation_for_repo};
 use serde_yaml_ng::{Mapping, Value as Yaml};
@@ -75,7 +75,15 @@ const API_RUNS_NO_WORKSPACES: &str = "the api function runs config sync and chat
 
 #[async_trait]
 impl RunnerPort for ApiWorkspaces {
+    fn platform(&self) -> &'static str {
+        crate::ecs::PLATFORM
+    }
+
     async fn start_workspace(&self, _spec: &WorkspaceSpec) -> Result<WorkspaceHandle, RunnerError> {
+        Err(RunnerError(API_RUNS_NO_WORKSPACES.into()))
+    }
+
+    async fn running_workspaces(&self) -> Result<Vec<RunningWorkspace>, RunnerError> {
         Err(RunnerError(API_RUNS_NO_WORKSPACES.into()))
     }
 

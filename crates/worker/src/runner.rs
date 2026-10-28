@@ -12,7 +12,9 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::clock::Clock;
-use crate::ports::{RunnerError, RunnerPort, WorkspaceExit, WorkspaceHandle, WorkspaceSpec};
+use crate::ports::{
+    RunnerError, RunnerPort, RunningWorkspace, WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
+};
 
 #[derive(Debug, Clone)]
 pub struct LocalRunnerConfig {
@@ -53,6 +55,7 @@ impl LocalRunnerConfig {
 }
 
 struct LocalWorkspace {
+    running: RunningWorkspace,
     child: Child,
     dir: PathBuf,
 }
@@ -179,7 +182,21 @@ impl LocalProcessRunner {
 
 #[async_trait]
 impl RunnerPort for LocalProcessRunner {
+    fn platform(&self) -> &'static str {
+        "local"
+    }
+
     async fn start_workspace(&self, spec: &WorkspaceSpec) -> Result<WorkspaceHandle, RunnerError> {
+        if let Some(platform_ref) = self
+            .workspaces
+            .lock()
+            .await
+            .iter()
+            .find(|(_, workspace)| workspace.running.workspace_id == spec.workspace_id)
+            .map(|(platform_ref, _)| platform_ref.clone())
+        {
+            return Ok(WorkspaceHandle { platform_ref });
+        }
         let dir = self.config.workspaces_dir.join(Uuid::new_v4().to_string());
         tokio::fs::create_dir_all(&dir)
             .await
@@ -228,14 +245,31 @@ impl RunnerPort for LocalProcessRunner {
             }
         }
         drop(stdin);
-        self.workspaces
+        self.workspaces.lock().await.insert(
+            platform_ref.clone(),
+            LocalWorkspace {
+                running: RunningWorkspace {
+                    platform_ref: platform_ref.clone(),
+                    tenant_id: spec.tenant_id,
+                    task_id: spec.task_id,
+                    run_id: spec.run_id,
+                    workspace_id: spec.workspace_id,
+                },
+                child,
+                dir,
+            },
+        );
+        Ok(WorkspaceHandle { platform_ref })
+    }
+
+    async fn running_workspaces(&self) -> Result<Vec<RunningWorkspace>, RunnerError> {
+        Ok(self
+            .workspaces
             .lock()
             .await
-            .insert(platform_ref.clone(), LocalWorkspace { child, dir });
-        Ok(WorkspaceHandle {
-            platform: "local",
-            platform_ref,
-        })
+            .values()
+            .map(|workspace| workspace.running.clone())
+            .collect())
     }
 
     async fn stop_workspace(&self, _run_id: Uuid, platform_ref: &str) -> Result<(), RunnerError> {
@@ -329,6 +363,8 @@ mod tests {
             run_id: Uuid::new_v4(),
             tenant_id: Uuid::new_v4(),
             task_id: Uuid::new_v4(),
+            workspace_id: Uuid::new_v4(),
+            started_at: chrono::Utc::now(),
             branch: "sanchoris/x".into(),
             compute: "standard".into(),
             repositories,
@@ -426,8 +462,12 @@ mod tests {
         let fixture = fixture("sleep", &["30"]);
         let spec = spec(vec![]);
         let handle = fixture.runner.start_workspace(&spec).await.unwrap();
-        assert_eq!(handle.platform, "local");
         assert!(handle.platform_ref.starts_with("pid:"));
+        assert_eq!(fixture.runner.start_workspace(&spec).await.unwrap(), handle);
+        let running = fixture.runner.running_workspaces().await.unwrap();
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].workspace_id, spec.workspace_id);
+        assert_eq!(running[0].platform_ref, handle.platform_ref);
         fixture
             .runner
             .stop_workspace(spec.run_id, &handle.platform_ref)
