@@ -200,15 +200,17 @@ impl Worker {
             Job::SweepChecks => engine_worker::sweep_checks(self).await,
             Job::SweepTaskLimits => supervisor::sweep_limits(self).await,
             Job::UsageAlerts => usage::sweep_alerts(self).await,
+            Job::SweepWorkspaces => supervisor::sweep_workspaces(self).await,
         }
     }
 }
 
-pub const PERIODIC_JOBS: [Job; 4] = [
+pub const PERIODIC_JOBS: [Job; 5] = [
     Job::SweepConfigs,
     Job::SweepChecks,
     Job::SweepTaskLimits,
     Job::UsageAlerts,
+    Job::SweepWorkspaces,
 ];
 
 pub(crate) async fn installations(

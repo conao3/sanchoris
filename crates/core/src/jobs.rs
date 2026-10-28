@@ -60,6 +60,7 @@ pub enum Job {
     SweepChecks,
     SweepTaskLimits,
     UsageAlerts,
+    SweepWorkspaces,
 }
 
 impl Job {
@@ -80,6 +81,7 @@ impl Job {
             Self::SweepChecks => "sweep:checks".into(),
             Self::SweepTaskLimits => "sweep:task-limits".into(),
             Self::UsageAlerts => "sweep:usage-alerts".into(),
+            Self::SweepWorkspaces => "sweep:workspaces".into(),
         }
     }
 }

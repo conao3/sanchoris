@@ -9,6 +9,7 @@ pub const ERROR_TURN_LIMIT: &str = "Task.TurnLimitExceeded";
 pub const ERROR_COST_LIMIT: &str = "Task.CostLimitExceeded";
 pub const ERROR_TIMEOUT: &str = "Task.Timeout";
 pub const ERROR_HEARTBEAT_TIMEOUT: &str = "Task.HeartbeatTimeout";
+pub const ERROR_WORKSPACE_STOPPED: &str = "Workspace.Stopped";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskDecision {

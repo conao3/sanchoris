@@ -313,6 +313,9 @@ impl Task {
                 | sanchoris_core::lifecycle::ERROR_TIMEOUT
                 | sanchoris_core::lifecycle::ERROR_HEARTBEAT_TIMEOUT,
             ) => NeedsYouReason::LimitExceeded,
+            Some(sanchoris_core::lifecycle::ERROR_WORKSPACE_STOPPED) => {
+                NeedsYouReason::WorkspaceStopped
+            }
             Some(_) => NeedsYouReason::SkillFailed,
         })
     }

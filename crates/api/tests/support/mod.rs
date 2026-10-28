@@ -36,7 +36,9 @@ use sanchoris_core::testing::{SeededTenant, TestDynamo};
 use sanchoris_core::tokens::{RunTokenSigner, Signer, TaskTokenSigner};
 use sanchoris_graphql::AesGcmEncryptor;
 use sanchoris_worker::driver::LocalDriver;
-use sanchoris_worker::ports::{RunnerError, RunnerPort, WorkspaceHandle, WorkspaceSpec};
+use sanchoris_worker::ports::{
+    RunnerError, RunnerPort, WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
+};
 use sanchoris_worker::resources::GitHubResources;
 use sanchoris_worker::runner::{LocalProcessRunner, LocalRunnerConfig};
 use sanchoris_worker::{Deps, Settings, Worker};
@@ -77,6 +79,17 @@ impl RunnerPort for NoWorkspaces {
     }
 
     async fn stop_workspace(&self, _run_id: Uuid, _platform_ref: &str) -> Result<(), RunnerError> {
+        Ok(())
+    }
+
+    async fn workspace_exit(
+        &self,
+        _platform_ref: &str,
+    ) -> Result<Option<WorkspaceExit>, RunnerError> {
+        Ok(None)
+    }
+
+    async fn sweep(&self) -> Result<(), RunnerError> {
         Ok(())
     }
 }

@@ -339,6 +339,7 @@
   "task.agentAsked": "エージェントが質問しています",
   "task.usageLimitManual": "利用枠の上限に達しました。手で再開します",
   "task.limitExceeded": "タスクの上限を超えました",
+  "task.workspaceStopped": "タスクが終わる前に Workspace が停止しました",
   "task.limitReached": "{agent} の利用枠の上限",
   "task.resumes": "{at} に再開",
   "task.autoResumeOn": "自動で再開",

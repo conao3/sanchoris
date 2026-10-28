@@ -754,6 +754,7 @@ enum NeedsYouReason {
   AGENT_ASKED
   USAGE_LIMIT
   LIMIT_EXCEEDED
+  WORKSPACE_STOPPED
 }
 
 enum ChannelKind {

@@ -6,8 +6,8 @@ use chrono::{DateTime, TimeZone, Utc};
 use sanchoris_config::ConfigFiles;
 use sanchoris_worker::ports::{
     CheckRun, ConfigSource, GitHubClient, GitHubError, GitHubReader, IssueComment, IssueRelations,
-    MergeResult, NewPullRequest, PullRequest, RunnerError, RunnerPort, WorkspaceHandle,
-    WorkspaceSpec,
+    MergeResult, NewPullRequest, PullRequest, RunnerError, RunnerPort, WorkspaceExit,
+    WorkspaceHandle, WorkspaceSpec,
 };
 use uuid::Uuid;
 
@@ -295,6 +295,9 @@ impl ConfigSource for FakeGitHub {
 pub struct FakeRunner {
     pub started: Mutex<Vec<Uuid>>,
     pub stopped: Mutex<Vec<Uuid>>,
+    pub refs: Mutex<Vec<String>>,
+    pub exits: Mutex<HashMap<String, WorkspaceExit>>,
+    pub sweeps: Mutex<usize>,
 }
 
 #[async_trait]
@@ -302,14 +305,28 @@ impl RunnerPort for FakeRunner {
     async fn start_workspace(&self, spec: &WorkspaceSpec) -> Result<WorkspaceHandle, RunnerError> {
         let mut started = self.started.lock().unwrap();
         started.push(spec.run_id);
+        let platform_ref = format!("fake-{}-{}", spec.run_id, started.len());
+        self.refs.lock().unwrap().push(platform_ref.clone());
         Ok(WorkspaceHandle {
             platform: "local",
-            platform_ref: format!("fake-{}-{}", spec.run_id, started.len()),
+            platform_ref,
         })
     }
 
     async fn stop_workspace(&self, run_id: Uuid, _: &str) -> Result<(), RunnerError> {
         self.stopped.lock().unwrap().push(run_id);
+        Ok(())
+    }
+
+    async fn workspace_exit(
+        &self,
+        platform_ref: &str,
+    ) -> Result<Option<WorkspaceExit>, RunnerError> {
+        Ok(self.exits.lock().unwrap().get(platform_ref).cloned())
+    }
+
+    async fn sweep(&self) -> Result<(), RunnerError> {
+        *self.sweeps.lock().unwrap() += 1;
         Ok(())
     }
 }

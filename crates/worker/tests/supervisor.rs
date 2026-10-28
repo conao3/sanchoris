@@ -173,6 +173,34 @@ async fn idle_workspaces_stop_and_restart_for_the_next_message() {
 }
 
 #[tokio::test]
+async fn a_workspace_that_stops_on_its_own_needs_you_with_the_reason() {
+    let world = World::new("pro").await;
+    world.started_task(35).await;
+    let platform_ref = world.runner.refs.lock().unwrap()[0].clone();
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "RUNNING");
+    let sweeps = *world.runner.sweeps.lock().unwrap();
+    assert!(sweeps > 0);
+
+    let reason = "Essential container in task exited; container workspace exit code 1";
+    world.runner.exits.lock().unwrap().insert(
+        platform_ref,
+        sanchoris_worker::ports::WorkspaceExit {
+            reason: reason.into(),
+        },
+    );
+    world.clock.advance(Duration::seconds(120));
+    world.worker.settle().await.unwrap();
+    let task = world.task(&format!("{REPO}#35")).await;
+    assert_eq!(task.status, "NEEDS_YOU");
+    assert_eq!(task.error.as_deref(), Some("Workspace.Stopped"));
+    assert_eq!(task.cause.as_deref(), Some(reason));
+    assert!(*world.runner.sweeps.lock().unwrap() > sweeps);
+    assert!(world.runner.stopped.lock().unwrap().is_empty());
+    assert_eq!(tenant(&world).await.workspace_seconds_this_period, 120);
+}
+
+#[tokio::test]
 async fn turn_limits_need_you_and_interrupt_the_session() {
     let world = World::new("pro").await;
     let yaml = common::CONFIG_YAML.replacen("Limits: { Turns: 60,", "Limits: { Turns: 2,", 1);

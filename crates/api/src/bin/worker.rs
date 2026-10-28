@@ -34,7 +34,7 @@ async fn main() -> Result<(), lambda_runtime::Error> {
         reader: github.clone(),
         config_source: github.clone(),
         resources: Arc::new(GitHubResources::new(github)),
-        runner: Arc::new(EcsRunner::new(&sdk, runner, clock)),
+        runner: Arc::new(EcsRunner::new(&sdk, &store, runner, clock)),
         pusher: Arc::new(channel),
     };
     let worker = Worker::new(store, deps, Settings::default());

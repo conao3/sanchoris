@@ -52,6 +52,8 @@ export function needsYouText(task: {
       return `${t('task.usageLimitManual')} · ${spent}`;
     case 'LIMIT_EXCEEDED':
       return `${t('task.limitExceeded')} · ${spent}`;
+    case 'WORKSPACE_STOPPED':
+      return `${t('task.workspaceStopped')} · ${spent}`;
     default:
       return spent;
   }

@@ -234,6 +234,11 @@ pub struct WorkspaceHandle {
     pub platform_ref: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceExit {
+    pub reason: String,
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[error("runner failed: {0}")]
 pub struct RunnerError(pub String);
@@ -242,6 +247,11 @@ pub struct RunnerError(pub String);
 pub trait RunnerPort: Send + Sync {
     async fn start_workspace(&self, spec: &WorkspaceSpec) -> Result<WorkspaceHandle, RunnerError>;
     async fn stop_workspace(&self, run_id: Uuid, platform_ref: &str) -> Result<(), RunnerError>;
+    async fn workspace_exit(
+        &self,
+        platform_ref: &str,
+    ) -> Result<Option<WorkspaceExit>, RunnerError>;
+    async fn sweep(&self) -> Result<(), RunnerError>;
 }
 
 #[async_trait]

@@ -219,6 +219,7 @@ pub enum NeedsYouReason {
     AgentAsked,
     UsageLimit,
     LimitExceeded,
+    WorkspaceStopped,
 }
 
 db_enum!(ChannelKind, "channel kind", {

@@ -10,7 +10,7 @@ use sanchoris_worker::error::WorkerError;
 use sanchoris_worker::github::{FileChange, GitHubApi};
 use sanchoris_worker::ports::{
     ConfigSource, GitHubClient, NewPullRequest, OutboxPusher, RunnerError, RunnerPort,
-    WorkspaceHandle, WorkspaceSpec,
+    WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
 };
 use sanchoris_worker::{Worker, config_sync, dispatcher, installation_for_repo};
 use serde_yaml_ng::{Mapping, Value as Yaml};
@@ -80,6 +80,17 @@ impl RunnerPort for ApiWorkspaces {
     }
 
     async fn stop_workspace(&self, _run_id: Uuid, _platform_ref: &str) -> Result<(), RunnerError> {
+        Err(RunnerError(API_RUNS_NO_WORKSPACES.into()))
+    }
+
+    async fn workspace_exit(
+        &self,
+        _platform_ref: &str,
+    ) -> Result<Option<WorkspaceExit>, RunnerError> {
+        Err(RunnerError(API_RUNS_NO_WORKSPACES.into()))
+    }
+
+    async fn sweep(&self) -> Result<(), RunnerError> {
         Err(RunnerError(API_RUNS_NO_WORKSPACES.into()))
     }
 }

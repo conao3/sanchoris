@@ -7,8 +7,9 @@ use sanchoris_core::items::{
 };
 use sanchoris_core::keys;
 use sanchoris_core::lifecycle::{
-    RequiredSkill, TaskDecision, TaskLimits, TaskProgress, TurnEnd, check_limits,
-    decide_human_reply, decide_turn_end, decide_usage_limit, decide_usage_limit_resume,
+    ERROR_WORKSPACE_STOPPED, RequiredSkill, TaskDecision, TaskLimits, TaskProgress, TurnEnd,
+    check_limits, decide_human_reply, decide_turn_end, decide_usage_limit,
+    decide_usage_limit_resume,
 };
 use sanchoris_core::model::{
     SkillRunStatus, TaskDefinition, TaskStatus, UsageLimitResume, WaitReason,
@@ -363,6 +364,75 @@ pub async fn resume(
     Ok(1)
 }
 
+pub async fn sweep_workspaces(worker: &Worker) -> Result<usize> {
+    let active = worker
+        .store
+        .query_index::<Task>(Index::Gsi2, keys::SWEEP_ACTIVE_TASKS, SortKey::All)
+        .await?;
+    let mut changed = 0;
+    for task in active {
+        changed += observe_workspaces(worker, task.tenant_id, task.id).await?;
+    }
+    worker.deps.runner.sweep().await?;
+    Ok(changed)
+}
+
+async fn observe_workspaces(worker: &Worker, tenant_id: Uuid, task_id: Uuid) -> Result<usize> {
+    let now = worker.now();
+    let mut tx = worker.tx(tenant_id);
+    let open = tx
+        .query::<Workspace>(&keys::task_pk(tenant_id, task_id), "WS#")
+        .await?
+        .into_iter()
+        .filter(|w| w.stopped_at.is_none())
+        .collect::<Vec<_>>();
+    let mut stopped = Vec::new();
+    for mut workspace in open {
+        let Some(platform_ref) = workspace.platform_ref.clone() else {
+            continue;
+        };
+        let Some(exit) = worker.deps.runner.workspace_exit(&platform_ref).await? else {
+            continue;
+        };
+        close_workspace(&mut tx, &mut workspace, now)?;
+        stopped.push((workspace.run_id, exit.reason));
+    }
+    let Some((last_run_id, last_reason)) = stopped.last().cloned() else {
+        return Ok(0);
+    };
+    for (run_id, reason) in &stopped {
+        let Some(mut run) = tx
+            .get::<Run>(&keys::run_key(tenant_id, task_id, *run_id))
+            .await?
+        else {
+            continue;
+        };
+        if !run.is_finished() {
+            run.status = "idle".into();
+            run.error = Some(reason.clone());
+            run.updated_at = now;
+            tx.put(&run)?;
+        }
+    }
+    let task = load_task(&mut tx, task_id).await?;
+    if task.status == TaskStatus::Running {
+        apply_decision(
+            &mut tx,
+            task_id,
+            last_run_id,
+            &TaskDecision::NeedsYou {
+                error: ERROR_WORKSPACE_STOPPED.into(),
+                cause: last_reason,
+            },
+            "workspace-stopped",
+            now,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(stopped.len())
+}
+
 pub async fn sweep_limits(worker: &Worker) -> Result<usize> {
     let active = worker
         .store
@@ -604,6 +674,21 @@ async fn start_workspace(
     Ok(1)
 }
 
+fn close_workspace(tx: &mut TenantTx, workspace: &mut Workspace, now: DateTime<Utc>) -> Result<()> {
+    let weight = match workspace.compute.as_str() {
+        "docker" => 3,
+        _ => 1,
+    };
+    let seconds = (now - workspace.started_at).num_seconds().max(0) * weight;
+    workspace.stopped_at = Some(now.max(workspace.started_at));
+    tx.put(workspace)?;
+    tx.update(
+        &keys::tenant_key(tx.tenant_id()),
+        Update::new().add("workspace_seconds_this_period", seconds),
+    )?;
+    Ok(())
+}
+
 async fn stop_workspace(
     worker: &Worker,
     mut tx: TenantTx,
@@ -611,7 +696,6 @@ async fn stop_workspace(
     mut workspace: Workspace,
 ) -> Result<usize> {
     let now = worker.now();
-    let tenant_id = tx.tenant_id();
     if let Some(platform_ref) = &workspace.platform_ref {
         worker
             .deps
@@ -619,17 +703,7 @@ async fn stop_workspace(
             .stop_workspace(run.id, platform_ref)
             .await?;
     }
-    let weight = match workspace.compute.as_str() {
-        "docker" => 3,
-        _ => 1,
-    };
-    let seconds = (now - workspace.started_at).num_seconds().max(0) * weight;
-    workspace.stopped_at = Some(now.max(workspace.started_at));
-    tx.put(&workspace)?;
-    tx.update(
-        &keys::tenant_key(tenant_id),
-        Update::new().add("workspace_seconds_this_period", seconds),
-    )?;
+    close_workspace(&mut tx, &mut workspace, now)?;
     if !run.is_finished() {
         run.status = "idle".into();
         run.updated_at = Utc::now();

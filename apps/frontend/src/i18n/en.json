@@ -339,6 +339,7 @@
   "task.agentAsked": "The agent asked a question",
   "task.usageLimitManual": "Usage limit reached; resume by hand",
   "task.limitExceeded": "Over the task limits",
+  "task.workspaceStopped": "The workspace stopped before the task finished",
   "task.limitReached": "{agent} limit reached",
   "task.resumes": "resumes {at}",
   "task.autoResumeOn": "auto-resume on",

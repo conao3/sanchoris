@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::clock::Clock;
-use crate::ports::{RunnerError, RunnerPort, WorkspaceHandle, WorkspaceSpec};
+use crate::ports::{RunnerError, RunnerPort, WorkspaceExit, WorkspaceHandle, WorkspaceSpec};
 
 #[derive(Debug, Clone)]
 pub struct LocalRunnerConfig {
@@ -236,6 +236,38 @@ impl RunnerPort for LocalProcessRunner {
         }
         Ok(())
     }
+
+    async fn workspace_exit(
+        &self,
+        platform_ref: &str,
+    ) -> Result<Option<WorkspaceExit>, RunnerError> {
+        let mut workspaces = self.workspaces.lock().await;
+        let Some(workspace) = workspaces.get_mut(platform_ref) else {
+            return Ok(Some(WorkspaceExit {
+                reason: format!("the workspace process {platform_ref} is gone"),
+            }));
+        };
+        let status = workspace
+            .child
+            .try_wait()
+            .map_err(|error| RunnerError(format!("wait {platform_ref}: {error}")))?;
+        let Some(status) = status else {
+            return Ok(None);
+        };
+        let workspace = workspaces
+            .remove(platform_ref)
+            .expect("the workspace is in the map");
+        tokio::fs::remove_dir_all(&workspace.dir)
+            .await
+            .map_err(|error| RunnerError(format!("remove {}: {error}", workspace.dir.display())))?;
+        Ok(Some(WorkspaceExit {
+            reason: format!("the workspace process exited with {status}"),
+        }))
+    }
+
+    async fn sweep(&self) -> Result<(), RunnerError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -382,6 +414,26 @@ mod tests {
             .stop_workspace(spec.run_id, &handle.platform_ref)
             .await
             .unwrap();
+        assert!(fixture.runner.workspaces.lock().await.is_empty());
+        assert_eq!(entries(&fixture.root.path().join("workspaces")), 0);
+    }
+
+    #[tokio::test]
+    async fn reports_the_exit_of_a_workspace_process() {
+        let fixture = fixture("sh", &["-c", "exit 3"]);
+        let handle = fixture.runner.start_workspace(&spec(vec![])).await.unwrap();
+        let exit = loop {
+            if let Some(exit) = fixture
+                .runner
+                .workspace_exit(&handle.platform_ref)
+                .await
+                .unwrap()
+            {
+                break exit;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        assert!(exit.reason.contains("exit status: 3"), "{}", exit.reason);
         assert!(fixture.runner.workspaces.lock().await.is_empty());
         assert_eq!(entries(&fixture.root.path().join("workspaces")), 0);
     }

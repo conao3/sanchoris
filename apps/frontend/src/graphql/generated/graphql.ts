@@ -130,7 +130,8 @@ export type NeedsYouReason =
   | 'LIMIT_EXCEEDED'
   | 'NUDGES_EXHAUSTED'
   | 'SKILL_FAILED'
-  | 'USAGE_LIMIT';
+  | 'USAGE_LIMIT'
+  | 'WORKSPACE_STOPPED';
 
 export type OutputKind =
   | 'COMMENT'
