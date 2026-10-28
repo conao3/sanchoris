@@ -19,7 +19,9 @@ use sanchoris_worker::dispatcher::schedule_trigger;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
-use crate::account::{Credential, Invitation, Member, Plan, Viewer, mask_key};
+use crate::account::{
+    Credential, Invitation, Member, Plan, Viewer, key_matches_provider, mask_key,
+};
 use crate::audit::{AuditEvent, AuditFilter};
 use crate::config::{ChangeRequest, Config, Session, ValidationError};
 use crate::context::{
@@ -1272,6 +1274,12 @@ impl MutationRoot {
         let key = input.key.trim();
         if key.is_empty() {
             return Err(bad_input("the key is empty"));
+        }
+        if !key_matches_provider(input.provider, key) {
+            return Err(bad_input(format!(
+                "the key does not look like a {:?} key",
+                input.provider
+            )));
         }
         let (provider, kind) = match input.provider {
             ApiKeyProvider::Anthropic => ("claude", "api_key"),

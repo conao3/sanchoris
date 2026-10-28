@@ -524,6 +524,104 @@ async fn roles_gate_admin_and_owner_operations() {
     assert!(w.audit_actions(w.acme).await.is_empty());
 }
 
+fn credential_ids(members: &Value, member_id: Uuid) -> Vec<String> {
+    members["tenant"]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|member| member["id"] == member_id.to_string())
+        .unwrap()["credentials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|credential| credential["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn members_see_only_their_own_personal_credentials_unless_admin() {
+    let w = World::new().await;
+    let tenant = json!({ "tenant": "acme" });
+    let mika = w.mika.member_id.unwrap();
+    let by_ken = w.ok(&w.ken, "Members", tenant.clone()).await;
+    assert!(credential_ids(&by_ken, mika).is_empty());
+    let by_sota = w.ok(&w.sota, "Members", tenant.clone()).await;
+    assert_eq!(
+        credential_ids(&by_sota, mika),
+        [w.mika_credential.to_string()]
+    );
+    let by_mika = w.ok(&w.mika, "Members", tenant).await;
+    assert_eq!(
+        credential_ids(&by_mika, mika),
+        [w.mika_credential.to_string()]
+    );
+}
+
+#[tokio::test]
+async fn invitations_operators_and_roles_reject_the_wrong_person() {
+    let w = World::new().await;
+    for (who, invitation) in [
+        (&w.ken, w.invitation),
+        (&w.hana, w.invitation),
+        (&w.ren, w.globex_invitation),
+    ] {
+        assert_eq!(
+            w.error_code(
+                who,
+                "AcceptInvitation",
+                json!({ "invitationId": invitation })
+            )
+            .await,
+            "NOT_FOUND"
+        );
+    }
+    assert_eq!(
+        w.error_code(
+            &w.hana,
+            "SuspendTenant",
+            json!({ "tenantId": w.acme, "reason": "abuse" })
+        )
+        .await,
+        "FORBIDDEN"
+    );
+    assert_eq!(
+        w.error_code(&w.hana, "UnsuspendTenant", json!({ "tenantId": w.acme }))
+            .await,
+        "FORBIDDEN"
+    );
+    assert_eq!(
+        w.error_code(
+            &w.sota,
+            "ChangeMemberRole",
+            json!({ "memberId": w.sota.member_id, "role": "OWNER" })
+        )
+        .await,
+        "FORBIDDEN"
+    );
+    let sota = w
+        .get::<Member>(&keys::member_key(w.acme, w.sota.member_id.unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(sota.role, "admin");
+
+    let home = w.ok(&w.operator, "Home", json!({ "tenant": "acme" })).await;
+    assert_eq!(home["tenant"], Value::Null);
+    for query in [
+        "query { operator { tenants { credentials { id } } } }",
+        "query { operator { tenants { configs { id } } } }",
+        "query { operator { tenants { invitations { id } } } }",
+    ] {
+        assert_eq!(
+            w.inline_code(&w.operator, query, json!({})).await,
+            "FORBIDDEN",
+            "{query}"
+        );
+    }
+    let tenant: sanchoris_core::items::Tenant = w.get(&keys::tenant_key(w.acme)).await.unwrap();
+    assert_eq!(tenant.status, "active");
+    assert!(w.audit_actions(w.acme).await.is_empty());
+}
+
 #[tokio::test]
 async fn requests_without_a_user_are_rejected() {
     let w = World::new().await;

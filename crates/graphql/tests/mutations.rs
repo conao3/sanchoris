@@ -461,7 +461,7 @@ async fn credentials_are_encrypted_and_removable_by_their_owner() {
     assert_eq!(row.scope, "personal");
     assert_eq!(row.provider, "claude");
     assert_eq!(row.kind, "api_key");
-    assert_eq!(row.account, "sk-ant-…9f2c");
+    assert_eq!(row.account, "sk-a…9f2c");
     assert_eq!(row.kms_key_id, sanchoris_graphql::LOCAL_KEY_ID);
     assert!(!row.encrypted_value.contains(key));
     let encrypted = STANDARD.decode(&row.encrypted_value).unwrap();
@@ -490,11 +490,33 @@ async fn credentials_are_encrypted_and_removable_by_their_owner() {
         w.error_code(
             &w.mika,
             "AddCredential",
-            json!({ "input": { "tenantId": w.acme, "name": "ken-key", "provider": "OPENAI", "key": "not-a-real-key", "scope": "ORGANIZATION" } }),
+            json!({ "input": { "tenantId": w.acme, "name": "ken-key", "provider": "OPENAI", "key": "sk-proj-example", "scope": "ORGANIZATION" } }),
         )
         .await,
         "CONFLICT"
     );
+    for (provider, wrong) in [
+        ("OPENAI", "not-a-real-key"),
+        ("OPENAI", "sk-ant-api03-0123456789"),
+        ("ANTHROPIC", "sk-proj-0123456789abcdef"),
+    ] {
+        assert_eq!(
+            w.error_code(
+                &w.ken,
+                "AddCredential",
+                json!({ "input": { "tenantId": w.acme, "name": "wrong-key", "provider": provider, "key": wrong, "scope": "PERSONAL" } }),
+            )
+            .await,
+            "BAD_USER_INPUT",
+            "{provider} {wrong}"
+        );
+    }
+    w.ok(
+        &w.ken,
+        "AddCredential",
+        json!({ "input": { "tenantId": w.acme, "name": "ken-oauth", "provider": "ANTHROPIC", "key": "sk-ant-oat01-0123456789abcd", "scope": "PERSONAL" } }),
+    )
+    .await;
     let org = w
         .ok(
             &w.sota,
@@ -537,7 +559,7 @@ async fn credentials_are_encrypted_and_removable_by_their_owner() {
         .into_iter()
         .filter(|credential| credential.tenant_id == w.acme)
         .count();
-    assert_eq!(left, 3);
+    assert_eq!(left, 4);
     assert!(
         w.get::<Guard>(&keys::credential_name_key(w.acme, "ken-key"))
             .await

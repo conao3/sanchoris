@@ -150,6 +150,7 @@ pub struct Recorder {
 pub struct Fakes {
     pub recorder: Arc<Recorder>,
     pub store: Store,
+    pub clock: Arc<FixedClock>,
 }
 
 #[async_trait]
@@ -315,13 +316,13 @@ impl Person {
 #[async_trait]
 impl ChatDispatcher for Fakes {
     async fn dispatch(&self, tenant_id: Uuid) -> Result<(), PortError> {
-        dispatch_chat(&self.store, tenant_id)
+        dispatch_chat(&self.store, tenant_id, self.clock.now())
             .await
             .map_err(|e| PortError::Failed(e.to_string()))
     }
 }
 
-async fn dispatch_chat(store: &Store, tenant_id: Uuid) -> Result<(), DbError> {
+async fn dispatch_chat(store: &Store, tenant_id: Uuid, now: DateTime<Utc>) -> Result<(), DbError> {
     let mut tx = store.tx(tenant_id);
     let markers = tx
         .query::<Pending>(&keys::inbound_pk(tenant_id), "PEND#")
@@ -329,7 +330,7 @@ async fn dispatch_chat(store: &Store, tenant_id: Uuid) -> Result<(), DbError> {
     for marker in markers {
         let mut inbound = tx.require::<InboundEvent>(&marker.target).await?;
         tx.delete(&marker.key)?;
-        inbound.processed_at = Some(Utc::now());
+        inbound.processed_at = Some(now);
         tx.put(&inbound)?;
         if inbound.source != "web" {
             continue;
@@ -1445,9 +1446,11 @@ impl World {
         tx.commit().await.unwrap();
 
         let recorder = Arc::new(Recorder::default());
+        let clock = Arc::new(FixedClock(Mutex::new(now)));
         let fakes = Arc::new(Fakes {
             recorder: recorder.clone(),
             store: store.clone(),
+            clock: clock.clone(),
         });
         let encryptor = Arc::new(AesGcmEncryptor::new(&[9; 32]));
         let schema = build_schema(
@@ -1461,7 +1464,7 @@ impl World {
                 chat: fakes.clone(),
                 audit_export: fakes.clone(),
                 encryptor: encryptor.clone(),
-                clock: Arc::new(FixedClock(Mutex::new(now))),
+                clock,
             },
         );
         let person = |user_id, member_id, email: &str| Person {

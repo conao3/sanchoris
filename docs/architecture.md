@@ -270,7 +270,7 @@ Reads marked "consistent" use the base table; "index" uses `gsi1`/`gsi2`; "app" 
 | Plans, billing | Query `PLANS` |
 | Home setup state | Get `USER#<u>`; Query `T#<t>` `INTEG#`, `CONFIG#`, `CRED#`; per config Query `TRIGGER#`, `PROJECT#`; Query index `gsi1` `T#<t>#TASKS` limit 1 |
 | Home usage and activity | Tenant counters (`running_tasks`, `tasks_this_period`); seats by Query `T#<t>` `MEMBER#`, `INVITE#` (app filter pending, unexpired); running runs by Query index `gsi2` `T#<t>#OPENRUNS`; Query index `gsi1` `T#<t>#RUNS`, `T#<t>#USAGE`, `T#<t>#OUTPUTS` from the earlier of midnight and 24 hours ago (app sums and buckets) |
-| Task list, chats, counts per trigger or member | Query index `gsi1` `T#<t>#TASKS` (app filter by status, trigger, skill, channel source, requester; app sort `NEEDS_YOU` first, then `updated_at`) |
+| Task list, chats, counts per trigger or member | Query index `gsi1` `T#<t>#TASKS` descending, stopping at 200 matches (`TASK_LISTING_LIMIT`; app filter by status, trigger, skill, channel source, requester; app sort `NEEDS_YOU` first, then `updated_at`); `tasksLast7d` starts the query at seven days ago. The lists and counts cover the latest 200 matching tasks |
 | Task row and detail | Get `T#<t>#TASK#<task>` `#TASK`; Query the task partition with prefixes `RUN#`, `DEP#`, `CHILD#`, `SR#` (app); trigger event, config revision, and the trigger's config (`parent_id`) by ref; parent, children, and blockers by Get |
 | Task by name | Query index `gsi1` `T#<t>#TASKNAME#<name>` (latest) |
 | Task by trigger event | The trigger event's `task_id` |
@@ -288,7 +288,7 @@ Reads marked "consistent" use the base table; "index" uses `gsi1`/`gsi2`; "app" 
 | Config, revisions | Query `T#<t>` `CONFIG#`; Query config `REV#` descending, limit 10; active revision by ref |
 | Projects, repositories, sessions, change requests | Query config `PROJECT#`, `PROJECT#<p>#REPO#`, `SESSION#`, `CR#`; by name Get `PROJECT#<name>`, `SESSION#<name>`, `SKILL#<name>` |
 | Add config | Get `CONFIGREPO#` guard; Insert config + guard; audit; then the `ConfigSyncTrigger` port (`ConfigSync` or `config_sync::sync_config` inline) |
-| Credentials | Query `T#<t>` `CRED#`; by name Get `CREDNAME#<name>`; latest usage Query `USAGESNAP#<cred>#` descending limit 1; add with Insert `CRED#` + `CREDNAME#`; remove deletes both |
+| Credentials | Query `T#<t>` `CRED#`; by name Get `CREDNAME#<name>`; latest usage Query `USAGESNAP#<cred>#` descending limit 1; add with Insert `CRED#` + `CREDNAME#` after checking the key prefix of the provider (`sk-ant-api` or `sk-ant-oat` for Anthropic, `sk-` but not `sk-ant-` for OpenAI) and storing `account` as the first and last four characters; remove deletes both. `Member.credentials` lists another member's personal credentials only to admins and owners |
 | Members, invitations | Query `T#<t>` `MEMBER#` → Get users; Query `INVITE#`; invite with `INVITEPENDING#` guard, `INVITEMAIL#` item, and an update of the tenant item conditioned on its read version; role changes and removals take the same tenant condition, so seat and owner counts are checked one change at a time |
 | Audit log, export | Query audit `T#<t>` descending from `since`, filter `actor_kind`, `actor_ref`, `action`, limit 100; actor names by Get `MEMBER#` + `USER#`, `USER#`, or ref (trigger, run → task); export writes all pages as JSON lines to `t/<t>/audit/<file>` in the records bucket and returns a presigned GET URL |
 | Plan change, suspension | Update `#TENANT` (`plan_id`; `status` with the condition on the current status); audit |

@@ -2,9 +2,10 @@ use async_graphql::{Context, ID, Object, Result};
 use chrono::{DateTime, Duration, Utc};
 use sanchoris_config::{Limits, Start};
 use sanchoris_core::db::{self, REF_TRIGGER, REF_TRIGGER_EVENT};
+use sanchoris_core::item::format_time;
 use sanchoris_core::items::{Task as TaskItem, Trigger as TriggerItem, TriggerEvent as EventItem};
 use sanchoris_core::keys;
-use sanchoris_core::store::{Index, Listing};
+use sanchoris_core::store::{Index, Listing, SortKey};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
@@ -17,7 +18,7 @@ use crate::enums::{
 use crate::error::not_found;
 use crate::scalars::{Timestamp, ts, ts_opt};
 use crate::skill::Skill;
-use crate::task::Task;
+use crate::task::{Task, latest_tasks};
 
 pub(crate) struct Trigger {
     pub scope: Scope,
@@ -87,15 +88,14 @@ impl Trigger {
         active_only: bool,
     ) -> Result<i32> {
         let trigger_id = self.row.id;
+        let mut listing = latest_tasks(self.scope.tenant_id);
+        if let Some(since) = since {
+            listing = listing.sort(SortKey::AtLeast(format_time(since)));
+        }
         let tasks = tx(ctx, self.scope.tenant_id)
-            .list::<TaskItem>(
-                &Listing::index(Index::Gsi1, keys::tasks_index(self.scope.tenant_id)),
-                |task| {
-                    task.trigger_id == trigger_id
-                        && since.is_none_or(|since| task.created_at >= since)
-                        && (!active_only || !task.status.is_terminal())
-                },
-            )
+            .list::<TaskItem>(&listing, |task| {
+                task.trigger_id == trigger_id && (!active_only || !task.status.is_terminal())
+            })
             .await?;
         Ok(i32::try_from(tasks.len())?)
     }
