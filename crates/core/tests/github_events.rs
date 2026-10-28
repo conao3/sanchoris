@@ -22,6 +22,7 @@ fn issue_labeled_is_normalized() {
             "detail-type": "Issue Labeled",
             "detail": {
                 "repository": "acme/shop-web",
+                "repository_id": 500,
                 "installation": { "id": 7001 },
                 "issue": {
                     "number": 35,
@@ -74,6 +75,7 @@ fn check_run_completed_is_normalized() {
         event.to_value()["detail"],
         json!({
             "repository": "acme/shop-web",
+            "repository_id": 500,
             "installation": { "id": 7001 },
             "check_run": {
                 "id": 4001,

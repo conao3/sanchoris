@@ -225,14 +225,20 @@ async fn process(
             .await?
             .filter(Trigger::is_active)
             .into_iter()
+            .map(|trigger| (trigger, inbound.event.clone()))
             .collect()
     } else {
-        event_triggers(tx).await?
+        let mut matched = Vec::new();
+        for (trigger, config) in event_triggers(tx).await? {
+            let view = repository_view(&inbound.event, &config)?;
+            matched.push((trigger, view));
+        }
+        matched
     };
-    for trigger in triggers {
+    for (trigger, view) in triggers {
         match failed.get(&trigger.id) {
             Some(reason) => record_failed(tx, inbound, &trigger, reason).await?,
-            None => evaluate(worker, tx, inbound, &trigger)
+            None => evaluate(worker, tx, inbound, &view, &trigger)
                 .await
                 .map_err(|error| Failure {
                     trigger_id: Some(trigger.id),
@@ -313,28 +319,45 @@ pub async fn load_trigger(tx: &mut TenantTx, trigger_id: Uuid) -> Result<Option<
     Ok(tx.get::<Trigger>(&location.target).await?)
 }
 
-pub async fn all_triggers(tx: &mut TenantTx) -> Result<Vec<Trigger>> {
+async fn event_triggers(tx: &mut TenantTx) -> Result<Vec<(Trigger, Config)>> {
     let tenant_id = tx.tenant_id();
     let configs = tx
         .query::<Config>(&keys::tenant_pk(tenant_id), "CONFIG#")
         .await?;
     let mut triggers = Vec::new();
-    for config in configs {
-        triggers.extend(
-            tx.query::<Trigger>(&keys::config_pk(tenant_id, config.id), "TRIGGER#")
-                .await?,
-        );
+    for config in configs.into_iter().filter(Config::is_active) {
+        for trigger in tx
+            .query::<Trigger>(&keys::config_pk(tenant_id, config.id), "TRIGGER#")
+            .await?
+        {
+            if trigger.is_active() && trigger.event_pattern.is_some() {
+                triggers.push((trigger, config.clone()));
+            }
+        }
     }
-    triggers.sort_by(|a, b| (&a.name, a.id).cmp(&(&b.name, b.id)));
+    triggers.sort_by(|(a, _), (b, _)| (&a.name, a.id).cmp(&(&b.name, b.id)));
     Ok(triggers)
 }
 
-async fn event_triggers(tx: &mut TenantTx) -> Result<Vec<Trigger>> {
-    Ok(all_triggers(tx)
-        .await?
-        .into_iter()
-        .filter(|t| t.is_active() && t.event_pattern.is_some())
-        .collect())
+pub fn repository_view(event: &Value, config: &Config) -> Result<Value> {
+    if event["source"] != "github" {
+        return Ok(event.clone());
+    }
+    let detail = &event["detail"];
+    let Some(name) = detail["repository"].as_str() else {
+        return Ok(event.clone());
+    };
+    let id = detail["repository_id"]
+        .as_i64()
+        .ok_or_else(|| WorkerError::Invalid("GitHub events carry detail.repository_id".into()))?;
+    let seen = match config.repositories.iter().find(|(_, r)| r.id == id) {
+        Some((named, _)) => named.clone(),
+        None if config.repository_named(name).is_some() => format!("#{id}"),
+        None => name.to_string(),
+    };
+    let mut view = event.clone();
+    view["detail"]["repository"] = json!(seen);
+    Ok(view)
 }
 
 fn without_actor(pattern: &Value, detail_type: &str) -> Value {
@@ -380,6 +403,7 @@ async fn evaluate(
     worker: &Worker,
     tx: &mut TenantTx,
     inbound: &InboundEvent,
+    view: &Value,
     trigger: &Trigger,
 ) -> Result<()> {
     let actor_check = match &trigger.event_pattern {
@@ -389,14 +413,12 @@ async fn evaluate(
                 .map_err(|e| WorkerError::Invalid(format!("trigger {}: {e}", trigger.name)))?;
             let relevant = EventPattern::parse(&without_actor(raw, detail_type))
                 .map_err(|e| WorkerError::Invalid(format!("trigger {}: {e}", trigger.name)))?;
-            if !relevant.matches(&inbound.event) {
+            if !relevant.matches(view) {
                 return Ok(());
             }
             match unconstrained_actor(raw, &inbound.event) {
                 Some(reason) => Some(skipped(reason)),
-                None => {
-                    (!full.matches(&inbound.event)).then(|| skipped(actor_reason(&inbound.event)))
-                }
+                None => (!full.matches(view)).then(|| skipped(actor_reason(&inbound.event))),
             }
         }
         None => None,

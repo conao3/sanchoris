@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use async_graphql::{Request, Variables};
@@ -12,11 +13,11 @@ use sanchoris_core::db::{
 };
 use sanchoris_core::item::{Entity, Key, Table};
 use sanchoris_core::items::{
-    AuditEvent, ChangeRequest, ChatMessage, Config, ConfigRevision, Credential, Guard,
-    InboundEvent, Integration, Invitation, InvitationEmail, Member, Membership, OutboxItem, Output,
-    Pending, Project, Repository, Run, RunChannel, RunEventItem, SessionDef, SkillDef,
-    SkillRunItem, StateEntryItem, Task, TaskName, Tenant, Trigger, TriggerEvent, UsageRecord,
-    UsageSnapshot, User, Workspace, uniq,
+    AuditEvent, CONFIG_ACTIVE, ChangeRequest, ChatMessage, Config, ConfigRevision, Credential,
+    GitHubRepository, Guard, InboundEvent, Integration, Invitation, InvitationEmail, Member,
+    Membership, OutboxItem, Output, Pending, Project, Repository, Run, RunChannel, RunEventItem,
+    SessionDef, SkillDef, SkillRunItem, StateEntryItem, Task, TaskName, Tenant, Trigger,
+    TriggerEvent, UsageRecord, UsageSnapshot, User, Workspace, uniq,
 };
 use sanchoris_core::jobs::Relayed;
 use sanchoris_core::keys;
@@ -26,7 +27,7 @@ use sanchoris_core::model::{
 use sanchoris_core::store::{Relay, relayed_from_item};
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_graphql::{
-    AesGcmEncryptor, AuditExportPort, AuthUser, ChatDispatcher, CheckoutPort, Clock,
+    AesGcmEncryptor, AuditExportPort, AuthUser, ChatDispatcher, CheckoutPort, Clock, ConfigCheck,
     ConfigLocation, ConfigProblem, ConfigRepositoryPort, ConfigSyncTrigger, GithubConnectUrl,
     GraphqlDeps, PlanChange, PortError, SanchorisSchema, SlackConnectUrl, TenantCheckout,
     TriggerProposal, build_schema,
@@ -209,9 +210,17 @@ impl ConfigRepositoryPort for Fakes {
         &self,
         _tenant_id: Uuid,
         location: &ConfigLocation,
-    ) -> Result<Vec<ConfigProblem>, PortError> {
+    ) -> Result<ConfigCheck, PortError> {
         self.recorder.checks.lock().unwrap().push(location.clone());
-        Ok(self.recorder.problems.lock().unwrap().clone())
+        let problems = self.recorder.problems.lock().unwrap().clone();
+        Ok(if problems.is_empty() {
+            ConfigCheck::Valid(GitHubRepository {
+                id: repository_id(&location.repository),
+                full_name: location.repository.clone(),
+            })
+        } else {
+            ConfigCheck::Invalid(problems)
+        })
     }
 
     async fn propose_trigger(
@@ -594,18 +603,22 @@ fn config_item(
     tx.insert(&Config {
         id: config_id,
         tenant_id,
+        repository_id: Some(repository_id(repository)),
         repository: repository.into(),
         root_path: "/".into(),
         branch: "main".into(),
+        status: CONFIG_ACTIVE.into(),
         active_revision_id: revision_id,
         revisions: 1,
+        repositories: BTreeMap::new(),
         synced_at,
+        sync_error: None,
         created_at: now,
         updated_at: now,
     })
     .unwrap();
     tx.insert(&Guard::new(
-        keys::config_repository_key(tenant_id, repository, "/"),
+        keys::config_repository_key(tenant_id, repository_id(repository), "/"),
         config_id,
     ))
     .unwrap();
@@ -969,6 +982,8 @@ impl World {
                 project: "shop".into(),
                 name: name.into(),
                 url: url.into(),
+                github_repository_id: repository_id(url.trim_start_matches("github.com/")),
+                full_name: url.trim_start_matches("github.com/").into(),
                 warm_hook: None,
                 start_hook: None,
                 prebuild_status: Some(status.into()),
@@ -1092,7 +1107,11 @@ impl World {
             details: json!({
                 "account_login": "acme",
                 "account_type": "Organization",
-                "repositories": ["acme/shop-web", "acme/shop-api", "acme/sanchoris-config"],
+                "repositories": [
+                    { "id": repository_id("acme/shop-web"), "full_name": "acme/shop-web" },
+                    { "id": repository_id("acme/shop-api"), "full_name": "acme/shop-api" },
+                    { "id": repository_id("acme/sanchoris-config"), "full_name": "acme/sanchoris-config" },
+                ],
             }),
             created_at: now,
             updated_at: now,
@@ -1642,4 +1661,10 @@ fn code_of(response: &async_graphql::Response, what: &str) -> String {
         .and_then(|extensions| extensions.get("code"))
         .map(|code| code.to_string().trim_matches('"').to_string())
         .unwrap_or_else(|| format!("no code: {}", error.message))
+}
+
+pub fn repository_id(full_name: &str) -> i64 {
+    full_name.bytes().fold(17_i64, |id, byte| {
+        (id * 31 + i64::from(byte)) % 1_000_000_007
+    })
 }

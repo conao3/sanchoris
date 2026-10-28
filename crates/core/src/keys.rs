@@ -112,10 +112,10 @@ pub fn config_key(tenant_id: Uuid, config_id: Uuid) -> Key {
     Key::main(tenant_pk(tenant_id), format!("CONFIG#{config_id}"))
 }
 
-pub fn config_repository_key(tenant_id: Uuid, repository: &str, root_path: &str) -> Key {
+pub fn config_repository_key(tenant_id: Uuid, repository_id: i64, root_path: &str) -> Key {
     Key::main(
         tenant_pk(tenant_id),
-        format!("CONFIGREPO#{repository}#{root_path}"),
+        format!("CONFIGREPO#{repository_id}#{root_path}"),
     )
 }
 

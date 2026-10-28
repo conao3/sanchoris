@@ -8,9 +8,13 @@ use sanchoris_core::audit::{AuditEntry, record_audit};
 use sanchoris_core::billing::{self, BillingError, Invoice, Outcome, Payer};
 use sanchoris_core::channel::{IngestError, ingest_github_delivery};
 use sanchoris_core::db::{DbError, Recorded};
-use sanchoris_core::items::{Guard, Integration, uniq};
+use sanchoris_core::items::{
+    Config, GitHubRepository, Guard, Integration, github_repositories, uniq,
+};
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
+use sanchoris_worker::config_sync::{disable_config, rename_repository};
+use sanchoris_worker::error::WorkerError;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
@@ -55,7 +59,10 @@ pub async fn github(
     let delivery = header(&headers, "x-github-delivery")?;
     let payload: Value = serde_json::from_slice(&body)
         .map_err(|error| ApiError::BadRequest(format!("the body is not JSON: {error}")))?;
-    if matches!(event, "installation" | "installation_repositories") {
+    if matches!(
+        event,
+        "installation" | "installation_repositories" | "repository"
+    ) {
         return installation_event(&state, event, &payload).await;
     }
     match ingest_github_delivery(&state.store, delivery, event, &payload).await {
@@ -71,19 +78,87 @@ pub async fn github(
     }
 }
 
-fn repository_names(payload: &Value, key: &str) -> Result<Vec<String>, ApiError> {
+fn repository_of(value: &Value, key: &str) -> Result<GitHubRepository, ApiError> {
+    match (value["id"].as_i64(), value["full_name"].as_str()) {
+        (Some(id), Some(full_name)) => Ok(GitHubRepository {
+            id,
+            full_name: full_name.to_string(),
+        }),
+        _ => Err(ApiError::BadRequest(format!(
+            "{key} has no id and full_name"
+        ))),
+    }
+}
+
+fn repository_list(payload: &Value, key: &str) -> Result<Vec<GitHubRepository>, ApiError> {
     payload
         .get(key)
         .and_then(Value::as_array)
         .ok_or_else(|| ApiError::BadRequest(format!("the event has no {key}")))?
         .iter()
-        .map(|repository| {
-            repository["full_name"]
-                .as_str()
-                .map(str::to_string)
-                .ok_or_else(|| ApiError::BadRequest(format!("{key} has no full_name")))
-        })
+        .map(|repository| repository_of(repository, key))
         .collect()
+}
+
+enum ConfigEffect {
+    Disable(Vec<GitHubRepository>, &'static str),
+    Rename(GitHubRepository),
+}
+
+fn config_effect(
+    event: &str,
+    action: &str,
+    payload: &Value,
+) -> Result<Option<ConfigEffect>, ApiError> {
+    Ok(match (event, action) {
+        ("installation_repositories", "removed") => Some(ConfigEffect::Disable(
+            repository_list(payload, "repositories_removed")?,
+            "was removed from the GitHub App installation",
+        )),
+        ("repository", "deleted") => Some(ConfigEffect::Disable(
+            vec![repository_of(&payload["repository"], "repository")?],
+            "was deleted on GitHub",
+        )),
+        ("repository", "renamed" | "transferred") => Some(ConfigEffect::Rename(repository_of(
+            &payload["repository"],
+            "repository",
+        )?)),
+        _ => None,
+    })
+}
+
+async fn apply_config_effect(
+    state: &AppState,
+    tenant_id: Uuid,
+    effect: ConfigEffect,
+) -> Result<(), ApiError> {
+    let now = Utc::now();
+    let worker_error = |error: WorkerError| ApiError::Internal(error.to_string());
+    match effect {
+        ConfigEffect::Rename(repository) => {
+            rename_repository(&state.store, tenant_id, &repository, now)
+                .await
+                .map_err(worker_error)?;
+        }
+        ConfigEffect::Disable(repositories, what) => {
+            let configs = state
+                .store
+                .query::<Config>(&keys::tenant_pk(tenant_id), "CONFIG#")
+                .await?;
+            for repository in repositories {
+                for config in configs
+                    .iter()
+                    .filter(|c| c.is_active() && c.repository_id == Some(repository.id))
+                {
+                    let reason = format!("{} {what}", repository.full_name);
+                    disable_config(&state.store, tenant_id, config.id, &reason, now)
+                        .await
+                        .map_err(worker_error)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn installation_event(
@@ -145,9 +220,13 @@ async fn installation_event(
         match tx.commit().await {
             Err(DbError::Conflict) if attempt < CONFLICT_ATTEMPTS => {}
             Err(error) => return Err(error.into()),
-            Ok(()) => return Ok(status(StatusCode::OK, "processed")),
+            Ok(()) => break,
         }
     }
+    if let Some(effect) = config_effect(event, action, payload)? {
+        apply_config_effect(state, tenant_id, effect).await?;
+    }
+    Ok(status(StatusCode::OK, "processed"))
 }
 
 fn apply_installation_event(
@@ -156,39 +235,43 @@ fn apply_installation_event(
     action: &str,
     payload: &Value,
 ) -> Result<Option<Integration>, ApiError> {
-    let details = &mut integration.details;
     let mut connected = integration.status == "connected";
+    let mut repositories = github_repositories(&integration.details)?;
     match (event, action) {
         ("installation", "deleted" | "suspend") => connected = false,
         ("installation", "unsuspend") => connected = true,
         ("installation", "created" | "new_permissions_accepted") => {
             connected = true;
-            details["account_login"] = json!(text(payload, "/installation/account/login")?);
-            details["account_type"] = json!(text(payload, "/installation/account/type")?);
+            integration.details["account_login"] =
+                json!(text(payload, "/installation/account/login")?);
+            integration.details["account_type"] =
+                json!(text(payload, "/installation/account/type")?);
             if payload.get("repositories").is_some() {
-                details["repositories"] = json!(repository_names(payload, "repositories")?);
+                repositories = repository_list(payload, "repositories")?;
             }
         }
         ("installation_repositories", "added" | "removed") => {
-            let removed = repository_names(payload, "repositories_removed")?;
-            let mut repositories = details["repositories"]
-                .as_array()
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .filter(|name| !removed.contains(name))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            repositories.extend(repository_names(payload, "repositories_added")?);
-            repositories.sort();
-            repositories.dedup();
-            details["repositories"] = json!(repositories);
+            let removed = repository_list(payload, "repositories_removed")?;
+            repositories.retain(|r| removed.iter().all(|gone| gone.id != r.id));
+            for added in repository_list(payload, "repositories_added")? {
+                repositories.retain(|r| r.id != added.id);
+                repositories.push(added);
+            }
+        }
+        ("repository", "renamed" | "transferred") => {
+            let renamed = repository_of(&payload["repository"], "repository")?;
+            for repository in repositories.iter_mut().filter(|r| r.id == renamed.id) {
+                repository.full_name = renamed.full_name.clone();
+            }
+        }
+        ("repository", "deleted") => {
+            let deleted = repository_of(&payload["repository"], "repository")?;
+            repositories.retain(|r| r.id != deleted.id);
         }
         _ => return Ok(None),
     }
+    repositories.sort_by(|a, b| (&a.full_name, a.id).cmp(&(&b.full_name, b.id)));
+    integration.details["repositories"] = json!(repositories);
     integration.status = if connected {
         "connected"
     } else {

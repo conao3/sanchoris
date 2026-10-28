@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, OnceCell};
 
 use crate::ports::{
-    CheckRun, ConfigSource, GitHubClient, GitHubError, GitHubReader, IssueComment, IssueRef,
-    IssueRelations, MergeResult, NewPullRequest, PullRequest,
+    CheckRun, ConfigSource, GitHubClient, GitHubError, GitHubReader, GitHubRepository,
+    IssueComment, IssueRef, IssueRelations, MergeResult, NewPullRequest, PullRequest,
 };
 use transport::{HttpRequest, HttpResponse, HttpTransport};
 
@@ -193,6 +193,13 @@ pub struct FileChange<'a> {
     pub previous_sha: Option<&'a str>,
 }
 
+fn github_repository(value: &Value) -> Result<GitHubRepository, GitHubError> {
+    Ok(GitHubRepository {
+        id: integer(value, "/id")?,
+        full_name: string(value, "/full_name")?,
+    })
+}
+
 fn split_repo(repo: &str) -> Result<(&str, &str), GitHubError> {
     repo.split_once('/')
         .ok_or_else(|| GitHubError::Decode(format!("{repo:?} is not owner/name")))
@@ -277,13 +284,13 @@ impl GitHubApi {
     pub async fn scoped_installation_token(
         &self,
         installation: i64,
-        repositories: Option<&[String]>,
+        repository_ids: Option<&[i64]>,
         permissions: &std::collections::BTreeMap<String, String>,
     ) -> Result<(String, DateTime<Utc>), GitHubError> {
         let jwt = self.auth.app_jwt(Utc::now())?;
         let mut body = json!({ "permissions": permissions });
-        if let Some(repositories) = repositories {
-            body["repositories"] = json!(repositories);
+        if let Some(repository_ids) = repository_ids {
+            body["repository_ids"] = json!(repository_ids);
         }
         let response = self
             .send(HttpRequest {
@@ -376,33 +383,6 @@ impl GitHubApi {
             login: string(&body, "/account/login")?,
             kind: string(&body, "/account/type")?,
         })
-    }
-
-    pub async fn installation_repositories(
-        &self,
-        installation: i64,
-    ) -> Result<Vec<String>, GitHubError> {
-        let mut names = Vec::new();
-        for page in 1.. {
-            let value = self
-                .call(
-                    installation,
-                    "GET",
-                    &format!("/installation/repositories?per_page={PER_PAGE}&page={page}"),
-                    None,
-                )
-                .await?;
-            let batch = field(&value, "/repositories")?
-                .as_array()
-                .ok_or_else(|| GitHubError::Decode("repositories is not an array".into()))?;
-            for repository in batch {
-                names.push(string(repository, "/full_name")?);
-            }
-            if batch.len() < PER_PAGE {
-                break;
-            }
-        }
-        Ok(names)
     }
 
     pub async fn file(
@@ -723,17 +703,75 @@ fn config_path(root_path: &str, path: &str) -> Option<String> {
 
 #[async_trait]
 impl ConfigSource for GitHubApi {
+    async fn repository(
+        &self,
+        installation: i64,
+        full_name: &str,
+    ) -> Result<Option<GitHubRepository>, GitHubError> {
+        match self
+            .call(installation, "GET", &format!("/repos/{full_name}"), None)
+            .await
+        {
+            Ok(value) => Ok(Some(github_repository(&value)?)),
+            Err(error) if error.status() == Some(404) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn repository_by_id(
+        &self,
+        installation: i64,
+        repository_id: i64,
+    ) -> Result<GitHubRepository, GitHubError> {
+        let value = self
+            .call(
+                installation,
+                "GET",
+                &format!("/repositories/{repository_id}"),
+                None,
+            )
+            .await?;
+        github_repository(&value)
+    }
+
+    async fn installation_repositories(
+        &self,
+        installation: i64,
+    ) -> Result<Vec<GitHubRepository>, GitHubError> {
+        let mut repositories = Vec::new();
+        for page in 1.. {
+            let value = self
+                .call(
+                    installation,
+                    "GET",
+                    &format!("/installation/repositories?per_page={PER_PAGE}&page={page}"),
+                    None,
+                )
+                .await?;
+            let batch = field(&value, "/repositories")?
+                .as_array()
+                .ok_or_else(|| GitHubError::Decode("repositories is not an array".into()))?;
+            for repository in batch {
+                repositories.push(github_repository(repository)?);
+            }
+            if batch.len() < PER_PAGE {
+                break;
+            }
+        }
+        Ok(repositories)
+    }
+
     async fn head_commit(
         &self,
         installation: i64,
-        repo: &str,
+        repository_id: i64,
         branch: &str,
     ) -> Result<String, GitHubError> {
         let value = self
             .call(
                 installation,
                 "GET",
-                &format!("/repos/{repo}/commits/{branch}"),
+                &format!("/repositories/{repository_id}/commits/{branch}"),
                 None,
             )
             .await?;
@@ -743,7 +781,7 @@ impl ConfigSource for GitHubApi {
     async fn fetch(
         &self,
         installation: i64,
-        repo: &str,
+        repository_id: i64,
         root_path: &str,
         sha: &str,
     ) -> Result<ConfigFiles, GitHubError> {
@@ -751,13 +789,13 @@ impl ConfigSource for GitHubApi {
             .call(
                 installation,
                 "GET",
-                &format!("/repos/{repo}/git/trees/{sha}?recursive=1"),
+                &format!("/repositories/{repository_id}/git/trees/{sha}?recursive=1"),
                 None,
             )
             .await?;
         if tree.get("truncated").and_then(Value::as_bool) == Some(true) {
             return Err(GitHubError::Decode(format!(
-                "the tree of {repo}@{sha} is too large to read in one request"
+                "the tree of repository {repository_id} at {sha} is too large to read in one request"
             )));
         }
         let mut files = ConfigFiles::new();
@@ -775,7 +813,10 @@ impl ConfigSource for GitHubApi {
                 .call(
                     installation,
                     "GET",
-                    &format!("/repos/{repo}/git/blobs/{}", string(entry, "/sha")?),
+                    &format!(
+                        "/repositories/{repository_id}/git/blobs/{}",
+                        string(entry, "/sha")?
+                    ),
                     None,
                 )
                 .await?;
@@ -788,14 +829,14 @@ impl ConfigSource for GitHubApi {
     async fn commit_author(
         &self,
         installation: i64,
-        repo: &str,
+        repository_id: i64,
         sha: &str,
     ) -> Result<String, GitHubError> {
         let value = self
             .call(
                 installation,
                 "GET",
-                &format!("/repos/{repo}/commits/{sha}"),
+                &format!("/repositories/{repository_id}/commits/{sha}"),
                 None,
             )
             .await?;

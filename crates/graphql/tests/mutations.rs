@@ -6,8 +6,8 @@ use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use common::World;
 use sanchoris_core::item::Table;
 use sanchoris_core::items::{
-    ChangeRequest, Config, Credential, Guard, InboundEvent, Invitation, Member, Membership,
-    OutboxItem, Pending, Run, RunEventItem, Tenant, Trigger,
+    CONFIG_DISABLED, ChangeRequest, Config, Credential, Guard, InboundEvent, Invitation, Member,
+    Membership, OutboxItem, Pending, Run, RunEventItem, Tenant, Trigger,
 };
 use sanchoris_core::jobs::{Job, Relayed};
 use sanchoris_core::keys;
@@ -404,7 +404,7 @@ async fn trigger_and_config_mutations_change_the_config_records() {
     let guard: Guard = w
         .get(&keys::config_repository_key(
             w.acme,
-            "acme/platform",
+            common::repository_id("acme/platform"),
             "tools/sanchoris/",
         ))
         .await
@@ -1089,4 +1089,35 @@ async fn a_portal_redirect_keeps_the_plan_and_returns_the_portal_url() {
     );
     assert_eq!(changed["changePlan"]["tenant"]["plan"]["id"], "pro");
     w.audit(w.acme, "billing.portal_open").await;
+}
+
+#[tokio::test]
+async fn a_disabled_config_shows_why_and_refuses_to_sync() {
+    let w = World::new().await;
+    let reason = "acme/sanchoris-config was removed from the GitHub App installation";
+    let configs = w.ok(&w.sota, "Configs", json!({ "tenant": "acme" })).await;
+    let active = &configs["tenant"]["configs"][0];
+    assert_eq!(active["status"], "ACTIVE");
+    assert_eq!(active["syncError"], Value::Null);
+    assert_eq!(
+        active["repositoryId"],
+        common::repository_id("acme/sanchoris-config").to_string()
+    );
+
+    w.dynamo
+        .modify::<Config>(&keys::config_key(w.acme, w.config_id), |config| {
+            config.status = CONFIG_DISABLED.into();
+            config.sync_error = Some(reason.into());
+        })
+        .await;
+    let configs = w.ok(&w.sota, "Configs", json!({ "tenant": "acme" })).await;
+    let disabled = &configs["tenant"]["configs"][0];
+    assert_eq!(disabled["status"], "DISABLED");
+    assert_eq!(disabled["syncError"], reason);
+    assert_eq!(
+        w.error_code(&w.sota, "SyncConfig", json!({ "configId": w.config_id }))
+            .await,
+        "BAD_USER_INPUT"
+    );
+    assert!(w.recorder.syncs.lock().unwrap().is_empty());
 }

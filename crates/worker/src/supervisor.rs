@@ -3,7 +3,8 @@ use sanchoris_config::{Session, Start};
 use sanchoris_core::channel::{OutboxType, RunEventType, SEQ_STRIDE, enqueue_outbox, outbox};
 use sanchoris_core::db::{self, REF_TRIGGER, TenantTx, locate};
 use sanchoris_core::items::{
-    OutboxItem, Pending, Repository, Run, RunEventItem, SkillRunItem, Task, UsageRecord, Workspace,
+    Config, OutboxItem, Pending, Repository, Run, RunEventItem, SkillRunItem, Task, UsageRecord,
+    Workspace,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::lifecycle::{
@@ -738,15 +739,30 @@ async fn checkout_repositories(
     task: &Task,
     session: &Session,
 ) -> Result<Vec<String>> {
+    let Some(location) = locate(tx, task.trigger_id, REF_TRIGGER).await? else {
+        return Ok(Vec::new());
+    };
+    let config_id = location
+        .parent_id
+        .ok_or_else(|| invalid("a trigger reference has no config"))?;
     match &session.checkout {
-        sanchoris_config::Checkout::Repos(repos) => Ok(repos.clone()),
+        sanchoris_config::Checkout::Repos(repos) => {
+            let config = tx
+                .require::<Config>(&keys::config_key(tx.tenant_id(), config_id))
+                .await?;
+            repos
+                .iter()
+                .map(|name| {
+                    config
+                        .repository_named(name)
+                        .map(|repository| repository.full_name.clone())
+                        .ok_or_else(|| {
+                            invalid(format!("{name} is not a repository of the active config"))
+                        })
+                })
+                .collect()
+        }
         sanchoris_config::Checkout::Project(project) => {
-            let Some(location) = locate(tx, task.trigger_id, REF_TRIGGER).await? else {
-                return Ok(Vec::new());
-            };
-            let config_id = location
-                .parent_id
-                .ok_or_else(|| invalid("a trigger reference has no config"))?;
             let mut repositories = tx
                 .query::<Repository>(
                     &keys::config_pk(tx.tenant_id(), config_id),
@@ -754,10 +770,7 @@ async fn checkout_repositories(
                 )
                 .await?;
             repositories.sort_by(|a, b| a.name.cmp(&b.name));
-            Ok(repositories
-                .into_iter()
-                .map(|r| r.url.trim_start_matches("github.com/").to_string())
-                .collect())
+            Ok(repositories.into_iter().map(|r| r.full_name).collect())
         }
     }
 }

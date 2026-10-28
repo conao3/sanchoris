@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use async_graphql::{Context, Error, ID, InputObject, Object, Result, SimpleObject};
 use aws_sdk_dynamodb::types::AttributeValue;
 use base64::Engine;
@@ -8,8 +10,8 @@ use sanchoris_core::channel::{RunEventType, record_inbound_event, record_run_eve
 use sanchoris_core::db::{self, REF_RUN, REF_TRIGGER, TenantTx};
 use sanchoris_core::item::format_time;
 use sanchoris_core::items::{
-    self, Guard, InboundEvent, InvitationEmail, Membership as MembershipItem, Task as TaskItem,
-    Trigger as TriggerItem, TriggerEvent as EventItem, User, uniq,
+    self, CONFIG_ACTIVE, Guard, InboundEvent, InvitationEmail, Membership as MembershipItem,
+    Task as TaskItem, Trigger as TriggerItem, TriggerEvent as EventItem, User, uniq,
 };
 use sanchoris_core::keys;
 use sanchoris_core::model::{AuditOrigin, TaskStatus as CoreStatus, WaitReason};
@@ -32,7 +34,7 @@ use crate::context::{
 };
 use crate::enums::{ApiKeyProvider, CredentialScope, EventSource, InvitationState, TriggerState};
 use crate::error::{bad_input, conflict, forbidden, not_found, parse_id, port};
-use crate::ports::{ConfigLocation, PlanChange, TenantCheckout, TriggerProposal};
+use crate::ports::{ConfigCheck, ConfigLocation, PlanChange, TenantCheckout, TriggerProposal};
 use crate::scalars::Timestamp;
 use crate::task::{ChatMessage, Run, Task};
 use crate::tenant::Tenant;
@@ -1133,53 +1135,57 @@ impl MutationRoot {
             root: input.root.clone(),
             branch: branch.clone(),
         };
-        let problems = state(ctx)
+        let checked = state(ctx)
             .deps
             .config_repository
             .check(scope.tenant_id, &location)
             .await
             .map_err(port)?;
-        if !problems.is_empty() {
-            let count = problems.len();
-            write(|| async {
-                let mut tx = tx(ctx, scope.tenant_id);
-                audit_member(
-                    ctx,
-                    &mut tx,
-                    member_id,
-                    "config.validation_fail",
-                    AuditTarget {
-                        kind: "config",
-                        id: format!("{repository}:{}", input.root),
-                        name: repository.clone(),
-                    },
-                    &format!(
-                        "The config at {repository} {} has {count} problems",
-                        input.root
-                    ),
-                )
+        let found = match checked {
+            ConfigCheck::Valid(found) => found,
+            ConfigCheck::Invalid(problems) => {
+                let count = problems.len();
+                write(|| async {
+                    let mut tx = tx(ctx, scope.tenant_id);
+                    audit_member(
+                        ctx,
+                        &mut tx,
+                        member_id,
+                        "config.validation_fail",
+                        AuditTarget {
+                            kind: "config",
+                            id: format!("{repository}:{}", input.root),
+                            name: repository.clone(),
+                        },
+                        &format!(
+                            "The config at {repository} {} has {count} problems",
+                            input.root
+                        ),
+                    )
+                    .await?;
+                    tx.commit().await?;
+                    Ok(())
+                })
                 .await?;
-                tx.commit().await?;
-                Ok(())
-            })
-            .await?;
-            return Ok(AddConfigPayload {
-                config: None,
-                errors: problems
-                    .into_iter()
-                    .map(|problem| ValidationError {
-                        path: problem.path,
-                        line: problem.line,
-                        column: problem.column,
-                        message: problem.message,
-                    })
-                    .collect(),
-            });
-        }
+                return Ok(AddConfigPayload {
+                    config: None,
+                    errors: problems
+                        .into_iter()
+                        .map(|problem| ValidationError {
+                            path: problem.path,
+                            line: problem.line,
+                            column: problem.column,
+                            message: problem.message,
+                        })
+                        .collect(),
+                });
+            }
+        };
+        let repository = found.full_name.clone();
         let at = now(ctx);
         let config_id = write(|| async {
             let mut tx = tx(ctx, scope.tenant_id);
-            let guard_key = keys::config_repository_key(scope.tenant_id, &repository, &input.root);
+            let guard_key = keys::config_repository_key(scope.tenant_id, found.id, &input.root);
             if tx.get::<Guard>(&guard_key).await?.is_some() {
                 return Err(
                     conflict(format!("{repository} {} is already a config", input.root)).into(),
@@ -1189,12 +1195,16 @@ impl MutationRoot {
             tx.insert(&items::Config {
                 id: config_id,
                 tenant_id: scope.tenant_id,
+                repository_id: Some(found.id),
                 repository: repository.clone(),
                 root_path: input.root.clone(),
                 branch: branch.clone(),
+                status: CONFIG_ACTIVE.into(),
                 active_revision_id: None,
                 revisions: 0,
+                repositories: BTreeMap::new(),
                 synced_at: None,
+                sync_error: None,
                 created_at: at,
                 updated_at: at,
             })?;
@@ -1231,6 +1241,16 @@ impl MutationRoot {
         })
         .await?;
         let member_id = scope.require(Role::Admin, "syncing configs")?;
+        if !config.is_active() {
+            return Err(bad_input(format!(
+                "the config {} is disabled: {}",
+                config.repository,
+                config
+                    .sync_error
+                    .as_deref()
+                    .unwrap_or("its repository left the GitHub App installation")
+            )));
+        }
         write(|| async {
             let mut tx = tx(ctx, scope.tenant_id);
             audit_member(

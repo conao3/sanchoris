@@ -15,6 +15,9 @@ use serde_json::{Value, json};
 
 pub const CONFIG_REPO: &str = "acme/sanchoris-config";
 pub const CONFIG_SHA: &str = "c0ff1ce0000000000000000000000000000000c1";
+pub const CONFIG_REPO_ID: i64 = 7001;
+pub const SHOP_WEB_ID: i64 = 7101;
+pub const OPS_ID: i64 = 7301;
 
 #[derive(Debug, Clone)]
 pub struct Pull {
@@ -50,7 +53,8 @@ pub struct GitHubState {
     pub checks: HashMap<String, String>,
     pub oauth_users: HashMap<String, (i64, String)>,
     pub user_installations: HashMap<String, Vec<Value>>,
-    pub installation_repositories: HashMap<i64, Vec<String>>,
+    pub installation_repositories: HashMap<i64, Vec<(i64, String)>>,
+    pub repositories: Vec<(i64, String)>,
     pub refs: HashMap<String, String>,
     pub file_updates: Vec<FileUpdate>,
     next_number: i64,
@@ -76,6 +80,11 @@ impl FakeGitHub {
             git_root: git_root.to_path_buf(),
             state: Mutex::new(GitHubState {
                 config_files,
+                repositories: vec![
+                    (CONFIG_REPO_ID, CONFIG_REPO.to_string()),
+                    (SHOP_WEB_ID, "acme/shop-web".to_string()),
+                    (OPS_ID, "acme/ops".to_string()),
+                ],
                 next_number: 52,
                 next_comment: 9000,
                 ..GitHubState::default()
@@ -157,6 +166,10 @@ impl FakeGitHub {
         Router::new()
             .route("/app/installations/{id}/access_tokens", post(access_token))
             .route("/repos/{owner}/{repo}", get(repository))
+            .route("/repositories/{id}", get(repository_by_id))
+            .route("/repositories/{id}/commits/{reference}", get(commit_by_id))
+            .route("/repositories/{id}/git/trees/{sha}", get(tree))
+            .route("/repositories/{id}/git/blobs/{sha}", get(blob_by_id))
             .route("/repos/{owner}/{repo}/commits/{reference}", get(commit))
             .route(
                 "/repos/{owner}/{repo}/commits/{reference}/check-runs",
@@ -197,15 +210,70 @@ async fn access_token(UrlPath(id): UrlPath<i64>) -> Json<Value> {
     Json(json!({ "token": format!("ghs_installation_{id}"), "expires_at": "2099-01-01T00:00:00Z" }))
 }
 
-async fn repository(UrlPath((owner, repo)): UrlPath<(String, String)>) -> Json<Value> {
-    Json(json!({ "full_name": format!("{owner}/{repo}"), "default_branch": "main" }))
+fn repository_json(id: i64, full_name: &str) -> Response {
+    Json(json!({ "id": id, "full_name": full_name, "default_branch": "main" })).into_response()
+}
+
+async fn repository(
+    State(fake): Fake,
+    UrlPath((owner, repo)): UrlPath<(String, String)>,
+) -> Response {
+    let full = format!("{owner}/{repo}");
+    let known = fake
+        .state
+        .lock()
+        .unwrap()
+        .repositories
+        .iter()
+        .find(|(_, name)| name.eq_ignore_ascii_case(&full))
+        .cloned();
+    match known {
+        Some((id, name)) => repository_json(id, &name),
+        None => not_found(&full),
+    }
+}
+
+fn name_of(fake: &FakeGitHub, id: i64) -> Option<String> {
+    fake.state
+        .lock()
+        .unwrap()
+        .repositories
+        .iter()
+        .find(|(known, _)| *known == id)
+        .map(|(_, name)| name.clone())
+}
+
+async fn repository_by_id(State(fake): Fake, UrlPath(id): UrlPath<i64>) -> Response {
+    match name_of(&fake, id) {
+        Some(name) => repository_json(id, &name),
+        None => not_found(&id.to_string()),
+    }
+}
+
+async fn commit_by_id(
+    State(fake): Fake,
+    UrlPath((id, reference)): UrlPath<(i64, String)>,
+) -> Response {
+    match name_of(&fake, id) {
+        Some(full) => commit_of(&fake, &full, &reference),
+        None => not_found(&id.to_string()),
+    }
+}
+
+async fn blob_by_id(State(fake): Fake, UrlPath((_, sha)): UrlPath<(i64, String)>) -> Response {
+    blob_of(&fake, &sha)
 }
 
 async fn commit(
     State(fake): Fake,
     UrlPath((owner, repo, reference)): UrlPath<(String, String, String)>,
 ) -> Response {
-    let full = format!("{owner}/{repo}");
+    commit_of(&fake, &format!("{owner}/{repo}"), &reference)
+}
+
+fn commit_of(fake: &FakeGitHub, full: &str, reference: &str) -> Response {
+    let full = full.to_string();
+    let reference = reference.to_string();
     if full == CONFIG_REPO {
         return Json(json!({
             "sha": CONFIG_SHA,
@@ -261,6 +329,11 @@ async fn blob(
     State(fake): Fake,
     UrlPath((_, _, sha)): UrlPath<(String, String, String)>,
 ) -> Response {
+    blob_of(&fake, &sha)
+}
+
+fn blob_of(fake: &FakeGitHub, sha: &str) -> Response {
+    let sha = sha.to_string();
     let state = fake.state.lock().unwrap();
     match state
         .config_files
@@ -527,9 +600,12 @@ async fn installation_repositories(State(fake): Fake, headers: HeaderMap) -> Res
         .and_then(|id| id.parse::<i64>().ok());
     let state = fake.state.lock().unwrap();
     match installation.and_then(|id| state.installation_repositories.get(&id).cloned()) {
-        Some(names) => Json(json!({
-            "total_count": names.len(),
-            "repositories": names.iter().map(|name| json!({ "full_name": name })).collect::<Vec<_>>(),
+        Some(repositories) => Json(json!({
+            "total_count": repositories.len(),
+            "repositories": repositories
+                .iter()
+                .map(|(id, name)| json!({ "id": id, "full_name": name }))
+                .collect::<Vec<_>>(),
         }))
         .into_response(),
         None => not_found("installation"),

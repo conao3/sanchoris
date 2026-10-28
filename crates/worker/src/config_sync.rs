@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 use sanchoris_config::{
@@ -7,22 +7,27 @@ use sanchoris_config::{
 };
 use sanchoris_core::audit::{AuditEntry, record_audit};
 use sanchoris_core::db::{
-    REF_CONFIG_REVISION, REF_TRIGGER, TenantTx, insert_ref, locate, tenant_plan,
+    REF_CONFIG_REVISION, REF_TRIGGER, Store, TenantTx, insert_ref, locate, tenant_plan,
 };
 use sanchoris_core::item::{Entity, Key, format_time};
 use sanchoris_core::items::{
-    Config, ConfigRevision, Credential, Guard, Project, Repository, SessionDef, SkillDef, Trigger,
+    CONFIG_DISABLED, Config, ConfigRevision, Credential, GitHubRepository, Guard, Project,
+    Repository, SessionDef, SkillDef, Task, Trigger,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
 use sanchoris_core::store::{Index, MAX_TRANSACTION_ITEMS, SortKey};
+use sanchoris_core::tasks::abort_task;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use crate::dispatcher::schedule_trigger;
 use crate::error::{Result, WorkerError};
+use crate::ports::{ConfigSource, Installation, installation_with};
 use crate::{Worker, installation_for, installations};
+
+const CONFLICT_ATTEMPTS: u32 = 8;
 
 pub async fn sweep(worker: &Worker) -> Result<usize> {
     let cutoff = worker.now() - worker.settings.config_poll_interval;
@@ -46,9 +51,8 @@ pub async fn sweep(worker: &Worker) -> Result<usize> {
 }
 
 pub async fn sync_config(worker: &Worker, tenant_id: Uuid, config_id: Uuid) -> Result<()> {
-    let now = worker.now();
-    let mut tx = worker.tx(tenant_id);
-    let mut config = tx
+    let config = worker
+        .store
         .get::<Config>(&keys::config_key(tenant_id, config_id))
         .await?
         .ok_or_else(|| {
@@ -56,11 +60,147 @@ pub async fn sync_config(worker: &Worker, tenant_id: Uuid, config_id: Uuid) -> R
                 "config {config_id} of tenant {tenant_id} does not exist"
             ))
         })?;
-    let installation = installation_for(&installations(&mut tx).await?, &config.repository)?;
-    let sha = worker
-        .deps
-        .config_source
-        .head_commit(installation, &config.repository, &config.branch)
+    if !config.is_active() {
+        return Ok(());
+    }
+    match sync_active(worker, tenant_id, config_id).await {
+        Err(error @ (WorkerError::GitHub(_) | WorkerError::Invalid(_))) => {
+            record_sync_error(worker, tenant_id, config_id, &error.to_string()).await
+        }
+        other => other,
+    }
+}
+
+async fn record_sync_error(
+    worker: &Worker,
+    tenant_id: Uuid,
+    config_id: Uuid,
+    message: &str,
+) -> Result<()> {
+    let mut tx = worker.tx(tenant_id);
+    let Some(mut config) = tx
+        .get::<Config>(&keys::config_key(tenant_id, config_id))
+        .await?
+    else {
+        return Ok(());
+    };
+    config.sync_error = Some(message.to_string());
+    config.updated_at = worker.now();
+    tx.put(&config)?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn resolve_repository(
+    source: &dyn ConfigSource,
+    installations: &[Installation],
+    name: &str,
+) -> Result<GitHubRepository> {
+    if let Some(found) = installations.iter().find_map(|installation| {
+        installation
+            .repositories
+            .iter()
+            .find(|r| r.full_name.eq_ignore_ascii_case(name))
+    }) {
+        return Ok(found.clone());
+    }
+    let missing = || {
+        WorkerError::Invalid(format!(
+            "{name} is not a repository of the tenant's GitHub App installation"
+        ))
+    };
+    let installation = installation_for(installations, name).map_err(|_| missing())?;
+    source
+        .repository(installation, name)
+        .await?
+        .filter(|found| {
+            installations
+                .iter()
+                .any(|i| i.id == installation && i.repository(found.id).is_some())
+        })
+        .ok_or_else(missing)
+}
+
+pub fn named_repositories(config: &RepoConfig) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for project in config.projects.values() {
+        names.extend(
+            project
+                .repos
+                .values()
+                .filter_map(|repo| repo.full_name())
+                .map(str::to_string),
+        );
+    }
+    for session in config.sessions.values() {
+        if let Checkout::Repos(repos) = &session.checkout {
+            names.extend(repos.iter().cloned());
+        }
+        names.extend(
+            session
+                .github
+                .repos
+                .iter()
+                .filter(|repo| !repo.contains('*'))
+                .cloned(),
+        );
+    }
+    for trigger in config.triggers.values() {
+        if let TriggerSource::EventPattern(pattern) = &trigger.source
+            && let Some(Value::Array(items)) =
+                rewrite_event_pattern(config, trigger, pattern).pointer("/detail/repository")
+        {
+            names.extend(
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|name| name.contains('/') && !name.contains('*'))
+                    .map(str::to_string),
+            );
+        }
+    }
+    names
+}
+
+async fn resolve_repositories(
+    worker: &Worker,
+    installations: &[Installation],
+    config: &RepoConfig,
+) -> Result<BTreeMap<String, GitHubRepository>> {
+    let mut resolved = BTreeMap::new();
+    for name in named_repositories(config) {
+        let repository =
+            resolve_repository(worker.deps.config_source.as_ref(), installations, &name).await?;
+        resolved.insert(name, repository);
+    }
+    Ok(resolved)
+}
+
+async fn sync_active(worker: &Worker, tenant_id: Uuid, config_id: Uuid) -> Result<()> {
+    let now = worker.now();
+    let mut tx = worker.tx(tenant_id);
+    let mut config = tx
+        .require::<Config>(&keys::config_key(tenant_id, config_id))
+        .await?;
+    let repository_id = config
+        .repository_id
+        .ok_or_else(|| WorkerError::Invalid(format!("config {config_id} has no repository id")))?;
+    let installations = installations(&mut tx).await?;
+    let installation = installation_with(&installations, repository_id)
+        .map(|(installation, _)| installation.id)
+        .ok_or_else(|| {
+            WorkerError::Invalid(format!(
+                "{} is not a repository of the tenant's GitHub App installation",
+                config.repository
+            ))
+        })?;
+    let source = &worker.deps.config_source;
+    config.repository = source
+        .repository_by_id(installation, repository_id)
+        .await?
+        .full_name;
+    let sha = source
+        .head_commit(installation, repository_id, &config.branch)
         .await?;
     let known = tx
         .get::<Guard>(&keys::revision_sha_key(tenant_id, config_id, &sha))
@@ -75,16 +215,15 @@ pub async fn sync_config(worker: &Worker, tenant_id: Uuid, config_id: Uuid) -> R
             tx.require::<ConfigRevision>(&location.target).await?
         }
         None => {
-            let files = worker
-                .deps
-                .config_source
-                .fetch(installation, &config.repository, &config.root_path, &sha)
+            let files = source
+                .fetch(installation, repository_id, &config.root_path, &sha)
                 .await?;
             let context = validation_context(&mut tx).await?;
             store_revision(&mut tx, &mut config, &sha, &files, &context, now)?
         }
     };
     config.synced_at = Some(now);
+    config.sync_error = None;
     config.updated_at = now;
     tx.put(&config)?;
     worker.faults.check("config_sync.before_commit")?;
@@ -99,17 +238,26 @@ pub async fn sync_config(worker: &Worker, tenant_id: Uuid, config_id: Uuid) -> R
         ))
     })?;
     let repository: ConfigRepository = serde_json::from_value(parsed)?;
-    let author = worker
-        .deps
-        .config_source
-        .commit_author(installation, &config.repository, &sha)
+    let repositories = resolve_repositories(worker, &installations, &repository.config).await?;
+    let author = source
+        .commit_author(installation, repository_id, &sha)
         .await?;
-    activate(worker, tenant_id, config_id, revision.id, &repository, now).await?;
+    activate(
+        worker,
+        tenant_id,
+        config_id,
+        revision.id,
+        &repository,
+        &repositories,
+        now,
+    )
+    .await?;
     let mut tx = worker.tx(tenant_id);
     let mut config = tx
         .require::<Config>(&keys::config_key(tenant_id, config_id))
         .await?;
     config.active_revision_id = Some(revision.id);
+    config.repositories = repositories;
     config.updated_at = now;
     tx.put(&config)?;
     let config_ref = config_id.to_string();
@@ -137,6 +285,278 @@ pub async fn sync_config(worker: &Worker, tenant_id: Uuid, config_id: Uuid) -> R
     )
     .await?;
     tx.commit().await?;
+    Ok(())
+}
+
+pub async fn reactivate(
+    worker: &Worker,
+    tenant_id: Uuid,
+    config_id: Uuid,
+    installations: &[Installation],
+) -> Result<()> {
+    let mut tx = worker.tx(tenant_id);
+    let config = tx
+        .require::<Config>(&keys::config_key(tenant_id, config_id))
+        .await?;
+    let Some(revision_id) = config.active_revision_id else {
+        return Ok(());
+    };
+    let location = locate(&mut tx, revision_id, REF_CONFIG_REVISION)
+        .await?
+        .ok_or_else(|| WorkerError::Invalid(format!("config revision {revision_id} has no ref")))?;
+    let revision = tx.require::<ConfigRevision>(&location.target).await?;
+    let parsed = revision.parsed.clone().ok_or_else(|| {
+        WorkerError::Invalid(format!(
+            "active revision {revision_id} has no parsed config"
+        ))
+    })?;
+    let repository: ConfigRepository = serde_json::from_value(parsed)?;
+    let repositories = resolve_repositories(worker, installations, &repository.config).await?;
+    activate(
+        worker,
+        tenant_id,
+        config_id,
+        revision_id,
+        &repository,
+        &repositories,
+        worker.now(),
+    )
+    .await?;
+    let mut tx = worker.tx(tenant_id);
+    let mut config = tx
+        .require::<Config>(&keys::config_key(tenant_id, config_id))
+        .await?;
+    config.repositories = repositories;
+    config.updated_at = worker.now();
+    tx.put(&config)?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn retrying<T, F, Fut>(mut operation: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match operation().await {
+            Err(error) if error.is_conflict() && attempt < CONFLICT_ATTEMPTS => {}
+            other => return other,
+        }
+    }
+}
+
+pub async fn disable_config(
+    store: &Store,
+    tenant_id: Uuid,
+    config_id: Uuid,
+    reason: &str,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    retrying(|| async {
+        let mut tx = store.tx(tenant_id);
+        let Some(mut config) = tx
+            .get::<Config>(&keys::config_key(tenant_id, config_id))
+            .await?
+        else {
+            return Ok(());
+        };
+        if !config.is_active() {
+            return Ok(());
+        }
+        config.status = CONFIG_DISABLED.into();
+        config.sync_error = Some(reason.to_string());
+        config.repositories = BTreeMap::new();
+        config.updated_at = now;
+        tx.put(&config)?;
+        if let Some(repository_id) = config.repository_id {
+            let guard = keys::config_repository_key(tenant_id, repository_id, &config.root_path);
+            if tx.get::<Guard>(&guard).await?.is_some() {
+                tx.delete(&guard)?;
+            }
+        }
+        let config_ref = config_id.to_string();
+        record_audit(
+            &mut tx,
+            &AuditEntry {
+                at: now,
+                actor_kind: ActorKind::System,
+                actor_ref: "github",
+                action: "config.disable",
+                target_kind: "config",
+                target_ref: &config_ref,
+                summary: &format!("Disabled the config {}: {reason}", config.repository),
+                origin: AuditOrigin::Github,
+                source_ip: None,
+                metadata: Map::new(),
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    })
+    .await?;
+    retire_definitions(store, tenant_id, config_id, reason, now).await
+}
+
+async fn retire_definitions(
+    store: &Store,
+    tenant_id: Uuid,
+    config_id: Uuid,
+    reason: &str,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let pk = keys::config_pk(tenant_id, config_id);
+    let triggers = store.query::<Trigger>(&pk, "TRIGGER#").await?;
+    for listed in triggers.iter().filter(|t| t.removed_at.is_none()) {
+        retrying(|| async {
+            let mut tx = store.tx(tenant_id);
+            let Some(mut trigger) = tx.get::<Trigger>(&listed.key()).await? else {
+                return Ok(());
+            };
+            if trigger.removed_at.is_some() {
+                return Ok(());
+            }
+            trigger.removed_at = Some(now);
+            schedule_trigger(&mut tx, &mut trigger, now)?;
+            tx.put(&trigger)?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
+    }
+    let mut definitions: Vec<Key> = Vec::new();
+    definitions.extend(
+        store
+            .query::<SkillDef>(&pk, "SKILL#")
+            .await?
+            .iter()
+            .map(Entity::key),
+    );
+    definitions.extend(
+        store
+            .query::<SessionDef>(&pk, "SESSION#")
+            .await?
+            .iter()
+            .map(Entity::key),
+    );
+    definitions.extend(
+        store
+            .query::<Repository>(&pk, "PROJECT#")
+            .await?
+            .iter()
+            .map(Entity::key),
+    );
+    definitions.extend(
+        store
+            .query::<Project>(&pk, "PROJECT#")
+            .await?
+            .iter()
+            .map(Entity::key),
+    );
+    for chunk in definitions.chunks(BATCH_WRITES) {
+        let mut tx = store.tx(tenant_id);
+        for key in chunk {
+            tx.delete(key)?;
+        }
+        tx.commit().await?;
+    }
+    let trigger_ids = triggers.iter().map(|t| t.id).collect::<BTreeSet<_>>();
+    let unfinished = store
+        .query_index::<Task>(Index::Gsi1, &keys::tasks_index(tenant_id), SortKey::All)
+        .await?
+        .into_iter()
+        .filter(|task| trigger_ids.contains(&task.trigger_id) && !task.status.is_terminal());
+    for task in unfinished {
+        retrying(|| async {
+            let mut tx = store.tx(tenant_id);
+            if abort_task(&mut tx, task.id, reason, now).await? {
+                tx.commit().await?;
+            }
+            Ok(())
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+pub async fn rename_repository(
+    store: &Store,
+    tenant_id: Uuid,
+    repository: &GitHubRepository,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let configs = store
+        .query::<Config>(&keys::tenant_pk(tenant_id), "CONFIG#")
+        .await?;
+    for listed in &configs {
+        retrying(|| async {
+            let mut tx = store.tx(tenant_id);
+            let Some(mut config) = tx.get::<Config>(&listed.key()).await? else {
+                return Ok(());
+            };
+            let mut changed = false;
+            if config.repository_id == Some(repository.id)
+                && config.repository != repository.full_name
+            {
+                let previous =
+                    std::mem::replace(&mut config.repository, repository.full_name.clone());
+                let config_ref = config.id.to_string();
+                record_audit(
+                    &mut tx,
+                    &AuditEntry {
+                        at: now,
+                        actor_kind: ActorKind::System,
+                        actor_ref: "github",
+                        action: "config.rename",
+                        target_kind: "config",
+                        target_ref: &config_ref,
+                        summary: &format!(
+                            "The config repository {previous} is now {}",
+                            repository.full_name
+                        ),
+                        origin: AuditOrigin::Github,
+                        source_ip: None,
+                        metadata: Map::new(),
+                    },
+                )
+                .await?;
+                changed = true;
+            }
+            for cached in config.repositories.values_mut() {
+                if cached.id == repository.id && cached.full_name != repository.full_name {
+                    cached.full_name = repository.full_name.clone();
+                    changed = true;
+                }
+            }
+            if changed {
+                config.updated_at = now;
+                tx.put(&config)?;
+                tx.commit().await?;
+            }
+            Ok(())
+        })
+        .await?;
+        let pk = keys::config_pk(tenant_id, listed.id);
+        for row in store.query::<Repository>(&pk, "PROJECT#").await? {
+            if row.github_repository_id != repository.id || row.full_name == repository.full_name {
+                continue;
+            }
+            retrying(|| async {
+                let mut tx = store.tx(tenant_id);
+                let Some(mut row) = tx.get::<Repository>(&row.key()).await? else {
+                    return Ok(());
+                };
+                row.full_name = repository.full_name.clone();
+                tx.put(&row)?;
+                tx.commit().await?;
+                Ok(())
+            })
+            .await?;
+        }
+    }
     Ok(())
 }
 
@@ -293,7 +713,7 @@ impl<'a> Batches<'a> {
 
 async fn upsert<E: Entity>(batches: &mut Batches<'_>, entity: &E) -> Result<()> {
     let tx = batches.room(1).await?;
-    tx.get::<E>(&entity.key()).await?;
+    tx.get_item(&entity.key()).await?;
     tx.put(entity)?;
     Ok(())
 }
@@ -309,6 +729,7 @@ async fn activate(
     config_id: Uuid,
     revision_id: Uuid,
     repository: &ConfigRepository,
+    repositories: &BTreeMap<String, GitHubRepository>,
     now: DateTime<Utc>,
 ) -> Result<()> {
     let pk = keys::config_pk(tenant_id, config_id);
@@ -330,6 +751,15 @@ async fn activate(
         )
         .await?;
         for (repo_name, repo) in &project.repos {
+            let resolved = repo
+                .full_name()
+                .and_then(|name| repositories.get(name))
+                .ok_or_else(|| {
+                    WorkerError::Invalid(format!(
+                        "project {name} repository {repo_name} ({}) is not resolved",
+                        repo.repo
+                    ))
+                })?;
             upsert(
                 &mut batches,
                 &Repository {
@@ -343,6 +773,8 @@ async fn activate(
                     project: name.clone(),
                     name: repo_name.clone(),
                     url: repo.repo.clone(),
+                    github_repository_id: resolved.id,
+                    full_name: resolved.full_name.clone(),
                     warm_hook: repo
                         .warm_hook
                         .as_ref()

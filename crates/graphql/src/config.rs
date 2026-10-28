@@ -14,8 +14,8 @@ use uuid::Uuid;
 use crate::account::{Credential, Member};
 use crate::context::{Scope, tx};
 use crate::enums::{
-    ChangeRequestState, ConfigObjectKind, Provider, UsageLimitResume, WorkspaceArchitecture,
-    WorkspaceCompute,
+    ChangeRequestState, ConfigObjectKind, ConfigStatus, Provider, UsageLimitResume,
+    WorkspaceArchitecture, WorkspaceCompute,
 };
 use crate::error::not_found;
 use crate::scalars::{Timestamp, ts, ts_opt};
@@ -110,6 +110,14 @@ impl Config {
         &self.row.repository
     }
 
+    async fn repository_id(&self) -> Option<ID> {
+        self.row.repository_id.map(|id| ID(id.to_string()))
+    }
+
+    async fn status(&self) -> Result<ConfigStatus> {
+        ConfigStatus::from_db(&self.row.status)
+    }
+
     async fn root(&self) -> &str {
         &self.row.root_path
     }
@@ -177,8 +185,8 @@ impl Config {
         ts_opt(self.row.synced_at)
     }
 
-    async fn sync_error(&self) -> Option<String> {
-        None
+    async fn sync_error(&self) -> Option<&str> {
+        self.row.sync_error.as_deref()
     }
 
     async fn trigger_count(&self, ctx: &Context<'_>) -> Result<i32> {
@@ -427,10 +435,6 @@ impl Project {
     }
 }
 
-fn full_name(row: &RepositoryItem) -> &str {
-    row.url.trim_start_matches("github.com/")
-}
-
 fn warm_build(row: &RepositoryItem) -> Option<WarmBuild> {
     let finished_at = row.prebuild_at?;
     match row.prebuild_status.as_deref() {
@@ -459,11 +463,11 @@ impl Repository {
     }
 
     async fn full_name(&self) -> &str {
-        full_name(&self.0)
+        &self.0.full_name
     }
 
     async fn url(&self) -> String {
-        format!("https://github.com/{}", full_name(&self.0))
+        format!("https://github.com/{}", self.0.full_name)
     }
 
     async fn warm_build(&self) -> Option<WarmBuild> {
@@ -542,7 +546,7 @@ impl Session {
                         .repository_rows(ctx)
                         .await?
                         .iter()
-                        .map(|row| full_name(row).to_string())
+                        .map(|row| row.full_name.clone())
                         .collect()),
                     None => Ok(Vec::new()),
                 }

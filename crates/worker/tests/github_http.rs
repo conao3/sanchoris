@@ -7,8 +7,8 @@ use sanchoris_engine::{IdempotencyKey, Integration, Invocation, ResourceOutcome,
 use sanchoris_worker::github::transport::{HttpRequest, HttpResponse, HttpTransport};
 use sanchoris_worker::github::{AppAuth, GitHubApi};
 use sanchoris_worker::ports::{
-    ConfigSource, GitHubClient, GitHubError, GitHubReader, Installation, InvocationContext,
-    IssueRef, ResourceInvoker,
+    ConfigSource, GitHubClient, GitHubError, GitHubReader, GitHubRepository, Installation,
+    InvocationContext, IssueRef, ResourceInvoker,
 };
 use sanchoris_worker::resources::GitHubResources;
 use serde_json::{Value, json};
@@ -150,6 +150,7 @@ fn context() -> InvocationContext {
         installations: vec![Installation {
             id: 42,
             account_login: Some("acme".into()),
+            repositories: vec![],
         }],
     }
 }
@@ -370,13 +371,13 @@ async fn config_files_are_read_from_the_tree_at_a_commit() {
         token_exchange(),
         exchange(
             "GET",
-            "/repos/acme/config/commits/release",
+            "/repositories/9001/commits/release",
             200,
             json!({ "sha": "c0ffee" }),
         ),
         exchange(
             "GET",
-            "/repos/acme/config/git/trees/c0ffee?recursive=1",
+            "/repositories/9001/git/trees/c0ffee?recursive=1",
             200,
             json!({ "truncated": false, "tree": [
                 { "path": "README.md", "type": "blob", "sha": "r" },
@@ -387,20 +388,20 @@ async fn config_files_are_read_from_the_tree_at_a_commit() {
         ),
         exchange(
             "GET",
-            "/repos/acme/config/git/blobs/y",
+            "/repositories/9001/git/blobs/y",
             200,
             json!({ "encoding": "base64", "content": format!("{}\n", encode("Version: 1\n")) }),
         ),
         exchange(
             "GET",
-            "/repos/acme/config/git/blobs/m",
+            "/repositories/9001/git/blobs/m",
             200,
             json!({ "encoding": "base64", "content": encode("---\nname: lint\n---\n") }),
         ),
     ]);
-    let sha = api.head_commit(42, "acme/config", "release").await.unwrap();
+    let sha = api.head_commit(42, 9001, "release").await.unwrap();
     assert_eq!(sha, "c0ffee");
-    let files = api.fetch(42, "acme/config", "/", &sha).await.unwrap();
+    let files = api.fetch(42, 9001, "/", &sha).await.unwrap();
     assert_eq!(
         files.into_iter().collect::<Vec<_>>(),
         vec![
@@ -425,7 +426,7 @@ fn with_headers(mut exchange: Exchange, headers: &[(&str, &str)]) -> Exchange {
 fn commit(sha: &str) -> Exchange {
     exchange(
         "GET",
-        "/repos/acme/config/commits/main",
+        "/repositories/9001/commits/main",
         200,
         json!({ "sha": sha }),
     )
@@ -438,7 +439,7 @@ async fn rate_limited_requests_are_retried_after_the_wait_github_asks_for() {
         with_headers(
             exchange(
                 "GET",
-                "/repos/acme/config/commits/main",
+                "/repositories/9001/commits/main",
                 429,
                 json!({ "message": "API rate limit exceeded" }),
             ),
@@ -448,7 +449,7 @@ async fn rate_limited_requests_are_retried_after_the_wait_github_asks_for() {
         with_headers(
             exchange(
                 "GET",
-                "/repos/acme/config/commits/main",
+                "/repositories/9001/commits/main",
                 403,
                 json!({ "message": "You have exceeded a secondary rate limit." }),
             ),
@@ -457,7 +458,7 @@ async fn rate_limited_requests_are_retried_after_the_wait_github_asks_for() {
         with_headers(
             exchange(
                 "GET",
-                "/repos/acme/config/commits/main",
+                "/repositories/9001/commits/main",
                 502,
                 json!({ "message": "Bad Gateway" }),
             ),
@@ -465,14 +466,8 @@ async fn rate_limited_requests_are_retried_after_the_wait_github_asks_for() {
         ),
         commit("c2"),
     ]);
-    assert_eq!(
-        api.head_commit(42, "acme/config", "main").await.unwrap(),
-        "c1"
-    );
-    assert_eq!(
-        api.head_commit(42, "acme/config", "main").await.unwrap(),
-        "c2"
-    );
+    assert_eq!(api.head_commit(42, 9001, "main").await.unwrap(), "c1");
+    assert_eq!(api.head_commit(42, 9001, "main").await.unwrap(), "c2");
     recorded.assert_done();
 }
 
@@ -482,7 +477,7 @@ async fn retries_stop_after_two_attempts_or_a_long_wait() {
         with_headers(
             exchange(
                 "GET",
-                "/repos/acme/config/commits/main",
+                "/repositories/9001/commits/main",
                 429,
                 json!({ "message": "API rate limit exceeded" }),
             ),
@@ -497,7 +492,7 @@ async fn retries_stop_after_two_attempts_or_a_long_wait() {
         with_headers(
             exchange(
                 "GET",
-                "/repos/acme/config/commits/main",
+                "/repositories/9001/commits/main",
                 403,
                 json!({ "message": "API rate limit exceeded" }),
             ),
@@ -505,16 +500,13 @@ async fn retries_stop_after_two_attempts_or_a_long_wait() {
         ),
         exchange(
             "GET",
-            "/repos/acme/config/commits/main",
+            "/repositories/9001/commits/main",
             404,
             json!({ "message": "Not Found" }),
         ),
     ]);
     for status in [429, 403, 404] {
-        let error = api
-            .head_commit(42, "acme/config", "main")
-            .await
-            .unwrap_err();
+        let error = api.head_commit(42, 9001, "main").await.unwrap_err();
         assert_eq!(error.status(), Some(status));
     }
     recorded.assert_done();
@@ -561,7 +553,7 @@ async fn installation_tokens_are_renewed_within_a_minute_of_expiry() {
         commit("c3"),
     ]);
     for _ in 0..3 {
-        api.head_commit(42, "acme/config", "main").await.unwrap();
+        api.head_commit(42, 9001, "main").await.unwrap();
     }
     recorded.assert_done();
     let seen = recorded.seen.lock().unwrap();
@@ -590,7 +582,7 @@ async fn scoped_tokens_name_the_repositories_and_permissions() {
     );
     narrowed.body = Some(json!({
         "permissions": { "contents": "write", "issues": "read" },
-        "repositories": ["shop-api", "shop-web"],
+        "repository_ids": [7101, 7102],
     }));
     let mut whole = exchange(
         "POST",
@@ -604,7 +596,7 @@ async fn scoped_tokens_name_the_repositories_and_permissions() {
         ("contents".to_string(), "write".to_string()),
         ("issues".to_string(), "read".to_string()),
     ]);
-    let repositories = vec!["shop-api".to_string(), "shop-web".to_string()];
+    let repositories = vec![7101, 7102];
     let (token, expires_at) = api
         .scoped_installation_token(42, Some(&repositories), &permissions)
         .await
@@ -630,5 +622,60 @@ async fn the_app_login_is_read_once_from_the_app() {
     )]);
     assert_eq!(api.app_login().await.unwrap(), "sanchoris-dev[bot]");
     assert_eq!(api.app_login().await.unwrap(), "sanchoris-dev[bot]");
+    recorded.assert_done();
+}
+
+#[tokio::test]
+async fn repositories_are_read_by_name_by_id_and_from_the_installation() {
+    let (api, recorded) = api(vec![
+        token_exchange(),
+        exchange(
+            "GET",
+            "/repos/acme/old-name",
+            200,
+            json!({ "id": 7101, "full_name": "acme/shop-web" }),
+        ),
+        exchange(
+            "GET",
+            "/repos/acme/missing",
+            404,
+            json!({ "message": "Not Found" }),
+        ),
+        exchange(
+            "GET",
+            "/repositories/7101",
+            200,
+            json!({ "id": 7101, "full_name": "acme/shop-web" }),
+        ),
+        exchange(
+            "GET",
+            "/installation/repositories?per_page=100&page=1",
+            200,
+            json!({ "total_count": 2, "repositories": [
+                { "id": 7101, "full_name": "acme/shop-web" },
+                { "id": 7102, "full_name": "acme/shop-api" },
+            ] }),
+        ),
+    ]);
+    let shop_web = GitHubRepository {
+        id: 7101,
+        full_name: "acme/shop-web".into(),
+    };
+    assert_eq!(
+        api.repository(42, "acme/old-name").await.unwrap(),
+        Some(shop_web.clone())
+    );
+    assert_eq!(api.repository(42, "acme/missing").await.unwrap(), None);
+    assert_eq!(api.repository_by_id(42, 7101).await.unwrap(), shop_web);
+    assert_eq!(
+        api.installation_repositories(42).await.unwrap(),
+        vec![
+            shop_web,
+            GitHubRepository {
+                id: 7102,
+                full_name: "acme/shop-api".into(),
+            },
+        ]
+    );
     recorded.assert_done();
 }

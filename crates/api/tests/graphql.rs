@@ -17,7 +17,7 @@ use sanchoris_core::model::TaskStatus;
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_graphql::AesGcmEncryptor;
 use serde_json::{Value, json};
-use support::fake_github::{CONFIG_REPO, CONFIG_SHA, FakeGitHub};
+use support::fake_github::{CONFIG_REPO, CONFIG_REPO_ID, CONFIG_SHA, FakeGitHub};
 use support::{
     Api, CONFIG_YAML, CREDENTIAL_KEY, Driving, FRONTEND_INDEX, FRONTEND_SCRIPT, INSTALLATION,
     STRIPE_SECRET, Seeded, WEBHOOK_SECRET, Workspaces, bare_repo, eventually, github_signature,
@@ -500,7 +500,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         missing["addConfig"]["errors"][0]["message"]
             .as_str()
             .unwrap()
-            .contains("no branch main")
+            .contains("acme/missing is not a repository of the tenant's GitHub App installation")
     );
     let added = w
         .ok(
@@ -854,7 +854,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         );
         github
             .installation_repositories
-            .insert(77, vec!["acme-labs/api".into()]);
+            .insert(77, vec![(8801, "acme-labs/api".into())]);
     }
     let setup = w
         .get(&format!(
@@ -899,7 +899,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
             "installation_repositories",
             &json!({
                 "action": "added", "installation": { "id": 77 },
-                "repositories_added": [{ "full_name": "acme-labs/web" }], "repositories_removed": [],
+                "repositories_added": [{ "id": 8802, "full_name": "acme-labs/web" }], "repositories_removed": [],
             }),
         )
         .await;
@@ -1032,5 +1032,79 @@ async fn the_built_frontend_is_served_for_every_other_path() {
     assert_eq!(
         health.json::<Value>().await.unwrap(),
         json!({ "status": "ok" })
+    );
+}
+
+#[tokio::test]
+async fn repository_events_rename_and_disable_the_config_by_its_repository_id() {
+    let w = World::start().await;
+    let owner = w.owner.as_str();
+    let slug = w.slug.as_str();
+    w.ok(
+        owner,
+        "SyncConfig",
+        json!({ "configId": w.seeded.tenant.config_id }),
+    )
+    .await;
+
+    let renamed = w
+        .github_webhook(
+            "repository",
+            &json!({
+                "action": "renamed",
+                "repository": { "id": CONFIG_REPO_ID, "full_name": "acme/platform-config" },
+                "changes": { "repository": { "name": { "from": "sanchoris-config" } } },
+                "installation": { "id": INSTALLATION },
+            }),
+        )
+        .await;
+    assert_eq!(renamed["status"], "processed");
+    let configs = w.ok(owner, "Configs", json!({ "tenant": slug })).await;
+    let config = &configs["tenant"]["configs"][0];
+    assert_eq!(config["repository"], "acme/platform-config");
+    assert_eq!(config["repositoryId"], CONFIG_REPO_ID.to_string());
+    assert_eq!(config["status"], "ACTIVE");
+    assert!(
+        configs["tenant"]["integrations"][0]["repositories"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("acme/platform-config"))
+    );
+    assert_eq!(configs["tenant"]["projects"].as_array().unwrap().len(), 1);
+
+    let removed = w
+        .github_webhook(
+            "installation_repositories",
+            &json!({
+                "action": "removed",
+                "installation": { "id": INSTALLATION },
+                "repositories_added": [],
+                "repositories_removed": [{ "id": CONFIG_REPO_ID, "full_name": "acme/platform-config" }],
+            }),
+        )
+        .await;
+    assert_eq!(removed["status"], "processed");
+    let configs = w.ok(owner, "Configs", json!({ "tenant": slug })).await;
+    let config = &configs["tenant"]["configs"][0];
+    assert_eq!(config["status"], "DISABLED");
+    assert_eq!(
+        config["syncError"],
+        "acme/platform-config was removed from the GitHub App installation"
+    );
+    assert_eq!(config["triggerCount"], 0);
+    assert_eq!(configs["tenant"]["projects"], json!([]));
+    let (code, _) = w
+        .error(
+            owner,
+            "SyncConfig",
+            json!({ "configId": w.seeded.tenant.config_id }),
+        )
+        .await;
+    assert_eq!(code, "BAD_USER_INPUT");
+    assert!(
+        w.audit_actions(w.tenant())
+            .await
+            .iter()
+            .any(|action| action == "config.disable")
     );
 }

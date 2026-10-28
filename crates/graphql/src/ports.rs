@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use sanchoris_core::items::GitHubRepository;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -65,6 +66,12 @@ pub struct ConfigProblem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigCheck {
+    Valid(GitHubRepository),
+    Invalid(Vec<ConfigProblem>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TriggerProposal {
     pub location: ConfigLocation,
     pub title: String,
@@ -78,7 +85,7 @@ pub trait ConfigRepositoryPort: Send + Sync {
         &self,
         tenant_id: Uuid,
         location: &ConfigLocation,
-    ) -> Result<Vec<ConfigProblem>, PortError>;
+    ) -> Result<ConfigCheck, PortError>;
     async fn propose_trigger(
         &self,
         tenant_id: Uuid,

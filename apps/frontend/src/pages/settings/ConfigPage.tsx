@@ -1,5 +1,5 @@
 import { useMutation } from '@apollo/client/react';
-import { CircleCheck, CircleX, ExternalLink, FolderGit2, MessageSquare, Plus, TriangleAlert, UserCheck, Zap } from 'lucide-react';
+import { CircleCheck, CircleSlash, CircleX, ExternalLink, FolderGit2, MessageSquare, Plus, TriangleAlert, UserCheck, Zap } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
 import { Button } from '../../components/Button';
 import { SettingsPage } from '../../components/SettingsTabs';
@@ -59,6 +59,7 @@ function AddConfigForm({ tenantId, repositories }: { tenantId: string; repositor
         </Button>
         <span className="text-muted">{t('config.checksFirst')}</span>
       </form>
+      <Dim className="mt-1.5">{t('config.removeHint')}</Dim>
       {error ? <Dim className="mt-2 text-err">{error.message}</Dim> : null}
       {data && data.addConfig.errors.length > 0 ? <Errors errors={data.addConfig.errors} /> : null}
     </>
@@ -97,6 +98,7 @@ export function ConfigPage() {
           </Th>
           {configs.map((config, index) => {
             const { validation } = config.revision;
+            const disabled = config.status === 'DISABLED';
             return (
               <div key={config.id}>
                 <Row cols={configCols} selected={nav.selected === index} rowRef={nav.rowRef(index)} onClick={() => nav.select(index)}>
@@ -113,7 +115,11 @@ export function ConfigPage() {
                   ) : (
                     <span className="text-muted">—</span>
                   )}
-                  {validation.valid ? (
+                  {disabled ? (
+                    <State tone="wait" icon={CircleSlash}>
+                      {t('config.disabled')}
+                    </State>
+                  ) : validation.valid ? (
                     <State tone="ok" icon={CircleCheck}>
                       {t('config.valid')}
                     </State>
@@ -127,13 +133,19 @@ export function ConfigPage() {
                   <div className="flex items-center gap-2 py-1.5 pl-1 text-sm">
                     <Icon icon={TriangleAlert} className="text-err" />
                     <span className="text-err">{config.syncError}</span>
-                    <span className="text-muted">{config.syncedAt ? t('config.lastSynced', { at: ago(config.syncedAt) }) : null}</span>
-                    <Button small isDisabled={syncState.loading} onPress={() => void syncConfig({ variables: { configId: config.id } })}>
-                      {t('common.retry')}
-                    </Button>
+                    {disabled ? (
+                      <span className="text-muted">{t('config.disabledHint')}</span>
+                    ) : (
+                      <>
+                        <span className="text-muted">{config.syncedAt ? t('config.lastSynced', { at: ago(config.syncedAt) }) : null}</span>
+                        <Button small isDisabled={syncState.loading} onPress={() => void syncConfig({ variables: { configId: config.id } })}>
+                          {t('common.retry')}
+                        </Button>
+                      </>
+                    )}
                   </div>
                 ) : null}
-                {validation.valid ? null : <Errors errors={validation.errors} />}
+                {disabled || validation.valid ? null : <Errors errors={validation.errors} />}
               </div>
             );
           })}

@@ -47,6 +47,7 @@ pub fn normalize_github_event(
             ISSUE_LABELED,
             json!({
                 "repository": reader.string("/repository/full_name")?,
+                "repository_id": reader.integer("/repository/id")?,
                 "installation": reader.installation()?,
                 "issue": reader.issue()?,
                 "label": reader.string("/label/name")?,
@@ -57,6 +58,7 @@ pub fn normalize_github_event(
             ISSUE_COMMENT_CREATED,
             json!({
                 "repository": reader.string("/repository/full_name")?,
+                "repository_id": reader.integer("/repository/id")?,
                 "installation": reader.installation()?,
                 "issue": reader.issue()?,
                 "comment": {
@@ -73,6 +75,7 @@ pub fn normalize_github_event(
             CHECK_RUN_COMPLETED,
             json!({
                 "repository": reader.string("/repository/full_name")?,
+                "repository_id": reader.integer("/repository/id")?,
                 "installation": reader.installation()?,
                 "check_run": reader.check_run()?,
                 "sender": reader.sender()?,

@@ -4,7 +4,7 @@ use sanchoris_core::item::format_time;
 use sanchoris_core::items::{
     self, Integration as IntegrationItem, Output as OutputItem, Project as ProjectItem,
     Run as RunItem, Task as TaskItem, Trigger as TriggerItem, UsageRecord,
-    Workspace as WorkspaceItem,
+    Workspace as WorkspaceItem, github_repositories,
 };
 use sanchoris_core::keys;
 use sanchoris_core::store::{Index, Listing, SortKey};
@@ -596,21 +596,13 @@ impl Integration {
         }
     }
 
-    async fn repositories(&self) -> Vec<String> {
+    async fn repositories(&self) -> Result<Vec<String>> {
         match self {
-            Self::Row(row) => row
-                .details
-                .get("repositories")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default(),
-            Self::NotConnected { .. } => Vec::new(),
+            Self::Row(row) => Ok(github_repositories(&row.details)?
+                .into_iter()
+                .map(|repository| repository.full_name)
+                .collect()),
+            Self::NotConnected { .. } => Ok(Vec::new()),
         }
     }
 

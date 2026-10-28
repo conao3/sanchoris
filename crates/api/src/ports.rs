@@ -3,16 +3,17 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use sanchoris_config::{CONFIG_FILE, ConfigFiles, parse_repository, validate};
 use sanchoris_graphql::{
-    AuditExportPort, ChatDispatcher, ConfigLocation, ConfigProblem, ConfigRepositoryPort,
-    ConfigSyncTrigger, PortError, SlackConnectUrl, TriggerProposal,
+    AuditExportPort, ChatDispatcher, ConfigCheck, ConfigLocation, ConfigProblem,
+    ConfigRepositoryPort, ConfigSyncTrigger, PortError, SlackConnectUrl, TriggerProposal,
 };
+use sanchoris_worker::config_sync::resolve_repository;
 use sanchoris_worker::error::WorkerError;
 use sanchoris_worker::github::{FileChange, GitHubApi};
 use sanchoris_worker::ports::{
-    ConfigSource, GitHubClient, NewPullRequest, OutboxPusher, RunnerError, RunnerPort,
-    RunningWorkspace, WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
+    ConfigSource, GitHubClient, GitHubRepository, NewPullRequest, OutboxPusher, RunnerError,
+    RunnerPort, RunningWorkspace, WorkspaceExit, WorkspaceHandle, WorkspaceSpec, installation_with,
 };
-use sanchoris_worker::{Worker, config_sync, dispatcher, installation_for_repo};
+use sanchoris_worker::{Worker, config_sync, dispatcher, installation_for_repo, installations};
 use serde_yaml_ng::{Mapping, Value as Yaml};
 use uuid::Uuid;
 
@@ -204,11 +205,12 @@ impl GitHubConfigRepository {
     async fn files(
         &self,
         installation: i64,
+        repository: &GitHubRepository,
         location: &ConfigLocation,
     ) -> Result<Result<ConfigFiles, ConfigProblem>, PortError> {
         let sha = match self
             .api
-            .head_commit(installation, &location.repository, &location.branch)
+            .head_commit(installation, repository.id, &location.branch)
             .await
         {
             Ok(sha) => sha,
@@ -219,14 +221,14 @@ impl GitHubConfigRepository {
                     column: None,
                     message: format!(
                         "{} has no branch {} that the GitHub App can read",
-                        location.repository, location.branch
+                        repository.full_name, location.branch
                     ),
                 }));
             }
             Err(error) => return Err(port_error(error)),
         };
         self.api
-            .fetch(installation, &location.repository, &location.root, &sha)
+            .fetch(installation, repository.id, &location.root, &sha)
             .await
             .map(Ok)
             .map_err(port_error)
@@ -239,13 +241,35 @@ impl ConfigRepositoryPort for GitHubConfigRepository {
         &self,
         tenant_id: Uuid,
         location: &ConfigLocation,
-    ) -> Result<Vec<ConfigProblem>, PortError> {
-        let installation = self.installation(tenant_id, &location.repository).await?;
-        let files = match self.files(installation, location).await? {
-            Ok(files) => files,
-            Err(problem) => return Ok(vec![problem]),
-        };
+    ) -> Result<ConfigCheck, PortError> {
         let mut tx = self.worker.tx(tenant_id);
+        let installations = installations(&mut tx).await.map_err(port_error)?;
+        let repository =
+            match resolve_repository(self.api.as_ref(), &installations, &location.repository).await
+            {
+                Ok(repository) => repository,
+                Err(WorkerError::Invalid(message)) => {
+                    return Ok(ConfigCheck::Invalid(vec![ConfigProblem {
+                        path: location.repository.clone(),
+                        line: None,
+                        column: None,
+                        message,
+                    }]));
+                }
+                Err(error) => return Err(port_error(error)),
+            };
+        let installation = installation_with(&installations, repository.id)
+            .map(|(installation, _)| installation.id)
+            .ok_or_else(|| {
+                PortError::Rejected(format!(
+                    "{} is not a repository of the tenant's GitHub App installation",
+                    repository.full_name
+                ))
+            })?;
+        let files = match self.files(installation, &repository, location).await? {
+            Ok(files) => files,
+            Err(problem) => return Ok(ConfigCheck::Invalid(vec![problem])),
+        };
         let context = config_sync::validation_context(&mut tx)
             .await
             .map_err(port_error)?;
@@ -253,17 +277,21 @@ impl ConfigRepositoryPort for GitHubConfigRepository {
             Ok(repository) => validate(&repository, &context).err(),
             Err(errors) => Some(errors),
         };
-        Ok(errors
-            .map(|errors| errors.0)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|error| ConfigProblem {
-                path: error.location,
-                line: None,
-                column: None,
-                message: error.message,
-            })
-            .collect())
+        Ok(match errors {
+            None => ConfigCheck::Valid(repository),
+            Some(errors) => ConfigCheck::Invalid(
+                errors
+                    .0
+                    .into_iter()
+                    .map(|error| ConfigProblem {
+                        path: error.location,
+                        line: None,
+                        column: None,
+                        message: error.message,
+                    })
+                    .collect(),
+            ),
+        })
     }
 
     async fn propose_trigger(
@@ -274,9 +302,16 @@ impl ConfigRepositoryPort for GitHubConfigRepository {
         let location = &proposal.location;
         let repository = &location.repository;
         let installation = self.installation(tenant_id, repository).await?;
+        let repository_id = self
+            .api
+            .repository(installation, repository)
+            .await
+            .map_err(port_error)?
+            .ok_or_else(|| PortError::Rejected(format!("{repository} is not readable on GitHub")))?
+            .id;
         let base = self
             .api
-            .head_commit(installation, repository, &location.branch)
+            .head_commit(installation, repository_id, &location.branch)
             .await
             .map_err(port_error)?;
         let path = config_file_path(&location.root);

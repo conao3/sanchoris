@@ -11,6 +11,7 @@ use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
 use sanchoris_core::store::retry;
 use sanchoris_graphql::GithubConnectUrl;
+use sanchoris_worker::ports::ConfigSource as _;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;

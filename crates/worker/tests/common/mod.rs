@@ -110,7 +110,7 @@ impl World {
                 status: "connected".into(),
                 github_installation_id: Some(INSTALLATION),
                 slack_team_id: None,
-                details: json!({ "account_login": "acme" }),
+                details: json!({ "account_login": "acme", "repositories": known_repositories() }),
                 created_at: now,
                 updated_at: now,
             })
@@ -402,7 +402,7 @@ pub fn turn_end_payload(turn: i64, error: Value) -> Value {
 pub fn labeled_payload(number: i64, title: &str, sender: &str) -> Value {
     json!({
         "action": "labeled",
-        "repository": { "full_name": REPO },
+        "repository": { "id": SHOP_WEB_ID, "full_name": REPO },
         "installation": { "id": INSTALLATION },
         "issue": {
             "number": number,

@@ -51,9 +51,12 @@ type Mutation {
   "Opens a change request on a config repository that adds a trigger from a template."
   proposeTriggerFromTemplate(input: ProposeTriggerInput!): ChangeRequest!
 
-  "Adds a config after checking the repository. Returns the validation errors when the check fails."
+  """
+  Adds a config after checking the repository. Returns the validation errors when the check fails.
+  No mutation removes a config: removing its repository from the GitHub App installation on GitHub disables it.
+  """
   addConfig(input: AddConfigInput!): AddConfigPayload!
-  "Reads the config repository again."
+  "Reads the config repository again. A DISABLED config cannot be synced."
   syncConfig(configId: ID!): Config!
 
   "Saves an API key credential. Subscriptions are connected with the sanchoris CLI."
@@ -300,10 +303,19 @@ type ConfigRevision {
   validation: Validation!
 }
 
+enum ConfigStatus {
+  ACTIVE
+  "The repository was removed from the GitHub App installation or deleted. The config no longer syncs or starts tasks."
+  DISABLED
+}
+
 type Config {
   id: ID!
-  "owner/name"
+  "The repository's current owner/name on GitHub, updated when the repository is renamed or transferred."
   repository: String!
+  "The GitHub repository id that the config follows. Null when the config was disabled before its name resolved to a repository."
+  repositoryId: ID
+  status: ConfigStatus!
   root: String!
   branch: String!
   url: String!
@@ -312,7 +324,7 @@ type Config {
   revision: ConfigRevision!
   revisions(limit: Int = 10): [ConfigRevision!]!
   syncedAt: DateTime
-  "Why the last sync failed, for example when GitHub is unreachable. Null after a successful sync."
+  "Why the last sync failed, for example when GitHub is unreachable or a repository named in sanchoris.yaml is not in the GitHub App installation, or why the config is DISABLED. Null after a successful sync."
   syncError: String
   triggerCount: Int!
   skillCount: Int!
@@ -329,7 +341,7 @@ type Repository {
   id: ID!
   "The name inside the project, such as frontend."
   name: String!
-  "owner/name"
+  "The repository's current owner/name on GitHub."
   fullName: String!
   url: String!
   warmBuild: WarmBuild

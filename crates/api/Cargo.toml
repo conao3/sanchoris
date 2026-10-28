@@ -29,6 +29,10 @@ path = "src/bin/worker.rs"
 name = "relay"
 path = "src/bin/relay.rs"
 
+[[bin]]
+name = "sanchoris-backfill-repository-ids"
+path = "src/bin/backfill_repository_ids.rs"
+
 [dependencies]
 sanchoris-config.workspace = true
 sanchoris-core.workspace = true

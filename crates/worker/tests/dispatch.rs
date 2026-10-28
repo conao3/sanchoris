@@ -209,7 +209,7 @@ async fn actors_outside_the_pattern_are_skipped_with_a_reason() {
 async fn unrelated_events_leave_no_trigger_event() {
     let world = World::new("pro").await;
     let mut payload = common::labeled_payload(41, "Other repo", "mika-dev");
-    payload["repository"]["full_name"] = json!("acme/elsewhere");
+    payload["repository"] = json!({ "id": 7999, "full_name": "acme/elsewhere" });
     world
         .deliver("delivery-elsewhere", "issues", &payload)
         .await;

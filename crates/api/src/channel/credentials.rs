@@ -6,14 +6,16 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, Utc};
 use sanchoris_config::{PermissionLevel, Session};
-use sanchoris_core::db::{DbError, Store, TenantTx};
-use sanchoris_core::items::Task;
+use sanchoris_core::db::{DbError, REF_TRIGGER, Store, TenantTx, locate};
+use sanchoris_core::items::{Config, Task};
+use sanchoris_core::keys;
 use sanchoris_core::tasks::{load_run, load_task};
 use sanchoris_core::tokens::RunClaims;
 use sanchoris_graphql::AesGcmEncryptor;
 use sanchoris_worker::error::WorkerError;
 use sanchoris_worker::github::GitHubApi;
-use sanchoris_worker::installation_for_repo;
+use sanchoris_worker::installations;
+use sanchoris_worker::ports::{installation_for, installation_with};
 use sanchoris_worker::usage::credential_of;
 
 pub const OAUTH_TOKEN_PREFIX: &str = "sk-ant-oat";
@@ -83,6 +85,18 @@ async fn running_task(tx: &mut TenantTx, claims: RunClaims) -> Result<Task, Cred
     Ok(load_task(tx, run.task_id).await?)
 }
 
+async fn config_of(tx: &mut TenantTx, task: &Task) -> Result<Config, CredentialError> {
+    let location = locate(tx, task.trigger_id, REF_TRIGGER)
+        .await?
+        .ok_or_else(|| unavailable(format!("trigger {} does not exist", task.trigger_id)))?;
+    let config_id = location
+        .parent_id
+        .ok_or_else(|| unavailable("a trigger reference has no config"))?;
+    Ok(tx
+        .require::<Config>(&keys::config_key(tx.tenant_id(), config_id))
+        .await?)
+}
+
 fn session_of(task: &Task) -> Result<Session, CredentialError> {
     serde_json::from_value(task.definition["Session"]["Definition"].clone())
         .map_err(|error| unavailable(format!("the task's session does not parse: {error}")))
@@ -98,15 +112,32 @@ pub fn worker_variable(provider: &str, kind: &str, value: &str) -> Option<&'stat
     }
 }
 
-pub fn scope_of(session: &Session) -> (Option<Vec<String>>, BTreeMap<String, String>) {
-    let repositories = session
-        .github
-        .repos
-        .iter()
-        .map(|repo| repo.split_once('/').map_or(repo.as_str(), |(_, name)| name))
-        .collect::<BTreeSet<_>>();
-    let repositories = (!repositories.contains("*"))
-        .then(|| repositories.into_iter().map(str::to_string).collect());
+pub type TokenScope = (Option<Vec<i64>>, BTreeMap<String, String>);
+
+pub fn scope_of(session: &Session, config: &Config) -> Result<TokenScope, CredentialError> {
+    let repositories = if session.github.repos.iter().any(|repo| repo.contains('*')) {
+        None
+    } else {
+        Some(
+            session
+                .github
+                .repos
+                .iter()
+                .map(|name| {
+                    config
+                        .repository_named(name)
+                        .map(|repository| repository.id)
+                        .ok_or_else(|| {
+                            unavailable(format!(
+                                "GitHub.Repos names {name}, which is not a repository of the active config"
+                            ))
+                        })
+                })
+                .collect::<Result<BTreeSet<_>, _>>()?
+                .into_iter()
+                .collect(),
+        )
+    };
     let permissions = session
         .github
         .permissions
@@ -119,7 +150,7 @@ pub fn scope_of(session: &Session) -> (Option<Vec<String>>, BTreeMap<String, Str
             (name.clone(), level.to_string())
         })
         .collect();
-    (repositories, permissions)
+    Ok((repositories, permissions))
 }
 
 #[async_trait]
@@ -128,11 +159,29 @@ impl RunCredentials for IssuedCredentials {
         let mut tx = self.store.tx(claims.tenant_id);
         let task = running_task(&mut tx, claims).await?;
         let session = session_of(&task)?;
-        let mut installations = BTreeSet::new();
-        for repo in &session.github.repos {
-            installations.insert(installation_for_repo(&mut tx, repo).await?);
+        let config = config_of(&mut tx, &task).await?;
+        let (repositories, permissions) = scope_of(&session, &config)?;
+        let installations = installations(&mut tx).await?;
+        let mut used = BTreeSet::new();
+        match &repositories {
+            Some(ids) => {
+                for id in ids {
+                    let (installation, _) =
+                        installation_with(&installations, *id).ok_or_else(|| {
+                            unavailable(format!(
+                                "repository {id} is not in the tenant's GitHub App installation"
+                            ))
+                        })?;
+                    used.insert(installation.id);
+                }
+            }
+            None => {
+                for repo in &session.github.repos {
+                    used.insert(installation_for(&installations, repo).map_err(unavailable)?);
+                }
+            }
         }
-        let installation = match installations.into_iter().collect::<Vec<_>>()[..] {
+        let installation = match used.into_iter().collect::<Vec<_>>()[..] {
             [only] => only,
             [] => return Err(unavailable("the session's GitHub.Repos is empty")),
             _ => {
@@ -141,7 +190,6 @@ impl RunCredentials for IssuedCredentials {
                 ));
             }
         };
-        let (repositories, permissions) = scope_of(&session);
         let (token, expires_at) = self
             .github
             .scoped_installation_token(installation, repositories.as_deref(), &permissions)
@@ -198,6 +246,7 @@ impl RunCredentials for NoRunCredentials {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sanchoris_core::items::GitHubRepository;
 
     #[test]
     fn claude_keys_and_oauth_tokens_map_to_their_variables() {
@@ -225,13 +274,46 @@ mod tests {
         .unwrap()
     }
 
+    fn config() -> Config {
+        let now = Utc::now();
+        Config {
+            id: uuid::Uuid::nil(),
+            tenant_id: uuid::Uuid::nil(),
+            repository_id: Some(7001),
+            repository: "acme/config".into(),
+            root_path: "/".into(),
+            branch: "main".into(),
+            status: sanchoris_core::items::CONFIG_ACTIVE.into(),
+            active_revision_id: None,
+            revisions: 1,
+            repositories: BTreeMap::from([
+                (
+                    "acme/shop-web".to_string(),
+                    GitHubRepository {
+                        id: 7101,
+                        full_name: "acme/storefront".into(),
+                    },
+                ),
+                (
+                    "acme/shop-api".to_string(),
+                    GitHubRepository {
+                        id: 7102,
+                        full_name: "acme/shop-api".into(),
+                    },
+                ),
+            ]),
+            synced_at: None,
+            sync_error: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     #[test]
-    fn the_scope_names_the_session_repositories_unless_a_wildcard_widens_it() {
-        let (repositories, permissions) = scope_of(&session(&["acme/shop-web", "acme/shop-api"]));
-        assert_eq!(
-            repositories,
-            Some(vec!["shop-api".to_string(), "shop-web".to_string()])
-        );
+    fn the_scope_names_the_session_repositories_by_id_unless_a_wildcard_widens_it() {
+        let (repositories, permissions) =
+            scope_of(&session(&["acme/shop-web", "acme/shop-api"]), &config()).unwrap();
+        assert_eq!(repositories, Some(vec![7101, 7102]));
         assert_eq!(
             permissions,
             BTreeMap::from([
@@ -239,7 +321,8 @@ mod tests {
                 ("issues".to_string(), "read".to_string()),
             ])
         );
-        let (repositories, _) = scope_of(&session(&["acme/*"]));
+        let (repositories, _) = scope_of(&session(&["acme/*"]), &config()).unwrap();
         assert_eq!(repositories, None);
+        assert!(scope_of(&session(&["acme/other"]), &config()).is_err());
     }
 }

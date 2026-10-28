@@ -148,6 +148,8 @@ function buildAcme(): Obj {
   const configMain: Obj = {
     id: 'config-main',
     repository: 'acme/sanchoris-config',
+    repositoryId: '812004417',
+    status: 'ACTIVE',
     root: '/',
     branch: 'main',
     url: 'https://github.com/acme/sanchoris-config',
@@ -164,6 +166,8 @@ function buildAcme(): Obj {
   const configPlatform: Obj = {
     id: 'config-platform',
     repository: 'acme/platform',
+    repositoryId: '812004981',
+    status: 'ACTIVE',
     root: 'tools/sanchoris/',
     branch: 'main',
     url: 'https://github.com/acme/platform/tree/main/tools/sanchoris',
@@ -990,6 +994,8 @@ export function buildSetupTenant(spec: { slug: string; name: string; planName: s
         {
           id: `config-${slug}`,
           repository: `${slug}-dev/sanchoris-config`,
+          repositoryId: '812005120',
+          status: 'ACTIVE',
           root: '/',
           branch: 'main',
           url: `https://github.com/${slug}-dev/sanchoris-config`,

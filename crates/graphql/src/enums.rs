@@ -65,6 +65,11 @@ pub enum IntegrationStatus {
     Error,
 }
 
+db_enum!(ConfigStatus, "config status", {
+    Active => "active",
+    Disabled => "disabled",
+});
+
 db_enum!(WorkspaceCompute, "workspace compute", {
     Standard => "standard",
     Docker => "docker",

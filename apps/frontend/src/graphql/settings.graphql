@@ -42,6 +42,8 @@ query Configs($tenant: String!) {
     configs {
       id
       repository
+      repositoryId
+      status
       root
       branch
       url

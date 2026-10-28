@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::net::{TcpListener, TcpStream};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, OnceLock};
@@ -12,11 +13,15 @@ use uuid::Uuid;
 use crate::clock::Clock;
 use crate::db::{REF_CONFIG_REVISION, REF_TRIGGER, insert_ref};
 use crate::item::{Entity, Item, KIND, Table};
-use crate::items::{Config, ConfigRevision, Member, Membership, Tenant, Trigger, User};
+use crate::items::{
+    CONFIG_ACTIVE, Config, ConfigRevision, Member, Membership, Tenant, Trigger, User,
+};
 use crate::keys;
 use crate::local::{MemoryBlobStore, MemoryQueue, MemoryScheduler};
 use crate::schema::{create_tables, drop_tables, plans, seed_plans};
 use crate::store::{Relay, Store, Tables};
+
+pub const SEED_CONFIG_REPOSITORY_ID: i64 = 7001;
 
 static SERVER: OnceLock<u16> = OnceLock::new();
 
@@ -219,6 +224,17 @@ impl TestDynamo {
             .expect("put a test item");
     }
 
+    pub async fn put_raw(&self, mut item: Item) {
+        item.insert(crate::item::VERSION.into(), AttributeValue::N("1".into()));
+        self.client
+            .put_item()
+            .table_name(&self.tables.main)
+            .set_item(Some(item))
+            .send()
+            .await
+            .expect("put a raw test item");
+    }
+
     pub async fn modify<E: Entity>(&self, key: &crate::item::Key, change: impl FnOnce(&mut E)) {
         let store = self.store(Relay::Stream);
         let item = store
@@ -304,12 +320,16 @@ impl TestDynamo {
         tx.insert(&Config {
             id: config_id,
             tenant_id,
+            repository_id: Some(SEED_CONFIG_REPOSITORY_ID),
             repository: "acme/sanchoris-config".into(),
             root_path: "/".into(),
             branch: "main".into(),
+            status: CONFIG_ACTIVE.into(),
             active_revision_id: Some(config_revision_id),
             revisions: 1,
+            repositories: BTreeMap::new(),
             synced_at: None,
+            sync_error: None,
             created_at: now,
             updated_at: now,
         })

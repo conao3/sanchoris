@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sanchoris_config::ConfigFiles;
+pub use sanchoris_core::items::GitHubRepository;
 use sanchoris_engine::{Invocation, ResourceOutcome};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -154,23 +155,37 @@ pub trait GitHubReader: Send + Sync {
 
 #[async_trait]
 pub trait ConfigSource: Send + Sync {
+    async fn repository(
+        &self,
+        installation: i64,
+        full_name: &str,
+    ) -> Result<Option<GitHubRepository>, GitHubError>;
+    async fn repository_by_id(
+        &self,
+        installation: i64,
+        repository_id: i64,
+    ) -> Result<GitHubRepository, GitHubError>;
+    async fn installation_repositories(
+        &self,
+        installation: i64,
+    ) -> Result<Vec<GitHubRepository>, GitHubError>;
     async fn head_commit(
         &self,
         installation: i64,
-        repo: &str,
+        repository_id: i64,
         branch: &str,
     ) -> Result<String, GitHubError>;
     async fn fetch(
         &self,
         installation: i64,
-        repo: &str,
+        repository_id: i64,
         root_path: &str,
         sha: &str,
     ) -> Result<ConfigFiles, GitHubError>;
     async fn commit_author(
         &self,
         installation: i64,
-        repo: &str,
+        repository_id: i64,
         sha: &str,
     ) -> Result<String, GitHubError>;
 }
@@ -179,6 +194,22 @@ pub trait ConfigSource: Send + Sync {
 pub struct Installation {
     pub id: i64,
     pub account_login: Option<String>,
+    pub repositories: Vec<GitHubRepository>,
+}
+
+impl Installation {
+    pub fn repository(&self, repository_id: i64) -> Option<&GitHubRepository> {
+        self.repositories.iter().find(|r| r.id == repository_id)
+    }
+}
+
+pub fn installation_with(
+    installations: &[Installation],
+    repository_id: i64,
+) -> Option<(&Installation, &GitHubRepository)> {
+    installations
+        .iter()
+        .find_map(|i| i.repository(repository_id).map(|r| (i, r)))
 }
 
 #[derive(Debug, Clone, PartialEq)]

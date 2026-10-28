@@ -55,6 +55,7 @@ pub const STRIPE_SECRET: &str = "whsec_http";
 pub const WEBHOOK_SECRET: &str = "http-webhook";
 pub const INSTALLATION: i64 = 42;
 pub const REPO: &str = "acme/shop-web";
+pub use fake_github::SHOP_WEB_ID;
 
 pub struct StubVerifier;
 
@@ -474,7 +475,14 @@ pub async fn seed(dynamo: &TestDynamo) -> Seeded {
             status: "connected".into(),
             github_installation_id: Some(INSTALLATION),
             slack_team_id: None,
-            details: json!({ "account_login": "acme" }),
+            details: json!({
+                "account_login": "acme",
+                "repositories": [
+                    { "id": fake_github::CONFIG_REPO_ID, "full_name": fake_github::CONFIG_REPO },
+                    { "id": SHOP_WEB_ID, "full_name": REPO },
+                    { "id": fake_github::OPS_ID, "full_name": "acme/ops" },
+                ],
+            }),
             created_at: now,
             updated_at: now,
         })
@@ -598,7 +606,7 @@ pub fn github_signature(secret: &str, body: &[u8]) -> String {
 pub fn labeled_payload(number: i64, title: &str) -> Value {
     json!({
         "action": "labeled",
-        "repository": { "full_name": REPO },
+        "repository": { "id": SHOP_WEB_ID, "full_name": REPO },
         "installation": { "id": INSTALLATION },
         "issue": {
             "number": number,
@@ -618,7 +626,7 @@ pub fn labeled_payload(number: i64, title: &str) -> Value {
 pub fn check_run_payload(sha: &str, conclusion: &str, pull: i64) -> Value {
     json!({
         "action": "completed",
-        "repository": { "full_name": REPO },
+        "repository": { "id": SHOP_WEB_ID, "full_name": REPO },
         "installation": { "id": INSTALLATION },
         "check_run": {
             "id": 7, "name": "ci/test", "status": "completed", "conclusion": conclusion,

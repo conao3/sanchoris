@@ -1,3 +1,4 @@
+pub mod backfill;
 pub mod config_sync;
 pub mod deadline;
 pub mod dispatcher;
@@ -19,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Duration;
 use sanchoris_core::db::{DbError, Store, TenantTx};
-use sanchoris_core::items::Integration;
+use sanchoris_core::items::{Integration, github_repositories};
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
 
@@ -216,9 +217,7 @@ pub const PERIODIC_JOBS: [Job; 5] = [
     Job::SweepWorkspaces,
 ];
 
-pub(crate) async fn installations(
-    tx: &mut TenantTx,
-) -> std::result::Result<Vec<Installation>, DbError> {
+pub async fn installations(tx: &mut TenantTx) -> std::result::Result<Vec<Installation>, DbError> {
     let mut integrations = tx
         .query::<Integration>(&keys::tenant_pk(tx.tenant_id()), "INTEG#")
         .await?
@@ -226,15 +225,18 @@ pub(crate) async fn installations(
         .filter(|i| i.kind == "github_installation" && i.status == "connected")
         .collect::<Vec<_>>();
     integrations.sort_by_key(|a| (a.created_at, a.id));
-    Ok(integrations
+    integrations
         .into_iter()
         .filter_map(|i| {
-            i.github_installation_id.map(|id| Installation {
-                id,
-                account_login: i.details["account_login"].as_str().map(str::to_string),
+            i.github_installation_id.map(|id| {
+                Ok(Installation {
+                    id,
+                    account_login: i.details["account_login"].as_str().map(str::to_string),
+                    repositories: github_repositories(&i.details)?,
+                })
             })
         })
-        .collect())
+        .collect()
 }
 
 pub(crate) fn installation_for(installations: &[Installation], repo: &str) -> Result<i64> {

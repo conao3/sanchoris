@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -625,14 +626,51 @@ impl Entity for Integration {
 pub struct Config {
     pub id: Uuid,
     pub tenant_id: Uuid,
+    pub repository_id: Option<i64>,
     pub repository: String,
     pub root_path: String,
     pub branch: String,
+    pub status: String,
     pub active_revision_id: Option<Uuid>,
     pub revisions: i64,
+    pub repositories: BTreeMap<String, GitHubRepository>,
     pub synced_at: Option<DateTime<Utc>>,
+    pub sync_error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+pub const CONFIG_ACTIVE: &str = "active";
+pub const CONFIG_DISABLED: &str = "disabled";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubRepository {
+    pub id: i64,
+    pub full_name: String,
+}
+
+impl Config {
+    pub fn is_active(&self) -> bool {
+        self.status == CONFIG_ACTIVE
+    }
+
+    pub fn repository_named(&self, name: &str) -> Option<&GitHubRepository> {
+        self.repositories
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, repository)| repository)
+    }
+}
+
+pub fn github_repositories(details: &Value) -> Result<Vec<GitHubRepository>, DbError> {
+    match details.get("repositories") {
+        None => Ok(Vec::new()),
+        Some(list) => serde_json::from_value(list.clone()).map_err(|error| {
+            DbError::Decode(format!(
+                "integration details.repositories is not a list of id and full_name: {error}"
+            ))
+        }),
+    }
 }
 
 impl Entity for Config {
@@ -649,28 +687,43 @@ impl Entity for Config {
             .unwrap_or_else(|| "0".into());
         w.uuid("id", self.id)
             .uuid("tenant_id", self.tenant_id)
+            .opt_n("repository_id", self.repository_id)
             .s("repository", &self.repository)
             .s("root_path", &self.root_path)
             .s("branch", &self.branch)
+            .s("status", &self.status)
             .opt_uuid("active_revision_id", self.active_revision_id)
             .n("revisions", self.revisions)
+            .json(
+                "repositories",
+                &serde_json::to_value(&self.repositories).expect("repositories serialize"),
+            )
             .opt_time("synced_at", self.synced_at)
+            .opt_s("sync_error", self.sync_error.as_ref())
             .time("created_at", self.created_at)
-            .time("updated_at", self.updated_at)
-            .s("gsi2pk", keys::SWEEP_CONFIGS)
-            .s("gsi2sk", format!("{synced}#{}#{}", self.tenant_id, self.id));
+            .time("updated_at", self.updated_at);
+        if self.is_active() {
+            w.s("gsi2pk", keys::SWEEP_CONFIGS)
+                .s("gsi2sk", format!("{synced}#{}#{}", self.tenant_id, self.id));
+        }
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
         Ok(Self {
             id: r.uuid("id")?,
             tenant_id: r.uuid("tenant_id")?,
+            repository_id: r.opt_n("repository_id")?,
             repository: r.s("repository")?,
             root_path: r.s("root_path")?,
             branch: r.s("branch")?,
+            status: r.s("status")?,
             active_revision_id: r.opt_uuid("active_revision_id")?,
             revisions: r.n("revisions")?,
+            repositories: serde_json::from_value(r.json("repositories")?).map_err(|error| {
+                DbError::Decode(format!("config repositories do not decode: {error}"))
+            })?,
             synced_at: r.opt_time("synced_at")?,
+            sync_error: r.opt_s("sync_error")?,
             created_at: r.time("created_at")?,
             updated_at: r.time("updated_at")?,
         })
@@ -773,6 +826,8 @@ pub struct Repository {
     pub project: String,
     pub name: String,
     pub url: String,
+    pub github_repository_id: i64,
+    pub full_name: String,
     pub warm_hook: Option<Value>,
     pub start_hook: Option<Value>,
     pub prebuild_status: Option<String>,
@@ -793,6 +848,8 @@ impl Entity for Repository {
             .s("project", &self.project)
             .s("name", &self.name)
             .s("url", &self.url)
+            .n("github_repository_id", self.github_repository_id)
+            .s("full_name", &self.full_name)
             .opt_json("warm_hook", self.warm_hook.as_ref())
             .opt_json("start_hook", self.start_hook.as_ref())
             .opt_s("prebuild_status", self.prebuild_status.as_ref())
@@ -807,6 +864,8 @@ impl Entity for Repository {
             project: r.s("project")?,
             name: r.s("name")?,
             url: r.s("url")?,
+            github_repository_id: r.n("github_repository_id")?,
+            full_name: r.s("full_name")?,
             warm_hook: r.opt_json("warm_hook")?,
             start_hook: r.opt_json("start_hook")?,
             prebuild_status: r.opt_s("prebuild_status")?,

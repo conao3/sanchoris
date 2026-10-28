@@ -1,6 +1,6 @@
 mod common;
 
-use common::{REPO, World, skill_input};
+use common::{REPO, SHOP_WEB_ID, World, skill_input};
 use sanchoris_core::items::{ApprovalWait, Output, StateEntryItem, Task, TimerItem};
 use sanchoris_core::keys;
 use serde_json::json;
@@ -222,7 +222,7 @@ async fn check_run_webhooks_wake_the_wait_before_the_poll_interval() {
             "check_run",
             &json!({
                 "action": "completed",
-                "repository": { "full_name": REPO },
+                "repository": { "id": SHOP_WEB_ID, "full_name": REPO },
                 "installation": { "id": common::INSTALLATION },
                 "check_run": {
                     "id": 7, "name": "ci/test", "status": "completed", "conclusion": "success",

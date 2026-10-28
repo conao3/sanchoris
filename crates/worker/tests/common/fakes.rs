@@ -5,9 +5,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use sanchoris_config::ConfigFiles;
 use sanchoris_worker::ports::{
-    CheckRun, ConfigSource, GitHubClient, GitHubError, GitHubReader, IssueComment, IssueRelations,
-    MergeResult, NewPullRequest, PullRequest, RunnerError, RunnerPort, RunningWorkspace,
-    WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
+    CheckRun, ConfigSource, GitHubClient, GitHubError, GitHubReader, GitHubRepository,
+    IssueComment, IssueRelations, MergeResult, NewPullRequest, PullRequest, RunnerError,
+    RunnerPort, RunningWorkspace, WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
 };
 use uuid::Uuid;
 
@@ -15,6 +15,27 @@ pub const CONFIG_YAML: &str = include_str!("../../../config/tests/fixtures/examp
 pub const INSTALLATION: i64 = 42;
 pub const REPO: &str = "acme/shop-web";
 pub const APP_LOGIN: &str = "sanchoris[bot]";
+pub const SHOP_WEB_ID: i64 = 7101;
+pub const SHOP_API_ID: i64 = 7102;
+pub const IDEA_ID: i64 = 7103;
+
+pub fn known_repositories() -> Vec<GitHubRepository> {
+    [
+        (
+            sanchoris_core::testing::SEED_CONFIG_REPOSITORY_ID,
+            "acme/sanchoris-config",
+        ),
+        (SHOP_WEB_ID, "acme/shop-web"),
+        (SHOP_API_ID, "acme/shop-api"),
+        (IDEA_ID, "acme/idea"),
+    ]
+    .into_iter()
+    .map(|(id, full_name)| GitHubRepository {
+        id,
+        full_name: full_name.to_string(),
+    })
+    .collect()
+}
 
 pub fn epoch() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 10, 27, 9, 0, 0).unwrap()
@@ -38,6 +59,8 @@ pub struct GitHubState {
     pub created_comments: Vec<(String, i64)>,
     pub updated_comments: Vec<i64>,
     pub merges: Vec<(String, i64)>,
+    pub repositories: Vec<GitHubRepository>,
+    pub moved: HashMap<String, i64>,
 }
 
 #[derive(Debug, Default)]
@@ -56,6 +79,7 @@ impl FakeGitHub {
                 .insert("sanchoris.yaml".into(), CONFIG_YAML.into());
             state.next_number = 52;
             state.next_comment = 9000;
+            state.repositories = known_repositories();
         }
         fake
     }
@@ -71,6 +95,30 @@ impl FakeGitHub {
         if let Some(pr) = state.pulls.get_mut(&key) {
             pr.head_sha = format!("{branch}-sha-{count}");
         }
+    }
+
+    pub fn rename(&self, repository_id: i64, full_name: &str) -> GitHubRepository {
+        let mut state = self.state.lock().unwrap();
+        let repository = state
+            .repositories
+            .iter_mut()
+            .find(|r| r.id == repository_id)
+            .expect("a known repository");
+        let previous = std::mem::replace(&mut repository.full_name, full_name.to_string());
+        let renamed = repository.clone();
+        state.moved.insert(previous.to_lowercase(), repository_id);
+        renamed
+    }
+
+    pub fn add_repository(&self, repository_id: i64, full_name: &str) -> GitHubRepository {
+        let repository = GitHubRepository {
+            id: repository_id,
+            full_name: full_name.to_string(),
+        };
+        let mut state = self.state.lock().unwrap();
+        state.moved.remove(&full_name.to_lowercase());
+        state.repositories.push(repository.clone());
+        repository
     }
 
     pub fn script_checks(&self, results: &[&'static str]) {
@@ -289,15 +337,66 @@ impl GitHubReader for FakeGitHub {
 
 #[async_trait]
 impl ConfigSource for FakeGitHub {
-    async fn head_commit(&self, _: i64, _: &str, _: &str) -> Result<String, GitHubError> {
+    async fn repository(
+        &self,
+        _: i64,
+        full_name: &str,
+    ) -> Result<Option<GitHubRepository>, GitHubError> {
+        let state = self.state.lock().unwrap();
+        let current = state
+            .repositories
+            .iter()
+            .find(|r| r.full_name.eq_ignore_ascii_case(full_name))
+            .cloned();
+        Ok(current.or_else(|| {
+            state
+                .moved
+                .get(&full_name.to_lowercase())
+                .and_then(|id| state.repositories.iter().find(|r| r.id == *id))
+                .cloned()
+        }))
+    }
+
+    async fn repository_by_id(
+        &self,
+        _: i64,
+        repository_id: i64,
+    ) -> Result<GitHubRepository, GitHubError> {
+        self.state
+            .lock()
+            .unwrap()
+            .repositories
+            .iter()
+            .find(|r| r.id == repository_id)
+            .cloned()
+            .ok_or_else(|| GitHubError::Status {
+                status: 404,
+                body: "Not Found".into(),
+            })
+    }
+
+    async fn installation_repositories(
+        &self,
+        _: i64,
+    ) -> Result<Vec<GitHubRepository>, GitHubError> {
+        Ok(self.state.lock().unwrap().repositories.clone())
+    }
+
+    async fn head_commit(
+        &self,
+        _: i64,
+        repository_id: i64,
+        _: &str,
+    ) -> Result<String, GitHubError> {
+        self.repository_by_id(0, repository_id).await?;
         Ok(self.state.lock().unwrap().head_sha.clone())
     }
 
-    async fn fetch(&self, _: i64, _: &str, _: &str, _: &str) -> Result<ConfigFiles, GitHubError> {
+    async fn fetch(&self, _: i64, _: i64, _: &str, _: &str) -> Result<ConfigFiles, GitHubError> {
         Ok(self.state.lock().unwrap().files.clone())
     }
 
-    async fn commit_author(&self, _: i64, _: &str, _: &str) -> Result<String, GitHubError> {
+    async fn commit_author(&self, _: i64, _: i64, _: &str) -> Result<String, GitHubError> {
         Ok("mika-dev".to_string())
     }
 }
