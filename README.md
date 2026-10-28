@@ -117,7 +117,7 @@ Secrets (the rows marked *secret*) come from the environment in `sanchoris all` 
 | `OAUTH_STATE_SIGNING_KEY` | api (*secret*) | Signs the GitHub OAuth and installation `state`, bound to the signed-in user and tenant (32+ bytes) |
 | `SANCHORIS_CREDENTIAL_KEY` | api, channel (*secret*) | AES-256-GCM key for stored API keys: 32 bytes in base64 (`openssl rand -base64 32`) |
 | `SANCHORIS_RECORDS_STORE` | api, channel, worker | `s3` or `local` (Lambda functions take `s3`) |
-| `SANCHORIS_RECORDS_BUCKET`, `SANCHORIS_RECORDS_KMS_KEY` | api, channel, worker (`s3`) | Bucket of session records and audit exports, and the KMS key (ARN or alias) that encrypts them with the tenant id in the encryption context |
+| `SANCHORIS_RECORDS_BUCKET` | api, channel, worker (`s3`) | Bucket of session records and audit exports (SSE-S3 by default) |
 | `SANCHORIS_RECORDS_DIR`, `RECORDS_SIGNING_KEY` | `sanchoris all` (`local`) | Record directory (set by `pnpm dev`) and the URL signing key (32+ bytes) |
 | `SANCHORIS_WORKSPACE_COMMAND` | `sanchoris all` | Command that starts the workspace agent (set by `pnpm dev`) |
 | `SANCHORIS_CONTROL_URL` | `sanchoris all`, worker | Run channel URL given to workspaces: locally `ws://127.0.0.1:8080/runs/channel` (set by `pnpm dev`), in AWS the `wss://` URL of the WebSocket API |

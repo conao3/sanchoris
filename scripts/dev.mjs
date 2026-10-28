@@ -158,7 +158,7 @@ const requiredEnv = [
   'SANCHORIS_RECORDS_STORE',
   'SANCHORIS_GIT_URL',
   ...(process.env.SANCHORIS_RECORDS_STORE === 's3'
-    ? ['AWS_REGION', 'SANCHORIS_RECORDS_BUCKET', 'SANCHORIS_RECORDS_KMS_KEY']
+    ? ['AWS_REGION', 'SANCHORIS_RECORDS_BUCKET']
     : ['RECORDS_SIGNING_KEY']),
 ];
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);

@@ -54,9 +54,7 @@ async fn run() -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     let (records, local_records): (Arc<dyn RecordStore>, Option<Arc<LocalRecordStore>>) =
         match &config.channel.records {
-            RecordsConfig::S3 { bucket, kms_key } => {
-                (Arc::new(S3RecordStore::new(&sdk, bucket, kms_key)), None)
-            }
+            RecordsConfig::S3 { bucket } => (Arc::new(S3RecordStore::new(&sdk, bucket)), None),
             RecordsConfig::Local { dir, signing_key } => {
                 let local = Arc::new(LocalRecordStore::new(
                     dir,

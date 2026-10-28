@@ -203,7 +203,7 @@ pub struct StripeConfig {
 
 #[derive(Debug, Clone)]
 pub enum RecordsConfig {
-    S3 { bucket: String, kms_key: String },
+    S3 { bucket: String },
     Local { dir: PathBuf, signing_key: HmacKey },
 }
 
@@ -402,9 +402,8 @@ impl RecordsConfig {
             "s3" => {
                 let mut env = Reader::new();
                 let bucket = env.get("SANCHORIS_RECORDS_BUCKET");
-                let kms_key = env.get("SANCHORIS_RECORDS_KMS_KEY");
                 env.finish()?;
-                Ok(Self::S3 { bucket, kms_key })
+                Ok(Self::S3 { bucket })
             }
             "local" => {
                 let mut env = Reader::new();

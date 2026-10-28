@@ -129,7 +129,7 @@ The worker runs with the agent's environment, so `sanchoris` must be on `PATH`.
   "requestId": "c7d2f9b0-6a3e-4f1b-8c55-2e9d0b7a4c11",
   "ok": true,
   "url": "https://records.s3.amazonaws.com/t/7/runs/42/5f0c6a8e-2d55-4c43-9a51-0a7b8f3d2e10/turn-4.jsonl?X-Amz-Signature=def",
-  "headers": { "content-type": "application/octet-stream", "x-amz-server-side-encryption": "aws:kms" },
+  "headers": { "content-type": "application/octet-stream", "x-amz-checksum-sha256": "q1MKE+RZFJgrefm34/uplM/R8/si9xzqGvvwK0YMbR0=" },
   "key": "t/7/runs/42/5f0c6a8e-2d55-4c43-9a51-0a7b8f3d2e10/turn-4.jsonl"
 }
 ```
@@ -320,7 +320,7 @@ Git asks for credentials through the helper `sanchoris git-credential` (the work
 After every turn, before `turn_end`:
 
 1. The agent reads the worker's session record (Claude: `$CLAUDE_CONFIG_DIR/projects/<dir>/<sessionId>.jsonl`; Codex: the rollout file under `$CODEX_HOME/sessions/`) and sends `record_upload_request` with its byte length and SHA-256.
-2. The control plane answers with a presigned PUT `url`, the `headers` the agent must send with it (for example SSE-KMS headers), and the object `key`.
+2. The control plane answers with a presigned PUT `url`, the `headers` the agent must send with it (for example the SHA-256 checksum), and the object `key`.
 3. The agent uploads the whole file with `PUT` and sends `session_record`. `relativePath` is the path of the record relative to the worker home (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`).
 4. The agent sends `turn_end`.
 
