@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+autotests = false
 
 [features]
 test-support = []
@@ -32,3 +33,7 @@ aws-sdk-scheduler = { version = "1", default-features = false, features = ["defa
 
 [dev-dependencies]
 sanchoris-core = { path = ".", features = ["test-support"] }
+
+[[test]]
+name = "tests"
+path = "tests/main.rs"

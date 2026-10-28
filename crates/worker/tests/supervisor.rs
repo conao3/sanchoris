@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use chrono::Duration;
 use common::{REPO, World, turn_end_payload};

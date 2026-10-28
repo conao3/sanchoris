@@ -9,7 +9,7 @@
     "build": "pnpm --filter @sanchoris/frontend build",
     "lint": "pnpm --filter @sanchoris/frontend lint",
     "check": "pnpm --filter @sanchoris/frontend check && pnpm --filter @sanchoris/workspace-agent check && pnpm --filter @sanchoris/egress-relay check",
-    "e2e": "cargo test -p sanchoris-api --test e2e",
+    "e2e": "cargo test -p sanchoris-api --test tests e2e::",
     "build:lambda": "node scripts/build-lambda.mjs"
   },
   "devDependencies": {

@@ -185,7 +185,7 @@ quick() {
   fi
 
   if [ $all_crates -eq 0 ] && [ $e2e -eq 1 ] && [ -z "${crates[sanchoris-api]:-}" ]; then
-    step "e2e" nextest -p sanchoris-api --test e2e
+    step "e2e" nextest -p sanchoris-api -E 'test(/^e2e::/)'
   fi
 
   local package

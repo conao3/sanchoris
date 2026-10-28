@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use common::{REPO, SHOP_WEB_ID, World, skill_input};
 use sanchoris_core::items::{ApprovalWait, Output, StateEntryItem, Task, TimerItem};

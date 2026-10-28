@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use common::{REPO, World, skill_input};
 use sanchoris_core::channel::RunEventType;

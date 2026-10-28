@@ -16,7 +16,7 @@ Read this file instead of reading `README.md` and `docs/architecture.md` in full
 |---|---|---|
 | `scripts/verify.sh quick` | Against the merge base with the local `master`: `cargo fmt --check` when Rust changed; clippy `-D warnings` on the changed crates and their dependents; nextest on the changed crates; the e2e test when only the workspace agent or `scripts/e2e` changed; `pnpm --filter <package> check` for each changed TS app | While working |
 | `scripts/verify.sh full` | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo nextest run --workspace` (with the e2e test), `pnpm check` | Before each commit and merge |
-| `scripts/verify.sh test <nextest arguments>` | `cargo nextest run <arguments>`, e.g. `-p sanchoris-worker --test supervisor` or `-p sanchoris-core -E 'test(/plan/)'` | One test while iterating |
+| `scripts/verify.sh test <nextest arguments>` | `cargo nextest run <arguments>`, e.g. `-p sanchoris-worker -E 'test(/^supervisor::/)'` or `-p sanchoris-core -E 'test(/plan/)'` | One test while iterating |
 
 All three re-enter the devShell when started outside it, run `pnpm install` when `node_modules` is missing, and print each step's time. Before the tests they start eight DynamoDB Local instances, run nextest with eight test threads, and export the ports as `SANCHORIS_TEST_DYNAMO_PORTS`; `TestDynamo` (`crates/core/src/testing.rs`) connects to the instance of its nextest slot (`NEXTEST_TEST_GLOBAL_SLOT`), so each instance serves one test at a time, and each test creates its own tables with a unique suffix. A test process started without that variable starts its own DynamoDB Local (about 5 s), and nextest runs every test in its own process, so run nextest through `scripts/verify.sh test`.
 
@@ -42,10 +42,10 @@ All three re-enter the devShell when started outside it, run `pnpm install` when
 
 | Change | Check |
 |---|---|
-| A crate | `scripts/verify.sh test -p <crate>`; one file: `scripts/verify.sh test -p sanchoris-api --test http` (`http`, `lambda`, `graphql`, `e2e`) |
-| `apps/frontend/src/graphql/*.graphql` | `scripts/verify.sh test -p sanchoris-api --test graphql` (runs every operation) and `scripts/verify.sh test -p sanchoris-graphql --test schema_contract` |
+| A crate | `scripts/verify.sh test -p <crate>`; one file: `scripts/verify.sh test -p sanchoris-api -E 'test(/^http::/)'` (each `tests/<file>.rs` is the module `<file>` of the crate's one test binary `tests/main.rs`) |
+| `apps/frontend/src/graphql/*.graphql` | `scripts/verify.sh test -p sanchoris-api -E 'test(/^graphql::/)'` (runs every operation) and `scripts/verify.sh test -p sanchoris-graphql -E 'test(/^schema_contract::/)'` |
 | `apps/frontend` | `pnpm --filter @sanchoris/frontend check`; UI changes also in the browser through `pnpm dev` (README "Development") |
-| `apps/workspace-agent`, `scripts/e2e` | `pnpm --filter @sanchoris/workspace-agent check` and `scripts/verify.sh test -p sanchoris-api --test e2e` |
+| `apps/workspace-agent`, `scripts/e2e` | `pnpm --filter @sanchoris/workspace-agent check` and `scripts/verify.sh test -p sanchoris-api -E 'test(/^e2e::/)'` |
 | `apps/egress-relay` | `pnpm --filter @sanchoris/egress-relay check` |
 | `infra/tables.json`, `infra/plans.json` | `scripts/verify.sh test -p sanchoris-core`, then the aws-infra-k8s template check (`docs/014-sanchoris.md` "Deploy") |
 | Lambda functions, their variables or IAM | Keep `docs/architecture.md` "Lambda functions" and aws-infra-k8s `docs/014-sanchoris.md` "Lambda functions" in step |
@@ -69,7 +69,7 @@ Turn each one into a test before fixing it.
    - HTTP: GitHub webhooks from the App's recent deliveries (`gh api /app/hook/deliveries` with the App JWT), Stripe events with `GET /v1/events/<id>`.
    - The functions log JSON (`LogFormat: JSON`) to `/aws/lambda/<prefix>-sanchoris-<function>`; `aws logs filter-log-events --filter-pattern '{ $.level = "ERROR" }'` finds the failing invocation and its request id.
 2. Save it under `crates/api/tests/fixtures/`, replacing ids that the test creates with `{{name}}` placeholders, and load it with `fixture(name, vars)` in `crates/api/tests/lambda.rs` (`sqs_event`, `stream_event`, and `websocket_event` wrap the recorded `sqs.json`, `stream.json`, and `websocket-*.json`; `http.json` and `authorizer.json` are the HTTP API and authorizer events).
-3. Write the failing test in `lambda.rs` against `TestDynamo`, fix the bug, and run `scripts/verify.sh test -p sanchoris-api --test lambda`.
+3. Write the failing test in `lambda.rs` against `TestDynamo`, fix the bug, and run `scripts/verify.sh test -p sanchoris-api -E 'test(/^lambda::/)'`.
 
 ## Design documents
 

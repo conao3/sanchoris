@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use chrono::Duration;
 use common::{Harness, RUN_ID, Summary, epoch};

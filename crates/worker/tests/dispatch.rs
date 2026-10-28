@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use common::{REPO, World};
 use sanchoris_core::items::{

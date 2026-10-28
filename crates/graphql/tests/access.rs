@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use common::{Person, World};
 use sanchoris_core::db::DbError;

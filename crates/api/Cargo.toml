@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+autotests = false
 
 [[bin]]
 name = "sanchoris"
@@ -74,3 +75,7 @@ sanchoris-core = { path = "../core", features = ["test-support"] }
 tempfile = "3"
 tokio-tungstenite = "0.30"
 tower = { version = "0.5", features = ["util"] }
+
+[[test]]
+name = "tests"
+path = "tests/main.rs"
