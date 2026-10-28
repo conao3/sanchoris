@@ -14,7 +14,8 @@ use sanchoris_config::skill::{
 use serde_json::{Map, Value, json};
 
 pub const RUNTIME_ERROR: &str = "States.Runtime";
-pub const MAX_INLINE_TRANSITIONS: usize = 1000;
+pub const MAX_TRANSITIONS_PER_STEP: usize = 70;
+const MAX_DELAY_MILLIS: f64 = 1e15;
 
 pub fn start(
     definition: &SkillDefinition,
@@ -22,6 +23,12 @@ pub fn start(
     now: DateTime<Utc>,
 ) -> Result<Step, EngineError> {
     validate_input(definition, &request.input)?;
+    let deadline_at = add_seconds(now, definition.timeout_seconds).ok_or_else(|| {
+        EngineError::InvalidDefinition(format!(
+            "TimeoutSeconds {} is out of range",
+            definition.timeout_seconds
+        ))
+    })?;
     let run = SkillRun {
         id: request.skill_run_id,
         skill_name: request.skill_name,
@@ -31,7 +38,7 @@ pub fn start(
         error: None,
         cause: None,
         started_at: now,
-        deadline_at: now + seconds(definition.timeout_seconds),
+        deadline_at,
         finished_at: None,
         next_sequence: 1,
         current: None,
@@ -82,13 +89,18 @@ pub fn error_matches(error_equals: &[String], error: &str) -> bool {
     })
 }
 
-pub fn retry_delay(retrier: &Retrier, retries_so_far: u32) -> Duration {
-    let raw = retrier.interval_seconds as f64 * retrier.backoff_rate.powi(retries_so_far as i32);
+pub fn retry_delay(retrier: &Retrier, retries_so_far: u32) -> Option<Duration> {
+    let exponent = i32::try_from(retries_so_far).ok()?;
+    let raw = retrier.interval_seconds as f64 * retrier.backoff_rate.powi(exponent);
     let capped = match retrier.max_delay_seconds {
         Some(max) => raw.min(max as f64),
         None => raw,
     };
-    Duration::milliseconds((capped * 1000.0).round() as i64)
+    let millis = (capped * 1000.0).round();
+    if !millis.is_finite() || !(0.0..=MAX_DELAY_MILLIS).contains(&millis) {
+        return None;
+    }
+    Duration::try_milliseconds(millis as i64)
 }
 
 pub fn apply_result_path(
@@ -103,8 +115,8 @@ pub fn apply_result_path(
     }
 }
 
-fn seconds(n: u64) -> Duration {
-    Duration::seconds(i64::try_from(n).expect("seconds fit in i64"))
+fn add_seconds(at: DateTime<Utc>, n: u64) -> Option<DateTime<Utc>> {
+    at.checked_add_signed(Duration::try_seconds(i64::try_from(n).ok()?)?)
 }
 
 fn timestamp(t: DateTime<Utc>) -> String {
@@ -146,6 +158,7 @@ struct Machine<'d> {
     now: DateTime<Utc>,
     entries: Vec<StateEntry>,
     effects: Vec<Effect>,
+    transitions: usize,
 }
 
 impl<'d> Machine<'d> {
@@ -156,6 +169,7 @@ impl<'d> Machine<'d> {
             now,
             entries: Vec::new(),
             effects: Vec::new(),
+            transitions: 0,
         }
     }
 
@@ -344,16 +358,14 @@ impl<'d> Machine<'d> {
 
     fn proceed(&mut self, name: String, input: Value) -> Result<(), EngineError> {
         let mut next = Some((name, input));
-        for _ in 0..MAX_INLINE_TRANSITIONS {
-            let Some((name, input)) = next.take() else {
-                return Ok(());
-            };
+        while let Some((name, input)) = next.take() {
+            if self.transitions >= MAX_TRANSITIONS_PER_STEP {
+                return self.runtime_failure(format!(
+                    "the skill made {MAX_TRANSITIONS_PER_STEP} transitions in one step without waiting on a Task or Wait state"
+                ));
+            }
+            self.transitions += 1;
             next = self.enter(name, input)?;
-        }
-        if next.is_some() {
-            self.runtime_failure(format!(
-                "the skill made {MAX_INLINE_TRANSITIONS} transitions in a row without waiting on a Task or Wait state"
-            ))?;
         }
         Ok(())
     }
@@ -437,7 +449,13 @@ impl<'d> Machine<'d> {
             }
             State::Wait(wait) => {
                 let until = match (wait.seconds, wait.timestamp.as_deref()) {
-                    (Some(n), None) => self.now + seconds(n),
+                    (Some(n), None) => match add_seconds(self.now, n) {
+                        Some(until) => until,
+                        None => {
+                            self.runtime_failure(format!("Seconds {n} is out of range"))?;
+                            return Ok(None);
+                        }
+                    },
                     (None, Some(text)) => DateTime::parse_from_rfc3339(text)
                         .map_err(|e| {
                             EngineError::InvalidDefinition(format!(
@@ -519,8 +537,21 @@ impl<'d> Machine<'d> {
         } else {
             None
         };
-        let timeout_at = self.now + seconds(task.timeout_seconds);
-        let heartbeat_at = task.heartbeat_seconds.map(|n| self.now + seconds(n));
+        let Some(timeout_at) = add_seconds(self.now, task.timeout_seconds) else {
+            return self.runtime_failure(format!(
+                "TimeoutSeconds {} is out of range",
+                task.timeout_seconds
+            ));
+        };
+        let heartbeat_at = match task.heartbeat_seconds {
+            Some(n) => match add_seconds(self.now, n) {
+                Some(at) => Some(at),
+                None => {
+                    return self.runtime_failure(format!("HeartbeatSeconds {n} is out of range"));
+                }
+            },
+            None => None,
+        };
         self.run.status = match (&token, handoff) {
             (Some(_), true) => SkillRunStatus::WaitingAgent,
             (Some(_), false) => SkillRunStatus::Waiting,
@@ -597,8 +628,15 @@ impl<'d> Machine<'d> {
             entry.retry_counts.resize(task.retry.len(), 0);
             let used = entry.retry_counts[index];
             if used < retrier.max_attempts {
+                let Some(retry_at) =
+                    retry_delay(retrier, used).and_then(|delay| now.checked_add_signed(delay))
+                else {
+                    return self.runtime_failure(format!(
+                        "the retry delay after {used} retries is out of range"
+                    ));
+                };
+                let entry = self.current_mut()?;
                 entry.retry_counts[index] = used + 1;
-                let retry_at = now + retry_delay(retrier, used);
                 let next_attempt = entry.attempts + 1;
                 let sequence = entry.sequence;
                 entry.status = StateEntryStatus::Running;
@@ -738,7 +776,10 @@ impl<'d> Machine<'d> {
                 }
                 let task = self.current_task()?;
                 if let Some(n) = task.heartbeat_seconds {
-                    let due_at = self.now + seconds(n);
+                    let Some(due_at) = add_seconds(self.now, n) else {
+                        self.runtime_failure(format!("HeartbeatSeconds {n} is out of range"))?;
+                        return Ok(Disposition::Applied);
+                    };
                     let entry = self.current_mut()?;
                     let sequence = entry.sequence;
                     if let Some(Progress::Invoking {
@@ -914,16 +955,25 @@ mod tests {
             backoff_rate: 2.0,
             max_delay_seconds: Some(25),
         };
-        assert_eq!(retry_delay(&retrier, 0), Duration::seconds(10));
-        assert_eq!(retry_delay(&retrier, 1), Duration::seconds(20));
-        assert_eq!(retry_delay(&retrier, 2), Duration::seconds(25));
+        assert_eq!(retry_delay(&retrier, 0), Some(Duration::seconds(10)));
+        assert_eq!(retry_delay(&retrier, 1), Some(Duration::seconds(20)));
+        assert_eq!(retry_delay(&retrier, 2), Some(Duration::seconds(25)));
         let fractional = Retrier {
             backoff_rate: 1.5,
             max_delay_seconds: None,
+            ..retrier.clone()
+        };
+        assert_eq!(retry_delay(&fractional, 1), Some(Duration::seconds(15)));
+        assert_eq!(
+            retry_delay(&fractional, 2),
+            Some(Duration::milliseconds(22_500))
+        );
+        let huge = Retrier {
+            backoff_rate: 1e300,
+            max_delay_seconds: None,
             ..retrier
         };
-        assert_eq!(retry_delay(&fractional, 1), Duration::seconds(15));
-        assert_eq!(retry_delay(&fractional, 2), Duration::milliseconds(22_500));
+        assert_eq!(retry_delay(&huge, 3), None);
     }
 
     #[test]

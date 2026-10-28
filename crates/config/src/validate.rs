@@ -25,6 +25,8 @@ pub struct ValidationContext {
     pub plan: PlanLimits,
 }
 
+pub const MAX_BACKOFF_RATE: f64 = 10.0;
+
 pub const KNOWN_STATES_ERRORS: &[&str] = &[
     errors::ALL,
     errors::TIMEOUT,
@@ -74,8 +76,11 @@ pub fn validate(
     v.config(&repository.config);
     for (name, skill) in &repository.skills {
         if let Some(definition) = &skill.definition {
-            v.errors
-                .extend(validate_skill_definition(definition, &at("Skills", name)));
+            v.errors.extend(validate_skill_definition(
+                definition,
+                &at("Skills", name),
+                context.plan.max_timeout_seconds,
+            ));
         }
     }
     if errors.is_empty() {
@@ -544,12 +549,22 @@ fn literal_repos(task: &TaskState) -> Vec<String> {
     out
 }
 
-pub fn validate_skill_definition(definition: &SkillDefinition, loc: &str) -> Vec<ValidationError> {
+pub fn validate_skill_definition(
+    definition: &SkillDefinition,
+    loc: &str,
+    max_seconds: u64,
+) -> Vec<ValidationError> {
     let mut errors = Vec::new();
     let mut err = |l: String, m: String| errors.push(ValidationError::new(l, m));
     if definition.timeout_seconds == 0 {
         err(at(loc, "TimeoutSeconds"), "must be greater than 0".into());
     }
+    at_most(
+        &at(loc, "TimeoutSeconds"),
+        definition.timeout_seconds,
+        max_seconds,
+        &mut err,
+    );
     if definition.states.is_empty() {
         err(at(loc, "States"), "must define at least one state".into());
     }
@@ -567,7 +582,7 @@ pub fn validate_skill_definition(definition: &SkillDefinition, loc: &str) -> Vec
             State::Task(t) => {
                 next_or_end(&sloc, t.next.as_deref(), t.end, &mut err);
                 targets.extend(t.next.as_deref().map(|n| (at(&sloc, "Next"), n)));
-                task_state(&sloc, t, &mut err);
+                task_state(&sloc, t, max_seconds, &mut err);
                 for (i, c) in t.catch.iter().enumerate() {
                     targets.push((at(&index(&at(&sloc, "Catch"), i), "Next"), c.next.as_str()));
                 }
@@ -585,6 +600,9 @@ pub fn validate_skill_definition(definition: &SkillDefinition, loc: &str) -> Vec
                         "Wait needs exactly one of Seconds or Timestamp".into(),
                     ),
                     _ => {}
+                }
+                if let Some(seconds) = w.seconds {
+                    at_most(&at(&sloc, "Seconds"), seconds, max_seconds, &mut err);
                 }
             }
             State::Choice(c) => {
@@ -667,10 +685,25 @@ fn next_or_end(
     }
 }
 
-fn task_state(loc: &str, task: &TaskState, err: &mut impl FnMut(String, String)) {
+fn at_most(loc: &str, value: u64, max: u64, err: &mut impl FnMut(String, String)) {
+    if value > max {
+        err(
+            loc.to_string(),
+            format!("{value} exceeds the plan limit of {max}"),
+        );
+    }
+}
+
+fn task_state(loc: &str, task: &TaskState, max_seconds: u64, err: &mut impl FnMut(String, String)) {
     if task.timeout_seconds == 0 {
         err(at(loc, "TimeoutSeconds"), "must be greater than 0".into());
     }
+    at_most(
+        &at(loc, "TimeoutSeconds"),
+        task.timeout_seconds,
+        max_seconds,
+        err,
+    );
     if let Some(h) = task.heartbeat_seconds
         && (h == 0 || h >= task.timeout_seconds)
     {
@@ -734,12 +767,12 @@ fn task_state(loc: &str, task: &TaskState, err: &mut impl FnMut(String, String))
             }
         }
     }
-    retriers(&at(loc, "Retry"), &task.retry, err);
+    retriers(&at(loc, "Retry"), &task.retry, max_seconds, err);
     let catch_lists: Vec<&Vec<String>> = task.catch.iter().map(|c| &c.error_equals).collect();
     error_lists(&at(loc, "Catch"), &catch_lists, err);
 }
 
-fn retriers(loc: &str, retry: &[Retrier], err: &mut impl FnMut(String, String)) {
+fn retriers(loc: &str, retry: &[Retrier], max_seconds: u64, err: &mut impl FnMut(String, String)) {
     for (i, r) in retry.iter().enumerate() {
         let rloc = index(loc, i);
         if r.interval_seconds == 0 {
@@ -748,14 +781,26 @@ fn retriers(loc: &str, retry: &[Retrier], err: &mut impl FnMut(String, String)) 
                 "must be greater than 0".into(),
             );
         }
-        if r.backoff_rate < 1.0 {
-            err(at(&rloc, "BackoffRate"), "must be at least 1.0".into());
+        at_most(
+            &at(&rloc, "IntervalSeconds"),
+            r.interval_seconds,
+            max_seconds,
+            err,
+        );
+        if !(1.0..=MAX_BACKOFF_RATE).contains(&r.backoff_rate) {
+            err(
+                at(&rloc, "BackoffRate"),
+                format!("must be between 1.0 and {MAX_BACKOFF_RATE}"),
+            );
         }
         if r.max_delay_seconds == Some(0) {
             err(
                 at(&rloc, "MaxDelaySeconds"),
                 "must be greater than 0".into(),
             );
+        }
+        if let Some(max_delay) = r.max_delay_seconds {
+            at_most(&at(&rloc, "MaxDelaySeconds"), max_delay, max_seconds, err);
         }
     }
     let lists: Vec<&Vec<String>> = retry.iter().map(|r| &r.error_equals).collect();

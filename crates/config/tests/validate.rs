@@ -133,7 +133,7 @@ fn builtin_skill_is_reliable_and_valid() {
     let definition = skill.definition.unwrap();
     assert!(definition.inputs.contains_key("Repo"));
     let errors =
-        sanchoris_config::validate_skill_definition(&definition, "Skills.open-pr-green-ci");
+        sanchoris_config::validate_skill_definition(&definition, "Skills.open-pr-green-ci", 14_400);
     assert!(errors.is_empty(), "{errors:?}");
     assert!(!skill.skill_yaml.unwrap().contains("acme/shop-web"));
 }
@@ -682,6 +682,57 @@ fn heartbeat_must_be_below_timeout() {
         ),
         "Skills.custom.States.T.HeartbeatSeconds",
     );
+}
+
+#[test]
+fn time_values_are_bounded_by_the_plan() {
+    let huge = "18446744073709551615";
+    skill_error(
+        &format!(
+            "Inputs: {{}}\nStartAt: A\nTimeoutSeconds: {huge}\nStates:\n  A:\n    Type: Pass\n    End: true\n"
+        ),
+        "Skills.custom.TimeoutSeconds",
+    );
+    skill_error(
+        &format!(
+            "Inputs: {{}}\nStartAt: W\nTimeoutSeconds: 60\nStates:\n  W:\n    Type: Wait\n    Seconds: {huge}\n    End: true\n"
+        ),
+        "Skills.custom.States.W.Seconds",
+    );
+    skill_error(
+        &task_skill(&format!(
+            "    Resource: sanchoris:::agent:handoff.waitForTaskToken\n    Parameters: {{ Instruction: Fix it, TaskToken.$: $$.Task.Token }}\n    TimeoutSeconds: {huge}\n    HeartbeatSeconds: 900001\n"
+        )),
+        "Skills.custom.States.T.TimeoutSeconds",
+    );
+    let retry = |field: &str| {
+        task_skill(&format!(
+            "    Resource: sanchoris:::chat:post\n    Parameters: {{ Text: hi }}\n    TimeoutSeconds: 60\n    Retry:\n      - ErrorEquals: [States.ALL]\n        MaxAttempts: 2\n{field}"
+        ))
+    };
+    skill_error(
+        &retry(&format!(
+            "        IntervalSeconds: {huge}\n        BackoffRate: 2\n"
+        )),
+        "Skills.custom.States.T.Retry[0].IntervalSeconds",
+    );
+    skill_error(
+        &retry(&format!(
+            "        IntervalSeconds: 1\n        BackoffRate: 2\n        MaxDelaySeconds: {huge}\n"
+        )),
+        "Skills.custom.States.T.Retry[0].MaxDelaySeconds",
+    );
+    skill_error(
+        &retry("        IntervalSeconds: 1\n        BackoffRate: 1.0e300\n"),
+        "Skills.custom.States.T.Retry[0].BackoffRate",
+    );
+    load_repository(
+        &skill_files(&retry(
+            "        IntervalSeconds: 900000\n        BackoffRate: 10\n        MaxDelaySeconds: 900000\n",
+        )),
+        &context(),
+    )
+    .unwrap();
 }
 
 fn choice_skill(rules: &str) -> String {

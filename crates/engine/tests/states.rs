@@ -227,7 +227,7 @@ States:
     assert_eq!(run.error.as_deref(), Some("States.Runtime"));
     assert_eq!(
         run.next_sequence as usize,
-        sanchoris_engine::MAX_INLINE_TRANSITIONS + 1
+        sanchoris_engine::MAX_TRANSITIONS_PER_STEP + 1
     );
 }
 
@@ -284,4 +284,62 @@ fn start_rejects_invalid_input() {
             Err(EngineError::InvalidInput(_))
         ));
     }
+}
+
+#[test]
+fn an_unbounded_backoff_fails_the_run_with_a_runtime_error() {
+    let yaml = r#"
+Inputs: {}
+StartAt: Push
+TimeoutSeconds: 600
+States:
+  Push:
+    Type: Task
+    Resource: sanchoris:::git:push
+    Parameters: { Repos: [acme/shop-web] }
+    TimeoutSeconds: 60
+    Retry:
+      - ErrorEquals: [States.ALL]
+        IntervalSeconds: 1
+        MaxAttempts: 5
+        BackoffRate: 1.0e300
+    End: true
+"#;
+    let mut h = started(yaml, json!({}));
+    let fail = |h: &mut Harness| {
+        let push = h.pending.pop_front().unwrap();
+        h.send(Event::ResourceResult {
+            key: push.idempotency_key,
+            outcome: ResourceOutcome::Failed {
+                error: None,
+                cause: None,
+            },
+        });
+    };
+    fail(&mut h);
+    assert_eq!(h.run().status, SkillRunStatus::Running);
+    h.fire_next_timer().unwrap();
+    fail(&mut h);
+    let run = h.run();
+    assert_eq!(run.status, SkillRunStatus::Failed);
+    assert_eq!(run.error.as_deref(), Some("States.Runtime"));
+    assert_eq!(h.next_timer(), None);
+}
+
+#[test]
+fn a_wait_beyond_the_calendar_fails_the_run_with_a_runtime_error() {
+    let yaml = r#"
+Inputs: {}
+StartAt: Pause
+TimeoutSeconds: 600
+States:
+  Pause:
+    Type: Wait
+    Seconds: 18446744073709551615
+    End: true
+"#;
+    let h = started(yaml, json!({}));
+    let run = h.run();
+    assert_eq!(run.status, SkillRunStatus::Failed);
+    assert_eq!(run.error.as_deref(), Some("States.Runtime"));
 }
