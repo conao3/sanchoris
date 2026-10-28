@@ -1,6 +1,7 @@
 mod common;
 
-use common::World;
+use common::{World, skill_input};
+use sanchoris_core::channel::RunEventType;
 use sanchoris_core::item::Entity;
 use sanchoris_core::items::{SkillRunItem, StateEntryItem, Task, TimerItem};
 use sanchoris_core::jobs::schedule_name;
@@ -133,5 +134,50 @@ async fn an_early_timer_is_kept_and_scheduled_again() {
             .status
             .as_str(),
         "SUCCEEDED"
+    );
+}
+
+#[tokio::test]
+async fn busy_heartbeats_of_the_run_keep_a_handoff_waiting() {
+    let world = World::new("pro").await;
+    world.github.script_checks(&["failure"]);
+    let task = world.started_task(35).await;
+    let run_id = task.run_id.unwrap();
+    world.request_skill(run_id, skill_input(35)).await;
+    world.drive().await;
+    assert_eq!(
+        common::skill_run(&world.store, world.tenant(), task.id, 1)
+            .await
+            .0,
+        "WAITING_AGENT"
+    );
+    for _ in 0..4 {
+        world.clock.advance(chrono::Duration::seconds(300));
+        world
+            .run_event(
+                run_id,
+                RunEventType::Heartbeat,
+                json!({ "at": world.clock_now(), "busy": true }),
+            )
+            .await;
+        world.worker.settle().await.unwrap();
+    }
+    assert_eq!(
+        common::skill_run(&world.store, world.tenant(), task.id, 1).await,
+        ("WAITING_AGENT".into(), None)
+    );
+    world.clock.advance(chrono::Duration::seconds(300));
+    world
+        .run_event(
+            run_id,
+            RunEventType::Heartbeat,
+            json!({ "at": world.clock_now(), "busy": false }),
+        )
+        .await;
+    world.clock.advance(chrono::Duration::seconds(601));
+    world.worker.settle().await.unwrap();
+    assert_eq!(
+        common::skill_run(&world.store, world.tenant(), task.id, 1).await,
+        ("FAILED".into(), Some("States.HeartbeatTimeout".into()))
     );
 }

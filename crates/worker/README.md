@@ -8,7 +8,7 @@ Jobs are written as message items in the same DynamoDB transaction as the state 
 |---|---|---|
 | `Inbound` | `record_inbound_event` (webhooks, chat, schedules) | Processes the tenant's pending inbound events in order: evaluates enabled triggers, records `trigger_events` with `started`/`skipped`/`discarded`, creates tasks, and dispatches pending tasks. `Check Run Completed` also wakes matching check waits |
 | `Dispatch` | `create_task`, a task leaving `RUNNING`, billing changes | Starts pending tasks while the plan's concurrency and task limits allow |
-| `RunEvents` | `record_run_event` | Processes the run's pending events in order: `ready`, `heartbeat`, `session_record`, `turn_end`, `rate_limit`, `exec_result`, `human_reply` |
+| `RunEvents` | `record_run_event` | Processes the run's pending events in order: `ready`, `heartbeat`, `session_record`, `turn_end`, `rate_limit`, `exec_result`, `human_reply`. Every event from the agent (a `heartbeat` only while `busy`) sends `TaskHeartbeat` to the run's skill runs in `WAITING_AGENT`, so an `agent:handoff` stays alive while the agent works on it |
 | `Invoke` | the engine's `InvokeResource` effect | Runs the resource and feeds `ResourceResult` back, or sends an `exec` and waits for `exec_result` |
 | `EngineTimer` | the engine's `ScheduleTimer` effect, at the due time | Feeds `TimerDue` to the engine unless the timer was cancelled or re-armed or the task is finished; a timer that arrives before its due time keeps its item and is scheduled again |
 | `CheckPoll` | `github:checks`, check-run webhooks, `SweepChecks` | Reads the PR head and its check runs; completes the wait with `TaskSuccess` |

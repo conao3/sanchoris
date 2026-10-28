@@ -14,7 +14,7 @@ use sanchoris_core::lifecycle::{
 use sanchoris_core::model::{
     SkillRunStatus, TaskDefinition, TaskStatus, UsageLimitResume, WaitReason,
 };
-use sanchoris_core::skillrun::required_skills;
+use sanchoris_core::skillrun::{heartbeat_agent_skill_runs, required_skills};
 use sanchoris_core::store::{Index, SortKey, Update};
 use sanchoris_core::tasks::{
     apply_decision, idle_seconds, latest_run, load_run, load_task, runs_of, send_to_task,
@@ -137,6 +137,14 @@ async fn handle(
         }
         RunEventType::TurnEnd => turn_end(worker, tx, task_id, event).await?,
         RunEventType::HumanReply => human_reply(worker, tx, task_id, event).await?,
+    }
+    let agent_active = match kind {
+        RunEventType::HumanReply => false,
+        RunEventType::Heartbeat => payload["busy"].as_bool() == Some(true),
+        _ => true,
+    };
+    if agent_active {
+        heartbeat_agent_skill_runs(tx, task_id, event.run_id, worker.now()).await?;
     }
     Ok(())
 }

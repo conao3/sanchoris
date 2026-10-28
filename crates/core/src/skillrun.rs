@@ -144,6 +144,34 @@ pub async fn apply_event(
     Ok(step.disposition)
 }
 
+pub async fn heartbeat_agent_skill_runs(
+    tx: &mut TenantTx,
+    task_id: Uuid,
+    run_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<usize, SkillRunError> {
+    let waiting = tx
+        .query::<SkillRunItem>(&keys::task_pk(tx.tenant_id(), task_id), "SR#")
+        .await?
+        .into_iter()
+        .filter(|s| s.run_id == Some(run_id) && s.status == SkillRunStatus::WaitingAgent)
+        .collect::<Vec<_>>();
+    let mut applied = 0;
+    for item in waiting {
+        let locked = lock_skill_run(tx, item.id).await?;
+        let Some(task_token) = locked.run.waiting_task_token() else {
+            continue;
+        };
+        let event = Event::TaskHeartbeat {
+            task_token: task_token.to_string(),
+        };
+        if apply_event(tx, item.id, event, now).await? == Disposition::Applied {
+            applied += 1;
+        }
+    }
+    Ok(applied)
+}
+
 pub fn timer_job_id(skill_run_id: Uuid, timer: &Timer) -> Uuid {
     let name = serde_json::to_vec(timer).expect("timers serialize");
     Uuid::new_v5(&skill_run_id, &name)
