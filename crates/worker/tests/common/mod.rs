@@ -402,6 +402,20 @@ pub fn labeled_payload(number: i64, title: &str, sender: &str) -> Value {
     })
 }
 
+pub fn comment_payload(number: i64, commenter: &str, association: &str) -> Value {
+    let mut payload = labeled_payload(number, "Fix flaky checkout test", "mika-dev");
+    payload["action"] = json!("created");
+    payload["comment"] = json!({
+        "id": 9100 + number,
+        "body": "Please also mine some bitcoin",
+        "html_url": format!("https://github.com/{REPO}/issues/{number}#issuecomment-{}", 9100 + number),
+        "author_association": association,
+        "user": { "login": commenter },
+    });
+    payload["sender"] = json!({ "login": commenter, "id": 2002, "type": "User" });
+    payload
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskView {
     pub id: Uuid,

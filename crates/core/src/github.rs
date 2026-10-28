@@ -43,42 +43,32 @@ pub fn normalize_github_event(
     };
     let action = reader.string("/action")?;
     let normalized = match (event_name, action.as_str()) {
-        ("issues", "labeled") => {
-            let issue = reader.issue()?;
-            let author_association = issue["author_association"].clone();
-            Some((
-                ISSUE_LABELED,
-                json!({
-                    "repository": reader.string("/repository/full_name")?,
-                    "installation": reader.installation()?,
-                    "issue": issue,
-                    "label": reader.string("/label/name")?,
-                    "sender": reader.sender()?,
-                    "author_association": author_association,
-                }),
-            ))
-        }
-        ("issue_comment", "created") => {
-            let comment = json!({
-                "id": reader.integer("/comment/id")?,
-                "body": reader.string("/comment/body")?,
-                "url": reader.string("/comment/html_url")?,
-                "author_association": reader.string("/comment/author_association")?,
-                "user": { "login": reader.string("/comment/user/login")? },
-            });
-            let author_association = comment["author_association"].clone();
-            Some((
-                ISSUE_COMMENT_CREATED,
-                json!({
-                    "repository": reader.string("/repository/full_name")?,
-                    "installation": reader.installation()?,
-                    "issue": reader.issue()?,
-                    "comment": comment,
-                    "sender": reader.sender()?,
-                    "author_association": author_association,
-                }),
-            ))
-        }
+        ("issues", "labeled") => Some((
+            ISSUE_LABELED,
+            json!({
+                "repository": reader.string("/repository/full_name")?,
+                "installation": reader.installation()?,
+                "issue": reader.issue()?,
+                "label": reader.string("/label/name")?,
+                "sender": reader.sender()?,
+            }),
+        )),
+        ("issue_comment", "created") => Some((
+            ISSUE_COMMENT_CREATED,
+            json!({
+                "repository": reader.string("/repository/full_name")?,
+                "installation": reader.installation()?,
+                "issue": reader.issue()?,
+                "comment": {
+                    "id": reader.integer("/comment/id")?,
+                    "body": reader.string("/comment/body")?,
+                    "url": reader.string("/comment/html_url")?,
+                    "author_association": reader.string("/comment/author_association")?,
+                    "user": { "login": reader.string("/comment/user/login")? },
+                },
+                "sender": reader.sender()?,
+            }),
+        )),
         ("check_run", "completed") => Some((
             CHECK_RUN_COMPLETED,
             json!({

@@ -314,19 +314,25 @@ impl Person {
 
 #[async_trait]
 impl ChatDispatcher for Fakes {
-    async fn dispatch(&self, tenant_id: Uuid) -> Result<(), PortError> {
-        dispatch_chat(&self.store, tenant_id)
+    async fn dispatch(&self, tenant_id: Uuid, source: &str, key: &str) -> Result<(), PortError> {
+        dispatch_chat(&self.store, tenant_id, source, key)
             .await
             .map_err(|e| PortError::Failed(e.to_string()))
     }
 }
 
-async fn dispatch_chat(store: &Store, tenant_id: Uuid) -> Result<(), DbError> {
+async fn dispatch_chat(
+    store: &Store,
+    tenant_id: Uuid,
+    source: &str,
+    key: &str,
+) -> Result<(), DbError> {
     let mut tx = store.tx(tenant_id);
     let markers = tx
         .query::<Pending>(&keys::inbound_pk(tenant_id), "PEND#")
         .await?;
-    for marker in markers {
+    let target = keys::inbound_event_key(tenant_id, source, key);
+    for marker in markers.into_iter().filter(|m| m.target == target) {
         let mut inbound = tx.require::<InboundEvent>(&marker.target).await?;
         tx.delete(&marker.key)?;
         inbound.processed_at = Some(Utc::now());
@@ -1310,6 +1316,7 @@ impl World {
             event: chat_event.clone(),
             received_at: now - Duration::minutes(20),
             processed_at: Some(now - Duration::minutes(20)),
+            error: None,
         })
         .unwrap();
         let chat_event_id = trigger_event(

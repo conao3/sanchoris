@@ -45,6 +45,7 @@ pub struct Settings {
     pub config_poll_interval: Duration,
     pub usage_snapshot_interval: Duration,
     pub conflict_attempts: u32,
+    pub trigger_starts_per_hour: i64,
 }
 
 impl Default for Settings {
@@ -54,6 +55,7 @@ impl Default for Settings {
             config_poll_interval: Duration::minutes(5),
             usage_snapshot_interval: Duration::seconds(60),
             conflict_attempts: 20,
+            trigger_starts_per_hour: 60,
         }
     }
 }

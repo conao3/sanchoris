@@ -329,6 +329,77 @@ fn author_association_satisfies_actor_condition() {
     load_repository(&example_files(&config), &context()).unwrap();
 }
 
+const SENDER_LINE: &str = "        sender: { login: [mika-dev, sota-dev, \"sanchoris[bot]\"] }\n";
+
+fn comment_trigger(actor: &str) -> String {
+    replaced(
+        &format!(
+            "      detail-type: [Issue Labeled]\n      detail:\n        repository: [frontend, backend]\n        label: [sanchoris]\n{SENDER_LINE}"
+        ),
+        &format!(
+            "      detail-type: [Issue Comment Created]\n      detail:\n        repository: [frontend, backend]\n{actor}"
+        ),
+    )
+}
+
+#[test]
+fn comment_triggers_need_the_commenter_as_actor() {
+    let errors = config_error(
+        &comment_trigger("        issue: { author_association: [OWNER, MEMBER] }\n"),
+        "Triggers.labeled-issue.EventPattern.detail",
+    );
+    assert!(
+        errors.to_string().contains(
+            "Issue Comment Created triggers must constrain the actor of the event with a list of exact values in detail.sender.login or detail.comment.author_association"
+        ),
+        "{errors}"
+    );
+    for actor in [
+        "        comment: { author_association: [OWNER, MEMBER] }\n",
+        "        sender: { login: [mika-dev] }\n",
+    ] {
+        load_repository(&example_files(&comment_trigger(actor)), &context()).unwrap();
+    }
+}
+
+#[test]
+fn actor_conditions_accept_only_exact_values() {
+    for (actor, location) in [
+        (
+            "        sender: { login: [{ exists: true }] }\n",
+            "Triggers.labeled-issue.EventPattern.detail.sender.login",
+        ),
+        (
+            "        sender: { login: [{ prefix: \"\" }] }\n",
+            "Triggers.labeled-issue.EventPattern.detail.sender.login",
+        ),
+        (
+            "        sender: { login: [{ anything-but: x }] }\n",
+            "Triggers.labeled-issue.EventPattern.detail.sender.login",
+        ),
+        (
+            "        sender: { login: [mika-dev, { prefix: m }] }\n",
+            "Triggers.labeled-issue.EventPattern.detail.sender.login",
+        ),
+        (
+            "        issue: { author_association: [{ anything-but: NONE }] }\n",
+            "Triggers.labeled-issue.EventPattern.detail.issue.author_association",
+        ),
+        (
+            "        sender: { login: [] }\n",
+            "Triggers.labeled-issue.EventPattern.detail.sender.login",
+        ),
+    ] {
+        let errors = config_error(&replaced(SENDER_LINE, actor), location);
+        assert_error(&errors, "Triggers.labeled-issue.EventPattern.detail");
+    }
+    let errors = config_error(
+        &comment_trigger("        comment: { author_association: [{ numeric: [\">\", 0] }] }\n"),
+        "Triggers.labeled-issue.EventPattern.detail.comment.author_association",
+    );
+    assert_error(&errors, "Triggers.labeled-issue.EventPattern.detail");
+}
+
 #[test]
 fn missing_github_repository_fails() {
     config_error(

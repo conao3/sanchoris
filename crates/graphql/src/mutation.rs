@@ -921,7 +921,7 @@ impl MutationRoot {
         state(ctx)
             .deps
             .chat
-            .dispatch(scope.tenant_id)
+            .dispatch(scope.tenant_id, "web", &key)
             .await
             .map_err(port)?;
         let task = match existing {
