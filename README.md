@@ -15,6 +15,8 @@ Sanchoris is a pnpm + Vite frontend and Rust backend monorepo.
 - `infra/tables.json`, `infra/plans.json`: the DynamoDB table definitions (CloudFormation properties) and the plan catalog, read by `sanchoris-dynamo-create` and the tests
 - `scripts/dev.mjs`: local development process supervisor
 - `scripts/build-lambda.mjs`: builds the frontend and the Lambda zips (`pnpm build:lambda`)
+- `scripts/verify.sh`: the checks (`quick` for the changed crates and apps, `full` for everything)
+- `scripts/deploy.mjs`, `scripts/e2e-aws.mjs`: deploy to an AWS environment and run an issue through it end to end (`AGENTS.md`)
 - `scripts/e2e/fake-agent.ts`: the scripted workspace agent used by the end-to-end test
 
 ## Development
@@ -262,9 +264,7 @@ The runner only creates log directories and runs the explicit command after `--`
 ## Checks
 
 ```sh
-pnpm check
-cargo fmt --all --check
-cargo test --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-pnpm e2e
+scripts/verify.sh full
 ```
+
+runs `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace` (with the end-to-end test), and `pnpm check`. `scripts/verify.sh quick` runs them for the crates and apps changed against `origin/master`.
