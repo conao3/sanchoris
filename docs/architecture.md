@@ -258,7 +258,7 @@ Reads marked "consistent" use the base table; "index" uses `gsi1`/`gsi2`; "app" 
 | Workspace reconcile | Get task, run; Query `WS#` (app filter run, open); Query run `OUT#` (undelivered `user_message`/`exec`) |
 | Project repositories for checkout | Get ref (trigger) → config → Query `PROJECT#<p>#REPO#` |
 | Credential for a rate limit | Query `T#<t>` `CRED#` (app), Query `USAGESNAP#<cred>#` |
-| Config sync | Get config, `REVSHA#<sha>`; Query `PROJECT#`, `SESSION#`, `SKILL#`, `TRIGGER#`; Query `T#<t>` `CRED#` |
+| Config sync | Get config, `REVSHA#<sha>` (→ ref → revision); Query `T#<t>` `CRED#`; insert the revision with the config's `synced_at` in one transaction. A valid revision that is not active is then activated: upserts of `PROJECT#`, `SESSION#`, `SKILL#`, `TRIGGER#`, then trigger removals and deletes of the definitions the revision drops (from Query `PROJECT#`, `SESSION#`, `SKILL#`, `TRIGGER#`), committed in batches of at most 90 writes; finally Put the config with `active_revision_id` and audit `config.activate` (revision number, commit sha, and the commit's author from `ConfigSource::commit_author`). An activation that stops between batches resumes on the next sync of the same head |
 
 #### Screens and api
 
@@ -310,6 +310,6 @@ Reads marked "consistent" use the base table; "index" uses `gsi1`/`gsi2`; "app" 
 ## Open decisions
 
 - Retention of task data: TTL covers audit, snapshots, logs, and messages. Deleting a finished task's partitions after the plan's `retention_days` needs a scheduled `purge` job; the offloaded `docs/` objects then need a lifecycle rule or reference tracking.
-- Config activation writes every definition of a config in one transaction, so a config with more than about 90 projects, repositories, sessions, skills, and triggers fails with `TooManyWrites`. Either cap it in validation or activate per-revision partitions behind a single pointer flip.
+- Config activation writes the definitions in batches, so while it runs the config partition holds definitions of both revisions. Per-revision partitions behind the `active_revision_id` flip would make the switch atomic for readers.
 - Audit tamper resistance stops at IAM: an app role with `PutItem` could overwrite an existing event by key. S3 Object Lock on the `t/<t>/audit/` objects of the records bucket would make exported history immutable.
 - Hot partitions: `T#<t>` holds the tenant counters that every status change touches; at high volume the counter moves to its own sharded items. The sweep partitions in `gsi2` are single keys and may need shards.

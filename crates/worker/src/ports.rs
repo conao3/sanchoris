@@ -166,6 +166,12 @@ pub trait ConfigSource: Send + Sync {
         root_path: &str,
         sha: &str,
     ) -> Result<ConfigFiles, GitHubError>;
+    async fn commit_author(
+        &self,
+        installation: i64,
+        repo: &str,
+        sha: &str,
+    ) -> Result<String, GitHubError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -296,6 +296,10 @@ impl ConfigSource for FakeGitHub {
     async fn fetch(&self, _: i64, _: &str, _: &str, _: &str) -> Result<ConfigFiles, GitHubError> {
         Ok(self.state.lock().unwrap().files.clone())
     }
+
+    async fn commit_author(&self, _: i64, _: &str, _: &str) -> Result<String, GitHubError> {
+        Ok("mika-dev".to_string())
+    }
 }
 
 #[derive(Debug, Default)]

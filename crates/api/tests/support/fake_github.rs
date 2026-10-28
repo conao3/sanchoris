@@ -207,10 +207,18 @@ async fn commit(
 ) -> Response {
     let full = format!("{owner}/{repo}");
     if full == CONFIG_REPO {
-        return Json(json!({ "sha": CONFIG_SHA })).into_response();
+        return Json(json!({
+            "sha": CONFIG_SHA,
+            "author": { "login": "mika-dev" },
+            "commit": { "author": { "name": "Mika", "email": "mika@acme.test" } },
+        }))
+        .into_response();
     }
     match fake.branch_head(&full, &reference) {
         Some(sha) => Json(json!({ "sha": sha })).into_response(),
+        None if reference.len() == 40 && reference.chars().all(|c| c.is_ascii_hexdigit()) => {
+            Json(json!({ "sha": reference, "author": { "login": "mika-dev" } })).into_response()
+        }
         None => not_found(&reference),
     }
 }

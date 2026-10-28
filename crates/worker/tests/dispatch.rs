@@ -735,3 +735,101 @@ async fn missed_schedule_occurrences_fire_once() {
         Some(common::epoch() + chrono::Duration::hours(2) + chrono::Duration::minutes(1))
     );
 }
+
+fn with_extra_sessions(count: usize) -> String {
+    let extra = (0..count)
+        .map(|i| {
+            format!(
+                "  extra-{i:03}:\n    Worker: {{ Agent: claude, Model: claude-sonnet-5-5, Credential: acme-claude-team }}\n    Repos: [acme/idea]\n    GitHub: {{ Repos: [acme/idea], Permissions: {{ contents: read }} }}\n    Network: {{ Allow: [github.com] }}\n    UsageLimit: {{ Resume: auto }}\n    Workspace: {{ Compute: standard, IdleSeconds: 900 }}\n"
+            )
+        })
+        .collect::<String>();
+    common::CONFIG_YAML.replacen("Sessions:\n", &format!("Sessions:\n{extra}"), 1)
+}
+
+fn push_config(world: &World, sha: &str, yaml: String) {
+    let mut state = world.github.state.lock().unwrap();
+    state.head_sha = sha.into();
+    state.files.insert("sanchoris.yaml".into(), yaml);
+}
+
+async fn stored_revision(world: &World, sha: &str) -> ConfigRevision {
+    world
+        .store
+        .query::<ConfigRevision>(
+            &keys::config_pk(world.tenant(), world.seeded.config_id),
+            "REV#",
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.commit_sha == sha)
+        .unwrap()
+}
+
+async fn sync(world: &World) -> Result<usize, sanchoris_worker::error::WorkerError> {
+    world.resync_config().await;
+    world
+        .worker
+        .worker
+        .handle(&Envelope::new(Job::ConfigSync {
+            tenant_id: world.tenant(),
+            config_id: world.seeded.config_id,
+        }))
+        .await
+}
+
+#[tokio::test]
+async fn large_configs_activate_in_batches_and_audit_the_commit() {
+    let world = World::new("pro").await;
+    push_config(&world, "config-big", with_extra_sessions(150));
+    world
+        .worker
+        .worker
+        .faults
+        .arm("config_sync.between_batches");
+    assert!(sync(&world).await.is_err());
+    let big = stored_revision(&world, "config-big").await;
+    assert_eq!(big.validation_status, "valid");
+    assert_ne!(active_revision(&world).await, Some(big.id));
+    sync(&world).await.unwrap();
+    assert_eq!(active_revision(&world).await, Some(big.id));
+    let sessions = world
+        .dynamo
+        .all::<sanchoris_core::items::SessionDef>()
+        .await;
+    assert_eq!(sessions.len(), 152);
+    assert!(sessions.iter().all(|s| s.config_revision_id == big.id));
+    let audits = sanchoris_core::audit::audit_events(&mut world.store.tx(world.tenant()))
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.action == "config.activate")
+        .collect::<Vec<_>>();
+    let big_audits = audits
+        .iter()
+        .filter(|a| a.metadata["commit_sha"] == "config-big")
+        .collect::<Vec<_>>();
+    assert_eq!(big_audits.len(), 1);
+    assert_eq!(big_audits[0].metadata["commit_author"], "mika-dev");
+    assert_eq!(big_audits[0].metadata["revision"], big.number);
+    assert_eq!(big_audits[0].actor_kind, "system");
+
+    push_config(&world, "config-small", common::CONFIG_YAML.to_string());
+    sync(&world).await.unwrap();
+    let small = stored_revision(&world, "config-small").await;
+    assert_eq!(active_revision(&world).await, Some(small.id));
+    assert_eq!(
+        world
+            .dynamo
+            .all::<sanchoris_core::items::SessionDef>()
+            .await
+            .len(),
+        2
+    );
+    world
+        .label_issue("delivery-90", 90, "After the big config", "mika-dev")
+        .await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#90")).await.status, "RUNNING");
+}

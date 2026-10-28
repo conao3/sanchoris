@@ -15,7 +15,7 @@ Jobs are written as message items in the same DynamoDB transaction as the state 
 | `TaskResume` | a usage-limit wait, at `ResumeAt` | Sends "Continue where you left off." |
 | `Reconcile` | a run being created, finished, or sent a `user_message`/`exec`; a task becoming idle, at the idle deadline | Starts a workspace for a run that needs one, stops a finished or idle one |
 | `DeliverOutbox` | `enqueue_outbox` | Calls `OutboxPusher` so the Run channel delivers the run's outbox |
-| `ConfigSync` | `SweepConfigs`, the config screen, push webhooks | Reads the head commit through `ConfigSource`, validates it, stores the revision, and on success activates projects, repositories, sessions, skills, and triggers (Project repo keys in `detail.repository` become `owner/name`) and schedules `rate`/`cron` triggers |
+| `ConfigSync` | `SweepConfigs`, the config screen, push webhooks | Reads the head commit through `ConfigSource`, validates it, and stores the revision. A valid revision of the head that is not active is activated in batches of at most 90 writes: projects, repositories, sessions, skills, and triggers (Project repo keys in `detail.repository` become `owner/name`; `rate`/`cron` triggers are scheduled), then the removals; the last transaction sets `active_revision_id` and audits `config.activate` with the commit sha and author |
 | `TriggerSchedule` | trigger activation, the previous firing | Writes a `schedule` inbound event and schedules the next firing |
 | `SweepConfigs` | rate schedule | Emits `ConfigSync` for configs not synced within 5 minutes |
 | `SweepChecks` | rate schedule | Emits `CheckPoll` for check waits whose poll is due |

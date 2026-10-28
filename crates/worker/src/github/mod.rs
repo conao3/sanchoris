@@ -784,6 +784,30 @@ impl ConfigSource for GitHubApi {
         }
         Ok(files)
     }
+
+    async fn commit_author(
+        &self,
+        installation: i64,
+        repo: &str,
+        sha: &str,
+    ) -> Result<String, GitHubError> {
+        let value = self
+            .call(
+                installation,
+                "GET",
+                &format!("/repos/{repo}/commits/{sha}"),
+                None,
+            )
+            .await?;
+        match value.pointer("/author/login").and_then(Value::as_str) {
+            Some(login) => Ok(login.to_string()),
+            None => {
+                let name = string(&value, "/commit/author/name")?;
+                let email = string(&value, "/commit/author/email")?;
+                Ok(format!("{name} <{email}>"))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
