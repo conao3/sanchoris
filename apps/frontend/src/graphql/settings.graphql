@@ -296,6 +296,7 @@ query Billing($tenant: String!) {
       taskLimit
       workspaceHourLimit
       limitPeriod
+      isAdmin
     }
     usage {
       periodStart

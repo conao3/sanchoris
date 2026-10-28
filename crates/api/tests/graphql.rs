@@ -1108,3 +1108,70 @@ async fn repository_events_rename_and_disable_the_config_by_its_repository_id() 
             .any(|action| action == "config.disable")
     );
 }
+
+#[tokio::test]
+async fn only_a_verified_sancode_email_in_the_token_creates_admin_tenants() {
+    let w = World::start().await;
+    let plan_ids = |page: &Value| {
+        page["viewer"]["newTenantPlans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|plan| plan["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+
+    let verified = "email:agent001@sancode.dev";
+    let page = w.ok(verified, "CreateTenantPage", json!({})).await;
+    assert_eq!(plan_ids(&page), ["admin"]);
+    let created = w
+        .ok(
+            verified,
+            "CreateTenant",
+            json!({ "input": { "name": "Agent Lab", "planId": "admin" } }),
+        )
+        .await;
+    let tenant_id: Uuid = created["createTenant"]["tenant"]["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        World::tenant_of(&w.dynamo, tenant_id).await.plan_id,
+        "admin"
+    );
+    let creator = w
+        .dynamo
+        .all::<User>()
+        .await
+        .into_iter()
+        .find(|user| user.email == "agent001@sancode.dev")
+        .unwrap();
+    assert_eq!(
+        World::tenant_of(&w.dynamo, tenant_id)
+            .await
+            .created_by_user_id,
+        creator.id
+    );
+
+    for token in [
+        "unverified:agent002@sancode.dev",
+        "email:agent003@sancode.dev.example.com",
+        "user:google_7",
+    ] {
+        let page = w.ok(token, "CreateTenantPage", json!({})).await;
+        assert_eq!(
+            plan_ids(&page),
+            ["free", "starter", "pro", "max"],
+            "{token}"
+        );
+        let (code, _) = w
+            .error(
+                token,
+                "CreateTenant",
+                json!({ "input": { "name": "Not Admin", "planId": "admin" } }),
+            )
+            .await;
+        assert_eq!(code, "FORBIDDEN", "{token}");
+    }
+}

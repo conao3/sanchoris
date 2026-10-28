@@ -19,7 +19,7 @@ impl QueryRoot {
 
     async fn plans(&self, ctx: &Context<'_>) -> Result<Vec<Plan>> {
         crate::context::auth(ctx)?;
-        Plan::all(ctx).await
+        Plan::for_sale(ctx).await
     }
 
     async fn tenant(&self, ctx: &Context<'_>, slug: String) -> Result<Option<Tenant>> {

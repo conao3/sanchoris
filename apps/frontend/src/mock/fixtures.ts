@@ -41,10 +41,10 @@ export function nextId(prefix: string): string {
 }
 
 export const plans: Obj[] = [
-  { id: 'plan-free', name: 'Free', priceUsd: 0, billingUnit: 'TENANT', taskLimit: 5, workspaceHourLimit: 10, limitPeriod: 'TOTAL', memberLimit: 1, concurrencyLimit: 1, retentionDays: 30, auditRetentionDays: 30, requiresPayment: false },
-  { id: 'plan-starter', name: 'Starter', priceUsd: 20, billingUnit: 'TENANT', taskLimit: 10, workspaceHourLimit: 50, limitPeriod: 'MONTH', memberLimit: 3, concurrencyLimit: 2, retentionDays: 90, auditRetentionDays: 365, requiresPayment: true },
-  { id: 'plan-pro', name: 'Pro', priceUsd: 100, billingUnit: 'TENANT', taskLimit: 50, workspaceHourLimit: 250, limitPeriod: 'MONTH', memberLimit: 10, concurrencyLimit: 5, retentionDays: 90, auditRetentionDays: 365, requiresPayment: true },
-  { id: 'plan-max', name: 'Max', priceUsd: 200, billingUnit: 'TENANT', taskLimit: 200, workspaceHourLimit: 500, limitPeriod: 'MONTH', memberLimit: 30, concurrencyLimit: 10, retentionDays: 90, auditRetentionDays: 365, requiresPayment: true },
+  { id: 'plan-free', name: 'Free', priceUsd: 0, billingUnit: 'TENANT', taskLimit: 5, workspaceHourLimit: 10, limitPeriod: 'TOTAL', memberLimit: 1, concurrencyLimit: 1, retentionDays: 30, auditRetentionDays: 30, requiresPayment: false, isAdmin: false },
+  { id: 'plan-starter', name: 'Starter', priceUsd: 20, billingUnit: 'TENANT', taskLimit: 10, workspaceHourLimit: 50, limitPeriod: 'MONTH', memberLimit: 3, concurrencyLimit: 2, retentionDays: 90, auditRetentionDays: 365, requiresPayment: true, isAdmin: false },
+  { id: 'plan-pro', name: 'Pro', priceUsd: 100, billingUnit: 'TENANT', taskLimit: 50, workspaceHourLimit: 250, limitPeriod: 'MONTH', memberLimit: 10, concurrencyLimit: 5, retentionDays: 90, auditRetentionDays: 365, requiresPayment: true, isAdmin: false },
+  { id: 'plan-max', name: 'Max', priceUsd: 200, billingUnit: 'TENANT', taskLimit: 200, workspaceHourLimit: 500, limitPeriod: 'MONTH', memberLimit: 30, concurrencyLimit: 10, retentionDays: 90, auditRetentionDays: 365, requiresPayment: true, isAdmin: false },
 ];
 
 const planByName = (name: string) => plans.find((plan) => plan.name === name) as Obj;

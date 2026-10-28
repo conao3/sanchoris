@@ -272,12 +272,16 @@ pub async fn dispatch_pending_tasks(
     let tenant_id = tx.tenant_id();
     let (tenant, plan) = tenant_plan(tx).await?;
     if tenant.status != "active"
-        || tenant.workspace_seconds_this_period >= plan.workspace_seconds_limit
+        || plan
+            .workspace_seconds_limit
+            .is_some_and(|limit| tenant.workspace_seconds_this_period >= limit)
     {
         return Ok(Vec::new());
     }
-    let slots = (plan.max_concurrency - tenant.running_tasks)
-        .min(plan.task_limit - tenant.tasks_this_period);
+    let slots = plan
+        .task_limit
+        .map_or(i64::MAX, |limit| limit - tenant.tasks_this_period)
+        .min(plan.max_concurrency - tenant.running_tasks);
     if slots <= 0 {
         return Ok(Vec::new());
     }
@@ -367,16 +371,16 @@ pub async fn dispatch_pending_tasks(
         });
     }
     let count = i64::try_from(dispatched.len()).expect("small");
-    tx.update(
-        &keys::tenant_key(tenant_id),
-        Update::new()
-            .add("tasks_this_period", count)
-            .cap_after("tasks_this_period", plan.task_limit)
-            .cap_after("running_tasks", plan.max_concurrency)
-            .require(
-                "status",
-                aws_sdk_dynamodb::types::AttributeValue::S("active".into()),
-            ),
-    )?;
+    let mut update = Update::new()
+        .add("tasks_this_period", count)
+        .cap_after("running_tasks", plan.max_concurrency)
+        .require(
+            "status",
+            aws_sdk_dynamodb::types::AttributeValue::S("active".into()),
+        );
+    if let Some(limit) = plan.task_limit {
+        update = update.cap_after("tasks_this_period", limit);
+    }
+    tx.update(&keys::tenant_key(tenant_id), update)?;
     Ok(dispatched)
 }

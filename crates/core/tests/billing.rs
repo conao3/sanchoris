@@ -1,8 +1,8 @@
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use sanchoris_core::billing::{
-    self, BillingError, Checkout, FREE_PLAN, Invoice, Outcome, PAYMENT_FAILED, PAYMENT_PENDING,
-    Payer, StripeEvent, complete_checkout, end_checkout, end_subscription, fail_payment,
-    start_period,
+    self, ADMIN_PLAN, BillingError, Checkout, FREE_PLAN, Invoice, Outcome, PAYMENT_FAILED,
+    PAYMENT_PENDING, Payer, StripeEvent, complete_checkout, end_checkout, end_subscription,
+    fail_payment, start_period,
 };
 use sanchoris_core::items::{AuditEvent, Guard, Member, Membership, Tenant, uniq};
 use sanchoris_core::keys;
@@ -686,4 +686,97 @@ async fn an_expired_or_failed_checkout_discards_the_pending_tenant() {
         Outcome::Ignored(_)
     ));
     assert_eq!(tenant(&store, active.tenant_id).await.status, "active");
+}
+
+#[tokio::test]
+async fn stripe_events_never_change_an_admin_tenant() {
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    prices(&dynamo).await;
+    let tenant_id = dynamo.seed_tenant(ADMIN_PLAN).await.tenant_id;
+    used(&dynamo, tenant_id, 7).await;
+    let before = tenant(&store, tenant_id).await;
+    let by_metadata = Payer {
+        customer_id: "cus_admin",
+        tenant_id: Some(tenant_id),
+    };
+    let ignored = Outcome::Ignored(format!("tenant {tenant_id} is on the admin plan"));
+
+    assert_eq!(
+        complete_checkout(
+            &store,
+            event("evt_a1", "checkout.session.completed", at(1)),
+            paid(tenant_id, "cus_admin", "starter"),
+        )
+        .await
+        .unwrap(),
+        ignored
+    );
+    assert_eq!(
+        billing::change_plan(
+            &store,
+            event("evt_a2", "customer.subscription.updated", at(2)),
+            by_metadata,
+            "active",
+            "price_pro",
+        )
+        .await
+        .unwrap(),
+        ignored
+    );
+    assert_eq!(
+        end_subscription(
+            &store,
+            event("evt_a3", "customer.subscription.deleted", at(3)),
+            by_metadata,
+        )
+        .await
+        .unwrap(),
+        ignored
+    );
+    assert_eq!(
+        fail_payment(
+            &store,
+            event("evt_a4", "invoice.payment_failed", at(4)),
+            by_metadata,
+        )
+        .await
+        .unwrap(),
+        ignored
+    );
+    assert_eq!(
+        start_period(
+            &store,
+            event("evt_a5", "invoice.paid", at(5)),
+            by_metadata,
+            cycle(at(5)),
+        )
+        .await
+        .unwrap(),
+        ignored
+    );
+
+    assert_eq!(tenant(&store, tenant_id).await, before);
+    assert_eq!(
+        audit_actions(&dynamo, tenant_id).await,
+        Vec::<String>::new()
+    );
+    let recorded = billing::recorded(&store, "evt_a2").await.unwrap().unwrap();
+    assert_eq!(
+        (recorded.outcome.as_str(), recorded.tenant_id),
+        ("ignored", Some(tenant_id))
+    );
+}
+
+#[test]
+fn privileged_emails_end_with_the_sancode_domain() {
+    assert!(billing::is_privileged_email("agent001@sancode.dev"));
+    assert!(billing::is_privileged_email("Agent001@SanCode.Dev"));
+    assert!(!billing::is_privileged_email("conao3@gmail.com"));
+    assert!(!billing::is_privileged_email("someone@notsancode.dev"));
+    assert!(!billing::is_privileged_email(
+        "someone@sancode.dev.example.com"
+    ));
+    assert!(!billing::is_privileged_email("@sancode.dev"));
+    assert!(!billing::is_privileged_email("sancode.dev"));
 }

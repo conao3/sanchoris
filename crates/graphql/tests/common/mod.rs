@@ -310,6 +310,7 @@ pub struct Person {
     pub user_id: Uuid,
     pub member_id: Option<Uuid>,
     pub email: String,
+    pub privileged: bool,
 }
 
 impl Person {
@@ -318,6 +319,7 @@ impl Person {
             user_id: self.user_id,
             cognito_subject: format!("google_{}", self.user_id),
             email: self.email.clone(),
+            privileged: self.privileged,
         }
     }
 }
@@ -454,6 +456,7 @@ pub struct World {
     pub ken: Person,
     pub hana: Person,
     pub ren: Person,
+    pub aya: Person,
     pub operator: Person,
 }
 
@@ -916,6 +919,7 @@ impl World {
         )
         .await;
         let ren_user = user(&store, "Ren", "ren@acme.dev", None, false, now).await;
+        let aya_user = user(&store, "Aya", "aya@sancode.dev", None, false, now).await;
         let operator_user = user(&store, "Operator", "ops@sancode.dev", None, true, now).await;
 
         let (acme, acme_members) = tenant(
@@ -1504,6 +1508,7 @@ impl World {
             user_id,
             member_id,
             email: email.to_string(),
+            privileged: false,
         };
         Self {
             mika: person(mika_user, Some(mika_member), "mika@acme.dev"),
@@ -1511,6 +1516,10 @@ impl World {
             ken: person(ken_user, Some(ken_member), "ken@acme.dev"),
             hana: person(hana_user, Some(hana_member), "hana@globex.dev"),
             ren: person(ren_user, None, "ren@acme.dev"),
+            aya: Person {
+                privileged: true,
+                ..person(aya_user, None, "aya@sancode.dev")
+            },
             operator: person(operator_user, None, "ops@sancode.dev"),
             dynamo,
             store,

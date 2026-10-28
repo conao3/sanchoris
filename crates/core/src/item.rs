@@ -127,6 +127,13 @@ impl ItemWriter {
         self
     }
 
+    pub fn null_or_n(&mut self, name: &str, value: Option<i64>) -> &mut Self {
+        match value {
+            Some(value) => self.n(name, value),
+            None => self.raw(name, AttributeValue::Null(true)),
+        }
+    }
+
     pub fn n(&mut self, name: &str, value: i64) -> &mut Self {
         self.raw(name, AttributeValue::N(value.to_string()))
     }
@@ -237,6 +244,13 @@ impl<'a> ItemReader<'a> {
                 .map_err(|_| self.wrong(name, "an integer")),
             Some(_) => Err(self.wrong(name, "a number")),
         }
+    }
+
+    pub fn null_or_n(&self, name: &str) -> Result<Option<i64>, DbError> {
+        if !self.has(name) {
+            return Err(self.missing(name));
+        }
+        self.opt_n(name)
     }
 
     pub fn n(&self, name: &str) -> Result<i64, DbError> {

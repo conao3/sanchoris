@@ -9,7 +9,7 @@ type Obj = Record<string, any>;
 function createResolvers() {
   const fixtures = buildFixtures();
   const { tenants, memberships, viewerInvitations, operator } = fixtures;
-  const viewer = { user: viewerUser, memberships, invitations: viewerInvitations, isOperator: true };
+  const viewer = { user: viewerUser, memberships, invitations: viewerInvitations, isOperator: true, newTenantPlans: plans };
 
   const tenantById = (id: string): Obj => {
     const tenant = tenants.find((item) => item.id === id) ?? operator.tenants.find((item) => item.id === id);

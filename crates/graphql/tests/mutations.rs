@@ -1121,3 +1121,193 @@ async fn a_disabled_config_shows_why_and_refuses_to_sync() {
     );
     assert!(w.recorder.syncs.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn a_verified_sancode_email_creates_admin_tenants_that_billing_cannot_change() {
+    let w = World::new().await;
+
+    let ren_page = w.ok(&w.ren, "CreateTenantPage", json!({})).await;
+    let ren_plans = ren_page["viewer"]["newTenantPlans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|plan| plan["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ren_plans, ["free", "starter", "pro", "max"]);
+    let aya_page = w.ok(&w.aya, "CreateTenantPage", json!({})).await;
+    assert_eq!(
+        aya_page["viewer"]["newTenantPlans"],
+        json!([{
+            "id": "admin",
+            "name": "Admin",
+            "priceUsd": 0,
+            "taskLimit": null,
+            "workspaceHourLimit": null,
+            "limitPeriod": "TOTAL",
+            "memberLimit": null,
+            "requiresPayment": false,
+        }])
+    );
+
+    assert_eq!(
+        w.error_code(
+            &w.ren,
+            "CreateTenant",
+            json!({ "input": { "name": "Ren Admin", "planId": "admin" } })
+        )
+        .await,
+        "FORBIDDEN"
+    );
+    assert_eq!(
+        w.error_code(
+            &w.aya,
+            "CreateTenant",
+            json!({ "input": { "name": "Aya Free", "planId": "free" } })
+        )
+        .await,
+        "BAD_USER_INPUT"
+    );
+    assert_eq!(
+        w.error_code(
+            &w.aya,
+            "CreateTenant",
+            json!({ "input": { "name": "Aya Max", "planId": "max" } })
+        )
+        .await,
+        "BAD_USER_INPUT"
+    );
+
+    let created = w
+        .ok(
+            &w.aya,
+            "CreateTenant",
+            json!({ "input": { "name": "Aya Lab", "planId": "admin" } }),
+        )
+        .await;
+    assert_eq!(created["createTenant"]["checkoutUrl"], Value::Null);
+    let slug = created["createTenant"]["tenant"]["slug"].as_str().unwrap();
+    let tenant_id: Uuid = created["createTenant"]["tenant"]["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let row = w.get::<Tenant>(&keys::tenant_key(tenant_id)).await.unwrap();
+    assert_eq!(
+        (
+            row.plan_id.as_str(),
+            row.status.as_str(),
+            row.stripe_customer_id
+        ),
+        ("admin", "active", None)
+    );
+    assert!(
+        w.get::<Guard>(&free_tenant_key(w.aya.user_id))
+            .await
+            .is_none()
+    );
+    let second = w
+        .ok(
+            &w.aya,
+            "CreateTenant",
+            json!({ "input": { "name": "Aya Lab", "planId": "admin" } }),
+        )
+        .await;
+    assert_eq!(second["createTenant"]["tenant"]["slug"], "aya-lab-2");
+
+    let billing = w.ok(&w.aya, "Billing", json!({ "tenant": slug })).await;
+    assert_eq!(
+        billing["tenant"]["plan"],
+        json!({
+            "id": "admin",
+            "name": "Admin",
+            "priceUsd": 0,
+            "memberLimit": null,
+            "concurrencyLimit": 10,
+            "taskLimit": null,
+            "workspaceHourLimit": null,
+            "limitPeriod": "TOTAL",
+            "isAdmin": true,
+        })
+    );
+    assert_eq!(billing["tenant"]["usage"]["periodEnd"], Value::Null);
+    let for_sale = billing["plans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|plan| plan["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(for_sale, ["free", "starter", "pro", "max"]);
+
+    for plan in ["free", "pro"] {
+        assert_eq!(
+            w.error_code(
+                &w.aya,
+                "ChangePlan",
+                json!({ "tenantId": tenant_id, "planId": plan })
+            )
+            .await,
+            "CONFLICT"
+        );
+    }
+    assert_eq!(
+        w.error_code(
+            &w.aya,
+            "OpenBillingPortal",
+            json!({ "tenantId": tenant_id })
+        )
+        .await,
+        "CONFLICT"
+    );
+    assert_eq!(
+        w.error_code(
+            &w.mika,
+            "ChangePlan",
+            json!({ "tenantId": w.acme, "planId": "admin" })
+        )
+        .await,
+        "FORBIDDEN"
+    );
+    assert_eq!(
+        w.get::<Tenant>(&keys::tenant_key(tenant_id))
+            .await
+            .unwrap()
+            .plan_id,
+        "admin"
+    );
+
+    for email in ["one@acme.dev", "two@acme.dev", "three@acme.dev"] {
+        w.ok(
+            &w.aya,
+            "InviteMember",
+            json!({ "input": { "tenantId": tenant_id, "email": email, "role": "MEMBER" } }),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn a_sancode_member_joining_a_tenant_leaves_its_plan() {
+    let w = World::new().await;
+    let invitation = w
+        .ok(
+            &w.mika,
+            "InviteMember",
+            json!({ "input": { "tenantId": w.acme, "email": "aya@sancode.dev", "role": "ADMIN" } }),
+        )
+        .await;
+    let joined = w
+        .ok(
+            &w.aya,
+            "AcceptInvitation",
+            json!({ "invitationId": invitation["inviteMember"]["id"] }),
+        )
+        .await;
+    assert_eq!(joined["acceptInvitation"]["role"], "ADMIN");
+
+    let tenant = w.get::<Tenant>(&keys::tenant_key(w.acme)).await.unwrap();
+    assert_eq!(tenant.plan_id, "pro");
+    let slug = tenant.slug;
+    let billing = w.ok(&w.aya, "Billing", json!({ "tenant": slug })).await;
+    assert_eq!(billing["tenant"]["plan"]["isAdmin"], false);
+    assert_eq!(billing["tenant"]["plan"]["taskLimit"], 50);
+}

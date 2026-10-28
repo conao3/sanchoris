@@ -288,8 +288,12 @@ impl Task {
         }
         let (tenant, plan) = db::tenant_plan(&mut tx).await?;
         let limited = tenant.status != "active"
-            || tenant.tasks_this_period >= plan.task_limit
-            || tenant.workspace_seconds_this_period >= plan.workspace_seconds_limit;
+            || plan
+                .task_limit
+                .is_some_and(|limit| tenant.tasks_this_period >= limit)
+            || plan
+                .workspace_seconds_limit
+                .is_some_and(|limit| tenant.workspace_seconds_this_period >= limit);
         Ok(Some(if limited {
             PendingReason::PlanLimit
         } else {

@@ -1,5 +1,6 @@
 use async_graphql::{Context, ID, Object, Result};
 use chrono::{DateTime, Utc};
+use sanchoris_core::billing::ADMIN_PLAN;
 use sanchoris_core::db;
 use sanchoris_core::items::{
     self, Guard, InvitationEmail, Membership as MembershipItem, Task as TaskItem,
@@ -109,15 +110,32 @@ impl Viewer {
     async fn is_operator(&self, ctx: &Context<'_>) -> Result<bool> {
         is_operator(ctx).await
     }
+
+    async fn new_tenant_plans(&self, ctx: &Context<'_>) -> Result<Vec<Plan>> {
+        Plan::for_new_tenant(ctx).await
+    }
 }
 
 pub(crate) struct Plan(pub items::Plan);
 
 impl Plan {
-    pub async fn all(ctx: &Context<'_>) -> Result<Vec<Self>> {
+    pub async fn for_sale(ctx: &Context<'_>) -> Result<Vec<Self>> {
         let mut plans = db::plans(store(ctx)).await?;
+        plans.retain(|plan| plan.id != ADMIN_PLAN);
         plans.sort_by(|a, b| (a.price_cents, &a.id).cmp(&(b.price_cents, &b.id)));
         Ok(plans.into_iter().map(Plan).collect())
+    }
+
+    pub async fn for_new_tenant(ctx: &Context<'_>) -> Result<Vec<Self>> {
+        if auth(ctx)?.privileged {
+            Ok(vec![Self::load(ctx, ADMIN_PLAN).await?])
+        } else {
+            Self::for_sale(ctx).await
+        }
+    }
+
+    pub fn is_admin(&self) -> bool {
+        self.0.id == ADMIN_PLAN
     }
 
     pub async fn load(ctx: &Context<'_>, plan_id: &str) -> Result<Self> {
@@ -151,20 +169,24 @@ impl Plan {
         BillingUnit::from_db(&self.0.billing_unit)
     }
 
-    async fn task_limit(&self) -> Result<i32> {
-        Ok(i32::try_from(self.0.task_limit)?)
+    async fn task_limit(&self) -> Result<Option<i32>> {
+        Ok(self.0.task_limit.map(i32::try_from).transpose()?)
     }
 
-    async fn workspace_hour_limit(&self) -> Result<i32> {
-        Ok(i32::try_from(self.0.workspace_seconds_limit / 3600)?)
+    async fn workspace_hour_limit(&self) -> Result<Option<i32>> {
+        Ok(self
+            .0
+            .workspace_seconds_limit
+            .map(|seconds| i32::try_from(seconds / 3600))
+            .transpose()?)
     }
 
     async fn limit_period(&self) -> Result<LimitPeriod> {
         self.period()
     }
 
-    async fn member_limit(&self) -> Result<i32> {
-        Ok(i32::try_from(self.0.member_limit)?)
+    async fn member_limit(&self) -> Result<Option<i32>> {
+        Ok(self.0.member_limit.map(i32::try_from).transpose()?)
     }
 
     async fn concurrency_limit(&self) -> Result<i32> {
@@ -181,6 +203,11 @@ impl Plan {
 
     async fn requires_payment(&self) -> bool {
         self.0.price_cents > 0
+    }
+
+    #[graphql(name = "isAdmin")]
+    async fn admin(&self) -> bool {
+        self.is_admin()
     }
 }
 

@@ -95,6 +95,30 @@
       "computes": ["standard", "docker"],
       "workspaceCpu": 2048,
       "workspaceMemoryMib": 4096
+    },
+    {
+      "id": "admin",
+      "name": "Admin",
+      "priceCents": 0,
+      "currency": "usd",
+      "billingUnit": "tenant",
+      "taskLimit": null,
+      "taskLimitPeriod": "total",
+      "workspaceSecondsLimit": null,
+      "workspaceLimitPeriod": "total",
+      "memberLimit": null,
+      "maxConcurrency": 10,
+      "retentionDays": 90,
+      "auditRetentionDays": 365,
+      "maxTaskTurns": 400,
+      "maxTaskCostUsd": 200,
+      "maxTaskTimeoutSeconds": 172800,
+      "maxIdleSeconds": 7200,
+      "maxChildrenDepth": 3,
+      "maxChildrenCount": 50,
+      "computes": ["standard", "docker"],
+      "workspaceCpu": 2048,
+      "workspaceMemoryMib": 4096
     }
   ]
 }

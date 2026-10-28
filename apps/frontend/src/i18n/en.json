@@ -481,6 +481,7 @@
   "credentials.howPickedDetail": "A session names the credential it uses, for example {example}. Writing {requester} uses the personal credential of the member who asked, and fails if that member has none.",
 
   "members.intro": "{n} of {total} members in {tenant}. Invitations count while they are pending.",
+  "members.introNoLimit": "{n} members in {tenant}, with no limit. Invitations count while they are pending.",
   "members.invite": "Invite",
   "members.inviteBy": "Invite by email",
   "members.sendInvitation": "Send invitation",
@@ -503,6 +504,7 @@
   "audit.empty": "No entries in this range.",
 
   "billing.intro": "Plan and usage for {tenant}. Paid plans are billed monthly in USD through Stripe.",
+  "billing.adminIntro": "{tenant} is on the Admin plan, which a tenant gets when a verified @sancode.dev email creates it. Tasks, workspace hours and members have no limit, nothing is billed, and the plan does not change.",
   "billing.manageInStripe": "Manage in Stripe",
   "billing.tasksThisPeriod": "Tasks this period",
   "billing.inTotal": "in total",
@@ -521,6 +523,9 @@
   "plan.perMonth": "{price} per month",
   "plan.inTotal": "{n} in total",
   "plan.perMonthCount": "{n} per month",
+  "plan.noLimit": "no limit",
+  "plan.countNoLimit": "{n}, no limit",
+  "plan.hoursNoLimit": "{n} hours, no limit",
 
   "operator.operator": "Operator",
   "operator.only": "Operator only",
@@ -543,6 +548,7 @@
   "tenantNew.orCreate": "Or create your own tenant.",
   "tenantNew.limitsTotal": "{tasks} tasks and {hours} workspace hours in total",
   "tenantNew.limitsMonth": "{tasks} tasks · {hours} workspace hours",
+  "tenantNew.noLimits": "no limit on tasks, workspace hours or members",
   "tenantNew.members": "{n} members",
   "tenantNew.memberOne": "1 member",
   "tenantNew.selected": "Selected",

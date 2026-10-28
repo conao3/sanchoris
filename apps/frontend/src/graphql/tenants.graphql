@@ -61,16 +61,16 @@ query CreateTenantPage {
         }
       }
     }
-  }
-  plans {
-    id
-    name
-    priceUsd
-    taskLimit
-    workspaceHourLimit
-    limitPeriod
-    memberLimit
-    requiresPayment
+    newTenantPlans {
+      id
+      name
+      priceUsd
+      taskLimit
+      workspaceHourLimit
+      limitPeriod
+      memberLimit
+      requiresPayment
+    }
   }
 }
 

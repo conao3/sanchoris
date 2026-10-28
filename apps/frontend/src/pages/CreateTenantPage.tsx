@@ -30,7 +30,7 @@ export function CreateTenantPage() {
   const [planId, setPlanId] = useState<string>();
   const [create, createState] = useMutation(CreateTenantDocument);
   const [accept, acceptState] = useMutation(AcceptInvitationDocument);
-  const plans = data?.plans ?? [];
+  const plans = data?.viewer.newTenantPlans ?? [];
   const selected = plans.find((plan) => plan.id === planId) ?? plans.find((plan) => plan.name === 'Pro') ?? plans[0];
 
   function enter(slug: string) {
@@ -112,10 +112,14 @@ export function CreateTenantPage() {
                   <span className={isSelected ? '' : 'text-muted'}>
                     {[
                       planPrice(plan),
-                      plan.limitPeriod === 'TOTAL'
-                        ? t('tenantNew.limitsTotal', { tasks: plan.taskLimit, hours: plan.workspaceHourLimit })
-                        : t('tenantNew.limitsMonth', { tasks: plan.taskLimit, hours: plan.workspaceHourLimit }),
-                      t(plan.memberLimit === 1 ? 'tenantNew.memberOne' : 'tenantNew.members', { n: plan.memberLimit }),
+                      ...(plan.taskLimit == null || plan.workspaceHourLimit == null || plan.memberLimit == null
+                        ? [t('tenantNew.noLimits')]
+                        : [
+                            plan.limitPeriod === 'TOTAL'
+                              ? t('tenantNew.limitsTotal', { tasks: plan.taskLimit, hours: plan.workspaceHourLimit })
+                              : t('tenantNew.limitsMonth', { tasks: plan.taskLimit, hours: plan.workspaceHourLimit }),
+                            t(plan.memberLimit === 1 ? 'tenantNew.memberOne' : 'tenantNew.members', { n: plan.memberLimit }),
+                          ]),
                     ].join(' · ')}
                   </span>
                   {isSelected ? (

@@ -15,6 +15,7 @@ import {
 import { type MessageKey, t } from '../i18n';
 import { ago, day, elapsedRatio, hours, issueLabel, percent, usd } from '../lib/format';
 import { useListNav } from '../lib/keys';
+import { countOf, hoursOf, usedShare } from '../lib/plan';
 import { useData } from '../lib/query';
 import { limitedText, needsYouText, skillStep } from '../lib/taskText';
 import { useTenant } from '../lib/tenant';
@@ -273,10 +274,10 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
 
       <UsageMeter
         title={t(plan.limitPeriod === 'MONTH' ? 'home.tasksThisMonth' : 'home.tasksInTotal')}
-        value={usage.tasksThisPeriod / plan.taskLimit}
+        value={usedShare(usage.tasksThisPeriod, plan.taskLimit)}
         pace={pace}
         caption={[
-          t('home.countOf', { n: usage.tasksThisPeriod, total: plan.taskLimit }),
+          countOf(usage.tasksThisPeriod, plan.taskLimit),
           plan.name,
           usage.periodEnd ? t('home.resets', { at: day(usage.periodEnd) }) : null,
         ]
@@ -285,10 +286,10 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
       />
       <UsageMeter
         title={t('home.workspaceHours')}
-        value={workspaceHours / plan.workspaceHourLimit}
+        value={usedShare(workspaceHours, plan.workspaceHourLimit)}
         pace={pace}
         caption={[
-          t('home.hoursOf', { n: workspaceHours, total: plan.workspaceHourLimit }),
+          hoursOf(workspaceHours, plan.workspaceHourLimit),
           pace !== undefined ? t('home.paceAt', { pace: percent(pace) }) : null,
         ]
           .filter(Boolean)

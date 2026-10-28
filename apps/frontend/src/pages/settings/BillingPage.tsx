@@ -6,7 +6,7 @@ import { Dim, ErrorNote, Kv, Meter, Row, Section, Skeleton, State, Sub, Th, Titl
 import { BillingDocument, ChangePlanDocument, OpenBillingPortalDocument } from '../../graphql/generated/graphql';
 import { t } from '../../i18n';
 import { day, elapsedRatio, hours, percent } from '../../lib/format';
-import { planLimit, planPrice } from '../../lib/plan';
+import { countOf, hoursOf, planLimit, planPrice, usedShare } from '../../lib/plan';
 import { useData } from '../../lib/query';
 import { useTenant } from '../../lib/tenant';
 
@@ -16,6 +16,7 @@ export function BillingPage() {
   const [changePlan, changeState] = useMutation(ChangePlanDocument);
   const [openPortal, portalState] = useMutation(OpenBillingPortalDocument);
   const tenant = data?.tenant;
+  const admin = tenant?.plan.isAdmin ?? false;
   const cols = '100px 140px 160px 160px 110px 100px 1fr';
 
   function portal() {
@@ -54,11 +55,11 @@ export function BillingPage() {
               {t('billing.tasksThisPeriod')}
             </Section>
             <div className="mt-2.5">
-              <Meter value={usage.tasksThisPeriod / plan.taskLimit} pace={pace} />
+              <Meter value={usedShare(usage.tasksThisPeriod, plan.taskLimit)} pace={pace} />
             </div>
             <Dim className="mt-2">
               {[
-                t('home.countOf', { n: usage.tasksThisPeriod, total: plan.taskLimit }),
+                countOf(usage.tasksThisPeriod, plan.taskLimit),
                 pace !== undefined ? t('home.paceAt', { pace: percent(pace) }) : null,
                 usage.periodEnd ? t('billing.countResets', { at: day(usage.periodEnd) }) : null,
               ]
@@ -71,7 +72,7 @@ export function BillingPage() {
             <Kv
               items={[
                 [t('billing.plan'), <><b>{plan.name}</b> · {planPrice(plan)}</>],
-                [t('settings.members'), t('home.countOf', { n: usage.seatsUsed, total: plan.memberLimit })],
+                [t('settings.members'), countOf(usage.seatsUsed, plan.memberLimit)],
                 [t('billing.nextBilling'), usage.periodEnd ? day(usage.periodEnd) : '—'],
                 [t('billing.concurrentRuns'), plan.concurrencyLimit],
               ]}
@@ -82,46 +83,50 @@ export function BillingPage() {
           <div>
             <Section count={period}>{t('billing.workspaceHours')}</Section>
             <div className="mt-2.5">
-              <Meter value={workspaceHours / plan.workspaceHourLimit} pace={pace} />
+              <Meter value={usedShare(workspaceHours, plan.workspaceHourLimit)} pace={pace} />
             </div>
             <Dim className="mt-2">
-              {t('home.hoursOf', { n: workspaceHours, total: plan.workspaceHourLimit })} · {t('billing.thresholds')}
+              {admin ? hoursOf(workspaceHours, plan.workspaceHourLimit) : `${hoursOf(workspaceHours, plan.workspaceHourLimit)} · ${t('billing.thresholds')}`}
             </Dim>
           </div>
           <div />
         </div>
-        <Section>{t('billing.plans')}</Section>
-        <Th cols={cols}>
-          <span>{t('billing.plan')}</span>
-          <span>{t('col.price')}</span>
-          <span>{t('nav.tasks')}</span>
-          <span>{t('col.workspaceHours')}</span>
-          <span>{t('col.concurrent')}</span>
-          <span>{t('settings.members')}</span>
-          <span />
-        </Th>
-        {data.plans.map((item) => (
-          <Row key={item.id} cols={cols} selected={item.id === plan.id}>
-            <span className="font-medium">{item.name}</span>
-            <span>{planPrice(item)}</span>
-            <span>{planLimit(item.taskLimit, item.limitPeriod)}</span>
-            <span>{planLimit(item.workspaceHourLimit, item.limitPeriod)}</span>
-            <span>{item.concurrencyLimit}</span>
-            <span>{item.memberLimit}</span>
-            {item.id === plan.id ? (
-              <State tone="ok" icon={ShieldCheck}>
-                {t('billing.current')}
-              </State>
-            ) : (
-              <span className="justify-self-end">
-                <Button small isDisabled={changeState.loading} onPress={() => change(item.id)}>
-                  {t('billing.change')}
-                </Button>
-              </span>
-            )}
-          </Row>
-        ))}
-        <Dim className="mt-3">{t('billing.footer')}</Dim>
+        {admin ? null : (
+          <>
+            <Section>{t('billing.plans')}</Section>
+            <Th cols={cols}>
+              <span>{t('billing.plan')}</span>
+              <span>{t('col.price')}</span>
+              <span>{t('nav.tasks')}</span>
+              <span>{t('col.workspaceHours')}</span>
+              <span>{t('col.concurrent')}</span>
+              <span>{t('settings.members')}</span>
+              <span />
+            </Th>
+            {data.plans.map((item) => (
+              <Row key={item.id} cols={cols} selected={item.id === plan.id}>
+                <span className="font-medium">{item.name}</span>
+                <span>{planPrice(item)}</span>
+                <span>{planLimit(item.taskLimit, item.limitPeriod)}</span>
+                <span>{planLimit(item.workspaceHourLimit, item.limitPeriod)}</span>
+                <span>{item.concurrencyLimit}</span>
+                <span>{item.memberLimit}</span>
+                {item.id === plan.id ? (
+                  <State tone="ok" icon={ShieldCheck}>
+                    {t('billing.current')}
+                  </State>
+                ) : (
+                  <span className="justify-self-end">
+                    <Button small isDisabled={changeState.loading} onPress={() => change(item.id)}>
+                      {t('billing.change')}
+                    </Button>
+                  </span>
+                )}
+              </Row>
+            ))}
+            <Dim className="mt-3">{t('billing.footer')}</Dim>
+          </>
+        )}
       </>
     );
   }
@@ -130,13 +135,15 @@ export function BillingPage() {
     <SettingsPage
       tab="billing"
       actions={
-        <Button icon={ExternalLink} onPress={portal} isDisabled={!tenant}>
-          {t('billing.manageInStripe')}
-        </Button>
+        admin ? undefined : (
+          <Button icon={ExternalLink} onPress={portal} isDisabled={!tenant}>
+            {t('billing.manageInStripe')}
+          </Button>
+        )
       }
     >
       <Title>{t('settings.billing')}</Title>
-      <Sub>{t('billing.intro', { tenant: tenant?.name ?? '' })}</Sub>
+      <Sub>{t(admin ? 'billing.adminIntro' : 'billing.intro', { tenant: tenant?.name ?? '' })}</Sub>
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
       {portalState.error ? <Dim className="my-3 text-err">{portalState.error.message}</Dim> : null}
       {changeState.error ? <Dim className="my-3 text-err">{changeState.error.message}</Dim> : null}

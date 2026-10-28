@@ -62,11 +62,20 @@ pub struct StubVerifier;
 #[async_trait]
 impl IdentityVerifier for StubVerifier {
     async fn verify(&self, token: &str) -> Result<Identity, AuthError> {
-        let subject = token.strip_prefix("user:").ok_or(AuthError::Unauthorized)?;
+        let (subject, email, email_verified) = if let Some(subject) = token.strip_prefix("user:") {
+            (subject.to_string(), format!("{subject}@example.com"), true)
+        } else if let Some(email) = token.strip_prefix("email:") {
+            (format!("google_{email}"), email.to_string(), true)
+        } else if let Some(email) = token.strip_prefix("unverified:") {
+            (format!("google_{email}"), email.to_string(), false)
+        } else {
+            return Err(AuthError::Unauthorized);
+        };
         Ok(Identity {
-            subject: subject.to_string(),
-            email: Some(format!("{subject}@example.com")),
-            display_name: subject.to_string(),
+            display_name: subject.clone(),
+            subject,
+            email: Some(email),
+            email_verified,
         })
     }
 }

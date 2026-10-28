@@ -5,6 +5,7 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, header};
 use chrono::Utc;
+use sanchoris_core::billing::is_privileged_email;
 use sanchoris_core::db::{DbError, Store};
 use sanchoris_core::items::{Guard, User, uniq};
 use sanchoris_core::keys;
@@ -18,7 +19,14 @@ use crate::error::ApiError;
 pub struct Identity {
     pub subject: String,
     pub email: Option<String>,
+    pub email_verified: bool,
     pub display_name: String,
+}
+
+impl Identity {
+    pub fn privileged(&self) -> bool {
+        self.email_verified && self.email.as_deref().is_some_and(is_privileged_email)
+    }
 }
 
 #[derive(Debug)]
@@ -48,16 +56,18 @@ pub struct CurrentUser {
     pub email: String,
     pub display_name: String,
     pub github_login: Option<String>,
+    pub privileged: bool,
 }
 
-impl From<User> for CurrentUser {
-    fn from(user: User) -> Self {
+impl CurrentUser {
+    fn new(user: User, privileged: bool) -> Self {
         Self {
             user_id: user.id,
             cognito_subject: user.cognito_subject,
             email: user.email,
             display_name: user.display_name,
             github_login: user.github_login,
+            privileged,
         }
     }
 }
@@ -113,7 +123,7 @@ pub async fn provision(store: &Store, identity: &Identity) -> Result<CurrentUser
     })
     .await?;
     match provisioned {
-        Provisioned::User(user) => Ok((*user).into()),
+        Provisioned::User(user) => Ok(CurrentUser::new(*user, identity.privileged())),
         Provisioned::EmailTaken => Err(ApiError::Conflict(format!(
             "the email {email} belongs to another user"
         ))),

@@ -45,11 +45,14 @@ struct PlanSpec {
     price_cents: i64,
     currency: String,
     billing_unit: String,
-    task_limit: i64,
+    #[serde(deserialize_with = "Option::deserialize")]
+    task_limit: Option<i64>,
     task_limit_period: String,
-    workspace_seconds_limit: i64,
+    #[serde(deserialize_with = "Option::deserialize")]
+    workspace_seconds_limit: Option<i64>,
     workspace_limit_period: String,
-    member_limit: i64,
+    #[serde(deserialize_with = "Option::deserialize")]
+    member_limit: Option<i64>,
     max_concurrency: i64,
     retention_days: i64,
     audit_retention_days: i64,
@@ -307,7 +310,7 @@ mod tests {
                 .any(|a| a == "dynamodb:DeleteItem")
         );
         assert_eq!(schema.read_only_leading_keys, ["PLANS"]);
-        assert_eq!(plans().len(), 4);
+        assert_eq!(plans().len(), 5);
     }
 
     #[test]
@@ -324,6 +327,7 @@ mod tests {
                 ("starter", Some("price_for_SANCHORIS_STRIPE_PRICE_STARTER")),
                 ("pro", Some("price_for_SANCHORIS_STRIPE_PRICE_PRO")),
                 ("max", Some("price_for_SANCHORIS_STRIPE_PRICE_MAX")),
+                ("admin", None),
             ]
         );
         let missing = priced_plans(|name| {
@@ -331,5 +335,15 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(missing.0, ["SANCHORIS_STRIPE_PRICE_PRO"]);
+    }
+
+    #[test]
+    fn a_plan_spec_states_each_limit_or_null() {
+        let mut spec: Value = serde_json::from_str(PLANS_JSON).unwrap();
+        let free = &mut spec["plans"][0];
+        assert!(serde_json::from_value::<PlanSpec>(free.clone()).is_ok());
+        free.as_object_mut().unwrap().remove("memberLimit");
+        let error = serde_json::from_value::<PlanSpec>(free.clone()).unwrap_err();
+        assert_eq!(error.to_string(), "missing field `memberLimit`");
     }
 }

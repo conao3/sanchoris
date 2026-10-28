@@ -9,7 +9,10 @@ import { hours } from '../lib/format';
 import { useListNav } from '../lib/keys';
 import { useData } from '../lib/query';
 
-function ratio(value: number, limit: number, total: boolean): string {
+function ratio(value: number, limit: number | null | undefined, total: boolean): string {
+  if (limit == null) {
+    return `${value} / ${t('plan.noLimit')}`;
+  }
   return total ? t('operator.ratioTotal', { n: value, total: limit }) : `${value} / ${limit}`;
 }
 
@@ -70,7 +73,7 @@ export function OperatorTenantsPage() {
                   </span>
                   <span>{tenant.plan.name}</span>
                   <span className="text-right font-mono text-sm">{ratio(tenant.usage.tasksThisPeriod, tenant.plan.taskLimit, total)}</span>
-                  <span className="text-right font-mono text-sm">{`${tenant.usage.seatsUsed} / ${tenant.plan.memberLimit}`}</span>
+                  <span className="text-right font-mono text-sm">{ratio(tenant.usage.seatsUsed, tenant.plan.memberLimit, false)}</span>
                   <span className="text-right font-mono text-sm">{tenant.plan.concurrencyLimit}</span>
                   <span className="text-right font-mono text-sm">
                     {ratio(hours(tenant.usage.workspaceSecondsThisPeriod), tenant.plan.workspaceHourLimit, total)}

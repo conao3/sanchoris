@@ -66,6 +66,7 @@ pub async fn execute(
             user_id: user.user_id,
             cognito_subject: user.cognito_subject,
             email: user.email,
+            privileged: user.privileged,
         })
         .data(ip);
     Json(state.schema.execute(request).await)

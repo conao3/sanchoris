@@ -10,6 +10,8 @@ use crate::config::CognitoConfig;
 struct CognitoClaims {
     sub: String,
     email: Option<String>,
+    #[serde(default, deserialize_with = "verified")]
+    email_verified: bool,
     #[serde(rename = "cognito:username")]
     username: Option<String>,
     token_use: Option<String>,
@@ -111,9 +113,25 @@ impl IdentityVerifier for CognitoVerifier {
         Ok(Identity {
             subject: claims.sub,
             email: claims.email,
+            email_verified: claims.email_verified,
             display_name,
         })
     }
+}
+
+fn verified<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Flag {
+        Bool(bool),
+        Text(String),
+    }
+    Ok(
+        match <Flag as serde::Deserialize>::deserialize(deserializer)? {
+            Flag::Bool(value) => value,
+            Flag::Text(value) => value == "true",
+        },
+    )
 }
 
 fn display_name(email: Option<&str>, username: Option<&str>, subject: &str) -> String {
@@ -146,7 +164,26 @@ fn slugify(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_name, region_of};
+    use super::{CognitoClaims, display_name, region_of};
+    use serde_json::json;
+
+    #[test]
+    fn email_verified_reads_a_boolean_or_the_string_true() {
+        let verified = |claim: Option<serde_json::Value>| {
+            let mut claims = json!({ "sub": "s", "email": "a@sancode.dev" });
+            if let Some(claim) = claim {
+                claims["email_verified"] = claim;
+            }
+            serde_json::from_value::<CognitoClaims>(claims)
+                .unwrap()
+                .email_verified
+        };
+        assert!(verified(Some(json!(true))));
+        assert!(verified(Some(json!("true"))));
+        assert!(!verified(Some(json!(false))));
+        assert!(!verified(Some(json!("false"))));
+        assert!(!verified(None));
+    }
 
     #[test]
     fn the_region_comes_from_the_pool_id() {

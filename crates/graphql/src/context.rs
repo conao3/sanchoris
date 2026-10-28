@@ -24,6 +24,7 @@ pub struct AuthUser {
     pub user_id: Uuid,
     pub cognito_subject: String,
     pub email: String,
+    pub privileged: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

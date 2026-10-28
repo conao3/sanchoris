@@ -5,7 +5,7 @@ use aws_sdk_dynamodb::types::AttributeValue;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Duration;
-use sanchoris_core::billing::{FREE_PLAN, stage_plan_change};
+use sanchoris_core::billing::{ADMIN_PLAN, FREE_PLAN, PRIVILEGED_EMAIL_DOMAIN, stage_plan_change};
 use sanchoris_core::channel::{RunEventType, record_inbound_event, record_run_event};
 use sanchoris_core::db::{self, REF_RUN, REF_TRIGGER, TenantTx};
 use sanchoris_core::item::format_time;
@@ -267,6 +267,19 @@ impl MutationRoot {
             return Err(bad_input("the tenant needs a name"));
         }
         let plan = Plan::load(ctx, input.plan_id.as_str()).await?;
+        match (user.privileged, plan.is_admin()) {
+            (true, false) => {
+                return Err(bad_input(format!(
+                    "a verified @{PRIVILEGED_EMAIL_DOMAIN} email creates tenants on the {ADMIN_PLAN} plan"
+                )));
+            }
+            (false, true) => {
+                return Err(forbidden(format!(
+                    "the {ADMIN_PLAN} plan needs a verified @{PRIVILEGED_EMAIL_DOMAIN} email"
+                )));
+            }
+            _ => {}
+        }
         if plan.0.price_cents > 0 {
             let url = state(ctx)
                 .deps
@@ -498,10 +511,11 @@ impl MutationRoot {
                 .filter(|invitation| invitation.is_pending_at(at))
                 .count();
             let seats = i64::try_from(members.len() + pending).map_err(worker_error)?;
-            if seats >= plan.member_limit {
+            if let Some(limit) = plan.member_limit
+                && seats >= limit
+            {
                 return Err(conflict(format!(
-                    "the plan allows {} members including pending invitations",
-                    plan.member_limit
+                    "the plan allows {limit} members including pending invitations"
                 ))
                 .into());
             }
@@ -1401,6 +1415,12 @@ impl MutationRoot {
         let member_id = scope.require(Role::Owner, "changing the plan")?;
         let plan = Plan::load(ctx, plan_id.as_str()).await?;
         let tenant = Tenant::load(ctx, scope).await?;
+        if tenant.row.plan_id == ADMIN_PLAN {
+            return Err(conflict(format!("the {ADMIN_PLAN} plan does not change")));
+        }
+        if plan.is_admin() {
+            return Err(forbidden(format!("the {ADMIN_PLAN} plan is not for sale")));
+        }
         if tenant.row.plan_id == plan.0.id {
             return Err(bad_input(format!(
                 "the tenant is already on {}",
@@ -1489,6 +1509,9 @@ impl MutationRoot {
     ) -> Result<RedirectPayload> {
         let scope = tenant_scope(ctx, &tenant_id).await?;
         let member_id = scope.require(Role::Owner, "opening the billing portal")?;
+        if Tenant::load(ctx, scope).await?.row.plan_id == ADMIN_PLAN {
+            return Err(conflict(format!("the {ADMIN_PLAN} plan has no billing")));
+        }
         let url = state(ctx)
             .deps
             .checkout

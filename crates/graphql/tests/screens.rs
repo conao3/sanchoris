@@ -305,7 +305,10 @@ async fn every_screen_query_validates_and_executes() {
         page["viewer"]["invitations"][0]["invitedBy"]["user"]["name"],
         "Mika"
     );
-    assert_eq!(page["plans"][0]["requiresPayment"], false);
+    assert_eq!(
+        page["viewer"]["newTenantPlans"][0]["requiresPayment"],
+        false
+    );
 
     w.ok(
         &w.mika,

@@ -637,3 +637,73 @@ async fn conditional_updates_of_a_staged_put_are_rejected() {
         ("Renamed", 1)
     );
 }
+
+#[tokio::test]
+async fn an_admin_tenant_dispatches_past_any_task_or_workspace_count() {
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("admin").await;
+    dynamo
+        .modify::<Tenant>(&keys::tenant_key(seeded.tenant_id), |t| {
+            t.tasks_this_period = 1_000_000;
+            t.workspace_seconds_this_period = 1_000_000_000;
+        })
+        .await;
+    for name in ["a", "b", "c"] {
+        create_task(&store, &seeded, name, &[]).await;
+    }
+
+    assert_eq!(dispatch(&store, seeded.tenant_id).await.len(), 3);
+    let t = tenant(&store, seeded.tenant_id).await;
+    assert_eq!((t.tasks_this_period, t.running_tasks), (1_000_003, 3));
+
+    let plan = db::plan(&store, "admin").await.unwrap();
+    assert_eq!(
+        (
+            plan.task_limit,
+            plan.workspace_seconds_limit,
+            plan.member_limit,
+            plan.max_concurrency,
+            plan.workspace_cpu,
+            plan.workspace_memory_mib,
+            plan.price_cents,
+            plan.stripe_price_id,
+        ),
+        (None, None, None, 10, 2048, 4096, 0, None)
+    );
+    assert_eq!(plan.computes, ["standard", "docker"]);
+}
+
+#[tokio::test]
+async fn a_tenant_on_an_unknown_plan_dispatches_nothing() {
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("pro").await;
+    dynamo
+        .modify::<Tenant>(&keys::tenant_key(seeded.tenant_id), |t| {
+            t.plan_id = "enterprise".into();
+        })
+        .await;
+    create_task(&store, &seeded, "a", &[]).await;
+
+    let mut tx = store.tx(seeded.tenant_id);
+    assert!(matches!(
+        db::dispatch_pending_tasks(&mut tx, Utc::now()).await,
+        Err(DbError::Missing(name)) if name == "plan enterprise"
+    ));
+    assert_eq!(tenant(&store, seeded.tenant_id).await.running_tasks, 0);
+}
+
+#[tokio::test]
+async fn a_plan_item_without_a_limit_attribute_does_not_decode() {
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let mut item = db::plan(&store, "free").await.unwrap().to_item();
+    item.remove("task_limit");
+    dynamo.put_raw(item).await;
+
+    assert!(matches!(
+        db::plan(&store, "free").await,
+        Err(DbError::Decode(message)) if message == "plan has no attribute task_limit"
+    ));
+}

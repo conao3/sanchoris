@@ -19,11 +19,11 @@ pub struct Plan {
     pub price_cents: i64,
     pub currency: String,
     pub billing_unit: String,
-    pub task_limit: i64,
+    pub task_limit: Option<i64>,
     pub task_limit_period: String,
-    pub workspace_seconds_limit: i64,
+    pub workspace_seconds_limit: Option<i64>,
     pub workspace_limit_period: String,
-    pub member_limit: i64,
+    pub member_limit: Option<i64>,
     pub max_concurrency: i64,
     pub retention_days: i64,
     pub audit_retention_days: i64,
@@ -52,11 +52,11 @@ impl Entity for Plan {
             .n("price_cents", self.price_cents)
             .s("currency", &self.currency)
             .s("billing_unit", &self.billing_unit)
-            .n("task_limit", self.task_limit)
+            .null_or_n("task_limit", self.task_limit)
             .s("task_limit_period", &self.task_limit_period)
-            .n("workspace_seconds_limit", self.workspace_seconds_limit)
+            .null_or_n("workspace_seconds_limit", self.workspace_seconds_limit)
             .s("workspace_limit_period", &self.workspace_limit_period)
-            .n("member_limit", self.member_limit)
+            .null_or_n("member_limit", self.member_limit)
             .n("max_concurrency", self.max_concurrency)
             .n("retention_days", self.retention_days)
             .n("audit_retention_days", self.audit_retention_days)
@@ -79,11 +79,11 @@ impl Entity for Plan {
             price_cents: r.n("price_cents")?,
             currency: r.s("currency")?,
             billing_unit: r.s("billing_unit")?,
-            task_limit: r.n("task_limit")?,
+            task_limit: r.null_or_n("task_limit")?,
             task_limit_period: r.s("task_limit_period")?,
-            workspace_seconds_limit: r.n("workspace_seconds_limit")?,
+            workspace_seconds_limit: r.null_or_n("workspace_seconds_limit")?,
             workspace_limit_period: r.s("workspace_limit_period")?,
-            member_limit: r.n("member_limit")?,
+            member_limit: r.null_or_n("member_limit")?,
             max_concurrency: r.n("max_concurrency")?,
             retention_days: r.n("retention_days")?,
             audit_retention_days: r.n("audit_retention_days")?,

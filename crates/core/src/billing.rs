@@ -20,10 +20,23 @@ use crate::tenants::{
 pub const PAYMENT_PENDING: &str = "payment_pending";
 pub const PAYMENT_FAILED: &str = "payment_failed";
 pub const FREE_PLAN: &str = "free";
+pub const ADMIN_PLAN: &str = "admin";
+pub const PRIVILEGED_EMAIL_DOMAIN: &str = "sancode.dev";
 pub const EVENT_RETENTION_DAYS: i64 = 30;
 pub const PLAN_STATUSES: [&str; 3] = ["active", "trialing", "past_due"];
 pub const PERIOD_REASONS: [&str; 2] = ["subscription_create", "subscription_cycle"];
 const ATTEMPTS: u32 = 8;
+
+pub fn is_privileged_email(email: &str) -> bool {
+    email.rsplit_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty() && domain.eq_ignore_ascii_case(PRIVILEGED_EMAIL_DOMAIN)
+    })
+}
+
+fn admin_ignored(current: &Tenant) -> Option<Outcome> {
+    (current.plan_id == ADMIN_PLAN)
+        .then(|| Outcome::Ignored(format!("tenant {} is on the {ADMIN_PLAN} plan", current.id)))
+}
 
 #[derive(Debug, Error)]
 pub enum BillingError {
@@ -333,6 +346,9 @@ pub async fn complete_checkout(
             }
             Err(other) => return Err(other),
         };
+        if let Some(outcome) = admin_ignored(&current) {
+            return close(tx, event, outcome).await;
+        }
         check_customer(&current, customer_id)?;
         if current.status != "active" && !is_payment_pending(&current) {
             return Err(BillingError::TenantNotPayable(tenant_id));
@@ -446,6 +462,9 @@ async fn set_plan(
         let Some((mut tx, current)) = open(store, tenant_id, event).await? else {
             return Ok(Outcome::Duplicate);
         };
+        if let Some(outcome) = admin_ignored(&current) {
+            return close(tx, event, outcome).await;
+        }
         check_customer(&current, payer.customer_id)?;
         if current.plan_id == to {
             return close(tx, event, Outcome::Processed).await;
@@ -479,6 +498,9 @@ pub async fn start_period(
         let Some((mut tx, current)) = open(store, tenant_id, event).await? else {
             return Ok(Outcome::Duplicate);
         };
+        if let Some(outcome) = admin_ignored(&current) {
+            return close(tx, event, outcome).await;
+        }
         check_customer(&current, payer.customer_id)?;
         let resumes = current.status == "suspended"
             && current.suspended_reason.as_deref() == Some(PAYMENT_FAILED);
@@ -521,6 +543,9 @@ pub async fn fail_payment(
         let Some((mut tx, current)) = open(store, tenant_id, event).await? else {
             return Ok(Outcome::Duplicate);
         };
+        if let Some(outcome) = admin_ignored(&current) {
+            return close(tx, event, outcome).await;
+        }
         check_customer(&current, payer.customer_id)?;
         if current.status != "active" {
             return close(tx, event, Outcome::Processed).await;

@@ -6,7 +6,7 @@ scalar DateTime
 type Query {
   "The signed-in user, the tenants they belong to and the invitations addressed to them."
   viewer: Viewer!
-  "The plans a tenant can choose, ordered by price."
+  "The plans a tenant can choose, ordered by price. The Admin plan is not among them."
   plans: [Plan!]!
   "A tenant the viewer is a member of. Null when it does not exist or the viewer is not a member."
   tenant(slug: String!): Tenant
@@ -17,7 +17,7 @@ type Query {
 }
 
 type Mutation {
-  "Creates a tenant owned by the viewer. A paid plan returns a Stripe Checkout URL and creates the tenant after payment; Free returns the tenant."
+  "Creates a tenant owned by the viewer on a plan of Viewer.newTenantPlans. A paid plan returns a Stripe Checkout URL and creates the tenant after payment; Free and Admin return the tenant."
   createTenant(input: CreateTenantInput!): CreateTenantPayload!
   "Accepts an invitation addressed to the viewer and returns the new membership."
   acceptInvitation(invitationId: ID!): Member!
@@ -64,9 +64,9 @@ type Mutation {
   "Removes an API key, or disconnects a subscription login."
   removeCredential(credentialId: ID!): ID!
 
-  "Changes the plan. Returns a Stripe Checkout URL when payment is needed."
+  "Changes the plan. Returns a Stripe Checkout URL when payment is needed. Refused for a tenant on the Admin plan and for the Admin plan as the target."
   changePlan(tenantId: ID!, planId: ID!): ChangePlanPayload!
-  "Returns the URL of the Stripe customer portal."
+  "Returns the URL of the Stripe customer portal. Refused for a tenant on the Admin plan."
   openBillingPortal(tenantId: ID!): RedirectPayload!
   "Returns a short-lived URL of the audit log as JSON Lines."
   exportAuditLog(tenantId: ID!, filter: AuditFilter): RedirectPayload!
@@ -88,6 +88,8 @@ type Viewer {
   "Pending invitations addressed to the viewer's email."
   invitations: [Invitation!]!
   isOperator: Boolean!
+  "The plans the viewer can create a tenant on: the Admin plan alone when the sign-in has a verified @sancode.dev email, otherwise the plans of Query.plans."
+  newTenantPlans: [Plan!]!
 }
 
 type User {
@@ -150,14 +152,19 @@ type Plan {
   name: String!
   priceUsd: Int!
   billingUnit: BillingUnit!
-  taskLimit: Int!
-  workspaceHourLimit: Int!
+  "Null when the plan has no limit."
+  taskLimit: Int
+  "Null when the plan has no limit."
+  workspaceHourLimit: Int
   limitPeriod: LimitPeriod!
-  memberLimit: Int!
+  "Null when the plan has no limit."
+  memberLimit: Int
   concurrencyLimit: Int!
   retentionDays: Int!
   auditRetentionDays: Int!
   requiresPayment: Boolean!
+  "The plan of tenants created by a verified @sancode.dev email. It has no price, and its tenants do not change plans or open Stripe."
+  isAdmin: Boolean!
 }
 
 enum TenantState {

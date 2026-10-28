@@ -114,7 +114,7 @@ export function MembersPage() {
       }
     >
       <Title>{t('settings.members')}</Title>
-      <Sub>{tenant ? t('members.intro', { n: tenant.usage.seatsUsed, total: tenant.plan.memberLimit, tenant: tenant.name }) : ' '}</Sub>
+      <Sub>{tenant ? tenant.plan.memberLimit == null ? t('members.introNoLimit', { n: tenant.usage.seatsUsed, tenant: tenant.name }) : t('members.intro', { n: tenant.usage.seatsUsed, total: tenant.plan.memberLimit, tenant: tenant.name }) : ' '}</Sub>
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
       {!data && !error ? <Skeleton rows={6} /> : null}
       {tenant && inviting ? <InviteForm tenantId={tenant.id} emailRef={emailRef} onDone={() => setInviting(false)} /> : null}

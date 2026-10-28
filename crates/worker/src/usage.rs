@@ -104,7 +104,8 @@ pub async fn sweep_alerts(worker: &Worker) -> Result<usize> {
         ];
         let due = metrics
             .iter()
-            .filter(|(_, used, limit)| used * 100 >= limit * ALERT_THRESHOLD_PERCENT)
+            .filter_map(|(metric, used, limit)| limit.map(|limit| (metric, used, limit)))
+            .filter(|(_, used, limit)| *used * 100 >= limit * ALERT_THRESHOLD_PERCENT)
             .collect::<Vec<_>>();
         if due.is_empty() {
             continue;
@@ -117,7 +118,7 @@ pub async fn sweep_alerts(worker: &Worker) -> Result<usize> {
                 metric: metric.to_string(),
                 threshold_percent: ALERT_THRESHOLD_PERCENT,
                 used: *used,
-                limit_value: *limit,
+                limit_value: limit,
                 created_at: worker.now(),
             };
             let key = keys::usage_alert_key(

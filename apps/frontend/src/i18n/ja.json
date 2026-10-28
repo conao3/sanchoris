@@ -481,6 +481,7 @@
   "credentials.howPickedDetail": "セッションは使う資格情報を名前で指します (例: {example})。{requester} と書くと、依頼したメンバーの個人の資格情報を使い、そのメンバーが持っていなければ失敗します。",
 
   "members.intro": "{tenant} のメンバー {total} 人中 {n} 人。保留中の招待も数えます。",
+  "members.introNoLimit": "{tenant} のメンバー {n} 人 (上限なし)。保留中の招待も数えます。",
   "members.invite": "招待",
   "members.inviteBy": "メールで招待",
   "members.sendInvitation": "招待を送る",
@@ -503,6 +504,7 @@
   "audit.empty": "この期間の記録はありません。",
 
   "billing.intro": "{tenant} のプランと使用量です。有料プランは Stripe で米ドルの月額を請求します。",
+  "billing.adminIntro": "{tenant} は Admin プランです。確認済みの @sancode.dev のメールアドレスで作ったテナントがこのプランになります。タスク・Workspace の稼働時間・メンバーに上限はなく、請求はなく、プランは変わりません。",
   "billing.manageInStripe": "Stripe で管理",
   "billing.tasksThisPeriod": "今期のタスク",
   "billing.inTotal": "通算",
@@ -521,6 +523,9 @@
   "plan.perMonth": "月 {price}",
   "plan.inTotal": "通算 {n}",
   "plan.perMonthCount": "月 {n}",
+  "plan.noLimit": "上限なし",
+  "plan.countNoLimit": "{n} 件 (上限なし)",
+  "plan.hoursNoLimit": "{n} 時間 (上限なし)",
 
   "operator.operator": "運営",
   "operator.only": "運営者のみ",
@@ -543,6 +548,7 @@
   "tenantNew.orCreate": "または自分のテナントを作成します。",
   "tenantNew.limitsTotal": "通算でタスク {tasks} 件と Workspace {hours} 時間",
   "tenantNew.limitsMonth": "月にタスク {tasks} 件 · Workspace {hours} 時間",
+  "tenantNew.noLimits": "タスク・Workspace の稼働時間・メンバーの上限なし",
   "tenantNew.members": "メンバー {n} 人",
   "tenantNew.memberOne": "メンバー 1 人",
   "tenantNew.selected": "選択中",
