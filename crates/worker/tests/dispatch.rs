@@ -153,7 +153,7 @@ async fn labeled_issue_starts_a_running_task_with_the_documented_message() {
         starts[0]["skills"],
         json!([{ "name": "open-pr-green-ci", "required": true, "inputs": { "Issue": "number", "Repo": "string", "Repos": "array" } }])
     );
-    assert_eq!(starts[0]["heartbeatSeconds"], 900);
+    assert_eq!(starts[0]["heartbeatSeconds"], 300);
     assert_eq!(*world.runner.started.lock().unwrap(), vec![run_id]);
     assert!(world.pusher.pushed.lock().unwrap().contains(&run_id));
     assert_eq!(
