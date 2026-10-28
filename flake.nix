@@ -46,14 +46,19 @@
             jq
             openssl
             worktrunk
+            sccache
           ];
 
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER = "${lambdaCc}/bin/${lambdaCc.targetPrefix}cc";
           CC_aarch64_unknown_linux_musl = "${lambdaCc}/bin/${lambdaCc.targetPrefix}cc";
           AR_aarch64_unknown_linux_musl = "${lambdaCc}/bin/${lambdaCc.targetPrefix}ar";
+          RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
+          SCCACHE_CACHE_SIZE = "30G";
+          CARGO_BUILD_JOBS = "6";
 
           shellHook = ''
             export RUST_BACKTRACE=1
+            export SCCACHE_DIR="$HOME/.cache/sccache"
           '';
         };
       }
