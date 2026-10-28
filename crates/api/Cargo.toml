@@ -39,7 +39,7 @@ serde_json.workspace = true
 serde_yaml_ng.workspace = true
 thiserror.workspace = true
 async-graphql = "7.2.1"
-aws-sdk-ssm = "1"
+aws-sdk-ssm = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 rust-embed = "8.13"
 mime_guess = "2"
 chrono = { version = "0.4", features = ["serde"] }
@@ -53,11 +53,11 @@ hmac = "0.13"
 sha2 = "0.11"
 hex = "0.4"
 base64 = "0.23"
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-dynamodb = "1"
-aws-sdk-s3 = "1"
-aws-sdk-apigatewaymanagement = "1"
-aws-sdk-ecs = "1"
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio", "credentials-process", "sso"] }
+aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
+aws-sdk-apigatewaymanagement = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-ecs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 lambda_http = { version = "1", default-features = false, features = ["apigw_http"] }
 lambda_runtime = "1"
 futures-util = { version = "0.3", features = ["sink"] }
