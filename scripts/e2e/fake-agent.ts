@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { type CredentialSource, WorkspaceAgent } from "../../apps/workspace-agent/src/agent.ts";
 import { stderrLogger } from "../../apps/workspace-agent/src/log.ts";
+import { readSecrets } from "../../apps/workspace-agent/src/secrets.ts";
 import { writeCliWrapper } from "../../apps/workspace-agent/src/testing/cli-wrapper.ts";
 import { fakeWorkerFactory, type CommandResult, type FakeScript } from "../../apps/workspace-agent/src/testing/fake-worker.ts";
 import { requireEnv } from "../../apps/workspace-agent/src/worker.ts";
@@ -101,13 +102,19 @@ function environmentSource(): CredentialSource {
   return { kind: "environment" };
 }
 
+const secrets = await readSecrets(process.stdin);
+process.stdin.destroy();
+if (secrets.relayUrl !== null) throw new Error("the scripted agent runs without the egress relay");
+
 const agent = new WorkspaceAgent({
   runId: requireEnv(env, "SANCHORIS_RUN_ID"),
-  token: requireEnv(env, "SANCHORIS_RUN_TOKEN"),
+  token: secrets.runToken,
   controlUrl: requireEnv(env, "SANCHORIS_CONTROL_URL"),
   socketPath: requireEnv(env, "SANCHORIS_SOCKET_PATH"),
   workspaceDir,
   credentialSource: environmentSource(),
+  egress: null,
+  providerUpstream: "https://api.anthropic.com",
   env,
   createWorker: fakeWorkerFactory(script),
   logger: stderrLogger,

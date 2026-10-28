@@ -13,7 +13,7 @@ Jobs are written as message items in the same DynamoDB transaction as the state 
 | `EngineTimer` | the engine's `ScheduleTimer` effect, at the due time | Feeds `TimerDue` to the engine unless the timer was cancelled or re-armed or the task is finished; a timer that arrives before its due time keeps its item and is scheduled again |
 | `CheckPoll` | `github:checks`, check-run webhooks, `SweepChecks` | Reads the PR head and its check runs; completes the wait with `TaskSuccess` |
 | `TaskResume` | a usage-limit wait, at `ResumeAt` | Sends "Continue where you left off." |
-| `Reconcile` | a run being created, finished, or sent a `user_message`/`exec`; a task becoming idle, at the idle deadline | Starts a workspace for a run that needs one, stops a finished or idle one |
+| `Reconcile` | a run being created, finished, or sent a `user_message`/`exec`; a task becoming idle, at the idle deadline | Starts a workspace for a run that needs one, stops a finished or idle one. A start commits the workspace item without `platform_ref` and the `start` outbox item first, then calls `RunnerPort::start_workspace` (idempotent per workspace id) and records the `platform_ref`; an open workspace without `platform_ref` is launched again. The `start` carries the task's instruction for a new run and for a run that has no session record and no turn yet |
 | `DeliverOutbox` | `enqueue_outbox` | Calls `OutboxPusher` so the Run channel delivers the run's outbox |
 | `ConfigSync` | `SweepConfigs`, the config screen, push webhooks | Reads the head commit through `ConfigSource`, validates it, and stores the revision. A valid revision of the head that is not active is activated in batches of at most 90 writes: projects, repositories, sessions, skills, and triggers (Project repo keys in `detail.repository` become `owner/name`; `rate`/`cron` triggers are scheduled), then the removals; the last transaction sets `active_revision_id` and audits `config.activate` with the commit sha and author |
 | `TriggerSchedule` | trigger activation, the previous firing | Writes a `schedule` inbound event and schedules the next firing |
@@ -21,7 +21,7 @@ Jobs are written as message items in the same DynamoDB transaction as the state 
 | `SweepChecks` | rate schedule | Emits `CheckPoll` for check waits whose poll is due |
 | `SweepTaskLimits` | rate schedule | Applies `Start.Limits` to `RUNNING`/`WAITING` tasks; over the limit, `NEEDS_YOU` and an `interrupt` |
 | `UsageAlerts` | rate schedule | Writes `usage_alerts` at 80% of the plan |
-| `SweepWorkspaces` | rate schedule | Asks `RunnerPort::workspace_exit` about the open workspaces of `RUNNING`/`WAITING` tasks; a workspace that stopped on its own is closed, its run goes `idle` with the reason as `error`, and a `RUNNING` task goes `NEEDS_YOU` (`Workspace.Stopped`, the reason as `cause`). Then `RunnerPort::sweep` (the ECS runner scales the egress relay to 0 when no Workspace runs) |
+| `SweepWorkspaces` | rate schedule | Asks `RunnerPort::workspace_exit` about the open workspaces of `RUNNING`/`WAITING` tasks; a workspace that stopped on its own is closed, its run goes `idle` with the reason as `error`, and a `RUNNING` task goes `NEEDS_YOU` (`Workspace.Stopped`, the reason as `cause`); a workspace without `platform_ref` 15 minutes after it started is closed the same way. Then it stops every workspace in `RunnerPort::running_workspaces` that no open workspace item records with that `platform_ref`, and calls `RunnerPort::sweep` (the ECS runner scales the egress relay to 0 when no Workspace runs) |
 
 ## Trigger evaluation
 
@@ -71,7 +71,7 @@ The task branch is `sanchoris/<task id>`.
 
 `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_API_URL`, `RUN_TOKEN_SIGNING_KEY`, `SANCHORIS_WORKSPACE_COMMAND`, `SANCHORIS_CONTROL_URL`, `SANCHORIS_SOCKET_DIR`, `SANCHORIS_WORKSPACES_DIR`, `SANCHORIS_GIT_URL`, and the store variables in `docs/architecture.md` (`SANCHORIS_TABLE_MAIN`, `SANCHORIS_TABLE_AUDIT`, `SANCHORIS_DOCS_BUCKET`, and in AWS `SANCHORIS_WORK_QUEUE_URL`, `SANCHORIS_WORK_QUEUE_ARN`, `SANCHORIS_SCHEDULE_GROUP`, `SANCHORIS_SCHEDULER_ROLE_ARN`). The api also needs `TASK_TOKEN_SIGNING_KEY` for approvals. All are required.
 
-`LocalProcessRunner` creates a directory per workspace under `SANCHORIS_WORKSPACES_DIR`, clones each repository from `SANCHORIS_GIT_URL/<owner>/<name>.git` into a directory named after the repository, checks out the task branch (from `origin` when it exists), and starts `SANCHORIS_WORKSPACE_COMMAND` there with `SANCHORIS_RUN_ID`, `SANCHORIS_RUN_TOKEN` (signed over the tenant id and the run id), `SANCHORIS_CONTROL_URL`, `SANCHORIS_SOCKET_PATH`, and `SANCHORIS_WORKSPACE_DIR`. Stopping the workspace kills the process and removes the directory.
+`LocalProcessRunner` creates a directory per workspace under `SANCHORIS_WORKSPACES_DIR`, clones each repository from `SANCHORIS_GIT_URL/<owner>/<name>.git` into a directory named after the repository, checks out the task branch (from `origin` when it exists), and starts `SANCHORIS_WORKSPACE_COMMAND` there with `SANCHORIS_RUN_ID`, `SANCHORIS_CONTROL_URL`, `SANCHORIS_SOCKET_PATH`, and `SANCHORIS_WORKSPACE_DIR`, and writes `{"runToken": ...}` (signed over the tenant id and the run id) to its stdin. Stopping the workspace kills the process and removes the directory.
 
 ## Tests
 

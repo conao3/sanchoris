@@ -203,6 +203,67 @@ async fn a_workspace_that_stops_on_its_own_needs_you_with_the_reason() {
 }
 
 #[tokio::test]
+async fn a_workspace_that_stops_before_the_session_starts_gets_the_instruction_again() {
+    let world = World::new("pro").await;
+    world
+        .label_issue("delivery-35", 35, "Fix flaky checkout test", "mika-dev")
+        .await;
+    world.worker.settle().await.unwrap();
+    let task = world.task(&format!("{REPO}#35")).await;
+    let run_id = task.run_id.unwrap();
+    let first = world.outbox(run_id, "start").await;
+    assert_eq!(first.len(), 1);
+    assert_ne!(first[0]["instruction"], serde_json::Value::Null);
+    assert_eq!(first[0]["heartbeatSeconds"], json!(300));
+    assert_eq!(sanchoris_worker::supervisor::heartbeat_interval(60), 30);
+    assert_eq!(sanchoris_worker::supervisor::heartbeat_interval(3600), 300);
+
+    let platform_ref = world.runner.refs.lock().unwrap()[0].clone();
+    world.runner.exits.lock().unwrap().insert(
+        platform_ref,
+        sanchoris_worker::ports::WorkspaceExit {
+            reason: "CannotPullContainerError".into(),
+        },
+    );
+    world.clock.advance(Duration::seconds(120));
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "NEEDS_YOU");
+
+    world
+        .run_event(
+            run_id,
+            RunEventType::HumanReply,
+            json!({ "member": "Mika", "text": "Try again." }),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.runner.started.lock().unwrap().len(), 2);
+    let starts = world.outbox(run_id, "start").await;
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[1]["instruction"], first[0]["instruction"]);
+    assert_eq!(starts[1]["resume"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn the_sweep_stops_workspaces_that_no_open_workspace_records() {
+    let world = World::new("pro").await;
+    let task = world.started_task(35).await;
+    let run_id = task.run_id.unwrap();
+    let recorded = world.runner.running.lock().unwrap()[0].clone();
+    let stray = sanchoris_worker::ports::RunningWorkspace {
+        platform_ref: "fake-stray".into(),
+        workspace_id: uuid::Uuid::new_v4(),
+        ..recorded.clone()
+    };
+    world.runner.running.lock().unwrap().push(stray);
+    world.clock.advance(Duration::seconds(60));
+    world.worker.settle().await.unwrap();
+    assert_eq!(*world.runner.stopped.lock().unwrap(), vec![run_id]);
+    assert_eq!(*world.runner.running.lock().unwrap(), vec![recorded]);
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "RUNNING");
+}
+
+#[tokio::test]
 async fn turn_limits_need_you_and_interrupt_the_session() {
     let world = World::new("pro").await;
     let yaml = common::CONFIG_YAML.replacen("Limits: { Turns: 60,", "Limits: { Turns: 2,", 1);

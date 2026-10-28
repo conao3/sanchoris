@@ -9,6 +9,7 @@ use sanchoris_api::ecs::{EcsRunner, EcsRunnerConfig};
 use sanchoris_api::lambda::{self, SqsEvent};
 use sanchoris_api::records::s3_records;
 use sanchoris_core::clock::{Clock, SystemClock};
+use sanchoris_worker::deadline::with_deadline;
 use sanchoris_worker::resources::GitHubResources;
 use sanchoris_worker::{Deps, Settings, Worker};
 
@@ -40,7 +41,10 @@ async fn main() -> Result<(), lambda_runtime::Error> {
     let worker = Worker::new(store, deps, Settings::default());
     let worker = &worker;
     lambda_runtime::run(service_fn(move |event: LambdaEvent<SqsEvent>| async move {
-        Ok::<_, lambda_runtime::Error>(Box::pin(lambda::work(worker, &event.payload)).await)
+        let deadline = lambda::invocation_deadline(event.context.deadline)?;
+        Ok::<_, lambda_runtime::Error>(
+            with_deadline(deadline, Box::pin(lambda::work(worker, &event.payload))).await,
+        )
     }))
     .await
 }

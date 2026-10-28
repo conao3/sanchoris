@@ -1,16 +1,20 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Duration;
 use sanchoris_core::tokens::RunTokenSigner;
+use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::clock::Clock;
-use crate::ports::{RunnerError, RunnerPort, WorkspaceExit, WorkspaceHandle, WorkspaceSpec};
+use crate::ports::{
+    RunnerError, RunnerPort, RunningWorkspace, WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
+};
 
 #[derive(Debug, Clone)]
 pub struct LocalRunnerConfig {
@@ -51,6 +55,7 @@ impl LocalRunnerConfig {
 }
 
 struct LocalWorkspace {
+    running: RunningWorkspace,
     child: Child,
     dir: PathBuf,
 }
@@ -103,20 +108,18 @@ impl LocalProcessRunner {
         self.config.socket_dir.join(format!("{run_id}.sock"))
     }
 
-    pub fn environment(
-        &self,
-        tenant_id: Uuid,
-        run_id: Uuid,
-        workspace_dir: &Path,
-    ) -> Vec<(&'static str, String)> {
+    pub fn secrets(&self, tenant_id: Uuid, run_id: Uuid) -> String {
         let token = self.config.run_tokens.sign(
             tenant_id,
             run_id,
             self.clock.now() + self.config.token_ttl,
         );
+        serde_json::json!({ "runToken": token }).to_string()
+    }
+
+    pub fn environment(&self, run_id: Uuid, workspace_dir: &Path) -> Vec<(&'static str, String)> {
         vec![
             ("SANCHORIS_RUN_ID", run_id.to_string()),
-            ("SANCHORIS_RUN_TOKEN", token),
             ("SANCHORIS_CONTROL_URL", self.config.control_url.clone()),
             (
                 "SANCHORIS_SOCKET_PATH",
@@ -179,7 +182,21 @@ impl LocalProcessRunner {
 
 #[async_trait]
 impl RunnerPort for LocalProcessRunner {
+    fn platform(&self) -> &'static str {
+        "local"
+    }
+
     async fn start_workspace(&self, spec: &WorkspaceSpec) -> Result<WorkspaceHandle, RunnerError> {
+        if let Some(platform_ref) = self
+            .workspaces
+            .lock()
+            .await
+            .iter()
+            .find(|(_, workspace)| workspace.running.workspace_id == spec.workspace_id)
+            .map(|(platform_ref, _)| platform_ref.clone())
+        {
+            return Ok(WorkspaceHandle { platform_ref });
+        }
         let dir = self.config.workspaces_dir.join(Uuid::new_v4().to_string());
         tokio::fs::create_dir_all(&dir)
             .await
@@ -192,11 +209,12 @@ impl RunnerPort for LocalProcessRunner {
         command
             .args(&self.config.args)
             .current_dir(&dir)
+            .stdin(Stdio::piped())
             .kill_on_drop(true);
-        for (name, value) in self.environment(spec.tenant_id, spec.run_id, &dir) {
+        for (name, value) in self.environment(spec.run_id, &dir) {
             command.env(name, value);
         }
-        let child = match command.spawn() {
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
                 let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -210,14 +228,48 @@ impl RunnerPort for LocalProcessRunner {
             .id()
             .map(|pid| format!("pid:{pid}"))
             .ok_or_else(|| RunnerError("the workspace process exited at once".into()))?;
-        self.workspaces
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| RunnerError("the workspace process has no stdin".into()))?;
+        match stdin
+            .write_all(self.secrets(spec.tenant_id, spec.run_id).as_bytes())
+            .await
+        {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(error) => {
+                return Err(RunnerError(format!(
+                    "write the secrets of {platform_ref}: {error}"
+                )));
+            }
+        }
+        drop(stdin);
+        self.workspaces.lock().await.insert(
+            platform_ref.clone(),
+            LocalWorkspace {
+                running: RunningWorkspace {
+                    platform_ref: platform_ref.clone(),
+                    tenant_id: spec.tenant_id,
+                    task_id: spec.task_id,
+                    run_id: spec.run_id,
+                    workspace_id: spec.workspace_id,
+                },
+                child,
+                dir,
+            },
+        );
+        Ok(WorkspaceHandle { platform_ref })
+    }
+
+    async fn running_workspaces(&self) -> Result<Vec<RunningWorkspace>, RunnerError> {
+        Ok(self
+            .workspaces
             .lock()
             .await
-            .insert(platform_ref.clone(), LocalWorkspace { child, dir });
-        Ok(WorkspaceHandle {
-            platform: "local",
-            platform_ref,
-        })
+            .values()
+            .map(|workspace| workspace.running.clone())
+            .collect())
     }
 
     async fn stop_workspace(&self, _run_id: Uuid, platform_ref: &str) -> Result<(), RunnerError> {
@@ -311,6 +363,8 @@ mod tests {
             run_id: Uuid::new_v4(),
             tenant_id: Uuid::new_v4(),
             task_id: Uuid::new_v4(),
+            workspace_id: Uuid::new_v4(),
+            started_at: chrono::Utc::now(),
             branch: "sanchoris/x".into(),
             compute: "standard".into(),
             repositories,
@@ -367,13 +421,12 @@ mod tests {
     }
 
     #[test]
-    fn environment_carries_a_verifiable_run_token() {
+    fn the_run_token_goes_to_stdin_and_not_to_the_environment() {
         let fixture = fixture("true", &[]);
         let run_id = Uuid::new_v4();
         let tenant_id = Uuid::new_v4();
-        let env = fixture
-            .runner
-            .environment(tenant_id, run_id, Path::new("/w/1"));
+        let env = fixture.runner.environment(run_id, Path::new("/w/1"));
+        assert!(env.iter().all(|(name, _)| *name != "SANCHORIS_RUN_TOKEN"));
         let get = |name: &str| env.iter().find(|(k, _)| *k == name).unwrap().1.clone();
         assert_eq!(get("SANCHORIS_RUN_ID"), run_id.to_string());
         assert_eq!(
@@ -393,10 +446,12 @@ mod tests {
         let now = chrono::Utc
             .with_ymd_and_hms(2026, 10, 27, 9, 30, 0)
             .unwrap();
+        let secrets: serde_json::Value =
+            serde_json::from_str(&fixture.runner.secrets(tenant_id, run_id)).unwrap();
         assert_eq!(
             fixture
                 .tokens
-                .verify(&get("SANCHORIS_RUN_TOKEN"), now)
+                .verify(secrets["runToken"].as_str().unwrap(), now)
                 .unwrap(),
             sanchoris_core::tokens::RunClaims { tenant_id, run_id }
         );
@@ -407,8 +462,12 @@ mod tests {
         let fixture = fixture("sleep", &["30"]);
         let spec = spec(vec![]);
         let handle = fixture.runner.start_workspace(&spec).await.unwrap();
-        assert_eq!(handle.platform, "local");
         assert!(handle.platform_ref.starts_with("pid:"));
+        assert_eq!(fixture.runner.start_workspace(&spec).await.unwrap(), handle);
+        let running = fixture.runner.running_workspaces().await.unwrap();
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].workspace_id, spec.workspace_id);
+        assert_eq!(running[0].platform_ref, handle.platform_ref);
         fixture
             .runner
             .stop_workspace(spec.run_id, &handle.platform_ref)

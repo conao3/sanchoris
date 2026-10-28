@@ -71,11 +71,11 @@ const spawned = spawnAgent(
     ...process.env,
     PATH: `${join(root, "bin")}:${process.env.PATH ?? ""}`,
     SANCHORIS_RUN_ID: runId,
-    SANCHORIS_RUN_TOKEN: token,
     SANCHORIS_CONTROL_URL: control.url,
     SANCHORIS_SOCKET_PATH: join(root, "agent.sock"),
     SANCHORIS_WORKSPACE_DIR: workspaceDir,
   },
+  token,
   (line) => process.stderr.write(`agent: ${line}\n`),
 );
 

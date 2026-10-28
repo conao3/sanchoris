@@ -6,8 +6,8 @@ use chrono::{DateTime, TimeZone, Utc};
 use sanchoris_config::ConfigFiles;
 use sanchoris_worker::ports::{
     CheckRun, ConfigSource, GitHubClient, GitHubError, GitHubReader, IssueComment, IssueRelations,
-    MergeResult, NewPullRequest, PullRequest, RunnerError, RunnerPort, WorkspaceExit,
-    WorkspaceHandle, WorkspaceSpec,
+    MergeResult, NewPullRequest, PullRequest, RunnerError, RunnerPort, RunningWorkspace,
+    WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
 };
 use uuid::Uuid;
 
@@ -305,27 +305,63 @@ impl ConfigSource for FakeGitHub {
 #[derive(Debug, Default)]
 pub struct FakeRunner {
     pub started: Mutex<Vec<Uuid>>,
+    pub launches: Mutex<usize>,
     pub stopped: Mutex<Vec<Uuid>>,
     pub refs: Mutex<Vec<String>>,
+    pub running: Mutex<Vec<RunningWorkspace>>,
     pub exits: Mutex<HashMap<String, WorkspaceExit>>,
     pub sweeps: Mutex<usize>,
 }
 
 #[async_trait]
 impl RunnerPort for FakeRunner {
+    fn platform(&self) -> &'static str {
+        "local"
+    }
+
     async fn start_workspace(&self, spec: &WorkspaceSpec) -> Result<WorkspaceHandle, RunnerError> {
+        *self.launches.lock().unwrap() += 1;
+        let mut running = self.running.lock().unwrap();
+        if let Some(existing) = running
+            .iter()
+            .find(|workspace| workspace.workspace_id == spec.workspace_id)
+        {
+            return Ok(WorkspaceHandle {
+                platform_ref: existing.platform_ref.clone(),
+            });
+        }
         let mut started = self.started.lock().unwrap();
         started.push(spec.run_id);
         let platform_ref = format!("fake-{}-{}", spec.run_id, started.len());
         self.refs.lock().unwrap().push(platform_ref.clone());
-        Ok(WorkspaceHandle {
-            platform: "local",
-            platform_ref,
-        })
+        running.push(RunningWorkspace {
+            platform_ref: platform_ref.clone(),
+            tenant_id: spec.tenant_id,
+            task_id: spec.task_id,
+            run_id: spec.run_id,
+            workspace_id: spec.workspace_id,
+        });
+        Ok(WorkspaceHandle { platform_ref })
     }
 
-    async fn stop_workspace(&self, run_id: Uuid, _: &str) -> Result<(), RunnerError> {
+    async fn running_workspaces(&self) -> Result<Vec<RunningWorkspace>, RunnerError> {
+        let exits = self.exits.lock().unwrap();
+        Ok(self
+            .running
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|workspace| !exits.contains_key(&workspace.platform_ref))
+            .cloned()
+            .collect())
+    }
+
+    async fn stop_workspace(&self, run_id: Uuid, platform_ref: &str) -> Result<(), RunnerError> {
         self.stopped.lock().unwrap().push(run_id);
+        self.running
+            .lock()
+            .unwrap()
+            .retain(|workspace| workspace.platform_ref != platform_ref);
         Ok(())
     }
 

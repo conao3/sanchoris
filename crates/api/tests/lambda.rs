@@ -450,4 +450,25 @@ async fn the_api_function_takes_the_client_ip_from_the_http_api_request_context(
     assert_eq!(client_ip_of(event).await, (200, "203.0.113.7".to_string()));
     let unparsable = fixture("http.json", &[("sourceIp", "not-an-ip".to_string())]);
     assert_eq!(client_ip_of(unparsable).await.0, 500);
+
+    let mut via_cloudflare = fixture("http.json", &[("sourceIp", "172.70.1.2".to_string())]);
+    via_cloudflare["headers"]["cf-connecting-ip"] = json!("198.51.100.4");
+    assert_eq!(
+        client_ip_of(via_cloudflare).await,
+        (200, "198.51.100.4".to_string())
+    );
+    let mut forged = fixture("http.json", &[("sourceIp", "203.0.113.7".to_string())]);
+    forged["headers"]["cf-connecting-ip"] = json!("198.51.100.4");
+    assert_eq!(client_ip_of(forged).await, (200, "203.0.113.7".to_string()));
+}
+
+#[test]
+fn the_invocation_deadline_keeps_a_margin_for_the_commit() {
+    let deadline = lambda::invocation_deadline(1_793_061_000_000).unwrap();
+    assert_eq!(
+        deadline,
+        chrono::DateTime::<Utc>::from_timestamp(1_793_061_000 - lambda::DEADLINE_MARGIN_SECONDS, 0)
+            .unwrap()
+    );
+    assert!(lambda::invocation_deadline(u64::MAX).is_err());
 }

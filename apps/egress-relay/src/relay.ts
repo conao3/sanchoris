@@ -17,6 +17,15 @@ export interface RelayOptions {
   resolve: (host: string) => Promise<string>;
   connect: (port: number, address: string) => Socket;
   now: () => number;
+  maxConnections: number;
+  maxTunnelsPerRun: number;
+  idleTimeoutMs: number;
+}
+
+export interface Relay {
+  server: Server;
+  tunnels: (run: string) => number;
+  shutdown: () => Promise<void>;
 }
 
 export type Decision = { allowed: true; rule: "platform" | "session" } | { allowed: false; reason: string };
@@ -30,9 +39,14 @@ privateAddresses.addSubnet("100.64.0.0", 10, "ipv4");
 privateAddresses.addSubnet("127.0.0.0", 8, "ipv4");
 privateAddresses.addSubnet("169.254.0.0", 16, "ipv4");
 privateAddresses.addSubnet("172.16.0.0", 12, "ipv4");
+privateAddresses.addSubnet("192.0.0.0", 24, "ipv4");
 privateAddresses.addSubnet("192.168.0.0", 16, "ipv4");
+privateAddresses.addSubnet("198.18.0.0", 15, "ipv4");
+privateAddresses.addSubnet("224.0.0.0", 4, "ipv4");
+privateAddresses.addSubnet("240.0.0.0", 4, "ipv4");
 privateAddresses.addSubnet("::", 128, "ipv6");
 privateAddresses.addSubnet("::1", 128, "ipv6");
+privateAddresses.addSubnet("64:ff9b::", 96, "ipv6");
 privateAddresses.addSubnet("fc00::", 7, "ipv6");
 privateAddresses.addSubnet("fe80::", 10, "ipv6");
 
@@ -97,8 +111,34 @@ function refuse(socket: Socket, status: string, headers: string[] = []): void {
   socket.end([`HTTP/1.1 ${status}`, ...headers, "Content-Length: 0", "", ""].join("\r\n"));
 }
 
-function tunnel(request: IncomingMessage, client: Socket, head: Buffer, options: RelayOptions): void {
+interface RelayState {
+  options: RelayOptions;
+  perRun: Map<string, number>;
+  sockets: Set<Socket>;
+}
+
+function track(state: RelayState, socket: Socket): void {
+  state.sockets.add(socket);
+  socket.setTimeout(state.options.idleTimeoutMs, () => socket.destroy());
+  socket.on("close", () => state.sockets.delete(socket));
+}
+
+function admit(state: RelayState, run: string, client: Socket): boolean {
+  const open = state.perRun.get(run) ?? 0;
+  if (open >= state.options.maxTunnelsPerRun) return false;
+  state.perRun.set(run, open + 1);
+  client.once("close", () => {
+    const remaining = (state.perRun.get(run) ?? 1) - 1;
+    if (remaining > 0) state.perRun.set(run, remaining);
+    else state.perRun.delete(run);
+  });
+  return true;
+}
+
+function tunnel(request: IncomingMessage, client: Socket, head: Buffer, state: RelayState): void {
+  const { options } = state;
   client.on("error", () => client.destroy());
+  track(state, client);
   const destination = target(request.url);
   if (!destination) {
     refuse(client, "400 Bad Request");
@@ -118,14 +158,21 @@ function tunnel(request: IncomingMessage, client: Socket, head: Buffer, options:
     refuse(client, "403 Forbidden");
     return;
   }
+  if (!admit(state, claims.run, client)) {
+    options.log({ ...entry, allowed: false, reason: `the run has ${options.maxTunnelsPerRun} open tunnels` });
+    refuse(client, "429 Too Many Requests");
+    return;
+  }
   options.resolve(destination.host).then(
     (address) => {
+      if (client.destroyed) return;
       if (isPrivateAddress(address)) {
         options.log({ ...entry, address, allowed: false, reason: "private address" });
         refuse(client, "403 Forbidden");
         return;
       }
       const upstream = options.connect(destination.port, address);
+      track(state, upstream);
       let established = false;
       upstream.on("connect", () => {
         established = true;
@@ -140,6 +187,9 @@ function tunnel(request: IncomingMessage, client: Socket, head: Buffer, options:
         if (!established) refuse(client, "502 Bad Gateway");
         else client.destroy();
       });
+      upstream.on("close", () => {
+        if (established) client.destroy();
+      });
       client.on("close", () => upstream.destroy());
     },
     (error: Error) => {
@@ -149,13 +199,26 @@ function tunnel(request: IncomingMessage, client: Socket, head: Buffer, options:
   );
 }
 
-export function createRelay(options: RelayOptions): Server {
+export function createRelay(options: RelayOptions): Relay {
+  const state: RelayState = { options, perRun: new Map(), sockets: new Set() };
   const server = createServer((_request, response) => {
     response.writeHead(405, { Allow: "CONNECT", "Content-Length": "0" });
     response.end();
   });
-  server.on("connect", (request: IncomingMessage, client: Socket, head: Buffer) => tunnel(request, client, head, options));
-  return server;
+  server.maxConnections = options.maxConnections;
+  server.on("connect", (request: IncomingMessage, client: Socket, head: Buffer) => tunnel(request, client, head, state));
+  server.on("error", (error) => options.log({ event: "server_error", error: error.message }));
+  server.on("drop", (data) => options.log({ event: "dropped", reason: "maxConnections", remoteAddress: data?.remoteAddress ?? null }));
+  return {
+    server,
+    tunnels: (run) => state.perRun.get(run) ?? 0,
+    shutdown: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+        for (const socket of state.sockets) socket.destroy();
+      }),
+  };
 }
 
 export async function resolveHost(host: string): Promise<string> {

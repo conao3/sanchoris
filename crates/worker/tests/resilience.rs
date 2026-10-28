@@ -12,12 +12,14 @@ use sanchoris_worker::driver::LocalDriver;
 use sanchoris_worker::error::WorkerError;
 use uuid::Uuid;
 
-const CRASH_POINTS: [&str; 5] = [
+const CRASH_POINTS: [&str; 7] = [
     "dispatcher.before_commit",
     "timer.before_commit",
     "invocation.before_commit",
     "checks.before_commit",
     "run_event.before_commit",
+    "workspace_start.before_commit",
+    "workspace_start.after_launch",
 ];
 
 async fn crashy_settle(driver: &LocalDriver) -> usize {
@@ -57,6 +59,7 @@ struct Summary {
     pulls: usize,
     comments: usize,
     comment_updates: usize,
+    workspaces: usize,
 }
 
 async fn scenario(crash: bool) -> (Summary, usize) {
@@ -111,6 +114,7 @@ async fn scenario(crash: bool) -> (Summary, usize) {
         pulls: state.created_pulls.len(),
         comments: state.created_comments.len(),
         comment_updates: state.updated_comments.len(),
+        workspaces: world.runner.started.lock().unwrap().len(),
     };
     drop(state);
     (summary, crashes)
@@ -129,6 +133,7 @@ async fn crashes_between_claim_and_commit_converge_without_duplicate_side_effect
         (1, 1, 0)
     );
     assert_eq!(clean.execs, 2);
+    assert_eq!(clean.workspaces, 1);
     assert_eq!(crashed, clean);
 }
 

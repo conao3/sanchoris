@@ -1,4 +1,5 @@
 pub mod config_sync;
+pub mod deadline;
 pub mod dispatcher;
 pub mod driver;
 pub mod engine_worker;

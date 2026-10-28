@@ -86,9 +86,119 @@ pub fn gateway_source_ip(context: &RequestContext) -> Option<IpAddr> {
     }
 }
 
+pub const CLOUDFLARE_RANGES: [&str; 22] = [
+    "173.245.48.0/20",
+    "103.21.244.0/22",
+    "103.22.200.0/22",
+    "103.31.4.0/22",
+    "141.101.64.0/18",
+    "108.162.192.0/18",
+    "190.93.240.0/20",
+    "188.114.96.0/20",
+    "197.234.240.0/22",
+    "198.41.128.0/17",
+    "162.158.0.0/15",
+    "104.16.0.0/13",
+    "104.24.0.0/14",
+    "172.64.0.0/13",
+    "131.0.72.0/22",
+    "2400:cb00::/32",
+    "2606:4700::/32",
+    "2803:f800::/32",
+    "2405:b500::/32",
+    "2405:8100::/32",
+    "2a06:98c0::/29",
+    "2c0f:f248::/32",
+];
+
+fn bits(ip: IpAddr) -> (u128, u32) {
+    match ip {
+        IpAddr::V4(v4) => (u128::from(u32::from(v4)), 32),
+        IpAddr::V6(v6) => (u128::from(v6), 128),
+    }
+}
+
+fn in_range(ip: IpAddr, range: &str) -> bool {
+    let (network, prefix) = range.split_once('/').expect("a range is address/prefix");
+    let network: IpAddr = network.parse().expect("a range starts with an address");
+    let prefix: u32 = prefix.parse().expect("a range ends with a prefix length");
+    let ((address, width), (network, network_width)) = (bits(ip), bits(network));
+    if width != network_width {
+        return false;
+    }
+    let shift = width - prefix;
+    shift == width || address >> shift == network >> shift
+}
+
+pub fn is_cloudflare(ip: IpAddr) -> bool {
+    let ip = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        IpAddr::V4(_) => ip,
+    };
+    CLOUDFLARE_RANGES.iter().any(|range| in_range(ip, range))
+}
+
+pub fn client_ip(source: IpAddr, cf_connecting_ip: Option<&str>) -> IpAddr {
+    if !is_cloudflare(source) {
+        return source;
+    }
+    cf_connecting_ip
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(source)
+}
+
 pub async fn gateway_ip(mut request: Request, next: Next) -> Response {
-    if let Some(ip) = request.request_context_ref().and_then(gateway_source_ip) {
+    if let Some(source) = request.request_context_ref().and_then(gateway_source_ip) {
+        let forwarded = request
+            .headers()
+            .get("cf-connecting-ip")
+            .and_then(|value| value.to_str().ok());
+        let ip = client_ip(source, forwarded);
         request.extensions_mut().insert(ClientIp(ip));
     }
     next.run(request).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ip(value: &str) -> IpAddr {
+        value.parse().unwrap()
+    }
+
+    #[test]
+    fn every_cloudflare_range_parses_and_matches_its_own_network() {
+        for range in CLOUDFLARE_RANGES {
+            let network = ip(range.split_once('/').unwrap().0);
+            assert!(is_cloudflare(network), "{range}");
+        }
+    }
+
+    #[test]
+    fn cloudflare_ranges_cover_their_edges_only() {
+        assert!(is_cloudflare(ip("173.245.63.255")));
+        assert!(!is_cloudflare(ip("173.245.64.0")));
+        assert!(is_cloudflare(ip("2a06:98c7:ffff::1")));
+        assert!(!is_cloudflare(ip("2a06:98c8::1")));
+        assert!(is_cloudflare(ip("::ffff:104.16.0.1")));
+        assert!(!is_cloudflare(ip("203.0.113.7")));
+    }
+
+    #[test]
+    fn the_client_ip_trusts_cf_connecting_ip_only_from_cloudflare() {
+        assert_eq!(
+            client_ip(ip("172.70.1.2"), Some("198.51.100.4")),
+            ip("198.51.100.4")
+        );
+        assert_eq!(
+            client_ip(ip("203.0.113.7"), Some("198.51.100.4")),
+            ip("203.0.113.7")
+        );
+        assert_eq!(client_ip(ip("172.70.1.2"), None), ip("172.70.1.2"));
+        assert_eq!(
+            client_ip(ip("172.70.1.2"), Some("not-an-ip")),
+            ip("172.70.1.2")
+        );
+    }
 }

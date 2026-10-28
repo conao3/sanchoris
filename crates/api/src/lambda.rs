@@ -220,6 +220,16 @@ fn failures_from<'a>(identifiers: impl Iterator<Item = &'a str>) -> Vec<ItemFail
         .collect()
 }
 
+pub const DEADLINE_MARGIN_SECONDS: i64 = 30;
+
+pub fn invocation_deadline(deadline_millis: u64) -> Result<DateTime<Utc>, String> {
+    let millis = i64::try_from(deadline_millis)
+        .map_err(|_| format!("the invocation deadline {deadline_millis} is out of range"))?;
+    DateTime::<Utc>::from_timestamp_millis(millis)
+        .map(|deadline| deadline - chrono::Duration::seconds(DEADLINE_MARGIN_SECONDS))
+        .ok_or_else(|| format!("the invocation deadline {deadline_millis} is out of range"))
+}
+
 pub async fn work(worker: &Worker, event: &SqsEvent) -> BatchResponse {
     for (index, record) in event.records.iter().enumerate() {
         if let Err(error) = worker.handle_body(&record.body).await {
