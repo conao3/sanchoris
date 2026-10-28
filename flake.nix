@@ -48,6 +48,7 @@
             worktrunk
             sccache
             mold
+            cargo-nextest
           ];
 
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER = "${lambdaCc}/bin/${lambdaCc.targetPrefix}cc";

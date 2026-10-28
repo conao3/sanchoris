@@ -32,8 +32,32 @@ fn free_port() -> u16 {
         .expect("reserve a local port")
 }
 
+const SHARED_SERVER_PORTS_VAR: &str = "SANCHORIS_TEST_DYNAMO_PORTS";
+const NEXTEST_SLOT_VAR: &str = "NEXTEST_TEST_GLOBAL_SLOT";
+
+fn shared_server_port(ports: &str) -> u16 {
+    let ports: Vec<u16> = ports
+        .split(',')
+        .map(|port| {
+            port.parse().unwrap_or_else(|_| {
+                panic!("{SHARED_SERVER_PORTS_VAR} has a value that is not a port: {port}")
+            })
+        })
+        .collect();
+    let slot = match std::env::var(NEXTEST_SLOT_VAR) {
+        Ok(slot) => slot
+            .parse::<usize>()
+            .unwrap_or_else(|_| panic!("{NEXTEST_SLOT_VAR} is not a number: {slot}")),
+        Err(_) => 0,
+    };
+    ports[slot % ports.len()]
+}
+
 fn server_port() -> u16 {
     *SERVER.get_or_init(|| {
+        if let Ok(ports) = std::env::var(SHARED_SERVER_PORTS_VAR) {
+            return shared_server_port(&ports);
+        }
         let port = free_port();
         let parent = std::process::id();
         let script = format!(

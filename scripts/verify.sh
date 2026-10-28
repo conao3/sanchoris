@@ -6,19 +6,26 @@ if [ -z "${IN_NIX_SHELL:-}" ]; then
 fi
 
 usage() {
-  echo "usage: scripts/verify.sh quick|full" >&2
+  echo "usage: scripts/verify.sh quick|full|test [cargo nextest run arguments]" >&2
   exit 2
 }
 
-[ $# -eq 1 ] || usage
+[ $# -ge 1 ] || usage
 mode=$1
+shift
+[ "$mode" = test ] || [ $# -eq 0 ] || usage
 cd "$(git rev-parse --show-toplevel)"
 
 timings=()
 started=$SECONDS
+dynamo_instances=8
+dynamo_pids=()
 
 summary() {
   local status=$?
+  if [ ${#dynamo_pids[@]} -gt 0 ]; then
+    kill "${dynamo_pids[@]}" 2>/dev/null || true
+  fi
   echo
   echo "verify.sh $mode: $([ $status -eq 0 ] && echo ok || echo FAILED) in $((SECONDS - started))s"
   for line in "${timings[@]}"; do
@@ -47,11 +54,47 @@ ensure_node_modules() {
   fi
 }
 
+start_dynamo() {
+  if [ ${#dynamo_pids[@]} -gt 0 ]; then
+    return
+  fi
+  local -a ports
+  mapfile -t ports < <(node -e "
+    const net = require('net');
+    const servers = Array.from({ length: $dynamo_instances }, () => net.createServer().listen(0, '127.0.0.1'));
+    Promise.all(servers.map((s) => new Promise((r) => s.on('listening', r)))).then(() => {
+      for (const s of servers) console.log(s.address().port);
+      for (const s of servers) s.close();
+    });")
+  local port
+  for port in "${ports[@]}"; do
+    dynamodb-local -inMemory -disableTelemetry -port "$port" >/dev/null 2>&1 &
+    dynamo_pids+=($!)
+  done
+  local deadline=$((SECONDS + 60))
+  for port in "${ports[@]}"; do
+    until (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; do
+      if [ $SECONDS -ge $deadline ]; then
+        echo "verify.sh: DynamoDB Local did not listen on port $port" >&2
+        exit 1
+      fi
+      sleep 0.2
+    done
+  done
+  export SANCHORIS_TEST_DYNAMO_PORTS
+  SANCHORIS_TEST_DYNAMO_PORTS=$(IFS=,; echo "${ports[*]}")
+}
+
+nextest() {
+  start_dynamo
+  cargo nextest run --no-fail-fast --test-threads "$dynamo_instances" "$@"
+}
+
 full() {
   ensure_node_modules
   step "cargo fmt" cargo fmt --all --check
   step "cargo clippy" cargo clippy --workspace --all-targets --all-features -- -D warnings
-  step "cargo test" cargo test --workspace --no-fail-fast
+  step "cargo nextest" nextest --workspace
   step "pnpm check" pnpm check
 }
 
@@ -136,17 +179,17 @@ quick() {
 
   if [ $all_crates -eq 1 ]; then
     step "cargo clippy" cargo clippy --workspace --all-targets --all-features -- -D warnings
-    step "cargo test" cargo test --workspace --no-fail-fast
+    step "cargo nextest" nextest --workspace
   elif [ ${#crates[@]} -gt 0 ]; then
     local -a tested=("${!crates[@]}")
     local -a checked
     mapfile -t checked < <(dependents_closure "${tested[@]}")
     step "cargo clippy" cargo clippy $(printf -- '-p %s ' "${checked[@]}") --all-targets --all-features -- -D warnings
-    step "cargo test" cargo test $(printf -- '-p %s ' "${tested[@]}") --no-fail-fast
+    step "cargo nextest" nextest $(printf -- '-p %s ' "${tested[@]}")
   fi
 
   if [ $all_crates -eq 0 ] && [ $e2e -eq 1 ] && [ -z "${crates[sanchoris-api]:-}" ]; then
-    step "pnpm e2e" pnpm e2e
+    step "e2e" nextest -p sanchoris-api --test e2e
   fi
 
   local package
@@ -158,5 +201,9 @@ quick() {
 case "$mode" in
   quick) quick ;;
   full) full ;;
+  test)
+    ensure_node_modules
+    step "cargo nextest" nextest "$@"
+    ;;
   *) usage ;;
 esac

@@ -192,7 +192,7 @@ SANCHORIS_TABLE_MAIN=<main table> SANCHORIS_TABLE_AUDIT=<audit table> \
   cargo run -q -p sanchoris-core --bin sanchoris-dynamo-create
 ```
 
-The Rust tests start their own in-memory DynamoDB Local on a free port (`sanchoris_core::testing::TestDynamo`) and create uniquely named tables per test.
+The Rust tests (`sanchoris_core::testing::TestDynamo`) connect to one of the DynamoDB Local instances whose ports `scripts/verify.sh` exports in `SANCHORIS_TEST_DYNAMO_PORTS` (the one of the test's nextest slot), or start their own in-memory instance on a free port when the variable is unset, and create uniquely named tables per test.
 
 The frontend GraphQL documents live in `apps/frontend/src/graphql/` (`schema.graphql`, `mvp-shell.graphql`, and the GraphQL Code Generator output in `generated/`).
 
@@ -267,4 +267,4 @@ The runner only creates log directories and runs the explicit command after `--`
 scripts/verify.sh full
 ```
 
-runs `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace` (with the end-to-end test), and `pnpm check`. `scripts/verify.sh quick` runs them for the crates and apps changed against `origin/master`.
+runs `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo nextest run --workspace` (with the end-to-end test), and `pnpm check`. `scripts/verify.sh quick` runs them for the crates and apps changed against `origin/master`. `scripts/verify.sh test <arguments>` runs `cargo nextest run <arguments>` against the DynamoDB Local instances it starts.
