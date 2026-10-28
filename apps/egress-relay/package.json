@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "engines": {
-    "node": ">=22.18"
+    "node": ">=26"
   },
   "bin": {
     "egress-relay": "./src/bin/egress-relay.ts"
@@ -15,7 +15,7 @@
     "check": "pnpm run typecheck && pnpm run test"
   },
   "devDependencies": {
-    "@types/node": "^22.20.5",
-    "typescript": "^6.0.3"
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
   }
 }

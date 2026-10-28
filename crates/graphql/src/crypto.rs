@@ -1,4 +1,4 @@
-use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
+use aes_gcm::aead::{Aead, Generate, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use async_trait::async_trait;
 use base64::Engine;
@@ -55,7 +55,7 @@ impl AesGcmEncryptor {
 #[async_trait]
 impl Encryptor for AesGcmEncryptor {
     async fn encrypt(&self, tenant_id: Uuid, plaintext: &[u8]) -> Result<Encrypted, PortError> {
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let nonce = Nonce::generate();
         let ciphertext = self
             .cipher
             .encrypt(
