@@ -226,6 +226,9 @@ async fn invocation_context(
         return Ok(None);
     }
     let task = load_task(tx, locked.meta.task_id).await?;
+    if task.status.is_terminal() {
+        return Ok(None);
+    }
     Ok(Some(InvocationContext {
         tenant_id: tx.tenant_id(),
         task_id: locked.meta.task_id,

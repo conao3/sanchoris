@@ -11,7 +11,9 @@ use uuid::Uuid;
 
 use crate::db::{DbError, REF_INVOCATION, REF_RUN, REF_SKILL_RUN, TenantTx, insert_ref, locate};
 use crate::item::Entity;
-use crate::items::{ApprovalWait, Invocation, SkillRunItem, StateEntryItem, Task, TimerItem};
+use crate::items::{
+    ApprovalWait, CheckWait, Invocation, SkillRunItem, StateEntryItem, Task, TimerItem,
+};
 use crate::jobs::Job;
 use crate::keys;
 use crate::lifecycle::decide_skill_run_finished;
@@ -192,6 +194,84 @@ async fn timers(tx: &mut TenantTx, meta: &SkillRunMeta) -> Result<Vec<TimerItem>
     .await
 }
 
+fn token_sequence(task_token: &str) -> Option<u64> {
+    task_token
+        .strip_prefix("sanchoris-task:")?
+        .split(':')
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+async fn cancel_waits(
+    tx: &mut TenantTx,
+    meta: &SkillRunMeta,
+    sequence: Option<u64>,
+    now: DateTime<Utc>,
+) -> Result<(), DbError> {
+    let tenant_id = tx.tenant_id();
+    let pk = keys::task_pk(tenant_id, meta.task_id);
+    let prefix = keys::skill_run_prefix(meta.number);
+    let closes = |token: &str| sequence.is_none() || token_sequence(token) == sequence;
+    for mut wait in tx
+        .query::<CheckWait>(&pk, &format!("{prefix}#CHECK#"))
+        .await?
+    {
+        if wait.status == "waiting" && closes(&wait.task_token) {
+            wait.status = "cancelled".into();
+            wait.completed_at = Some(now);
+            tx.put(&wait)?;
+            tx.delete(&keys::check_wait_marker_key(tenant_id, wait.id))?;
+        }
+    }
+    for mut wait in tx
+        .query::<ApprovalWait>(&pk, &format!("{prefix}#APPROVAL#"))
+        .await?
+    {
+        if wait.status == "waiting" && closes(&wait.task_token) {
+            wait.status = "cancelled".into();
+            wait.resolved_at = Some(now);
+            tx.put(&wait)?;
+        }
+    }
+    Ok(())
+}
+
+pub async fn abort_skill_runs(
+    tx: &mut TenantTx,
+    task_id: Uuid,
+    cause: &str,
+    now: DateTime<Utc>,
+) -> Result<usize, DbError> {
+    let active = tx
+        .query::<SkillRunItem>(&keys::task_pk(tx.tenant_id(), task_id), "SR#")
+        .await?
+        .into_iter()
+        .filter(|s| s.status.is_active())
+        .collect::<Vec<_>>();
+    let mut aborted = 0;
+    for item in &active {
+        let locked = lock_skill_run(tx, item.id).await.map_err(into_db)?;
+        let step = sanchoris_engine::abort(&locked.definition, &locked.run, cause, now)
+            .map_err(|error| DbError::Decode(error.to_string()))?;
+        if step.disposition == Disposition::Applied {
+            Box::pin(persist_step(tx, &locked.meta, &step, now))
+                .await
+                .map_err(into_db)?;
+            aborted += 1;
+        }
+    }
+    Ok(aborted)
+}
+
+fn into_db(error: SkillRunError) -> DbError {
+    match error {
+        SkillRunError::Db(error) => error,
+        SkillRunError::Json(error) => DbError::Definition(error),
+        other => DbError::Decode(other.to_string()),
+    }
+}
+
 pub async fn persist_step(
     tx: &mut TenantTx,
     meta: &SkillRunMeta,
@@ -285,19 +365,21 @@ pub async fn persist_step(
                 }
             }
             Effect::CancelTimers { sequence } => {
-                let sequence = i64::try_from(*sequence).expect("sequence fits in i64");
+                let timer_sequence = i64::try_from(*sequence).expect("sequence fits in i64");
                 for timer in timers(tx, meta).await? {
-                    if timer.sequence == sequence {
+                    if timer.sequence == timer_sequence {
                         tx.cancel_schedule(timer.message_id);
                         tx.delete(&timer.key())?;
                     }
                 }
+                cancel_waits(tx, meta, Some(*sequence), now).await?;
             }
             Effect::CancelAllTimers => {
                 for timer in timers(tx, meta).await? {
                     tx.cancel_schedule(timer.message_id);
                     tx.delete(&timer.key())?;
                 }
+                cancel_waits(tx, meta, None, now).await?;
             }
             Effect::Notify(notification) => {
                 if let Some(run_id) = meta.run_id {
@@ -585,6 +667,10 @@ pub async fn resolve_approval(
         .await?
         .filter(|w| w.status == "waiting")
         .ok_or(SkillRunError::ApprovalNotWaiting)?;
+    let locked = lock_skill_run(tx, verified.skill_run_id).await?;
+    if locked.run.waiting_task_token() != Some(verified.task_token.as_str()) {
+        return Err(SkillRunError::ApprovalNotWaiting);
+    }
     wait.status = if approved { "approved" } else { "rejected" }.to_string();
     wait.resolved_at = Some(now);
     tx.put(&wait)?;

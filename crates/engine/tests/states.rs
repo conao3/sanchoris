@@ -4,8 +4,8 @@ use chrono::Duration;
 use common::{Harness, epoch};
 use sanchoris_config::skill::parse_skill_yaml;
 use sanchoris_engine::{
-    Disposition, EngineError, Event, IgnoreReason, ResourceOutcome, SkillRunStatus, StartRequest,
-    StateEntryStatus, Timer, start,
+    Disposition, Effect, EngineError, Event, IgnoreReason, ResourceOutcome, SkillRunStatus,
+    StartRequest, StateEntryStatus, Timer, start,
 };
 use serde_json::json;
 
@@ -342,4 +342,36 @@ States:
     let run = h.run();
     assert_eq!(run.status, SkillRunStatus::Failed);
     assert_eq!(run.error.as_deref(), Some("States.Runtime"));
+}
+
+#[test]
+fn abort_fails_the_run_and_cancels_its_timers_without_a_notification() {
+    let yaml = r#"
+Inputs: {}
+StartAt: Pause
+TimeoutSeconds: 600
+States:
+  Pause:
+    Type: Wait
+    Seconds: 30
+    End: true
+"#;
+    let h = started(yaml, json!({}));
+    let definition = parse_skill_yaml(yaml).unwrap();
+    let step = sanchoris_engine::abort(&definition, &h.run(), "stopped", h.now).unwrap();
+    assert_eq!(step.disposition, Disposition::Applied);
+    assert_eq!(step.run.status, SkillRunStatus::Failed);
+    assert_eq!(
+        step.run.error.as_deref(),
+        Some(sanchoris_engine::ABORTED_ERROR)
+    );
+    assert_eq!(step.run.cause.as_deref(), Some("stopped"));
+    assert_eq!(step.entries[0].status, StateEntryStatus::Failed);
+    assert!(step.effects.contains(&Effect::CancelAllTimers));
+    assert!(!step.effects.iter().any(|e| matches!(e, Effect::Notify(_))));
+    let again = sanchoris_engine::abort(&definition, &step.run, "stopped", h.now).unwrap();
+    assert_eq!(
+        again.disposition,
+        Disposition::Ignored(IgnoreReason::RunFinished)
+    );
 }

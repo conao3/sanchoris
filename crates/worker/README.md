@@ -33,7 +33,7 @@ The api writes inbound items and delivers outbox items; it never drives the engi
 - Run channel messages from the workspace agent: `record_run_event(tx, run_id, Some(seq), type, payload)` with the message minus `type`, `runId`, and `seq`. Types: `ready`, `heartbeat`, `turn_end`, `rate_limit`, `session_record`, `exec_result`.
 - A member's reply on the Task screen: `record_run_event(tx, latest_run, None, human_reply, {"member", "text"})`.
 - `skill_request`: answer synchronously with `skillrun::accept_skill_request` (`run`), `continue_skill_run` (`continue`), or `skill_run_status` (`status`), and reply with `skill_response`. Errors carry `SkillRunError::code()`.
-- Approvals: `skillrun::resolve_approval(tx, signer, signed_token, approved, member, now)`. Show `TaskTokenSigner::sign(approval_waits.skill_run_id, approval_waits.task_token)` to the user; the raw token never leaves the control plane.
+- Approvals: `skillrun::resolve_approval(tx, signer, signed_token, approved, member, now)`. It refuses a token whose wait is not `waiting` or that the skill run no longer waits for, before it changes the task. Show `TaskTokenSigner::sign(approval_waits.skill_run_id, approval_waits.task_token)` to the user; the raw token never leaves the control plane.
 
 ### Deliveries
 

@@ -10,6 +10,7 @@ use crate::jobs::Job;
 use crate::keys;
 use crate::lifecycle::TaskDecision;
 use crate::model::{TaskStatus, WaitReason};
+use crate::skillrun::abort_skill_runs;
 use crate::store::Update;
 
 pub const ERROR_APPROVAL_REQUESTED: &str = "Approval.Requested";
@@ -141,6 +142,7 @@ pub async fn apply_decision(
             task.cause = None;
             task.finished_at = Some(now);
             store_task(tx, &task, now).await?;
+            abort_skill_runs(tx, task_id, "The task succeeded", now).await?;
             finish_runs(tx, task_id, "completed", now).await?;
         }
         TaskDecision::Wait { reason, resume_at } => {
@@ -214,6 +216,7 @@ pub async fn abort_task(
     task.finished_at = Some(now);
     task.updated_at = now;
     store_task(tx, &task, now).await?;
+    abort_skill_runs(tx, task_id, "The task was stopped", now).await?;
     for run in runs_of(tx, task_id).await? {
         if !run.is_finished() {
             stop_run(tx, run.id, reason, now).await?;

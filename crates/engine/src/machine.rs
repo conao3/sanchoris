@@ -14,6 +14,7 @@ use sanchoris_config::skill::{
 use serde_json::{Map, Value, json};
 
 pub const RUNTIME_ERROR: &str = "States.Runtime";
+pub const ABORTED_ERROR: &str = "Skill.Aborted";
 pub const MAX_TRANSITIONS_PER_STEP: usize = 70;
 const MAX_DELAY_MILLIS: f64 = 1e15;
 
@@ -72,6 +73,40 @@ pub fn advance(
         Disposition::Applied => Ok(machine.finish()),
         Disposition::Ignored(reason) => Ok(ignored(reason)),
     }
+}
+
+pub fn abort(
+    definition: &SkillDefinition,
+    run: &SkillRun,
+    cause: &str,
+    now: DateTime<Utc>,
+) -> Result<Step, EngineError> {
+    if run.status.is_finished() {
+        return Ok(Step {
+            run: run.clone(),
+            entries: Vec::new(),
+            effects: Vec::new(),
+            disposition: Disposition::Ignored(IgnoreReason::RunFinished),
+        });
+    }
+    let mut machine = Machine::new(definition, run.clone(), now);
+    let error = ABORTED_ERROR.to_string();
+    let cause = Some(cause.to_string());
+    if machine.run.current.is_some() {
+        machine.close(
+            StateEntryStatus::Failed,
+            None,
+            None,
+            Some(error.clone()),
+            cause.clone(),
+        )?;
+    }
+    machine.run.status = SkillRunStatus::Failed;
+    machine.run.error = Some(error);
+    machine.run.cause = cause;
+    machine.run.finished_at = Some(now);
+    machine.effects.push(Effect::CancelAllTimers);
+    Ok(machine.finish())
 }
 
 pub fn task_token(key: IdempotencyKey) -> String {
