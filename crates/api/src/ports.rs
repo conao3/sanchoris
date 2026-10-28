@@ -61,8 +61,8 @@ impl InlineChatDispatcher {
 
 #[async_trait]
 impl ChatDispatcher for InlineChatDispatcher {
-    async fn dispatch(&self, tenant_id: Uuid) -> Result<(), PortError> {
-        dispatcher::dispatch_tenant(&self.worker, tenant_id)
+    async fn dispatch(&self, tenant_id: Uuid, source: &str, key: &str) -> Result<(), PortError> {
+        dispatcher::dispatch_inbound(&self.worker, tenant_id, source, key)
             .await
             .map(|_| ())
             .map_err(port_error)

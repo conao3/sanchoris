@@ -198,6 +198,13 @@ pub fn trigger_event_key(tenant_id: Uuid, trigger_id: Uuid, key: &str) -> Key {
     Key::main(trigger_pk(tenant_id, trigger_id), format!("EVT#{key}"))
 }
 
+pub fn trigger_rate_key(tenant_id: Uuid, trigger_id: Uuid, window_start: DateTime<Utc>) -> Key {
+    Key::main(
+        trigger_pk(tenant_id, trigger_id),
+        format!("RATE#{}", format_time(window_start)),
+    )
+}
+
 pub fn task_name_key(tenant_id: Uuid, trigger_id: Uuid, name: &str) -> Key {
     Key::main(trigger_pk(tenant_id, trigger_id), format!("TASK#{name}"))
 }

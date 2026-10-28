@@ -48,11 +48,44 @@ pub const EVENT_TYPES: &[(&str, &[&str])] = &[
     ("web", &["Message"]),
 ];
 
-pub const GITHUB_ACTOR_CONDITIONS: &[&[&str]] = &[
+pub const GITHUB_ACTOR_PATHS: &[&[&str]] = &[
     &["sender", "login"],
     &["issue", "author_association"],
     &["comment", "author_association"],
 ];
+
+pub fn github_actor_conditions(detail_type: &str) -> &'static [&'static [&'static str]] {
+    match detail_type {
+        "Issue Labeled" => &[&["sender", "login"], &["issue", "author_association"]],
+        "Issue Comment Created" => &[&["sender", "login"], &["comment", "author_association"]],
+        "Check Run Completed" => &[&["sender", "login"]],
+        _ => &[],
+    }
+}
+
+pub fn is_exact_values(value: &Value) -> bool {
+    matches!(value, Value::Array(items) if !items.is_empty() && items.iter().all(Value::is_string))
+}
+
+fn at_path<'a>(detail: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    path.iter()
+        .try_fold(detail, |v, key| v.get(*key))
+        .filter(|v| !v.is_null())
+}
+
+pub fn constrains_actor(detail: &Value, detail_type: &str) -> bool {
+    github_actor_conditions(detail_type)
+        .iter()
+        .any(|path| at_path(detail, path).is_some_and(is_exact_values))
+}
+
+fn actor_description(detail_type: &str) -> String {
+    github_actor_conditions(detail_type)
+        .iter()
+        .map(|path| format!("detail.{}", path.join(".")))
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
 
 pub fn load_repository(
     files: &ConfigFiles,
@@ -408,11 +441,31 @@ impl Validator<'_> {
                 .is_some_and(|v| !v.is_null())
         };
         if sources.contains(&"github") {
-            if !GITHUB_ACTOR_CONDITIONS.iter().any(|p| has(p)) {
-                self.error(
-                    &detail_loc,
-                    "GitHub triggers must constrain the actor with detail.sender.login, detail.issue.author_association, or detail.comment.author_association",
-                );
+            for path in GITHUB_ACTOR_PATHS {
+                if at_path(detail, path).is_some_and(|v| !is_exact_values(v)) {
+                    self.error(
+                        path.iter().fold(detail_loc.clone(), |loc, key| at(&loc, key)),
+                        "actor conditions must be a list of exact values; exists, prefix, anything-but, and numeric also match actors outside the list",
+                    );
+                }
+            }
+            let detail_types = pattern
+                .get("detail-type")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|t| !github_actor_conditions(t).is_empty());
+            for detail_type in detail_types {
+                if !constrains_actor(detail, detail_type) {
+                    self.error(
+                        &detail_loc,
+                        format!(
+                            "{detail_type} triggers must constrain the actor of the event with a list of exact values in {}",
+                            actor_description(detail_type)
+                        ),
+                    );
+                }
             }
             match detail.get("repository") {
                 None | Some(Value::Null) => self.error(

@@ -2103,6 +2103,7 @@ pub struct InboundEvent {
     pub event: Value,
     pub received_at: DateTime<Utc>,
     pub processed_at: Option<DateTime<Utc>>,
+    pub error: Option<String>,
 }
 
 impl Entity for InboundEvent {
@@ -2119,7 +2120,8 @@ impl Entity for InboundEvent {
             .s("key", &self.key)
             .json("event", &self.event)
             .time("received_at", self.received_at)
-            .opt_time("processed_at", self.processed_at);
+            .opt_time("processed_at", self.processed_at)
+            .opt_s("error", self.error.as_ref());
         if let Some(thread) = self.event["detail"]["thread"].as_str() {
             w.s(
                 "gsi1pk",
@@ -2138,6 +2140,7 @@ impl Entity for InboundEvent {
             event: r.json("event")?,
             received_at: r.time("received_at")?,
             processed_at: r.opt_time("processed_at")?,
+            error: r.opt_s("error")?,
         })
     }
 }
@@ -2300,6 +2303,45 @@ impl Entity for RunLogEntry {
             at: r.time("at")?,
             expires_at: DateTime::from_timestamp(r.n(crate::item::TTL)?, 0)
                 .ok_or_else(|| DbError::Decode("run log expires_at".into()))?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TriggerRate {
+    pub tenant_id: Uuid,
+    pub trigger_id: Uuid,
+    pub window_start: DateTime<Utc>,
+    pub starts: i64,
+    pub discarded: i64,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl Entity for TriggerRate {
+    const KIND: &'static str = "trigger_rate";
+
+    fn key(&self) -> Key {
+        keys::trigger_rate_key(self.tenant_id, self.trigger_id, self.window_start)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .uuid("trigger_id", self.trigger_id)
+            .time("window_start", self.window_start)
+            .n("starts", self.starts)
+            .n("discarded", self.discarded)
+            .ttl(self.expires_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            trigger_id: r.uuid("trigger_id")?,
+            window_start: r.time("window_start")?,
+            starts: r.n("starts")?,
+            discarded: r.n("discarded")?,
+            expires_at: DateTime::from_timestamp(r.n(crate::item::TTL)?, 0)
+                .ok_or_else(|| DbError::Decode("trigger rate expires_at".into()))?,
         })
     }
 }

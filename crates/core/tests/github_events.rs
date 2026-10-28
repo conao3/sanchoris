@@ -35,8 +35,7 @@ fn issue_labeled_is_normalized() {
                     "is_pull_request": false
                 },
                 "label": "sanchoris",
-                "sender": { "login": "mika-dev", "id": 101, "type": "User" },
-                "author_association": "MEMBER"
+                "sender": { "login": "mika-dev", "id": 101, "type": "User" }
             }
         })
     );
@@ -62,7 +61,7 @@ fn issue_comment_created_is_normalized() {
     assert_eq!(value["detail"]["issue"]["body"], Value::Null);
     assert_eq!(value["detail"]["issue"]["is_pull_request"], true);
     assert_eq!(value["detail"]["issue"]["author_association"], "NONE");
-    assert_eq!(value["detail"]["author_association"], "MEMBER");
+    assert_eq!(value["detail"]["author_association"], Value::Null);
     assert_eq!(value["detail"]["sender"]["login"], "mika-dev");
 }
 

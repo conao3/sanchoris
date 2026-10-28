@@ -10,7 +10,7 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use sanchoris_config::ConfigFiles;
 use serde::Serialize;
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 
 use crate::ports::{
     CheckRun, ConfigSource, GitHubClient, GitHubError, GitHubReader, IssueComment, IssueRef,
@@ -59,6 +59,50 @@ pub struct GitHubApi {
     base_url: String,
     transport: Arc<dyn HttpTransport>,
     auth: AppAuth,
+    app_login: OnceCell<String>,
+}
+
+const MAX_RETRIES: u32 = 2;
+const MAX_RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn repeatable(request: &HttpRequest) -> bool {
+    request.method == "GET"
+        || request.url.ends_with("/graphql")
+        || request.url.ends_with("/access_tokens")
+}
+
+fn retry_wait(
+    request: &HttpRequest,
+    response: &HttpResponse,
+    attempt: u32,
+    now: DateTime<Utc>,
+) -> Option<std::time::Duration> {
+    let rate_limited = response.status == 429
+        || (response.status == 403
+            && (response.header("x-ratelimit-remaining") == Some("0")
+                || response.header("retry-after").is_some()
+                || response
+                    .body
+                    .to_lowercase()
+                    .contains("secondary rate limit")));
+    let server_error = response.status >= 500 && repeatable(request);
+    if !rate_limited && !server_error {
+        return None;
+    }
+    if let Some(seconds) = response
+        .header("retry-after")
+        .and_then(|value| value.trim().parse::<u64>().ok())
+    {
+        return Some(std::time::Duration::from_secs(seconds));
+    }
+    if let Some(reset) = response
+        .header("x-ratelimit-reset")
+        .and_then(|value| value.trim().parse::<i64>().ok())
+    {
+        let seconds = u64::try_from(reset - now.timestamp()).unwrap_or(0);
+        return Some(std::time::Duration::from_secs(seconds));
+    }
+    Some(std::time::Duration::from_secs(1 << attempt))
 }
 
 fn decode<T: serde::de::DeserializeOwned>(response: &HttpResponse) -> Result<T, GitHubError> {
@@ -160,7 +204,36 @@ impl GitHubApi {
             base_url: base_url.trim_end_matches('/').to_string(),
             transport,
             auth,
+            app_login: OnceCell::new(),
         }
+    }
+
+    async fn send(&self, request: HttpRequest) -> Result<HttpResponse, GitHubError> {
+        let mut attempt = 0;
+        loop {
+            let response = self.transport.send(request.clone()).await?;
+            match retry_wait(&request, &response, attempt, Utc::now()) {
+                Some(wait) if attempt < MAX_RETRIES && wait <= MAX_RETRY_WAIT => {
+                    tokio::time::sleep(wait).await;
+                    attempt += 1;
+                }
+                _ => return Ok(response),
+            }
+        }
+    }
+
+    async fn app_slug(&self) -> Result<String, GitHubError> {
+        let jwt = self.auth.app_jwt(Utc::now())?;
+        let response = self
+            .send(HttpRequest {
+                method: "GET",
+                url: format!("{}/app", self.base_url),
+                headers: Self::headers(&jwt),
+                body: None,
+            })
+            .await?;
+        let body: Value = Self::check(response)?;
+        string(&body, "/slug")
     }
 
     fn headers(token: &str) -> Vec<(String, String)> {
@@ -182,7 +255,6 @@ impl GitHubApi {
         }
         let jwt = self.auth.app_jwt(now)?;
         let response = self
-            .transport
             .send(HttpRequest {
                 method: "POST",
                 url: format!(
@@ -214,7 +286,6 @@ impl GitHubApi {
             body["repositories"] = json!(repositories);
         }
         let response = self
-            .transport
             .send(HttpRequest {
                 method: "POST",
                 url: format!(
@@ -252,7 +323,6 @@ impl GitHubApi {
     ) -> Result<Value, GitHubError> {
         let token = self.installation_token(installation).await?;
         let response = self
-            .transport
             .send(HttpRequest {
                 method,
                 url: format!("{}{path}", self.base_url),
@@ -294,7 +364,6 @@ impl GitHubApi {
     ) -> Result<InstallationAccount, GitHubError> {
         let jwt = self.auth.app_jwt(Utc::now())?;
         let response = self
-            .transport
             .send(HttpRequest {
                 method: "GET",
                 url: format!("{}/app/installations/{installation}", self.base_url),
@@ -621,6 +690,13 @@ impl GitHubReader for GitHubApi {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(IssueRelations { parent, blocked_by })
     }
+
+    async fn app_login(&self) -> Result<String, GitHubError> {
+        self.app_login
+            .get_or_try_init(|| async { Ok(format!("{}[bot]", self.app_slug().await?)) })
+            .await
+            .cloned()
+    }
 }
 
 fn config_path(root_path: &str, path: &str) -> Option<String> {
@@ -707,6 +783,30 @@ impl ConfigSource for GitHubApi {
             files.insert(path, text);
         }
         Ok(files)
+    }
+
+    async fn commit_author(
+        &self,
+        installation: i64,
+        repo: &str,
+        sha: &str,
+    ) -> Result<String, GitHubError> {
+        let value = self
+            .call(
+                installation,
+                "GET",
+                &format!("/repos/{repo}/commits/{sha}"),
+                None,
+            )
+            .await?;
+        match value.pointer("/author/login").and_then(Value::as_str) {
+            Some(login) => Ok(login.to_string()),
+            None => {
+                let name = string(&value, "/commit/author/name")?;
+                let email = string(&value, "/commit/author/email")?;
+                Ok(format!("{name} <{email}>"))
+            }
+        }
     }
 }
 

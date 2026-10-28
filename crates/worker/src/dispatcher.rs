@@ -1,22 +1,25 @@
-use chrono::{DateTime, SecondsFormat, Utc};
-use sanchoris_config::{
-    Skill, SkillOrigin, Start, builtin_skill, validate::GITHUB_ACTOR_CONDITIONS,
-};
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, Duration, DurationRound, SecondsFormat, Utc};
+use sanchoris_config::validate::{constrains_actor, github_actor_conditions};
+use sanchoris_config::{Skill, SkillOrigin, Start, builtin_skill};
+use sanchoris_core::audit::{AuditEntry, record_audit};
 use sanchoris_core::db::{
-    self, NewTask, NewTriggerEvent, REF_CHECK_WAIT, REF_TRIGGER, Recorded, TenantTx,
+    self, DbError, NewTask, NewTriggerEvent, REF_CHECK_WAIT, REF_TRIGGER, Recorded, TenantTx,
     TriggerEventOutcome, locate,
 };
 use sanchoris_core::github::CHECK_RUN_COMPLETED;
+use sanchoris_core::item::Key;
 use sanchoris_core::items::{
     CheckWait, CheckWaitMarker, Config, Guard, InboundEvent, Membership, Pending, Project,
-    SessionDef, SkillDef, Task, TaskName, Trigger, uniq,
+    SessionDef, SkillDef, Task, TaskName, Trigger, TriggerRate, uniq,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
 use sanchoris_core::messages::{self, OfferedSkill, StartMessage};
-use sanchoris_core::model::{NamedDefinition, TaskDefinition, TaskStatus};
+use sanchoris_core::model::{ActorKind, AuditOrigin, NamedDefinition, TaskDefinition, TaskStatus};
 use sanchoris_core::pattern::EventPattern;
-use sanchoris_core::store::{Index, SortKey};
+use sanchoris_core::store::{Index, SortKey, Update};
 use sanchoris_core::tasks::{latest_run, load_task, send_to_task, store_task};
 use sanchoris_core::transform::{InputTransformer, render_instruction};
 use serde_json::{Map, Value, json};
@@ -25,6 +28,7 @@ use uuid::Uuid;
 use crate::Worker;
 use crate::config_sync::trigger_definition;
 use crate::error::{Result, WorkerError};
+use crate::ports::{GitHubError, IssueRelations};
 use crate::schedule::next_fire;
 
 pub const SCHEDULE_SOURCE: &str = "schedule";
@@ -34,21 +38,58 @@ const DEPTH_LIMIT: i64 = 100;
 
 pub async fn process_inbound(worker: &Worker, tenant_id: Uuid) -> Result<usize> {
     let mut processed = 0;
-    while process_next(worker, tenant_id).await? {
+    loop {
+        let mut tx = worker.tx(tenant_id);
+        let markers = tx
+            .query::<Pending>(&keys::inbound_pk(tenant_id), "PEND#")
+            .await?;
+        let Some(marker) = markers.into_iter().next() else {
+            return Ok(processed);
+        };
+        process_marker(worker, tenant_id, &marker.key).await?;
         processed += 1;
     }
-    Ok(processed)
 }
 
-pub async fn dispatch_tenant(worker: &Worker, tenant_id: Uuid) -> Result<usize> {
+pub async fn dispatch_inbound(
+    worker: &Worker,
+    tenant_id: Uuid,
+    source: &str,
+    key: &str,
+) -> Result<usize> {
     let mut attempt = 0;
     loop {
         attempt += 1;
-        match process_inbound(worker, tenant_id).await {
+        match dispatch_inbound_once(worker, tenant_id, source, key).await {
             Err(error) if error.is_conflict() && attempt < worker.settings.conflict_attempts => {}
             other => return other,
         }
     }
+}
+
+async fn dispatch_inbound_once(
+    worker: &Worker,
+    tenant_id: Uuid,
+    source: &str,
+    key: &str,
+) -> Result<usize> {
+    let inbound = worker
+        .store
+        .get::<InboundEvent>(&keys::inbound_event_key(tenant_id, source, key))
+        .await?
+        .ok_or_else(|| {
+            WorkerError::Invalid(format!("inbound event {source}:{key} does not exist"))
+        })?;
+    if inbound.processed_at.is_some() {
+        return Ok(0);
+    }
+    process_marker(
+        worker,
+        tenant_id,
+        &keys::pending_inbound_key(tenant_id, inbound.received_at, inbound.id),
+    )
+    .await?;
+    Ok(1)
 }
 
 pub async fn dispatch(worker: &Worker, tenant_id: Uuid) -> Result<usize> {
@@ -58,13 +99,69 @@ pub async fn dispatch(worker: &Worker, tenant_id: Uuid) -> Result<usize> {
     Ok(dispatched.len())
 }
 
-async fn process_next(worker: &Worker, tenant_id: Uuid) -> Result<bool> {
+struct Failure {
+    trigger_id: Option<Uuid>,
+    error: WorkerError,
+}
+
+impl From<WorkerError> for Failure {
+    fn from(error: WorkerError) -> Self {
+        Self {
+            trigger_id: None,
+            error,
+        }
+    }
+}
+
+impl From<DbError> for Failure {
+    fn from(error: DbError) -> Self {
+        WorkerError::from(error).into()
+    }
+}
+
+fn is_poison(error: &WorkerError) -> bool {
+    let transient = match error {
+        WorkerError::Db(DbError::Dynamo(_) | DbError::Port(_))
+        | WorkerError::Port(_)
+        | WorkerError::Runner(_)
+        | WorkerError::Injected(_)
+        | WorkerError::GitHub(GitHubError::Transport(_)) => true,
+        WorkerError::GitHub(GitHubError::Status { status, .. }) => *status == 429 || *status >= 500,
+        _ => error.is_conflict(),
+    };
+    !transient
+}
+
+async fn process_marker(worker: &Worker, tenant_id: Uuid, marker_key: &Key) -> Result<()> {
+    let mut failed = BTreeMap::new();
+    loop {
+        let error = match process_once(worker, tenant_id, marker_key, &failed).await {
+            Ok(()) => return Ok(()),
+            Err(Failure {
+                trigger_id: Some(trigger_id),
+                error,
+            }) if is_poison(&error) && !failed.contains_key(&trigger_id) => {
+                failed.insert(trigger_id, error.to_string());
+                continue;
+            }
+            Err(Failure { error, .. }) => error,
+        };
+        if !is_poison(&error) {
+            return Err(error);
+        }
+        return discard_inbound(worker, tenant_id, marker_key, &error.to_string()).await;
+    }
+}
+
+async fn process_once(
+    worker: &Worker,
+    tenant_id: Uuid,
+    marker_key: &Key,
+    failed: &BTreeMap<Uuid, String>,
+) -> std::result::Result<(), Failure> {
     let mut tx = worker.tx(tenant_id);
-    let markers = tx
-        .query::<Pending>(&keys::inbound_pk(tenant_id), "PEND#")
-        .await?;
-    let Some(marker) = markers.into_iter().next() else {
-        return Ok(false);
+    let Some(marker) = tx.get::<Pending>(marker_key).await? else {
+        return Ok(());
     };
     tx.delete(&marker.key)?;
     let Some(mut inbound) = tx
@@ -73,18 +170,47 @@ async fn process_next(worker: &Worker, tenant_id: Uuid) -> Result<bool> {
         .filter(|event| event.processed_at.is_none())
     else {
         tx.commit().await?;
-        return Ok(true);
+        return Ok(());
     };
-    process(worker, &mut tx, &inbound).await?;
+    process(worker, &mut tx, &inbound, failed).await?;
     inbound.processed_at = Some(worker.now());
     tx.put(&inbound)?;
     db::dispatch_pending_tasks(&mut tx, worker.now()).await?;
     worker.faults.check("dispatcher.before_commit")?;
     tx.commit().await?;
-    Ok(true)
+    Ok(())
 }
 
-async fn process(worker: &Worker, tx: &mut TenantTx, inbound: &InboundEvent) -> Result<()> {
+async fn discard_inbound(
+    worker: &Worker,
+    tenant_id: Uuid,
+    marker_key: &Key,
+    reason: &str,
+) -> Result<()> {
+    let mut tx = worker.tx(tenant_id);
+    let Some(marker) = tx.get::<Pending>(marker_key).await? else {
+        return Ok(());
+    };
+    tx.delete(&marker.key)?;
+    if let Some(mut inbound) = tx
+        .get::<InboundEvent>(&marker.target)
+        .await?
+        .filter(|event| event.processed_at.is_none())
+    {
+        inbound.processed_at = Some(worker.now());
+        inbound.error = Some(reason.to_string());
+        tx.put(&inbound)?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn process(
+    worker: &Worker,
+    tx: &mut TenantTx,
+    inbound: &InboundEvent,
+    failed: &BTreeMap<Uuid, String>,
+) -> std::result::Result<(), Failure> {
     if inbound.event["detail-type"] == CHECK_RUN_COMPLETED {
         nudge_check_waits(worker, tx, &inbound.event).await?;
     }
@@ -104,7 +230,41 @@ async fn process(worker: &Worker, tx: &mut TenantTx, inbound: &InboundEvent) -> 
         event_triggers(tx).await?
     };
     for trigger in triggers {
-        evaluate(worker, tx, inbound, &trigger).await?;
+        match failed.get(&trigger.id) {
+            Some(reason) => record_failed(tx, inbound, &trigger, reason).await?,
+            None => evaluate(worker, tx, inbound, &trigger)
+                .await
+                .map_err(|error| Failure {
+                    trigger_id: Some(trigger.id),
+                    error,
+                })?,
+        }
+    }
+    Ok(())
+}
+
+async fn record_failed(
+    tx: &mut TenantTx,
+    inbound: &InboundEvent,
+    trigger: &Trigger,
+    reason: &str,
+) -> Result<()> {
+    let recorded = db::record_trigger_event(
+        tx,
+        &NewTriggerEvent {
+            trigger_id: trigger.id,
+            key: &inbound.key,
+            event: &inbound.event,
+        },
+    )
+    .await?;
+    if let Recorded::New(trigger_event_id) = recorded {
+        db::set_trigger_event_outcome(
+            tx,
+            trigger_event_id,
+            &discarded(format!("the trigger failed on this event: {reason}")),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -177,12 +337,12 @@ async fn event_triggers(tx: &mut TenantTx) -> Result<Vec<Trigger>> {
         .collect())
 }
 
-fn without_actor(pattern: &Value) -> Value {
+fn without_actor(pattern: &Value, detail_type: &str) -> Value {
     let mut pattern = pattern.clone();
     let Some(Value::Object(detail)) = pattern.get_mut("detail") else {
         return pattern;
     };
-    for path in GITHUB_ACTOR_CONDITIONS {
+    for path in github_actor_conditions(detail_type) {
         let [parent, leaf] = path else {
             panic!("actor conditions are two levels deep");
         };
@@ -199,8 +359,21 @@ fn without_actor(pattern: &Value) -> Value {
 fn actor_reason(event: &Value) -> String {
     let detail = &event["detail"];
     let login = detail["sender"]["login"].as_str().unwrap_or("unknown");
-    let association = detail["author_association"].as_str().unwrap_or("NONE");
-    format!("the actor {login} ({association}) is not allowed by the trigger")
+    match detail["comment"]["author_association"].as_str() {
+        Some(association) => {
+            format!("the actor {login} ({association}) is not allowed by the trigger")
+        }
+        None => format!("the actor {login} is not allowed by the trigger"),
+    }
+}
+
+fn unconstrained_actor(pattern: &Value, event: &Value) -> Option<String> {
+    let detail_type = event["detail-type"].as_str()?;
+    if event["source"] != "github" || github_actor_conditions(detail_type).is_empty() {
+        return None;
+    }
+    (!constrains_actor(&pattern["detail"], detail_type))
+        .then(|| format!("the trigger does not constrain the actor of {detail_type} events"))
 }
 
 async fn evaluate(
@@ -209,16 +382,22 @@ async fn evaluate(
     inbound: &InboundEvent,
     trigger: &Trigger,
 ) -> Result<()> {
-    let pattern = match &trigger.event_pattern {
+    let actor_check = match &trigger.event_pattern {
         Some(raw) => {
+            let detail_type = inbound.event["detail-type"].as_str().unwrap_or("");
             let full = EventPattern::parse(raw)
                 .map_err(|e| WorkerError::Invalid(format!("trigger {}: {e}", trigger.name)))?;
-            let relevant = EventPattern::parse(&without_actor(raw))
+            let relevant = EventPattern::parse(&without_actor(raw, detail_type))
                 .map_err(|e| WorkerError::Invalid(format!("trigger {}: {e}", trigger.name)))?;
             if !relevant.matches(&inbound.event) {
                 return Ok(());
             }
-            Some(full)
+            match unconstrained_actor(raw, &inbound.event) {
+                Some(reason) => Some(skipped(reason)),
+                None => {
+                    (!full.matches(&inbound.event)).then(|| skipped(actor_reason(&inbound.event)))
+                }
+            }
         }
         None => None,
     };
@@ -234,11 +413,9 @@ async fn evaluate(
     let Recorded::New(trigger_event_id) = recorded else {
         return Ok(());
     };
-    let outcome = match pattern {
-        Some(pattern) if !pattern.matches(&inbound.event) => TriggerEventOutcome::Skipped {
-            reason: actor_reason(&inbound.event),
-        },
-        _ => start(worker, tx, inbound, trigger, trigger_event_id).await?,
+    let outcome = match actor_check {
+        Some(outcome) => outcome,
+        None => start(worker, tx, inbound, trigger, trigger_event_id).await?,
     };
     db::set_trigger_event_outcome(tx, trigger_event_id, &outcome).await?;
     Ok(())
@@ -340,6 +517,13 @@ async fn start(
         },
         skills,
     };
+    let name_key = keys::task_name_key(tx.tenant_id(), trigger.id, &placement.name);
+    if tx.get::<TaskName>(&name_key).await?.is_some() {
+        return Ok(discarded(format!("task {} already exists", placement.name)));
+    }
+    if let Some(outcome) = admit_start(worker, tx, trigger).await? {
+        return Ok(outcome);
+    }
     let recorded = db::create_task(
         tx,
         &NewTask {
@@ -377,6 +561,63 @@ async fn start(
     task.start_payload = Some(json!({ "instruction": text, "systemPrompt": system_prompt }));
     tx.put(&task)?;
     Ok(TriggerEventOutcome::Started)
+}
+
+async fn admit_start(
+    worker: &Worker,
+    tx: &mut TenantTx,
+    trigger: &Trigger,
+) -> Result<Option<TriggerEventOutcome>> {
+    let now = worker.now();
+    let window_start = now
+        .duration_trunc(Duration::hours(1))
+        .expect("an hour divides the time");
+    let limit = worker.settings.trigger_starts_per_hour;
+    let key = keys::trigger_rate_key(tx.tenant_id(), trigger.id, window_start);
+    let Some(rate) = tx.get::<TriggerRate>(&key).await? else {
+        tx.insert(&TriggerRate {
+            tenant_id: tx.tenant_id(),
+            trigger_id: trigger.id,
+            window_start,
+            starts: 1,
+            discarded: 0,
+            expires_at: window_start + Duration::days(1),
+        })?;
+        return Ok(None);
+    };
+    if rate.starts < limit {
+        tx.update(
+            &key,
+            Update::new().add("starts", 1).cap_after("starts", limit),
+        )?;
+        return Ok(None);
+    }
+    tx.update(&key, Update::new().add("discarded", 1))?;
+    let window = window_start.to_rfc3339_opts(SecondsFormat::Secs, true);
+    let reason = format!(
+        "receive limit: trigger {} already started {limit} tasks in the hour from {window}",
+        trigger.name
+    );
+    if rate.discarded == 0 {
+        let trigger_ref = trigger.id.to_string();
+        record_audit(
+            tx,
+            &AuditEntry {
+                at: now,
+                actor_kind: ActorKind::Trigger,
+                actor_ref: &trigger_ref,
+                action: "trigger.receive_limit",
+                target_kind: "trigger",
+                target_ref: &trigger_ref,
+                summary: &format!("Discarded events over the receive limit: {reason}"),
+                origin: AuditOrigin::System,
+                source_ip: None,
+                metadata: Map::new(),
+            },
+        )
+        .await?;
+    }
+    Ok(Some(discarded(reason)))
 }
 
 async fn place(
@@ -452,6 +693,15 @@ async fn depth_of(tx: &mut TenantTx, task_id: Uuid) -> Result<i64> {
     Ok(depth)
 }
 
+async fn app_sender(worker: &Worker, detail: &Value) -> Result<Option<String>> {
+    let sender = &detail["sender"];
+    let Some(login) = sender["login"].as_str().filter(|_| sender["type"] == "Bot") else {
+        return Ok(None);
+    };
+    let app = worker.deps.reader.app_login().await?;
+    Ok(login.eq_ignore_ascii_case(&app).then_some(app))
+}
+
 async fn place_github(
     worker: &Worker,
     tx: &mut TenantTx,
@@ -482,41 +732,69 @@ async fn place_github(
             requested_by_member_id: requester,
         }));
     };
-    let installation = detail["installation"]["id"]
-        .as_i64()
-        .ok_or_else(|| WorkerError::Invalid("GitHub events carry detail.installation.id".into()))?;
-    let relations = worker
-        .deps
-        .reader
-        .issue_relations(installation, repo, number)
-        .await?;
-    let mut parent_task_id = None;
-    if let Some(parent) = &relations.parent
-        && let Some(parent_id) = task_by_name(worker, tx, &parent.task_name()).await?
-    {
-        let limits = start.limits.children;
-        let depth = depth_of(tx, parent_id).await? + 1;
-        if u64::try_from(depth).expect("depth is positive") > limits.max_depth {
-            return Ok(Plan::Done(skipped(format!(
-                "children limit: depth {depth} exceeds MaxDepth {}",
-                limits.max_depth
-            ))));
+    let Some(installation) = detail["installation"]["id"].as_i64() else {
+        return Ok(Plan::Done(discarded(
+            "GitHub events carry detail.installation.id",
+        )));
+    };
+    let relations = if detail["issue"]["is_pull_request"] == true {
+        IssueRelations::default()
+    } else {
+        match worker
+            .deps
+            .reader
+            .issue_relations(installation, repo, number)
+            .await
+        {
+            Ok(relations) => relations,
+            Err(error) => {
+                return Ok(Plan::Done(skipped(format!(
+                    "children limit: the parent and blockers of {repo}#{number} could not be read: {error}"
+                ))));
+            }
         }
-        let siblings = tx
-            .query::<sanchoris_core::items::Child>(
-                &keys::task_pk(tx.tenant_id(), parent_id),
-                "CHILD#",
-            )
+    };
+    let parent = match &relations.parent {
+        Some(parent) => task_by_name(worker, tx, &parent.task_name())
             .await?
-            .len();
-        if u64::try_from(siblings).expect("count fits") >= limits.max_count {
-            return Ok(Plan::Done(skipped(format!(
-                "children limit: {} already has {siblings} child tasks (MaxCount {})",
-                parent.task_name(),
-                limits.max_count
-            ))));
+            .map(|id| (parent.task_name(), id)),
+        None => None,
+    };
+    let mut parent_task_id = None;
+    match parent {
+        Some((parent_name, parent_id)) => {
+            let limits = start.limits.children;
+            let depth = depth_of(tx, parent_id).await? + 1;
+            if u64::try_from(depth).expect("depth is positive") > limits.max_depth {
+                return Ok(Plan::Done(skipped(format!(
+                    "children limit: depth {depth} exceeds MaxDepth {}",
+                    limits.max_depth
+                ))));
+            }
+            let parent_task = load_task(tx, parent_id).await?;
+            let siblings = tx
+                .query::<sanchoris_core::items::Child>(
+                    &keys::task_pk(tx.tenant_id(), parent_id),
+                    "CHILD#",
+                )
+                .await?
+                .len();
+            if u64::try_from(siblings).expect("count fits") >= limits.max_count {
+                return Ok(Plan::Done(skipped(format!(
+                    "children limit: {parent_name} already has {siblings} child tasks (MaxCount {})",
+                    limits.max_count
+                ))));
+            }
+            tx.put(&parent_task)?;
+            parent_task_id = Some(parent_id);
         }
-        parent_task_id = Some(parent_id);
+        None => {
+            if let Some(bot) = app_sender(worker, detail).await? {
+                return Ok(Plan::Done(skipped(format!(
+                    "children limit: {bot} started this event on {repo}#{number}, which is not a sub-issue of a task's issue"
+                ))));
+            }
+        }
     }
     let mut blocked_by = Vec::new();
     for blocker in &relations.blocked_by {
@@ -562,14 +840,25 @@ async fn place_chat(
     if let Some(latest) = latest {
         let task = load_task(tx, latest.task_id).await?;
         if !task.status.is_terminal() {
+            let user = detail["user"].as_str().unwrap_or("user");
+            let message = messages::reply_message(user, text);
             let Some(run_id) = latest_run(tx, task.id).await? else {
-                return Ok(Plan::Done(skipped(format!(
-                    "the thread's task {} has not started yet",
+                let mut task = task;
+                let Some(payload) = task.start_payload.as_mut() else {
+                    return Ok(Plan::Done(skipped(format!(
+                        "the thread's task {} has no start instruction yet",
+                        task.name
+                    ))));
+                };
+                let instruction = payload["instruction"].as_str().unwrap_or("");
+                payload["instruction"] = json!(format!("{instruction}\n\n{message}"));
+                task.updated_at = now;
+                tx.put(&task)?;
+                return Ok(Plan::Done(discarded(format!(
+                    "added to the start instruction of the pending task {}",
                     task.name
                 ))));
             };
-            let user = detail["user"].as_str().unwrap_or("user");
-            let message = messages::reply_message(user, text);
             send_to_task(
                 tx,
                 task.id,
@@ -721,7 +1010,7 @@ pub async fn fire_schedule(
     )
     .await?;
     trigger.schedule_message_id = None;
-    schedule_trigger(&mut tx, &mut trigger, due_at)?;
+    schedule_trigger(&mut tx, &mut trigger, due_at.max(worker.now()))?;
     tx.put(&trigger)?;
     tx.commit().await?;
     Ok(1)

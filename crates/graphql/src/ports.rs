@@ -87,7 +87,7 @@ pub trait ConfigRepositoryPort: Send + Sync {
 
 #[async_trait]
 pub trait ChatDispatcher: Send + Sync {
-    async fn dispatch(&self, tenant_id: Uuid) -> Result<(), PortError>;
+    async fn dispatch(&self, tenant_id: Uuid, source: &str, key: &str) -> Result<(), PortError>;
 }
 
 #[async_trait]

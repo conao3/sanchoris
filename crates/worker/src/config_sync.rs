@@ -5,15 +5,19 @@ use sanchoris_config::{
     Checkout, Compute, Config as RepoConfig, ConfigRepository, PlanLimits, Trigger as RepoTrigger,
     TriggerSource, TriggerState, ValidationContext, parse_repository, validate,
 };
-use sanchoris_core::db::{REF_CONFIG_REVISION, REF_TRIGGER, TenantTx, insert_ref, tenant_plan};
-use sanchoris_core::item::{Entity, format_time};
+use sanchoris_core::audit::{AuditEntry, record_audit};
+use sanchoris_core::db::{
+    REF_CONFIG_REVISION, REF_TRIGGER, TenantTx, insert_ref, locate, tenant_plan,
+};
+use sanchoris_core::item::{Entity, Key, format_time};
 use sanchoris_core::items::{
     Config, ConfigRevision, Credential, Guard, Project, Repository, SessionDef, SkillDef, Trigger,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
-use sanchoris_core::store::{Index, SortKey};
-use serde_json::{Value, json};
+use sanchoris_core::model::{ActorKind, AuditOrigin};
+use sanchoris_core::store::{Index, MAX_TRANSACTION_ITEMS, SortKey};
+use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use crate::dispatcher::schedule_trigger;
@@ -61,19 +65,77 @@ pub async fn sync_config(worker: &Worker, tenant_id: Uuid, config_id: Uuid) -> R
     let known = tx
         .get::<Guard>(&keys::revision_sha_key(tenant_id, config_id, &sha))
         .await?;
-    if known.is_none() {
-        let files = worker
-            .deps
-            .config_source
-            .fetch(installation, &config.repository, &config.root_path, &sha)
-            .await?;
-        let context = validation_context(&mut tx).await?;
-        store_revision(&mut tx, &mut config, &sha, &files, &context, now).await?;
-    }
+    let revision = match known {
+        Some(guard) => {
+            let location = locate(&mut tx, guard.target, REF_CONFIG_REVISION)
+                .await?
+                .ok_or_else(|| {
+                    WorkerError::Invalid(format!("config revision {} has no ref", guard.target))
+                })?;
+            tx.require::<ConfigRevision>(&location.target).await?
+        }
+        None => {
+            let files = worker
+                .deps
+                .config_source
+                .fetch(installation, &config.repository, &config.root_path, &sha)
+                .await?;
+            let context = validation_context(&mut tx).await?;
+            store_revision(&mut tx, &mut config, &sha, &files, &context, now)?
+        }
+    };
     config.synced_at = Some(now);
     config.updated_at = now;
     tx.put(&config)?;
     worker.faults.check("config_sync.before_commit")?;
+    tx.commit().await?;
+    if revision.validation_status != "valid" || config.active_revision_id == Some(revision.id) {
+        return Ok(());
+    }
+    let parsed = revision.parsed.clone().ok_or_else(|| {
+        WorkerError::Invalid(format!(
+            "valid revision {} has no parsed config",
+            revision.id
+        ))
+    })?;
+    let repository: ConfigRepository = serde_json::from_value(parsed)?;
+    let author = worker
+        .deps
+        .config_source
+        .commit_author(installation, &config.repository, &sha)
+        .await?;
+    activate(worker, tenant_id, config_id, revision.id, &repository, now).await?;
+    let mut tx = worker.tx(tenant_id);
+    let mut config = tx
+        .require::<Config>(&keys::config_key(tenant_id, config_id))
+        .await?;
+    config.active_revision_id = Some(revision.id);
+    config.updated_at = now;
+    tx.put(&config)?;
+    let config_ref = config_id.to_string();
+    let mut metadata = Map::new();
+    metadata.insert("revision".into(), json!(revision.number));
+    metadata.insert("commit_sha".into(), json!(sha));
+    metadata.insert("commit_author".into(), json!(author));
+    record_audit(
+        &mut tx,
+        &AuditEntry {
+            at: now,
+            actor_kind: ActorKind::System,
+            actor_ref: "config-sync",
+            action: "config.activate",
+            target_kind: "config",
+            target_ref: &config_ref,
+            summary: &format!(
+                "Activated revision {} of {} at {sha} by {author}",
+                revision.number, config.repository
+            ),
+            origin: AuditOrigin::Github,
+            source_ip: None,
+            metadata,
+        },
+    )
+    .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -110,17 +172,16 @@ pub async fn validation_context(tx: &mut TenantTx) -> Result<ValidationContext> 
     })
 }
 
-async fn store_revision(
+fn store_revision(
     tx: &mut TenantTx,
     config: &mut Config,
     sha: &str,
     files: &sanchoris_config::ConfigFiles,
     context: &ValidationContext,
     now: DateTime<Utc>,
-) -> Result<()> {
+) -> Result<ConfigRevision> {
     let tenant_id = tx.tenant_id();
-    let parsed = parse_repository(files);
-    let (repository, errors) = match parsed {
+    let (repository, errors) = match parse_repository(files) {
         Ok(repository) => {
             let errors = validate(&repository, context).err();
             (Some(repository), errors)
@@ -154,11 +215,7 @@ async fn store_revision(
         revision.key(),
         Some(config.id),
     )?;
-    if let (Some(repository), "valid") = (repository, status) {
-        activate(tx, config.id, revision.id, &repository, now).await?;
-        config.active_revision_id = Some(revision.id);
-    }
-    Ok(())
+    Ok(revision)
 }
 
 pub fn resolve_repository_key(
@@ -197,40 +254,70 @@ pub fn rewrite_event_pattern(config: &RepoConfig, trigger: &RepoTrigger, pattern
     pattern
 }
 
-async fn upsert<E: Entity>(tx: &mut TenantTx, entity: &E) -> Result<()> {
+const BATCH_WRITES: usize = MAX_TRANSACTION_ITEMS - 10;
+const TRIGGER_WRITES: usize = 4;
+
+struct Batches<'a> {
+    worker: &'a Worker,
+    tenant_id: Uuid,
+    tx: TenantTx,
+    writes: usize,
+}
+
+impl<'a> Batches<'a> {
+    fn new(worker: &'a Worker, tenant_id: Uuid) -> Self {
+        Self {
+            worker,
+            tenant_id,
+            tx: worker.tx(tenant_id),
+            writes: 0,
+        }
+    }
+
+    async fn room(&mut self, writes: usize) -> Result<&mut TenantTx> {
+        if self.writes + writes > BATCH_WRITES {
+            let full = std::mem::replace(&mut self.tx, self.worker.tx(self.tenant_id));
+            full.commit().await?;
+            self.worker.faults.check("config_sync.between_batches")?;
+            self.writes = 0;
+        }
+        self.writes += writes;
+        Ok(&mut self.tx)
+    }
+
+    async fn finish(self) -> Result<()> {
+        self.tx.commit().await?;
+        Ok(())
+    }
+}
+
+async fn upsert<E: Entity>(batches: &mut Batches<'_>, entity: &E) -> Result<()> {
+    let tx = batches.room(1).await?;
     tx.get::<E>(&entity.key()).await?;
     tx.put(entity)?;
     Ok(())
 }
 
+async fn delete(batches: &mut Batches<'_>, key: &Key) -> Result<()> {
+    batches.room(1).await?.delete(key)?;
+    Ok(())
+}
+
 async fn activate(
-    tx: &mut TenantTx,
+    worker: &Worker,
+    tenant_id: Uuid,
     config_id: Uuid,
     revision_id: Uuid,
     repository: &ConfigRepository,
     now: DateTime<Utc>,
 ) -> Result<()> {
-    let tenant_id = tx.tenant_id();
     let pk = keys::config_pk(tenant_id, config_id);
     let config = &repository.config;
+    let mut batches = Batches::new(worker, tenant_id);
 
-    for project in tx.query::<Project>(&pk, "PROJECT#").await? {
-        if !config.projects.contains_key(&project.name) {
-            tx.delete(&project.key())?;
-        }
-    }
-    for repo in tx.query::<Repository>(&pk, "PROJECT#").await? {
-        let keep = config
-            .projects
-            .get(&repo.project)
-            .is_some_and(|p| p.repos.contains_key(&repo.name));
-        if !keep {
-            tx.delete(&repo.key())?;
-        }
-    }
     for (name, project) in &config.projects {
         upsert(
-            tx,
+            &mut batches,
             &Project {
                 id: keys::config_entity_id(config_id, "project", name),
                 tenant_id,
@@ -244,7 +331,7 @@ async fn activate(
         .await?;
         for (repo_name, repo) in &project.repos {
             upsert(
-                tx,
+                &mut batches,
                 &Repository {
                     id: keys::config_entity_id(
                         config_id,
@@ -274,14 +361,9 @@ async fn activate(
         }
     }
 
-    for session in tx.query::<SessionDef>(&pk, "SESSION#").await? {
-        if !config.sessions.contains_key(&session.name) {
-            tx.delete(&session.key())?;
-        }
-    }
     for (name, session) in &config.sessions {
         upsert(
-            tx,
+            &mut batches,
             &SessionDef {
                 id: keys::config_entity_id(config_id, "session", name),
                 tenant_id,
@@ -294,14 +376,9 @@ async fn activate(
         .await?;
     }
 
-    for skill in tx.query::<SkillDef>(&pk, "SKILL#").await? {
-        if !repository.skills.contains_key(&skill.name) {
-            tx.delete(&skill.key())?;
-        }
-    }
     for (name, skill) in &repository.skills {
         upsert(
-            tx,
+            &mut batches,
             &SkillDef {
                 id: keys::config_entity_id(config_id, "skill", name),
                 tenant_id,
@@ -333,14 +410,8 @@ async fn activate(
         .await?;
     }
 
-    for mut previous in tx.query::<Trigger>(&pk, "TRIGGER#").await? {
-        if !config.triggers.contains_key(&previous.name) && previous.removed_at.is_none() {
-            previous.removed_at = Some(now);
-            schedule_trigger(tx, &mut previous, now)?;
-            tx.put(&previous)?;
-        }
-    }
     for (name, trigger) in &config.triggers {
+        let tx = batches.room(TRIGGER_WRITES).await?;
         let (event_pattern, schedule_expression) = match &trigger.source {
             TriggerSource::EventPattern(pattern) => {
                 (Some(rewrite_event_pattern(config, trigger, pattern)), None)
@@ -395,7 +466,45 @@ async fn activate(
             }
         }
     }
-    Ok(())
+
+    let store = &worker.store;
+    for listed in store.query::<Trigger>(&pk, "TRIGGER#").await? {
+        if config.triggers.contains_key(&listed.name) || listed.removed_at.is_some() {
+            continue;
+        }
+        let tx = batches.room(TRIGGER_WRITES).await?;
+        let Some(mut previous) = tx.get::<Trigger>(&listed.key()).await? else {
+            continue;
+        };
+        previous.removed_at = Some(now);
+        schedule_trigger(tx, &mut previous, now)?;
+        tx.put(&previous)?;
+    }
+    for skill in store.query::<SkillDef>(&pk, "SKILL#").await? {
+        if !repository.skills.contains_key(&skill.name) {
+            delete(&mut batches, &skill.key()).await?;
+        }
+    }
+    for session in store.query::<SessionDef>(&pk, "SESSION#").await? {
+        if !config.sessions.contains_key(&session.name) {
+            delete(&mut batches, &session.key()).await?;
+        }
+    }
+    for repo in store.query::<Repository>(&pk, "PROJECT#").await? {
+        let keep = config
+            .projects
+            .get(&repo.project)
+            .is_some_and(|p| p.repos.contains_key(&repo.name));
+        if !keep {
+            delete(&mut batches, &repo.key()).await?;
+        }
+    }
+    for project in store.query::<Project>(&pk, "PROJECT#").await? {
+        if !config.projects.contains_key(&project.name) {
+            delete(&mut batches, &project.key()).await?;
+        }
+    }
+    batches.finish().await
 }
 
 pub fn trigger_definition(

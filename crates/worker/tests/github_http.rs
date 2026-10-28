@@ -7,8 +7,8 @@ use sanchoris_engine::{IdempotencyKey, Integration, Invocation, ResourceOutcome,
 use sanchoris_worker::github::transport::{HttpRequest, HttpResponse, HttpTransport};
 use sanchoris_worker::github::{AppAuth, GitHubApi};
 use sanchoris_worker::ports::{
-    ConfigSource, GitHubError, GitHubReader, Installation, InvocationContext, IssueRef,
-    ResourceInvoker,
+    ConfigSource, GitHubClient, GitHubError, GitHubReader, Installation, InvocationContext,
+    IssueRef, ResourceInvoker,
 };
 use sanchoris_worker::resources::GitHubResources;
 use serde_json::{Value, json};
@@ -39,6 +39,7 @@ struct Exchange {
     path: String,
     body: Option<Value>,
     status: u16,
+    headers: Vec<(String, String)>,
     response: Value,
 }
 
@@ -48,6 +49,7 @@ fn exchange(method: &'static str, path: &str, status: u16, response: Value) -> E
         path: path.to_string(),
         body: None,
         status,
+        headers: Vec::new(),
         response,
     }
 }
@@ -100,6 +102,7 @@ impl HttpTransport for Recorded {
         self.seen.lock().unwrap().push(request);
         Ok(HttpResponse {
             status: next.status,
+            headers: next.headers,
             body: next.response.to_string(),
         })
     }
@@ -408,5 +411,224 @@ async fn config_files_are_read_from_the_tree_at_a_commit() {
             ),
         ]
     );
+    recorded.assert_done();
+}
+
+fn with_headers(mut exchange: Exchange, headers: &[(&str, &str)]) -> Exchange {
+    exchange.headers = headers
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+    exchange
+}
+
+fn commit(sha: &str) -> Exchange {
+    exchange(
+        "GET",
+        "/repos/acme/config/commits/main",
+        200,
+        json!({ "sha": sha }),
+    )
+}
+
+#[tokio::test]
+async fn rate_limited_requests_are_retried_after_the_wait_github_asks_for() {
+    let (api, recorded) = api(vec![
+        token_exchange(),
+        with_headers(
+            exchange(
+                "GET",
+                "/repos/acme/config/commits/main",
+                429,
+                json!({ "message": "API rate limit exceeded" }),
+            ),
+            &[("Retry-After", "0")],
+        ),
+        commit("c1"),
+        with_headers(
+            exchange(
+                "GET",
+                "/repos/acme/config/commits/main",
+                403,
+                json!({ "message": "You have exceeded a secondary rate limit." }),
+            ),
+            &[("retry-after", "0")],
+        ),
+        with_headers(
+            exchange(
+                "GET",
+                "/repos/acme/config/commits/main",
+                502,
+                json!({ "message": "Bad Gateway" }),
+            ),
+            &[("x-ratelimit-reset", "0")],
+        ),
+        commit("c2"),
+    ]);
+    assert_eq!(
+        api.head_commit(42, "acme/config", "main").await.unwrap(),
+        "c1"
+    );
+    assert_eq!(
+        api.head_commit(42, "acme/config", "main").await.unwrap(),
+        "c2"
+    );
+    recorded.assert_done();
+}
+
+#[tokio::test]
+async fn retries_stop_after_two_attempts_or_a_long_wait() {
+    let limited = || {
+        with_headers(
+            exchange(
+                "GET",
+                "/repos/acme/config/commits/main",
+                429,
+                json!({ "message": "API rate limit exceeded" }),
+            ),
+            &[("Retry-After", "0")],
+        )
+    };
+    let (api, recorded) = api(vec![
+        token_exchange(),
+        limited(),
+        limited(),
+        limited(),
+        with_headers(
+            exchange(
+                "GET",
+                "/repos/acme/config/commits/main",
+                403,
+                json!({ "message": "API rate limit exceeded" }),
+            ),
+            &[("x-ratelimit-remaining", "0"), ("Retry-After", "60")],
+        ),
+        exchange(
+            "GET",
+            "/repos/acme/config/commits/main",
+            404,
+            json!({ "message": "Not Found" }),
+        ),
+    ]);
+    for status in [429, 403, 404] {
+        let error = api
+            .head_commit(42, "acme/config", "main")
+            .await
+            .unwrap_err();
+        assert_eq!(error.status(), Some(status));
+    }
+    recorded.assert_done();
+}
+
+#[tokio::test]
+async fn server_errors_on_writes_are_not_repeated() {
+    let (api, recorded) = api(vec![
+        token_exchange(),
+        exchange(
+            "POST",
+            "/repos/acme/shop-web/issues/35/comments",
+            502,
+            json!({ "message": "Bad Gateway" }),
+        ),
+    ]);
+    let error = api
+        .create_issue_comment(42, "acme/shop-web", 35, "Done")
+        .await
+        .unwrap_err();
+    assert_eq!(error.status(), Some(502));
+    recorded.assert_done();
+}
+
+#[tokio::test]
+async fn installation_tokens_are_renewed_within_a_minute_of_expiry() {
+    let soon = (chrono::Utc::now() + chrono::Duration::seconds(30))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let later = (chrono::Utc::now() + chrono::Duration::minutes(10))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let token = |token: &str, expires_at: &str| {
+        exchange(
+            "POST",
+            "/app/installations/42/access_tokens",
+            201,
+            json!({ "token": token, "expires_at": expires_at }),
+        )
+    };
+    let (api, recorded) = api(vec![
+        token("ghs_soon", &soon),
+        commit("c1"),
+        token("ghs_later", &later),
+        commit("c2"),
+        commit("c3"),
+    ]);
+    for _ in 0..3 {
+        api.head_commit(42, "acme/config", "main").await.unwrap();
+    }
+    recorded.assert_done();
+    let seen = recorded.seen.lock().unwrap();
+    let authorizations = seen
+        .iter()
+        .filter(|r| r.url.ends_with("/commits/main"))
+        .map(|r| r.header("Authorization").unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        authorizations,
+        vec![
+            "Bearer ghs_soon".to_string(),
+            "Bearer ghs_later".to_string(),
+            "Bearer ghs_later".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn scoped_tokens_name_the_repositories_and_permissions() {
+    let mut narrowed = exchange(
+        "POST",
+        "/app/installations/42/access_tokens",
+        201,
+        json!({ "token": "ghs_narrow", "expires_at": "2099-01-01T00:00:00Z" }),
+    );
+    narrowed.body = Some(json!({
+        "permissions": { "contents": "write", "issues": "read" },
+        "repositories": ["shop-api", "shop-web"],
+    }));
+    let mut whole = exchange(
+        "POST",
+        "/app/installations/42/access_tokens",
+        201,
+        json!({ "token": "ghs_whole", "expires_at": "2099-01-01T00:00:00Z" }),
+    );
+    whole.body = Some(json!({ "permissions": { "contents": "read" } }));
+    let (api, recorded) = api(vec![narrowed, whole]);
+    let permissions = std::collections::BTreeMap::from([
+        ("contents".to_string(), "write".to_string()),
+        ("issues".to_string(), "read".to_string()),
+    ]);
+    let repositories = vec!["shop-api".to_string(), "shop-web".to_string()];
+    let (token, expires_at) = api
+        .scoped_installation_token(42, Some(&repositories), &permissions)
+        .await
+        .unwrap();
+    assert_eq!(token, "ghs_narrow");
+    assert_eq!(expires_at.to_rfc3339(), "2099-01-01T00:00:00+00:00");
+    let read = std::collections::BTreeMap::from([("contents".to_string(), "read".to_string())]);
+    let (token, _) = api
+        .scoped_installation_token(42, None, &read)
+        .await
+        .unwrap();
+    assert_eq!(token, "ghs_whole");
+    recorded.assert_done();
+}
+
+#[tokio::test]
+async fn the_app_login_is_read_once_from_the_app() {
+    let (api, recorded) = api(vec![exchange(
+        "GET",
+        "/app",
+        200,
+        json!({ "slug": "sanchoris-dev" }),
+    )]);
+    assert_eq!(api.app_login().await.unwrap(), "sanchoris-dev[bot]");
+    assert_eq!(api.app_login().await.unwrap(), "sanchoris-dev[bot]");
     recorded.assert_done();
 }

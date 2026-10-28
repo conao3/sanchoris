@@ -258,6 +258,7 @@ pub async fn record_inbound_event(
         event: event.clone(),
         received_at,
         processed_at: None,
+        error: None,
     })?;
     tx.insert(&Pending {
         key: keys::pending_inbound_key(tenant_id, received_at, id),

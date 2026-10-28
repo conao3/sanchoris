@@ -6,7 +6,7 @@ Jobs are written as message items in the same DynamoDB transaction as the state 
 
 | Job | Emitted by | Does |
 |---|---|---|
-| `Inbound` | `record_inbound_event` (webhooks, chat, schedules) | Processes the tenant's pending inbound events in order: evaluates enabled triggers, records `trigger_events` with `started`/`skipped`/`discarded`, creates tasks, and dispatches pending tasks. `Check Run Completed` also wakes matching check waits |
+| `Inbound` | `record_inbound_event` (webhooks, chat, schedules) | Processes the tenant's pending inbound events in order: evaluates enabled triggers, records `trigger_events` with `started`/`skipped`/`discarded`, creates tasks, and dispatches pending tasks. `Check Run Completed` also wakes matching check waits. See "Trigger evaluation" |
 | `Dispatch` | `create_task`, a task leaving `RUNNING`, billing changes | Starts pending tasks while the plan's concurrency and task limits allow |
 | `RunEvents` | `record_run_event` | Processes the run's pending events in order: `ready`, `heartbeat`, `session_record`, `turn_end`, `rate_limit`, `exec_result`, `human_reply`. Every event from the agent (a `heartbeat` only while `busy`) sends `TaskHeartbeat` to the run's skill runs in `WAITING_AGENT`, so an `agent:handoff` stays alive while the agent works on it |
 | `Invoke` | the engine's `InvokeResource` effect | Runs the resource and feeds `ResourceResult` back, or sends an `exec` and waits for `exec_result` |
@@ -15,13 +15,21 @@ Jobs are written as message items in the same DynamoDB transaction as the state 
 | `TaskResume` | a usage-limit wait, at `ResumeAt` | Sends "Continue where you left off." |
 | `Reconcile` | a run being created, finished, or sent a `user_message`/`exec`; a task becoming idle, at the idle deadline | Starts a workspace for a run that needs one, stops a finished or idle one |
 | `DeliverOutbox` | `enqueue_outbox` | Calls `OutboxPusher` so the Run channel delivers the run's outbox |
-| `ConfigSync` | `SweepConfigs`, the config screen, push webhooks | Reads the head commit through `ConfigSource`, validates it, stores the revision, and on success activates projects, repositories, sessions, skills, and triggers (Project repo keys in `detail.repository` become `owner/name`) and schedules `rate`/`cron` triggers |
+| `ConfigSync` | `SweepConfigs`, the config screen, push webhooks | Reads the head commit through `ConfigSource`, validates it, and stores the revision. A valid revision of the head that is not active is activated in batches of at most 90 writes: projects, repositories, sessions, skills, and triggers (Project repo keys in `detail.repository` become `owner/name`; `rate`/`cron` triggers are scheduled), then the removals; the last transaction sets `active_revision_id` and audits `config.activate` with the commit sha and author |
 | `TriggerSchedule` | trigger activation, the previous firing | Writes a `schedule` inbound event and schedules the next firing |
 | `SweepConfigs` | rate schedule | Emits `ConfigSync` for configs not synced within 5 minutes |
 | `SweepChecks` | rate schedule | Emits `CheckPoll` for check waits whose poll is due |
 | `SweepTaskLimits` | rate schedule | Applies `Start.Limits` to `RUNNING`/`WAITING` tasks; over the limit, `NEEDS_YOU` and an `interrupt` |
 | `UsageAlerts` | rate schedule | Writes `usage_alerts` at 80% of the plan |
 | `SweepWorkspaces` | rate schedule | Asks `RunnerPort::workspace_exit` about the open workspaces of `RUNNING`/`WAITING` tasks; a workspace that stopped on its own is closed, its run goes `idle` with the reason as `error`, and a `RUNNING` task goes `NEEDS_YOU` (`Workspace.Stopped`, the reason as `cause`). Then `RunnerPort::sweep` (the ECS runner scales the egress relay to 0 when no Workspace runs) |
+
+## Trigger evaluation
+
+- A GitHub event is relevant to a trigger when the pattern matches it without the actor conditions of its detail type (`validate::github_actor_conditions`: `sender.login` or `issue.author_association` for `Issue Labeled`, `sender.login` or `comment.author_association` for `Issue Comment Created`, `sender.login` for `Check Run Completed`). A relevant event is skipped when the trigger has no exact-value list at one of those paths or when the actor is not in the list.
+- An event whose sender is the App's bot (`GitHubReader::app_login`, sender type `Bot`) starts a task only when its issue is a sub-issue of a task's issue; otherwise it is skipped under the children limit. A failure to read the issue's parent and blockers also skips the event under the children limit. Pull request comments have no sub-issues and skip that read.
+- Each trigger starts at most `Settings::trigger_starts_per_hour` (60) tasks per clock hour (the `RATE#<hour>` item). Later events of the hour are discarded with the receive limit as the reason, and the first discard of the hour writes the audit event `trigger.receive_limit`.
+- A chat message to a thread whose task is still `PENDING` is appended to the task's start instruction; to a task with a run it is sent as a `user_message`.
+- An error that retrying cannot fix (anything but a conflict, DynamoDB or port failures, GitHub transport failures, 429, and 5xx) does not hold the queue: when it comes from one trigger, the event is evaluated again with that trigger's event recorded as `discarded` with the error; otherwise the inbound event is marked processed with the error in `error`. A schedule fires once for the occurrences it missed and schedules the next one after the current time.
 
 ## Contract with the api
 

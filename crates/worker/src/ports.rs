@@ -148,6 +148,7 @@ pub trait GitHubReader: Send + Sync {
         repo: &str,
         number: i64,
     ) -> Result<IssueRelations, GitHubError>;
+    async fn app_login(&self) -> Result<String, GitHubError>;
 }
 
 #[async_trait]
@@ -165,6 +166,12 @@ pub trait ConfigSource: Send + Sync {
         root_path: &str,
         sha: &str,
     ) -> Result<ConfigFiles, GitHubError>;
+    async fn commit_author(
+        &self,
+        installation: i64,
+        repo: &str,
+        sha: &str,
+    ) -> Result<String, GitHubError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
