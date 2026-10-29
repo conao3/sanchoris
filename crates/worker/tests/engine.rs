@@ -231,6 +231,63 @@ async fn stopping_a_task_that_needs_you_dispatches_the_tasks_it_blocks() {
 }
 
 #[tokio::test]
+async fn a_task_that_succeeds_with_active_skill_runs_dispatches_the_tasks_it_blocks() {
+    let world = World::new("admin").await;
+    let blocker = world.started_task(34).await;
+    let run_id = blocker.run_id.unwrap();
+    add_skill(
+        &world,
+        blocker.id,
+        "pause",
+        "Inputs: {}\nStartAt: Pause\nTimeoutSeconds: 3600\nStates:\n  Pause:\n    Type: Wait\n    Seconds: 1800\n    End: true\n",
+    )
+    .await;
+    for _ in 0..8 {
+        world
+            .try_request_skill(run_id, "pause", json!({}))
+            .await
+            .unwrap();
+    }
+    world.request_skill(run_id, skill_input(34)).await;
+    world.github.script_checks(&["success"]);
+    world.drive().await;
+    let blocked = 35..=43;
+    for number in blocked.clone() {
+        world.github.state.lock().unwrap().relations.insert(
+            (REPO.to_string(), number),
+            sanchoris_worker::ports::IssueRelations {
+                parent: None,
+                blocked_by: vec![sanchoris_worker::ports::IssueRef {
+                    repository: REPO.into(),
+                    repository_id: common::SHOP_WEB_ID,
+                    number: 34,
+                }],
+            },
+        );
+        world
+            .label_issue(&format!("delivery-{number}"), number, "Blocked", "mika-dev")
+            .await;
+    }
+    world.worker.settle().await.unwrap();
+    for number in blocked.clone() {
+        assert_eq!(
+            world.task(&format!("{REPO}#{number}")).await.status,
+            "PENDING"
+        );
+    }
+
+    world.turn_end(run_id, 1).await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#34")).await.status, "SUCCEEDED");
+    for number in blocked {
+        assert_eq!(
+            world.task(&format!("{REPO}#{number}")).await.status,
+            "RUNNING"
+        );
+    }
+}
+
+#[tokio::test]
 async fn stopping_a_task_aborts_its_skill_runs_and_their_timers() {
     let world = World::new("pro").await;
     world.github.script_checks(&["success"]);

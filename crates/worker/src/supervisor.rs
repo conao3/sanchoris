@@ -326,9 +326,6 @@ async fn turn_end(
         decision = limited;
     }
     apply_decision(tx, task.id, event.run_id, &decision, &dedupe, now).await?;
-    if decision == TaskDecision::Succeed {
-        db::dispatch_pending_tasks(tx, now).await?;
-    }
     Ok(())
 }
 
