@@ -247,6 +247,14 @@ async fn outputs(
         let r = ItemReader::new(item);
         let repository = r.s("repository")?;
         let url = r.s("url")?;
+        let task = worker
+            .store
+            .get::<Task>(&keys::task_key(tenant_id, r.uuid("task_id")?))
+            .await?;
+        let of_task = task
+            .and_then(|task| task.channel)
+            .filter(|channel| channel["repository"] == repository.as_str())
+            .and_then(|channel| channel["repository_id"].as_i64());
         let resolved = repository_named(installations, &repository)
             .or_else(|| {
                 let path = url.strip_prefix("https://github.com/")?;
@@ -254,7 +262,8 @@ async fn outputs(
                 let name = format!("{}/{}", parts.next()?, parts.next()?);
                 repository_named(installations, &name)
             })
-            .map(|found| found.id);
+            .map(|found| found.id)
+            .or(of_task);
         let old_key = Key::of(Table::Main, item)?;
         let mut tx = worker.tx(tenant_id);
         tx.get_item(&old_key).await?;
