@@ -9,6 +9,7 @@ use crate::items::{
 };
 use crate::jobs::Job;
 use crate::keys;
+use crate::receive::{Admission, ReceiveLimited, SOURCE_GITHUB, admit_inbound};
 use crate::store::retry;
 
 pub const SEQ_STRIDE: i64 = 1_000_000_000;
@@ -279,6 +280,8 @@ pub enum IngestError {
     Db(#[from] DbError),
     #[error(transparent)]
     Event(#[from] GithubEventError),
+    #[error("{}", .0.reason())]
+    ReceiveLimit(ReceiveLimited),
     #[error("no connected tenant has GitHub installation {0}")]
     UnknownInstallation(i64),
 }
@@ -317,10 +320,25 @@ pub async fn ingest_github_delivery(
     let tenant_id = tenant_for_installation(store, installation_id)
         .await?
         .ok_or(IngestError::UnknownInstallation(installation_id))?;
+    if let Some(existing) = store
+        .get::<InboundEvent>(&keys::inbound_event_key(
+            tenant_id,
+            SOURCE_GITHUB,
+            delivery_id,
+        ))
+        .await?
+    {
+        return Ok(Some(Recorded::Duplicate(existing.id)));
+    }
+    if let Admission::Dropped(limited) =
+        admit_inbound(store, tenant_id, SOURCE_GITHUB, delivery_id, Utc::now()).await?
+    {
+        return Err(IngestError::ReceiveLimit(limited));
+    }
     let event = normalized.to_value();
     let recorded = retry(8, || async {
         let mut tx = store.tx(tenant_id);
-        let recorded = record_inbound_event(&mut tx, "github", delivery_id, &event).await?;
+        let recorded = record_inbound_event(&mut tx, SOURCE_GITHUB, delivery_id, &event).await?;
         tx.commit().await?;
         Ok(recorded)
     })

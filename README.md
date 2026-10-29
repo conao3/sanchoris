@@ -181,7 +181,7 @@ pnpm dynamo:create
 
 `dynamo:local` keeps its data under `.sanchoris/dynamodb`. `dynamo:create` (`sanchoris-dynamo-create`) creates the tables declared in `infra/tables.json` when they are missing and writes the plans from `infra/plans.json` with the Stripe prices from `SANCHORIS_STRIPE_PRICE_STARTER`, `SANCHORIS_STRIPE_PRICE_PRO`, and `SANCHORIS_STRIPE_PRICE_MAX`. Point the SDK at DynamoDB Local with `AWS_ENDPOINT_URL_DYNAMODB` (the worktrunk block sets it); DynamoDB Local accepts any credentials, so set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` to any value when no AWS profile is configured. The `devo.yaml` `db` pane runs `dynamo:local`.
 
-In AWS the stack creates the tables, and an administrator seeds `PLANS` after each deploy with the deployed table names and the prices from SSM:
+In AWS the stack creates the tables, and `scripts/deploy.mjs` seeds `PLANS` on each deploy before it changes the functions, so a plan attribute that new code reads is in place when the code starts (the code before ignores attributes it does not read). By hand, with the deployed table names and the prices from SSM:
 
 ```sh
 price() { aws ssm get-parameter --name "/dev-k8s/sanchoris/stripe-price-$1" --query Parameter.Value --output text; }

@@ -8,6 +8,7 @@ use sanchoris_core::db::{DbError, REF_SKILL_RUN, Store, TenantTx, locate};
 use sanchoris_core::items::{Member, Membership, Task};
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
+use sanchoris_core::receive::{Admission, SOURCE_REPLY, admit_inbound};
 use sanchoris_core::skillrun::{self, SkillRunError};
 use sanchoris_core::store::retry;
 use sanchoris_core::tasks::{latest_run, load_task};
@@ -223,6 +224,17 @@ pub async fn reply(
     let tenant_id = tenant_of_task(&state.store, user.user_id, task_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("task {task_id}")))?;
+    if let Admission::Dropped(limited) = admit_inbound(
+        &state.store,
+        tenant_id,
+        SOURCE_REPLY,
+        &task_id.to_string(),
+        Utc::now(),
+    )
+    .await?
+    {
+        return Err(ApiError::RateLimited(limited));
+    }
     let payload = json!({ "member": user.display_name, "text": body.text });
     let replied = retry(ATTEMPTS, || async {
         let mut tx = state.store.tx(tenant_id);

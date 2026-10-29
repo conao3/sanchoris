@@ -434,11 +434,11 @@ try {
   if (failed.length > 0) {
     throw new Error(failed.map((artifact) => artifact.reason.message).join('\n'));
   }
+  await step('seed plans', () => seedPlans(exports));
   if (route === 'cloudformation') {
     await step('deploy stack', () => deployStack(jar));
   }
   await step(route === 'cloudformation' ? 'converge function code' : 'update function code', updateFunctions);
-  await step('seed plans', () => seedPlans(exports));
 } catch (error) {
   ok = false;
   process.stderr.write(`deploy ${env.name}: ${error.message}\n`);

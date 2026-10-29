@@ -15,6 +15,7 @@ use sanchoris_core::items::{
 };
 use sanchoris_core::keys;
 use sanchoris_core::model::{AuditOrigin, TaskStatus as CoreStatus, WaitReason};
+use sanchoris_core::receive::{Admission, SOURCE_CHAT, SOURCE_REPLY, admit_inbound};
 use sanchoris_core::store::Update;
 use sanchoris_core::tasks::{abort_task, latest_run, load_task, stop_run};
 use sanchoris_core::tenants::{NewTenant, TenantError, create_tenant, free_tenant_key};
@@ -33,7 +34,7 @@ use crate::context::{
     serialize_tenant, state, store, tx, user_tx, viewer_user, write,
 };
 use crate::enums::{ApiKeyProvider, CredentialScope, EventSource, InvitationState, TriggerState};
-use crate::error::{bad_input, conflict, forbidden, not_found, parse_id, port};
+use crate::error::{bad_input, conflict, forbidden, not_found, parse_id, port, rate_limited};
 use crate::ports::{ConfigCheck, ConfigLocation, PlanChange, TenantCheckout, TriggerProposal};
 use crate::scalars::Timestamp;
 use crate::task::{ChatMessage, Run, Task};
@@ -169,6 +170,13 @@ async fn member_name(ctx: &Context<'_>, tx: &mut TenantTx, member_id: Uuid) -> R
         .await?
         .ok_or_else(|| not_found(format!("user {}", member.user_id)))?
         .display_name)
+}
+
+async fn admit(ctx: &Context<'_>, tenant_id: Uuid, source: &str, key: &str) -> Result<()> {
+    match admit_inbound(store(ctx), tenant_id, source, key, now(ctx)).await? {
+        Admission::Admitted => Ok(()),
+        Admission::Dropped(limited) => Err(rate_limited(&limited)),
+    }
 }
 
 async fn tenant_scope(ctx: &Context<'_>, tenant_id: &ID) -> Result<Scope> {
@@ -705,6 +713,7 @@ impl MutationRoot {
         if message.is_empty() {
             return Err(bad_input("the message is empty"));
         }
+        admit(ctx, scope.tenant_id, SOURCE_REPLY, &task_id.to_string()).await?;
         write(|| async {
             let mut tx = tx(ctx, scope.tenant_id);
             let mut task = load_task(&mut tx, task_id).await?;
@@ -895,6 +904,7 @@ impl MutationRoot {
             }
         };
         let key = Uuid::new_v4().to_string();
+        admit(ctx, scope.tenant_id, SOURCE_CHAT, &key).await?;
         let (inbound_id, received_at) = write(|| async {
             let mut tx = tx(ctx, scope.tenant_id);
             let user = member_name(ctx, &mut tx, member_id).await?;

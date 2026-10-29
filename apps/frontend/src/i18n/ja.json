@@ -513,6 +513,8 @@
   "billing.plan": "プラン",
   "billing.nextBilling": "次の請求",
   "billing.concurrentRuns": "並列数",
+  "billing.inboundEvents": "受け付けるイベント",
+  "billing.perMinute": "1 分あたり {n} 件",
   "billing.workspaceHours": "今期の Workspace の稼働時間",
   "billing.thresholds": "80% で通知 · 100% で新しいタスクは待機",
   "billing.plans": "プラン",

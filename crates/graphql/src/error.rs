@@ -1,4 +1,5 @@
 use async_graphql::{Error, ErrorExtensions, ID};
+use sanchoris_core::receive::ReceiveLimited;
 use uuid::Uuid;
 
 use crate::ports::PortError;
@@ -21,6 +22,16 @@ pub fn bad_input(message: impl Into<String>) -> Error {
 
 pub fn conflict(message: impl Into<String>) -> Error {
     coded("CONFLICT", message)
+}
+
+pub fn rate_limited(limited: &ReceiveLimited) -> Error {
+    let limit = limited.limit;
+    let retry_after = limited.retry_after_seconds;
+    Error::new(limited.reason()).extend_with(|_, e| {
+        e.set("code", "RATE_LIMITED");
+        e.set("limit", limit);
+        e.set("retryAfterSeconds", retry_after);
+    })
 }
 
 pub fn port(error: PortError) -> Error {
