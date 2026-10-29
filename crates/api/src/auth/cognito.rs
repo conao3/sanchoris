@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use async_trait::async_trait;
 use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
@@ -19,11 +21,20 @@ struct CognitoClaims {
     client_id: Option<String>,
 }
 
+const JWKS_REFETCH_INTERVAL: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+struct Jwks {
+    set: Option<JwkSet>,
+    fetched_at: Option<Instant>,
+}
+
 pub struct CognitoVerifier {
     config: CognitoConfig,
     region: String,
+    jwks_url: String,
     http: reqwest::Client,
-    jwks: RwLock<Option<JwkSet>>,
+    jwks: RwLock<Jwks>,
 }
 
 pub fn region_of(user_pool_id: &str) -> Result<String, String> {
@@ -38,31 +49,43 @@ pub fn region_of(user_pool_id: &str) -> Result<String, String> {
 impl CognitoVerifier {
     pub fn new(config: CognitoConfig, http: reqwest::Client) -> Result<Self, String> {
         let region = region_of(&config.user_pool_id)?;
+        let jwks_url = format!("{}/.well-known/jwks.json", issuer(&region, &config));
         Ok(Self {
             config,
             region,
+            jwks_url,
             http,
-            jwks: RwLock::new(None),
+            jwks: RwLock::new(Jwks::default()),
         })
     }
 
     fn issuer(&self) -> String {
-        format!(
-            "https://cognito-idp.{}.amazonaws.com/{}",
-            self.region, self.config.user_pool_id
-        )
+        issuer(&self.region, &self.config)
     }
 
     async fn key(&self, kid: &str) -> Result<DecodingKey, AuthError> {
-        if let Some(set) = self.jwks.read().await.as_ref()
+        if let Some(set) = self.jwks.read().await.set.as_ref()
             && set.find(kid).is_some()
         {
             return decoding_key(set, kid);
         }
-        let url = format!("{}/.well-known/jwks.json", self.issuer());
+        let mut jwks = self.jwks.write().await;
+        if let Some(set) = jwks.set.as_ref()
+            && set.find(kid).is_some()
+        {
+            return decoding_key(set, kid);
+        }
+        if jwks
+            .fetched_at
+            .is_some_and(|at| at.elapsed() < JWKS_REFETCH_INTERVAL)
+        {
+            return Err(AuthError::Unauthorized);
+        }
+        jwks.fetched_at = Some(Instant::now());
+        let url = &self.jwks_url;
         let set = self
             .http
-            .get(&url)
+            .get(url)
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
@@ -70,10 +93,17 @@ impl CognitoVerifier {
             .json::<JwkSet>()
             .await
             .map_err(|error| AuthError::Internal(format!("parse {url}: {error}")))?;
-        let key = decoding_key(&set, kid)?;
-        *self.jwks.write().await = Some(set);
-        Ok(key)
+        let key = decoding_key(&set, kid);
+        jwks.set = Some(set);
+        key
     }
+}
+
+fn issuer(region: &str, config: &CognitoConfig) -> String {
+    format!(
+        "https://cognito-idp.{region}.amazonaws.com/{}",
+        config.user_pool_id
+    )
 }
 
 fn decoding_key(set: &JwkSet, kid: &str) -> Result<DecodingKey, AuthError> {
@@ -164,8 +194,62 @@ fn slugify(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CognitoClaims, display_name, region_of};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    use super::{
+        AuthError, CognitoClaims, CognitoConfig, CognitoVerifier, IdentityVerifier,
+        JWKS_REFETCH_INTERVAL, display_name, region_of,
+    };
     use serde_json::json;
+
+    #[tokio::test]
+    async fn an_unknown_key_id_fetches_the_jwks_at_most_once_a_minute() {
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let counter = fetches.clone();
+        let router = axum::Router::new().route(
+            "/jwks.json",
+            axum::routing::get(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                async { axum::Json(json!({ "keys": [] })) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let mut verifier = CognitoVerifier::new(
+            CognitoConfig {
+                user_pool_id: "ap-northeast-1_Test".into(),
+                client_id: "client".into(),
+            },
+            reqwest::Client::new(),
+        )
+        .unwrap();
+        verifier.jwks_url = format!("http://{address}/jwks.json");
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+        header.kid = Some("unknown".into());
+        let token = jsonwebtoken::encode(
+            &header,
+            &json!({ "sub": "s" }),
+            &jsonwebtoken::EncodingKey::from_secret(b"x"),
+        )
+        .unwrap();
+        for _ in 0..5 {
+            assert!(matches!(
+                verifier.verify(&token).await,
+                Err(AuthError::Unauthorized)
+            ));
+        }
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        verifier.jwks.write().await.fetched_at =
+            Some(Instant::now() - JWKS_REFETCH_INTERVAL - Duration::from_secs(1));
+        assert!(matches!(
+            verifier.verify(&token).await,
+            Err(AuthError::Unauthorized)
+        ));
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn email_verified_reads_a_boolean_or_the_string_true() {
