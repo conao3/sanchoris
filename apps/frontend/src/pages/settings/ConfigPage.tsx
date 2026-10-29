@@ -79,7 +79,14 @@ export function ConfigPage() {
   const repositories = tenant?.integrations.flatMap((integration) => (integration.kind === 'GITHUB_INSTALLATION' ? integration.repositories : [])) ?? [];
 
   return (
-    <SettingsPage tab="config">
+    <SettingsPage
+      tab="config"
+      keys={[
+        ['g s', 'nav.settings'],
+        ['j k', 'keys.move'],
+        ['↵', 'keys.openOnGitHub'],
+      ]}
+    >
       <Title>{t('settings.config')}</Title>
       <Sub>{t('config.intro')}</Sub>
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}

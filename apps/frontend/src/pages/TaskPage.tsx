@@ -411,6 +411,18 @@ export function TaskPage() {
     body = <Cols main={main} aside={aside} />;
   }
 
+  const keys: [string, MessageKey][] = [];
+  if (resumable) {
+    keys.push(['⌘↵', 'task.resume']);
+  }
+  if (active) {
+    keys.push(['s', 'task.stop']);
+  }
+  if (task && task.runs.length > 0) {
+    keys.push(['o', 'keys.openRun']);
+  }
+  keys.push(['Esc', 'keys.back']);
+
   return (
     <Page
       crumbs={[{ label: t('nav.tasks'), to: '/tasks' }, { label: task?.title ?? '…' }]}
@@ -430,12 +442,7 @@ export function TaskPage() {
           </>
         ) : null
       }
-      keys={[
-        ['⌘↵', 'task.resume'],
-        ['s', 'task.stop'],
-        ['o', 'keys.openRun'],
-        ['Esc', 'keys.back'],
-      ]}
+      keys={keys}
     >
       {body}
     </Page>

@@ -108,6 +108,18 @@ export function MembersPage() {
   return (
     <SettingsPage
       tab="members"
+      keys={
+        canManage
+          ? [
+              ['g s', 'nav.settings'],
+              ['j k', 'keys.move'],
+              ['i', 'members.invite'],
+            ]
+          : [
+              ['g s', 'nav.settings'],
+              ['j k', 'keys.move'],
+            ]
+      }
       actions={
         canManage ? (
           <Button variant="primary" icon={Plus} kbd="i" onPress={() => setInviting(!inviting)}>

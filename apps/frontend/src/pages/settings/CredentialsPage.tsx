@@ -31,6 +31,10 @@ export function CredentialsPage() {
   return (
     <SettingsPage
       tab="credentials"
+      keys={[
+        ['g s', 'nav.settings'],
+        ['j k', 'keys.move'],
+      ]}
       actions={
         <Button variant="primary" icon={Plus} onPress={() => setConnect(!connect)}>
           {t('credentials.connect')}

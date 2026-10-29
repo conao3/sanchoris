@@ -29,10 +29,7 @@ export function OperatorTenantsPage() {
     <Page
       crumbs={[{ label: t('operator.operator') }, { label: t('nav.tenants') }]}
       badge={<State tone="err" icon={Ban} className="ml-1.5">{t('operator.only')}</State>}
-      keys={[
-        ['j k', 'keys.move'],
-        ['↵', 'keys.open'],
-      ]}
+      keys={[['j k', 'keys.move']]}
     >
       <Pg>
         <Title>{t('nav.tenants')}</Title>
