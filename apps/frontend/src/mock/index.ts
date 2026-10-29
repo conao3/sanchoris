@@ -48,13 +48,15 @@ function createResolvers() {
         if (!plan) {
           throw new Error('Unknown plan');
         }
-        if (plan.requiresPayment) {
-          return { tenant: null, checkoutUrl: `https://checkout.stripe.com/c/pay/cs_test_${encodeURIComponent(input.name)}` };
-        }
         const slug = String(input.name).toLowerCase().replace(/[^a-z0-9-]+/g, '-');
         const tenant = buildSetupTenant({ slug, name: input.name, planName: plan.name, role: 'OWNER', installed: false });
         tenants.push(tenant);
         memberships.push(tenant.viewerMember);
+        if (plan.requiresPayment) {
+          tenant.state = 'SUSPENDED';
+          tenant.suspendedReason = 'payment_pending';
+          return { tenant, checkoutUrl: `https://checkout.stripe.com/c/pay/cs_test_${encodeURIComponent(input.name)}` };
+        }
         return { tenant, checkoutUrl: null };
       },
       acceptInvitation: (_: unknown, { invitationId }: Obj) => {

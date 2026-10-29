@@ -1,7 +1,9 @@
 import { useMutation } from '@apollo/client/react';
+import { useSearch } from '@tanstack/react-router';
 import { ExternalLink, ShieldCheck } from 'lucide-react';
 import { Button } from '../../components/Button';
 import { SettingsPage } from '../../components/SettingsTabs';
+import { CheckoutNote, TenantStateNote, useCheckoutOutcome } from '../../components/billing';
 import { Dim, ErrorNote, Kv, Meter, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
 import { BillingDocument, ChangePlanDocument, OpenBillingPortalDocument } from '../../graphql/generated/graphql';
 import { t } from '../../i18n';
@@ -17,6 +19,7 @@ export function BillingPage() {
   const [openPortal, portalState] = useMutation(OpenBillingPortalDocument);
   const tenant = data?.tenant;
   const admin = tenant?.plan.isAdmin ?? false;
+  const checkout = useCheckoutOutcome(useSearch({ from: '/app/settings/billing' }).checkout);
   const cols = '100px 140px 160px 160px 110px 100px 1fr';
 
   function portal() {
@@ -145,6 +148,8 @@ export function BillingPage() {
     >
       <Title>{t('settings.billing')}</Title>
       <Sub>{t(admin ? 'billing.adminIntro' : 'billing.intro', { tenant: tenant?.name ?? '' })}</Sub>
+      <CheckoutNote outcome={checkout} success="checkout.planPaid" canceled="checkout.planCanceled" />
+      {tenant ? <TenantStateNote tenant={tenant} /> : null}
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
       {portalState.error ? <Dim className="my-3 text-err">{portalState.error.message}</Dim> : null}
       {changeState.error ? <Dim className="my-3 text-err">{changeState.error.message}</Dim> : null}

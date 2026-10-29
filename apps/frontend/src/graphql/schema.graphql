@@ -1053,9 +1053,9 @@ input CreateTenantInput {
 }
 
 type CreateTenantPayload {
-  "Set when no payment is needed."
+  "The new tenant. On a paid plan it stays SUSPENDED with the reason payment_pending until the checkout completes."
   tenant: Tenant
-  "Set when the plan is paid. The tenant is created after the checkout completes."
+  "Set when the plan is paid: the Stripe Checkout to open."
   checkoutUrl: String
 }
 

@@ -749,7 +749,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
             json!({ "input": { "name": "Newbie Pro", "planId": "pro" } }),
         )
         .await;
-    assert_eq!(paid["createTenant"]["tenant"], Value::Null);
+    assert_eq!(paid["createTenant"]["tenant"]["name"], "Newbie Pro");
     assert!(paid["createTenant"]["checkoutUrl"].is_string());
     let abandoned: Uuid = w
         .api
@@ -774,6 +774,11 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     assert!(session.contains_key("expires_at"));
     let pending: Uuid = session["client_reference_id"].parse().unwrap();
     assert_ne!(pending, abandoned);
+    assert_eq!(retried["createTenant"]["tenant"]["id"], pending.to_string());
+    assert_eq!(
+        retried["createTenant"]["tenant"]["slug"],
+        World::tenant_of(&w.dynamo, pending).await.slug
+    );
     let first_session = format!("cs_test_{}", sessions.len() - 1);
     assert_eq!(
         w.api.stripe.state.lock().unwrap().sessions[&first_session],

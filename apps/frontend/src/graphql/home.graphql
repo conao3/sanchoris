@@ -3,6 +3,8 @@ query Home($tenant: String!) {
     id
     name
     githubAppInstallUrl
+    state
+    suspendedReason
     setup {
       githubLinked
       appInstalled

@@ -1,9 +1,10 @@
 import { useMutation } from '@apollo/client/react';
-import { useNavigate } from '@tanstack/react-router';
+import { useNavigate, useSearch } from '@tanstack/react-router';
 import { ExternalLink, GitPullRequest, Plus, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '../components/Button';
 import { Cols, Page } from '../components/Shell';
+import { CheckoutNote, TenantStateNote, useCheckoutOutcome } from '../components/billing';
 import { TaskState } from '../components/status';
 import { Dim, ErrorNote, Id, Lk, Meter, Row, Section, Segments, Skeleton, State, Sub, Th, Title, Toggle } from '../components/ui';
 import {
@@ -364,6 +365,7 @@ export function HomePage() {
   const { data, error, refetch } = useData(HomeDocument, { tenant: slug }, { poll: (result) => (result.tenant?.tasks.length ? LIVE_POLL : IDLE_POLL) });
   const tenant = data?.tenant;
   const setup = tenant && !tenant.setup.complete;
+  const checkout = useCheckoutOutcome(useSearch({ from: '/app/' }).checkout);
   return (
     <Page
       crumbs={[{ label: t('nav.home') }]}
@@ -393,10 +395,16 @@ export function HomePage() {
         <div className="p-6">
           <Skeleton rows={6} />
         </div>
-      ) : setup ? (
-        <HomeSetup tenant={tenant} />
       ) : (
-        <Dashboard tenant={tenant} />
+        <>
+          {checkout || tenant.state === 'SUSPENDED' ? (
+            <div className="px-6 pt-5">
+              <CheckoutNote outcome={checkout} success="checkout.tenantPaid" canceled="checkout.tenantCanceled" />
+              <TenantStateNote tenant={tenant} />
+            </div>
+          ) : null}
+          {setup ? <HomeSetup tenant={tenant} /> : <Dashboard tenant={tenant} />}
+        </>
       )}
     </Page>
   );

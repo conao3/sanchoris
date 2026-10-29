@@ -4,6 +4,7 @@ import { createRootRoute, createRoute, createRouter, Outlet, redirect, RouterPro
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { AppFrame } from './components/Shell';
+import { checkoutSearch } from './components/billing';
 import { authorizedFetch, isLoggedIn } from './lib/cognito';
 import { mockApi } from './lib/env';
 import { TenantProvider } from './lib/tenant';
@@ -53,7 +54,7 @@ const authCallbackRoute = createRoute({ getParentRoute: () => rootRoute, path: '
 
 const signedInRoute = createRoute({ getParentRoute: () => rootRoute, id: 'signed-in', beforeLoad: authGuard, component: Outlet });
 
-const createTenantRoute = createRoute({ getParentRoute: () => signedInRoute, path: '/tenants/new', component: CreateTenantPage });
+const createTenantRoute = createRoute({ getParentRoute: () => signedInRoute, path: '/tenants/new', validateSearch: checkoutSearch, component: CreateTenantPage });
 
 const appRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -68,7 +69,7 @@ const appRoute = createRoute({
   ),
 });
 
-const homeRoute = createRoute({ getParentRoute: () => appRoute, path: '/', component: HomePage });
+const homeRoute = createRoute({ getParentRoute: () => appRoute, path: '/', validateSearch: checkoutSearch, component: HomePage });
 const triggersRoute = createRoute({ getParentRoute: () => appRoute, path: '/triggers', component: TriggersPage });
 const skillsRoute = createRoute({ getParentRoute: () => appRoute, path: '/skills', component: SkillsPage });
 const skillRoute = createRoute({ getParentRoute: () => appRoute, path: '/skills/$skill', component: SkillPage });
@@ -88,7 +89,7 @@ const configRoute = createRoute({ getParentRoute: () => appRoute, path: '/settin
 const credentialsRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/credentials', component: CredentialsPage });
 const membersRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/members', component: MembersPage });
 const auditRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/audit', component: AuditPage });
-const billingRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/billing', component: BillingPage });
+const billingRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/billing', validateSearch: checkoutSearch, component: BillingPage });
 
 const routeTree = rootRoute.addChildren([
   loginRoute,

@@ -19,7 +19,9 @@ use sanchoris_core::receive::{Admission, SOURCE_CHAT, SOURCE_REPLY, admit_inboun
 use sanchoris_core::skillrun::{SkillRunError, resolve_waiting_approval};
 use sanchoris_core::store::Update;
 use sanchoris_core::tasks::{abort_task, latest_run, load_task, stop_run};
-use sanchoris_core::tenants::{NewTenant, TenantError, create_tenant, free_tenant_key};
+use sanchoris_core::tenants::{
+    NewTenant, TenantError, create_tenant, free_tenant_key, pending_checkout,
+};
 use sanchoris_worker::dispatcher::schedule_trigger;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -301,8 +303,12 @@ impl MutationRoot {
                 })
                 .await
                 .map_err(port)?;
+            let pending = pending_checkout(store(ctx), user.user_id)
+                .await?
+                .ok_or_else(|| Error::new("the checkout left no pending tenant"))?;
+            let tenant = Tenant::load(ctx, member_scope(ctx, pending.tenant_id).await?).await?;
             return Ok(CreateTenantPayload {
-                tenant: None,
+                tenant: Some(tenant),
                 checkout_url: Some(url),
             });
         }

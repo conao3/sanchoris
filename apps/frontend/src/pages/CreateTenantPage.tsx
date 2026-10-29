@@ -1,8 +1,9 @@
 import { useApolloClient, useMutation } from '@apollo/client/react';
-import { useNavigate } from '@tanstack/react-router';
+import { useNavigate, useSearch } from '@tanstack/react-router';
 import { Check, ExternalLink, ShieldCheck, Users } from 'lucide-react';
 import { type FormEvent, type ReactNode, useState } from 'react';
 import { Button } from '../components/Button';
+import { CheckoutNote, useCheckoutOutcome } from '../components/billing';
 import { Dim, ErrorNote, Note, Row, Skeleton, State, Sub, Title } from '../components/ui';
 import { AcceptInvitationDocument, CreateTenantDocument, CreateTenantPageDocument } from '../graphql/generated/graphql';
 import { type MessageKey, t } from '../i18n';
@@ -24,6 +25,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
 
 export function CreateTenantPage() {
   const navigate = useNavigate();
+  const checkout = useCheckoutOutcome(useSearch({ from: '/signed-in/tenants/new' }).checkout);
   const client = useApolloClient();
   const { data, error, refetch } = useData(CreateTenantPageDocument, {});
   const [name, setName] = useState('');
@@ -45,7 +47,8 @@ export function CreateTenantPage() {
     }
     void create({ variables: { input: { name, planId: selected.id } } }).then((result) => {
       const payload = result.data?.createTenant;
-      if (payload?.checkoutUrl) {
+      if (payload?.checkoutUrl && payload.tenant) {
+        rememberTenant(payload.tenant.slug);
         window.location.assign(payload.checkoutUrl);
       } else if (payload?.tenant) {
         enter(payload.tenant.slug);
@@ -59,6 +62,7 @@ export function CreateTenantPage() {
         <span className="text-auth">{t('tenantNew.title')}</span>
       </Title>
       <Sub className="mt-1.5">{t('tenantNew.intro')}</Sub>
+      <CheckoutNote outcome={checkout} success="checkout.tenantPaid" canceled="checkout.tenantCanceled" />
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
       {!data && !error ? <Skeleton rows={5} /> : null}
       {data?.viewer.invitations.map((invitation) => (

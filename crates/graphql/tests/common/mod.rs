@@ -22,9 +22,11 @@ use sanchoris_core::items::{
 use sanchoris_core::jobs::Relayed;
 use sanchoris_core::keys;
 use sanchoris_core::model::{
-    NamedDefinition, SkillRunStatus, TaskDefinition, TaskStatus, TriggerEventResult, WaitReason,
+    AuditOrigin, NamedDefinition, SkillRunStatus, TaskDefinition, TaskStatus, TriggerEventResult,
+    WaitReason,
 };
 use sanchoris_core::store::{Relay, relayed_from_item};
+use sanchoris_core::tenants::{NewTenant, PendingSession, create_tenant};
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_graphql::{
     AesGcmEncryptor, AuditExportPort, AuthUser, ChatDispatcher, CheckoutPort, Clock, ConfigCheck,
@@ -157,6 +159,25 @@ pub struct Fakes {
 #[async_trait]
 impl CheckoutPort for Fakes {
     async fn tenant_checkout(&self, checkout: &TenantCheckout) -> Result<String, PortError> {
+        let now = self.clock.now();
+        create_tenant(
+            &self.store,
+            &NewTenant {
+                id: Uuid::new_v4(),
+                name: &checkout.tenant_name,
+                plan_id: &checkout.plan_id,
+                user_id: checkout.user_id,
+                checkout: Some(PendingSession {
+                    session_id: "cs_test_fake",
+                    expires_at: now + Duration::minutes(30),
+                }),
+                origin: AuditOrigin::Web,
+                source_ip: None,
+                now,
+            },
+        )
+        .await
+        .map_err(|error| PortError::Failed(error.to_string()))?;
         Ok(format!(
             "https://checkout.stripe.test/{}/{}",
             checkout.plan_id, checkout.tenant_name
