@@ -2,13 +2,13 @@ import { useMutation } from '@apollo/client/react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import clsx from 'clsx';
 import type { LucideIcon } from 'lucide-react';
-import { Bot, ChevronRight, Circle, CircleCheck, CircleDashed, CircleX, Play, Puzzle, Square, Zap } from 'lucide-react';
+import { Bot, Check, ChevronRight, Circle, CircleCheck, CircleDashed, CircleX, Play, Puzzle, Square, X, Zap } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Button } from '../components/Button';
 import { Cols, Page } from '../components/Shell';
 import { SkillRunState, StateEntryState, TaskState } from '../components/status';
 import { Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Kv, Lk, Meter, Row, Section, Skeleton, State, Sub, Th, Title, type Tone } from '../components/ui';
-import { ResumeTaskDocument, StopTaskDocument, type TaskQuery, TaskDocument } from '../graphql/generated/graphql';
+import { ResolveApprovalDocument, ResumeTaskDocument, StopTaskDocument, type TaskQuery, TaskDocument } from '../graphql/generated/graphql';
 import { type MessageKey, t } from '../i18n';
 import { between, clock, duration, issueLabel, usd, usdWhole } from '../lib/format';
 import { useKeys } from '../lib/keys';
@@ -135,12 +135,21 @@ export function TaskPage() {
   const [message, setMessage] = useState('');
   const [resume, resumeState] = useMutation(ResumeTaskDocument);
   const [stop, stopState] = useMutation(StopTaskDocument);
+  const [resolveApproval, approvalState] = useMutation(ResolveApprovalDocument);
   const task = data?.tenant?.task;
   const needsYou = task?.status === 'NEEDS_YOU';
+  const approval = task?.approval;
+  const resumable = needsYou && !approval;
   const active = task ? !finished.includes(task.status) : false;
 
+  function doResolve(approved: boolean) {
+    if (task && approval) {
+      void resolveApproval({ variables: { taskId: task.id, approved } });
+    }
+  }
+
   function doResume() {
-    if (task && needsYou && message.trim()) {
+    if (task && resumable && message.trim()) {
       void resume({ variables: { input: { taskId: task.id, message: message.trim() } } }).then(() => {
         setMessage('');
         refetch();
@@ -251,7 +260,27 @@ export function TaskPage() {
         </Section>
         <StepStrip task={task} />
 
-        {needsYou ? (
+        {needsYou && approval ? (
+          <>
+            <Section>{t('status.needsYou')}</Section>
+            <div className="font-medium">{approval.message}</div>
+            <Dim className="mt-1">{t('task.approvalNote')}</Dim>
+            {approvalState.error ? <Dim className="mt-2 text-err">{approvalState.error.message}</Dim> : null}
+            <div className="mt-2.5 flex gap-2">
+              <Button variant="primary" icon={Check} onPress={() => doResolve(true)} isDisabled={approvalState.loading}>
+                {t('task.approve')}
+              </Button>
+              <Button icon={X} onPress={() => doResolve(false)} isDisabled={approvalState.loading}>
+                {t('task.reject')}
+              </Button>
+              <Button variant="danger" icon={Square} kbd="s" onPress={doStop} isDisabled={stopState.loading}>
+                {t('task.stop')}
+              </Button>
+            </div>
+          </>
+        ) : null}
+
+        {resumable ? (
           <>
             <Section>{t('status.needsYou')}</Section>
             <Dim>
@@ -387,7 +416,7 @@ export function TaskPage() {
                 {t('task.stop')}
               </Button>
             ) : null}
-            {needsYou ? (
+            {resumable ? (
               <Button variant="primary" icon={Play} kbd="⌘↵" onPress={doResume} isDisabled={!message.trim()}>
                 {t('task.resume')}
               </Button>

@@ -48,6 +48,8 @@ export function needsYouText(task: {
       return `${t('task.nudgesExhausted', { skill })} · ${spent}`;
     case 'AGENT_ASKED':
       return `${t('task.agentAsked')} · ${spent}`;
+    case 'APPROVAL_REQUESTED':
+      return `${t('task.approvalRequested')} · ${spent}`;
     case 'USAGE_LIMIT':
       return `${t('task.usageLimitManual')} · ${spent}`;
     case 'LIMIT_EXCEEDED':

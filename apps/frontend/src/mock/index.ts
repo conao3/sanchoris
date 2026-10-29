@@ -143,6 +143,20 @@ function createResolvers() {
         touch(task);
         return task;
       },
+      resolveApproval: (_: unknown, { taskId, approved }: Obj) => {
+        const task = taskById(taskId);
+        if (!task.approval) {
+          throw new Error('the task has no approval waiting');
+        }
+        task.approval = null;
+        task.status = 'WAITING';
+        task.waitReason = 'SKILL';
+        task.needsYouReason = null;
+        task.error = null;
+        task.cause = approved ? null : 'Mika rejected the request';
+        touch(task);
+        return task;
+      },
       stopTask: (_: unknown, { taskId }: Obj) => {
         const task = taskById(taskId);
         task.status = 'ABORTED';
@@ -196,6 +210,7 @@ function createResolvers() {
           waitReason: null,
           pendingReason: null,
           needsYouReason: null,
+          approval: null,
           resumeAt: null,
           autoResume: true,
           snoozedUntil: null,

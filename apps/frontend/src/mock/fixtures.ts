@@ -437,6 +437,7 @@ function buildAcme(): Obj {
       waitReason: null,
       pendingReason: null,
       needsYouReason: null,
+      approval: null,
       resumeAt: null,
       autoResume: true,
       snoozedUntil: null,
@@ -665,6 +666,23 @@ function buildAcme(): Obj {
     requester: { kind: 'MEMBER', member: sota, task: null, viaChat: false },
     turns: 22,
     costUsd: 2.4,
+  });
+  makeTask({
+    id: 'task-45',
+    title: 'Release the orders export',
+    status: 'NEEDS_YOU',
+    needsYouReason: 'APPROVAL_REQUESTED',
+    error: 'Approval.Requested',
+    cause: 'Ship the orders export to production?',
+    approval: { message: 'Ship the orders export to production?', requestedAt: ago(12) },
+    trigger: labeledIssue,
+    createdAt: ago(50),
+    startedAt: ago(50),
+    updatedAt: ago(12),
+    issue: issue('acme/shop-api', 45, 'Release the orders export'),
+    requester: { kind: 'MEMBER', member: mika, task: null, viaChat: false },
+    turns: 14,
+    costUsd: 1.9,
   });
   const t33 = makeTask({
     id: 'task-33',

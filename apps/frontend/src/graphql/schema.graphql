@@ -39,6 +39,8 @@ type Mutation {
   snoozeTask(taskId: ID!, until: DateTime!): Task!
   "Stops the task. Its status becomes ABORTED."
   stopTask(taskId: ID!): Task!
+  "Approves or rejects the approval that the task's skill waits for. Owners, admins, and the member who requested the task can resolve it."
+  resolveApproval(taskId: ID!, approved: Boolean!): Task!
   "Stops the agent session of a run."
   stopRun(runId: ID!): Run!
   """
@@ -779,6 +781,7 @@ enum NeedsYouReason {
   SKILL_FAILED
   NUDGES_EXHAUSTED
   AGENT_ASKED
+  APPROVAL_REQUESTED
   USAGE_LIMIT
   LIMIT_EXCEEDED
   WORKSPACE_STOPPED
@@ -851,6 +854,8 @@ type Task {
   waitReason: WaitReason
   pendingReason: PendingReason
   needsYouReason: NeedsYouReason
+  "The approval that the task's skill waits for; null when none waits."
+  approval: Approval
   "When a usage-limited task resumes."
   resumeAt: DateTime
   autoResume: Boolean!
@@ -885,6 +890,11 @@ type Task {
   limits: TaskLimits!
   turns: Int!
   costUsd: Float!
+}
+
+type Approval {
+  message: String!
+  requestedAt: DateTime!
 }
 
 enum RunStatus {

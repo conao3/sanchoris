@@ -10,10 +10,12 @@ use reqwest::StatusCode;
 use sanchoris_api::signing::HmacKey;
 use sanchoris_core::channel::{OutboxType, enqueue_outbox};
 use sanchoris_core::items::{
-    AuditEvent, ConfigRevision, Credential, Integration, Run, Task, Tenant, User,
+    ApprovalWait, AuditEvent, ConfigRevision, Credential, Integration, Member, Run, SkillRunItem,
+    Task, Tenant, User,
 };
 use sanchoris_core::keys;
-use sanchoris_core::model::TaskStatus;
+use sanchoris_core::model::{SkillRunStatus, TaskStatus};
+use sanchoris_core::skillrun::accept_skill_request;
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_graphql::AesGcmEncryptor;
 use serde_json::{Value, json};
@@ -21,7 +23,7 @@ use support::fake_github::{CONFIG_REPO, CONFIG_REPO_ID, CONFIG_SHA, FakeGitHub};
 use support::{
     Api, CONFIG_YAML, CREDENTIAL_KEY, Driving, FRONTEND_INDEX, FRONTEND_SCRIPT, INSTALLATION,
     STRIPE_SECRET, Seeded, WEBHOOK_SECRET, Workspaces, bare_repo, eventually, github_signature,
-    seed, start_api,
+    seed, start_api, task_with_run,
 };
 use uuid::Uuid;
 
@@ -433,6 +435,14 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         )
         .await;
     assert_eq!(resumed["resumeTask"]["id"], task_id.as_str());
+    let (code, _) = w
+        .error(
+            owner,
+            "ResolveApproval",
+            json!({ "taskId": task_id, "approved": true }),
+        )
+        .await;
+    assert_eq!(code, "CONFLICT");
     let stopped = w.ok(owner, "StopRun", json!({ "runId": run_id })).await;
     assert_eq!(stopped["stopRun"]["id"], run_id.to_string());
     w.ok(owner, "StopTask", json!({ "taskId": task_id })).await;
@@ -1174,4 +1184,121 @@ async fn only_a_verified_sancode_email_in_the_token_creates_admin_tenants() {
             .await;
         assert_eq!(code, "FORBIDDEN", "{token}");
     }
+}
+
+#[tokio::test]
+async fn a_member_resolves_a_skill_approval_from_the_task_page() {
+    let w = World::start().await;
+    let tenant = w.tenant();
+    let slug = w.slug.as_str();
+    let owner = w.owner.as_str();
+    let member_id = w.seeded.tenant.member_id;
+    let (task_id, run_id) = task_with_run(&w.dynamo, &w.seeded).await;
+    let yaml = "Inputs: {}\nStartAt: Ask\nTimeoutSeconds: 600\nStates:\n  Ask:\n    Type: Task\n    Resource: sanchoris:::approval:request.waitForTaskToken\n    Parameters: { Message: Ship it?, TaskToken.$: $$.Task.Token }\n    TimeoutSeconds: 300\n    End: true\n";
+    let skill = sanchoris_config::Skill {
+        name: "ship".into(),
+        description: "Ship".into(),
+        body: String::new(),
+        skill_md: String::new(),
+        skill_yaml: Some(yaml.into()),
+        definition: Some(sanchoris_config::skill::parse_skill_yaml(yaml).unwrap()),
+        origin: sanchoris_config::SkillOrigin::Repository,
+    };
+    w.dynamo
+        .modify::<Task>(&keys::task_key(tenant, task_id), |task| {
+            task.definition["Skills"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({ "Name": "ship", "Definition": skill }));
+            task.definition["Session"]["Definition"] = json!({
+                "Worker": { "Agent": "claude", "Model": "claude-sonnet-5-5", "Credential": "acme-claude-team" },
+                "Project": "shop",
+                "GitHub": { "Repos": ["acme/shop-web"], "Permissions": { "contents": "write" } },
+                "Network": { "Allow": ["github.com"] },
+                "UsageLimit": { "Resume": "auto" },
+                "Workspace": { "Compute": "standard", "Architecture": "arm64", "IdleSeconds": 900 },
+            });
+            task.definition["Trigger"]["Definition"]["Start"] = json!({
+                "Session": "shop", "Instruction": "Ship it.", "Skills": ["ship"], "RequiredSkills": [], "MaxNudges": 0,
+                "Limits": { "Turns": 60, "CostUsd": 10, "TimeoutSeconds": 86400, "HeartbeatSeconds": 900, "Children": { "MaxDepth": 1, "MaxCount": 5 } },
+            });
+        })
+        .await;
+    let mut tx = w.api.store.tx(tenant);
+    let accepted = accept_skill_request(&mut tx, run_id, "ship", json!({}), Utc::now())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    eventually("the approval wait", StdDuration::from_secs(10), || async {
+        w.dynamo.all::<ApprovalWait>().await.pop()
+    })
+    .await;
+
+    let page = w
+        .ok(owner, "Task", json!({ "tenant": slug, "id": task_id }))
+        .await;
+    assert_eq!(page["tenant"]["task"]["status"], "NEEDS_YOU");
+    assert_eq!(
+        page["tenant"]["task"]["needsYouReason"],
+        "APPROVAL_REQUESTED"
+    );
+    assert_eq!(page["tenant"]["task"]["approval"]["message"], "Ship it?");
+
+    w.dynamo
+        .modify::<Member>(&keys::member_key(tenant, member_id), |member| {
+            member.role = "member".into()
+        })
+        .await;
+    let (code, _) = w
+        .error(
+            owner,
+            "ResolveApproval",
+            json!({ "taskId": task_id, "approved": true }),
+        )
+        .await;
+    assert_eq!(code, "FORBIDDEN");
+    w.dynamo
+        .modify::<Task>(&keys::task_key(tenant, task_id), |task| {
+            task.requested_by_member_id = Some(member_id)
+        })
+        .await;
+    let resolved = w
+        .ok(
+            owner,
+            "ResolveApproval",
+            json!({ "taskId": task_id, "approved": true }),
+        )
+        .await;
+    assert_eq!(resolved["resolveApproval"]["approval"], Value::Null);
+    assert_ne!(resolved["resolveApproval"]["status"], "NEEDS_YOU");
+    let skill_run = eventually(
+        "the approved skill run",
+        StdDuration::from_secs(10),
+        || async {
+            w.dynamo
+                .all::<SkillRunItem>()
+                .await
+                .into_iter()
+                .find(|run| run.id == accepted.id && run.status == SkillRunStatus::Succeeded)
+        },
+    )
+    .await;
+    assert_eq!(
+        skill_run.output,
+        Some(json!({ "Approved": true, "By": "Mika" }))
+    );
+    let (code, _) = w
+        .error(
+            owner,
+            "ResolveApproval",
+            json!({ "taskId": task_id, "approved": false }),
+        )
+        .await;
+    assert_eq!(code, "CONFLICT");
+    assert!(
+        w.audit_actions(tenant)
+            .await
+            .iter()
+            .any(|action| action == "approval.resolve")
+    );
 }

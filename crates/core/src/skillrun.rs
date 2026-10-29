@@ -660,22 +660,41 @@ pub async fn resolve_approval(
     now: DateTime<Utc>,
 ) -> Result<Disposition, SkillRunError> {
     let verified = signer.verify(signed_token)?;
-    let skill_run = skill_run_item(tx, verified.skill_run_id)
+    resolve_waiting_approval(
+        tx,
+        verified.skill_run_id,
+        &verified.task_token,
+        approved,
+        member,
+        now,
+    )
+    .await
+}
+
+pub async fn resolve_waiting_approval(
+    tx: &mut TenantTx,
+    skill_run_id: Uuid,
+    task_token: &str,
+    approved: bool,
+    member: &str,
+    now: DateTime<Utc>,
+) -> Result<Disposition, SkillRunError> {
+    let skill_run = skill_run_item(tx, skill_run_id)
         .await?
         .ok_or(SkillRunError::ApprovalNotWaiting)?;
     let key = keys::approval_wait_key(
         tx.tenant_id(),
         skill_run.task_id,
         skill_run.number,
-        &verified.task_token,
+        task_token,
     );
     let mut wait = tx
         .get::<ApprovalWait>(&key)
         .await?
         .filter(|w| w.status == "waiting")
         .ok_or(SkillRunError::ApprovalNotWaiting)?;
-    let locked = lock_skill_run(tx, verified.skill_run_id).await?;
-    if locked.run.waiting_task_token() != Some(verified.task_token.as_str()) {
+    let locked = lock_skill_run(tx, skill_run_id).await?;
+    if locked.run.waiting_task_token() != Some(task_token) {
         return Err(SkillRunError::ApprovalNotWaiting);
     }
     wait.status = if approved { "approved" } else { "rejected" }.to_string();
@@ -694,15 +713,15 @@ pub async fn resolve_approval(
     }
     let event = if approved {
         Event::TaskSuccess {
-            task_token: verified.task_token,
+            task_token: task_token.to_string(),
             output: json!({ "Approved": true, "By": member }),
         }
     } else {
         Event::TaskFailure {
-            task_token: verified.task_token,
+            task_token: task_token.to_string(),
             error: Some("Approval.Rejected".to_string()),
             cause: Some(format!("{member} rejected the request")),
         }
     };
-    apply_event(tx, verified.skill_run_id, event, now).await
+    apply_event(tx, skill_run_id, event, now).await
 }
