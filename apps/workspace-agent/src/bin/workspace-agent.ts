@@ -30,7 +30,7 @@ process.stdin.destroy();
 
 const agent = new WorkspaceAgent({
   runId: requireEnv(env, "SANCHORIS_RUN_ID"),
-  token: secrets.runToken,
+  bootstrapToken: secrets.bootstrapToken,
   controlUrl,
   socketPath: requireEnv(env, "SANCHORIS_SOCKET_PATH"),
   workspaceDir: requireEnv(env, "SANCHORIS_WORKSPACE_DIR"),

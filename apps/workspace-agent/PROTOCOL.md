@@ -1,4 +1,4 @@
-# Run channel protocol (version 1)
+# Run channel protocol (version 2)
 
 The Run channel connects one `workspace-agent` process (inside a Workspace) to the control plane (`api`). The schema in `src/protocol.ts` is the source of truth; every JSON example in this file is parsed against it by `test/protocol.test.ts`.
 
@@ -6,7 +6,7 @@ The Run channel connects one `workspace-agent` process (inside a Workspace) to t
 
 The `runner` starts `workspace-agent` with one JSON document on stdin and these variables. A missing or empty one stops the agent with an error.
 
-The JSON document carries the secrets, so that they never sit in an environment that the worker or `exec` commands inherit: `runToken` (the Run's short-lived bearer token, always) and `relayUrl` (Fargate workspaces: the egress relay with the Run's relay token as the password, `http://run:<token>@<relay>:3128`). The agent reads stdin to its end before it starts. The Fargate image's entrypoint (`infra/workspace/entrypoint.sh`) receives `SANCHORIS_RUN_TOKEN` and `SANCHORIS_RELAY_URL` from the task, removes them from the environment, and `exec`s `tini` with the agent as its child and the document on stdin, so no `/proc/<pid>/environ` in the Workspace holds them.
+The JSON document carries the secrets, so that they never sit in an environment that the worker or `exec` commands inherit: `bootstrapToken` (always) and `relayUrl` (Fargate workspaces: the egress relay with a bootstrap relay token as the password, `http://run:<token>@<relay>:3128`). The agent reads stdin to its end before it starts. The bootstrap token opens one Run channel connection and expires 15 minutes after the Workspace started; the bootstrap relay token expires at the same time. Both only get the agent to its first `hello`: the control plane answers that `hello` with `credentials`, which bring the Run token for every later connection and the relay token for the life of the Run (see "Bootstrap"). The Fargate image's entrypoint (`infra/workspace/entrypoint.sh`) receives `SANCHORIS_BOOTSTRAP_TOKEN` and `SANCHORIS_RELAY_URL` from the task, removes them from the environment, and `exec`s `tini` with the agent as its child and the document on stdin, so no `/proc/<pid>/environ` in the Workspace holds them. The task's container overrides, which CloudTrail records and `ecs:DescribeTasks` returns, therefore hold only tokens that are spent or expired once the agent has connected.
 
 | Variable | When | Value |
 |---|---|---|
@@ -16,20 +16,20 @@ The JSON document carries the secrets, so that they never sit in an environment 
 | `SANCHORIS_WORKSPACE_DIR` | always | Working directory of the agent session |
 | `SANCHORIS_CREDENTIAL_SOURCE` | always | `environment`: the worker's credentials are already in its environment and the runner checked out the repositories (local workspaces). `channel`: the agent asks the control plane for the worker credential and GitHub tokens over the Run channel and checks out the repositories itself (Fargate workspaces) |
 | `SANCHORIS_GIT_URL`, `SANCHORIS_BRANCH`, `SANCHORIS_REPOSITORIES` | `channel` | Git origin (`https://github.com`), the task branch, and the comma-separated `owner/name` repositories to check out |
-| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | with `relayUrl` | `http://127.0.0.1:<port>` and `127.0.0.1,localhost` (the image sets port 3129). The agent listens on that port and forwards each `CONNECT` to `relayUrl` with the relay token as `Proxy-Authorization`, so the Run channel, record uploads (with `NODE_USE_ENV_PROXY=1`), `git`, and the worker reach the relay without holding its token |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | with `relayUrl` | `http://127.0.0.1:<port>` and `127.0.0.1,localhost` (the image sets port 3129). The agent listens on that port and forwards each `CONNECT` to `relayUrl` with the relay token as `Proxy-Authorization` (the bootstrap relay token until `credentials` bring the Run's relay token), so the Run channel, record uploads (with `NODE_USE_ENV_PROXY=1`), `git`, and the worker reach the relay without holding its token |
 | `CLAUDE_CONFIG_DIR`, `SANCHORIS_CLAUDE_PATH` | `agent: "claude"` | Claude config directory (credentials, session records) and the `claude` executable |
 | `CODEX_HOME`, `SANCHORIS_CODEX_PATH` | `agent: "codex"` | Codex home (credentials, session records) and the `codex` executable |
 
-The worker and `exec` commands run with the agent's environment, which holds neither the Run token nor the relay token (with the `environment` source it holds the worker's own credentials), plus, for the worker with the `channel` source, the credential proxy's variables. `sanchoris` must be on `PATH`.
+The worker and `exec` commands run with the agent's environment, which holds none of the bootstrap token, the Run token, and the relay token (with the `environment` source it holds the worker's own credentials), plus, for the worker with the `channel` source, the credential proxy's variables. `sanchoris` must be on `PATH`.
 
 ## Transport
 
-- The agent opens a WebSocket to `SANCHORIS_CONTROL_URL` (`ws://` or `wss://`) with the header `Authorization: Bearer <SANCHORIS_RUN_TOKEN>`. It sends a WebSocket ping every 30 s, so proxies that close idle connections (Cloudflare closes a WebSocket after 100 s without frames) keep the connection open.
-- The control plane rejects an invalid or expired token at the upgrade with HTTP `401` (or `403`). The agent treats that as fatal and exits with code 1.
+- The agent opens a WebSocket to `SANCHORIS_CONTROL_URL` (`ws://` or `wss://`) with the header `Authorization: Bearer <token>`: the bootstrap token on the first connection, and the Run token from `credentials` on every reconnect. It sends a WebSocket ping every 30 s, so proxies that close idle connections (Cloudflare closes a WebSocket after 100 s without frames) keep the connection open.
+- The control plane rejects an invalid or expired token at the upgrade with HTTP `401`, and a bootstrap token that already opened a connection, or a Run that has finished, with `403`. The agent treats either as fatal and exits with code 1.
 - Each WebSocket text frame is one JSON object. Every object has `type` and `runId`. `runId` is an opaque string equal to `SANCHORIS_RUN_ID`. Unknown fields are rejected on both sides.
 - An inbound message that fails validation, or carries another `runId`, is a protocol error: the agent exits with code 1.
 - In AWS the control plane is an API Gateway WebSocket API: a Lambda authorizer checks the `Authorization` header on `$connect`, and messages are answered from Lambda through the API Gateway Management API. Locally `sanchoris all` serves the same protocol at `/runs/channel`.
-- The control plane ends a Run by sending `shutdown`, or rejects the agent by sending `close` (a code in `4000`–`4999` and a reason) and closing the socket; the agent exits with code 1 without reconnecting. The agent treats a WebSocket close code in `4000`–`4999` the same way. Any other close or network error makes the agent reconnect with exponential backoff (0.5 s doubling up to 30 s, reset after a successful upgrade).
+- The control plane ends a Run by sending `shutdown`, or rejects the agent by sending `close` (a code in `4000`–`4999` and a reason) and closing the socket; the agent exits with code 1 without reconnecting. The agent treats a WebSocket close code in `4000`–`4999` the same way. Any other close or network error makes the agent reconnect with exponential backoff (0.5 s doubling up to 30 s, reset after a successful upgrade), unless `credentials` have not arrived yet: the bootstrap token is spent, so the agent exits with code 1 and the Workspace stops.
 
 ## Delivery
 
@@ -54,6 +54,7 @@ The worker and `exec` commands run with the agent's environment, which holds nei
 | `worker_credential_response` | `requestId`, `ok`, `env` or `error` | Reply to `worker_credential_request` |
 | `ack` | `seq` | Cumulative acknowledgement of outbound messages, and the answer to `hello` |
 | `close` | `code`, `reason` | The control plane rejects this agent (`4000`: protocol error). The agent exits with code 1 without reconnecting |
+| `credentials` | `runToken`, `relayToken` | Sent once, right after the `ack` of the `hello` on a connection opened with the bootstrap token (see "Bootstrap") |
 
 `start` fields:
 
@@ -151,7 +152,7 @@ The worker and `exec` commands run with the agent's environment, which holds nei
 
 | `type` | Sequenced | Fields | Meaning |
 |---|---|---|---|
-| `hello` | no | `protocolVersion` (`1`), `instanceId`, `started`, `sessionId` (string or `null`) | First message on every connection |
+| `hello` | no | `protocolVersion` (`2`), `instanceId`, `started`, `sessionId` (string or `null`) | First message on every connection |
 | `heartbeat` | no | `at` (ISO 8601), `busy` (a turn is running) | Every `heartbeatSeconds` after `start`, and once immediately |
 | `ready` | yes | `sessionId`, `agent`, `model`, `resumed` | The worker session is ready. `sessionId` is the Claude session ID or the Codex thread ID; on resume it equals `resume.sessionId` |
 | `event` | yes | `turn`, `kind`, `data`, `at` | One line of agent output (S3 log and screen summary) |
@@ -181,7 +182,7 @@ Field details:
 - `skill_request.output` is the parsed `--output` JSON, or `null` when the option was omitted.
 
 ```json
-{ "type": "hello", "runId": "42", "protocolVersion": 1, "instanceId": "0d6f1c3a-8b2e-4f57-a1c9-5e7b2d4f6a80", "started": false, "sessionId": null }
+{ "type": "hello", "runId": "42", "protocolVersion": 2, "instanceId": "0d6f1c3a-8b2e-4f57-a1c9-5e7b2d4f6a80", "started": false, "sessionId": null }
 ```
 
 ```json
@@ -293,6 +294,19 @@ The control plane treats a Workspace whose agent sent `stopping`, or whose ECS t
 ## Commands (`exec`)
 
 The control plane sends `exec` when a skill state runs commands in the workspace (`git:push`, `workspace:exec`). The agent runs `commands` one at a time with `/bin/sh -c`, in `SANCHORIS_WORKSPACE_DIR` (each repository is cloned into a directory named after the repository), with the agent's environment. It stops at the first command that exits non-zero and sends `exec_result`: `ok` is `true` when every command exited 0, and `results` has one entry per command that ran (`exitCode`, and the last 16000 characters of `stdout` and `stderr`). `exec` requests run in the order received, independently of the worker's turns. The agent drops an `exec` whose `requestId` it has already seen in this process.
+
+## Bootstrap
+
+The runner gives the agent a bootstrap token instead of the Run token, because a Fargate task's container overrides are visible outside the Workspace (CloudTrail records the `RunTask` request, and `ecs:DescribeTasks` returns the overrides). The bootstrap token is signed with the Run token's key, names the tenant, the Run, and the Workspace, and is accepted only on the upgrade; a Run token is not a bootstrap token and the other way round. The control plane records the first connection of each Workspace's bootstrap token with a conditional write and answers `403` to any later upgrade with the same token. After the `ack` of that connection's `hello` it sends `credentials`:
+
+- `runToken`: the Run token, valid until 12 hours after the Workspace started. The agent keeps it in memory and sends it on every reconnect.
+- `relayToken`: the relay token with the Session's `Network.Allow`, valid as long as the Run token, or `null` for a Workspace without the egress relay (local workspaces). The agent's forwarder sends it on every later `CONNECT`; tunnels that are already open stay open. A `relayToken` that does not match the agent's `relayUrl` (one without the other) stops the agent with exit code 1.
+
+A second `credentials` is a protocol error. Local workspaces (`SANCHORIS_CREDENTIAL_SOURCE=environment`) go through the same bootstrap.
+
+```json
+{ "type": "credentials", "runId": "42", "runToken": "run.<tenant>.<run>.<expiry>.<signature>", "relayToken": "7b2272756e223a2234322e2e2e227d.<signature>" }
+```
 
 ## Credentials (`channel` source)
 

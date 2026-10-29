@@ -25,6 +25,7 @@ async fn main() -> Result<(), lambda_runtime::Error> {
     let channel = Channel {
         store: store.clone(),
         run_tokens: config.run_tokens,
+        relay_tokens: Some(runner.relay_tokens.clone()),
         records: s3_records(&config.records, &sdk)?,
         sender: Arc::new(GatewaySender::from_env(&sdk)?),
         credentials: Arc::new(NoRunCredentials),

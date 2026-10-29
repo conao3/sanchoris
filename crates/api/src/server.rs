@@ -32,6 +32,7 @@ pub fn local_channel(
         channel: Channel {
             store,
             run_tokens,
+            relay_tokens: None,
             records,
             sender: connections.clone(),
             credentials,

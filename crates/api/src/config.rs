@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use aws_sdk_ssm::error::DisplayErrorContext;
 use sanchoris_core::tokens::{
-    RELAY_TOKEN_SIGNING_KEY_ENV, RUN_TOKEN_SIGNING_KEY_ENV, RunTokenSigner, Signer,
-    TASK_TOKEN_SIGNING_KEY_ENV, TaskTokenSigner,
+    RELAY_TOKEN_SIGNING_KEY_ENV, RUN_TOKEN_SIGNING_KEY_ENV, RelayTokenSigner, RunTokenSigner,
+    Signer, TASK_TOKEN_SIGNING_KEY_ENV, TaskTokenSigner,
 };
 use sanchoris_graphql::AesGcmEncryptor;
 use sanchoris_worker::github::transport::ReqwestTransport;
@@ -62,8 +62,9 @@ pub const API_SECRETS: [&str; 11] = [
 
 pub const RUN_TOKEN_SECRETS: [&str; 1] = [RUN_TOKEN_SIGNING_KEY_ENV];
 
-pub const CHANNEL_SECRETS: [&str; 4] = [
+pub const CHANNEL_SECRETS: [&str; 5] = [
     RUN_TOKEN_SIGNING_KEY_ENV,
+    RELAY_TOKEN_SIGNING_KEY_ENV,
     "GITHUB_APP_ID",
     "GITHUB_APP_PRIVATE_KEY",
     CREDENTIAL_KEY_ENV,
@@ -377,6 +378,16 @@ pub fn run_tokens(secrets: &Secrets) -> Result<RunTokenSigner, ConfigError> {
     Ok(RunTokenSigner::new(signer(
         RUN_TOKEN_SIGNING_KEY_ENV,
         &run_key,
+    )?))
+}
+
+pub fn relay_tokens(secrets: &Secrets) -> Result<RelayTokenSigner, ConfigError> {
+    let mut env = Reader::new();
+    let relay_key = env.secret(secrets, RELAY_TOKEN_SIGNING_KEY_ENV);
+    env.finish()?;
+    Ok(RelayTokenSigner::new(signer(
+        RELAY_TOKEN_SIGNING_KEY_ENV,
+        &relay_key,
     )?))
 }
 

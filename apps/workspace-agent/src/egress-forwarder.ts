@@ -5,13 +5,15 @@ const HEAD_LIMIT = 16 * 1024;
 
 export interface EgressForwarder {
   server: Server;
+  usePassword: (password: string) => void;
   close: () => Promise<void>;
 }
 
 export interface Relay {
   host: string;
   port: number;
-  authorization: string;
+  username: string;
+  password: string;
 }
 
 export function parseRelayUrl(value: string): Relay {
@@ -19,11 +21,11 @@ export function parseRelayUrl(value: string): Relay {
   if (url.protocol !== "http:" || url.username === "" || url.password === "" || url.port === "") {
     throw new Error("The relay URL must be http://<user>:<token>@<host>:<port>");
   }
-  const credentials = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
   return {
     host: url.hostname.replace(/^\[|\]$/g, ""),
     port: Number(url.port),
-    authorization: `Basic ${Buffer.from(credentials).toString("base64")}`,
+    username: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
   };
 }
 
@@ -57,7 +59,7 @@ function forward(relay: Relay, request: IncomingMessage, client: Socket, head: B
   let buffered = Buffer.alloc(0);
   let established = false;
   upstream.on("connect", () => {
-    upstream.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\nProxy-Authorization: ${relay.authorization}\r\n\r\n`);
+    upstream.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\nProxy-Authorization: Basic ${Buffer.from(`${relay.username}:${relay.password}`).toString("base64")}\r\n\r\n`);
   });
   const onData = (chunk: Buffer) => {
     buffered = Buffer.concat([buffered, chunk]);
@@ -88,7 +90,8 @@ function forward(relay: Relay, request: IncomingMessage, client: Socket, head: B
   });
 }
 
-export async function startEgressForwarder(relay: Relay, port: number, onError: (error: Error) => void): Promise<EgressForwarder> {
+export async function startEgressForwarder(initial: Relay, port: number, onError: (error: Error) => void): Promise<EgressForwarder> {
+  let relay = initial;
   const sockets = new Set<Socket>();
   const server = createServer((_request, response) => {
     response.writeHead(405, { Allow: "CONNECT", "Content-Length": "0" });
@@ -101,6 +104,9 @@ export async function startEgressForwarder(relay: Relay, port: number, onError: 
   });
   return {
     server,
+    usePassword: (password) => {
+      relay = { ...relay, password };
+    },
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => resolve());

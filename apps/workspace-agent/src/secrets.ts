@@ -2,13 +2,13 @@ import { z } from "zod";
 
 const AgentSecrets = z
   .object({
-    runToken: z.string().min(1),
+    bootstrapToken: z.string().min(1),
     relayUrl: z.string().min(1).optional(),
   })
   .strict();
 
 export interface AgentSecrets {
-  runToken: string;
+  bootstrapToken: string;
   relayUrl: string | null;
 }
 
@@ -20,7 +20,7 @@ export function parseSecrets(text: string): AgentSecrets {
     throw new Error(`The agent's secrets on stdin are not JSON: ${(error as Error).message}`);
   }
   const parsed = AgentSecrets.parse(value);
-  return { runToken: parsed.runToken, relayUrl: parsed.relayUrl ?? null };
+  return { bootstrapToken: parsed.bootstrapToken, relayUrl: parsed.relayUrl ?? null };
 }
 
 export async function readSecrets(stream: NodeJS.ReadableStream): Promise<AgentSecrets> {

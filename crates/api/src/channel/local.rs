@@ -15,7 +15,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use super::{Admission, CLOSE_PROTOCOL_ERROR, Channel, ConnectionSender, SendError};
+use super::{Admission, CLOSE_PROTOCOL_ERROR, Channel, Connected, ConnectionSender, SendError};
 use crate::auth::bearer;
 
 enum Outbound {
@@ -80,22 +80,49 @@ async fn upgrade(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    match state.channel.admit(bearer(&headers), Utc::now()).await {
-        Ok(Admission::Accepted(claims)) => {
-            ws.on_upgrade(move |socket| serve(state, claims, socket))
-        }
-        Ok(Admission::Unauthorized) => StatusCode::UNAUTHORIZED.into_response(),
-        Ok(Admission::Forbidden) => StatusCode::FORBIDDEN.into_response(),
+    let claims = match state.channel.admit(bearer(&headers), Utc::now()).await {
+        Ok(Admission::Accepted(claims)) => claims,
+        Ok(Admission::Unauthorized) => return StatusCode::UNAUTHORIZED.into_response(),
+        Ok(Admission::Forbidden) => return StatusCode::FORBIDDEN.into_response(),
         Err(error) => {
             eprintln!("sanchoris channel: admission failed: {error}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let connection_id = Uuid::new_v4().to_string();
+    let outbound = state.connections.register(&connection_id);
+    let run = claims.run();
+    match state.channel.connect(claims, &connection_id).await {
+        Ok(Connected::Accepted) => {
+            let failed = state.clone();
+            let failed_id = connection_id.clone();
+            ws.on_failed_upgrade(move |_| {
+                tokio::spawn(async move {
+                    failed.channel.disconnect(run, &failed_id).await.ok();
+                    failed.connections.remove(&failed_id);
+                });
+            })
+            .on_upgrade(move |socket| serve(state, run, connection_id, outbound, socket))
+        }
+        Ok(Connected::Spent) => {
+            state.connections.remove(&connection_id);
+            StatusCode::FORBIDDEN.into_response()
+        }
+        Err(error) => {
+            eprintln!("sanchoris channel: connect run {}: {error}", run.run_id);
+            state.connections.remove(&connection_id);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
-async fn serve(state: LocalChannel, claims: RunClaims, socket: WebSocket) {
-    let connection_id = Uuid::new_v4().to_string();
-    let mut outbound = state.connections.register(&connection_id);
+async fn serve(
+    state: LocalChannel,
+    claims: RunClaims,
+    connection_id: String,
+    mut outbound: mpsc::UnboundedReceiver<Outbound>,
+    socket: WebSocket,
+) {
     let (mut sink, mut stream) = socket.split();
     let writer = tokio::spawn(async move {
         while let Some(message) = outbound.recv().await {
@@ -117,12 +144,6 @@ async fn serve(state: LocalChannel, claims: RunClaims, socket: WebSocket) {
             }
         }
     });
-    if let Err(error) = state.channel.connect(claims, &connection_id).await {
-        eprintln!("sanchoris channel: connect run {}: {error}", claims.run_id);
-        state.connections.remove(&connection_id);
-        writer.abort();
-        return;
-    }
     while let Some(message) = stream.next().await {
         match message {
             Ok(Message::Text(text)) => {

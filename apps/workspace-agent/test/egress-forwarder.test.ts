@@ -78,11 +78,23 @@ describe("egress forwarder", () => {
     expect(relay.seen.map((entry) => entry.url)).toEqual(["github.com:443", "blocked.example:443"]);
   });
 
+  it("sends later CONNECTs with the relay token it switches to", async () => {
+    const relay = await fakeRelay();
+    const forwarder = await startEgressForwarder(parseRelayUrl(`http://run:short-token@127.0.0.1:${relay.port}`), 0, () => {});
+    cleanups.push(forwarder.close);
+    const port = (forwarder.server.address() as AddressInfo).port;
+
+    expect(await tunnel(port, "github.com:443", "ping")).toMatch(/^HTTP\/1\.1 407 /);
+    forwarder.usePassword("relay-token");
+    expect(await tunnel(port, "github.com:443", "ping")).toBe("HTTP/1.1 200 Connection Established\r\n\r\nping");
+  });
+
   it("parses the relay URL and requires a loopback HTTPS_PROXY", () => {
     expect(parseRelayUrl("http://run:a.b@10.0.1.5:3128")).toEqual({
       host: "10.0.1.5",
       port: 3128,
-      authorization: `Basic ${Buffer.from("run:a.b").toString("base64")}`,
+      username: "run",
+      password: "a.b",
     });
     expect(() => parseRelayUrl("http://10.0.1.5:3128")).toThrow(/relay URL/);
     expect(loopbackProxyPort("http://127.0.0.1:3129")).toBe(3129);

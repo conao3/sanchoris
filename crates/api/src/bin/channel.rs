@@ -5,7 +5,7 @@ use sanchoris_api::channel::Channel;
 use sanchoris_api::channel::credentials::IssuedCredentials;
 use sanchoris_api::channel::gateway::GatewaySender;
 use sanchoris_api::config::{
-    CHANNEL_SECRETS, ChannelConfig, GitHubAppConfig, Secrets, credential_key,
+    CHANNEL_SECRETS, ChannelConfig, GitHubAppConfig, Secrets, credential_key, relay_tokens,
 };
 use sanchoris_api::lambda::{self, WebSocketEvent};
 use sanchoris_api::records::s3_records;
@@ -20,6 +20,7 @@ async fn main() -> Result<(), lambda_runtime::Error> {
     let channel = Channel {
         store: store.clone(),
         run_tokens: config.run_tokens,
+        relay_tokens: Some(relay_tokens(&secrets)?),
         records: s3_records(&config.records, &sdk)?,
         sender: Arc::new(GatewaySender::from_env(&sdk)?),
         credentials: Arc::new(IssuedCredentials::new(

@@ -5,9 +5,11 @@ import WebSocket from "ws";
 
 import type { Logger } from "./log.ts";
 import {
+  type CredentialsMessage,
   type GitTokenResponseMessage,
   InboundMessage,
   type OutboundMessage,
+  PROTOCOL_VERSION,
   type RecordUploadResponseMessage,
   type SequencedMessage,
   type SequencedPayload,
@@ -20,7 +22,7 @@ type ReplyMessage =
   | RecordUploadResponseMessage
   | GitTokenResponseMessage
   | WorkerCredentialResponseMessage;
-type InboundCommand = Exclude<InboundMessage, ReplyMessage | { type: "ack" | "close" }>;
+type InboundCommand = Exclude<InboundMessage, ReplyMessage | { type: "ack" | "close" | "credentials" }>;
 
 interface PendingReply {
   resolve: (message: ReplyMessage) => void;
@@ -30,12 +32,13 @@ interface PendingReply {
 
 export interface RunChannelOptions {
   url: string;
-  token: string;
+  bootstrapToken: string;
   runId: string;
   env: NodeJS.ProcessEnv;
   logger: Logger;
   hello: () => { started: boolean; sessionId: string | null };
   onCommand: (message: InboundCommand) => void;
+  onCredentials: (message: CredentialsMessage) => void;
   onFatal: (error: Error) => void;
   initialBackoffMs: number;
   maxBackoffMs: number;
@@ -48,6 +51,8 @@ const PING_INTERVAL_MS = 30_000;
 
 export class RunChannel {
   private readonly options: RunChannelOptions;
+  private token: string;
+  private credentialed = false;
   private socket: WebSocket | null = null;
   private seq = 0;
   private readonly instanceId = randomUUID();
@@ -65,6 +70,7 @@ export class RunChannel {
 
   constructor(options: RunChannelOptions) {
     this.options = options;
+    this.token = options.bootstrapToken;
     this.backoffMs = options.initialBackoffMs;
   }
 
@@ -72,7 +78,7 @@ export class RunChannel {
     if (this.closed) return;
     const agentOptions = { keepAlive: false, proxyEnv: this.options.env } as http.AgentOptions;
     const socket = new WebSocket(this.options.url, {
-      headers: { Authorization: `Bearer ${this.options.token}` },
+      headers: { Authorization: `Bearer ${this.token}` },
       agent: this.options.url.startsWith("wss:") ? new https.Agent(agentOptions) : new http.Agent(agentOptions),
     });
     this.socket = socket;
@@ -84,7 +90,7 @@ export class RunChannel {
       this.write({
         type: "hello",
         runId: this.options.runId,
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         instanceId: this.instanceId,
         started: hello.started,
         sessionId: hello.sessionId,
@@ -116,6 +122,10 @@ export class RunChannel {
       if (this.closed) return;
       if (code >= 4000 && code <= 4999) {
         this.fail(new ProtocolError(`Run channel closed by control plane: ${code} ${reason.toString()}`));
+        return;
+      }
+      if (!this.credentialed) {
+        this.fail(new ProtocolError("Run channel closed before the control plane sent the credentials"));
         return;
       }
       this.scheduleReconnect();
@@ -212,6 +222,15 @@ export class RunChannel {
         return;
       case "close":
         this.fail(new ProtocolError(`Run channel closed by control plane: ${parsed.code} ${parsed.reason}`));
+        return;
+      case "credentials":
+        if (this.credentialed) {
+          this.fail(new ProtocolError("Received a second credentials message"));
+          return;
+        }
+        this.credentialed = true;
+        this.token = parsed.runToken;
+        this.options.onCredentials(parsed);
         return;
       case "skill_response":
       case "record_upload_response":

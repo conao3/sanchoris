@@ -893,6 +893,7 @@ fn run_item(
         connection_id: None,
         connection_instance: None,
         connection_started: false,
+        connection_bootstrap: None,
     })
     .unwrap();
     insert_ref(tx, id, REF_RUN, run.key(), Some(task_id)).unwrap();

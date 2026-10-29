@@ -97,7 +97,7 @@ async fn config_of(tx: &mut TenantTx, task: &Task) -> Result<Config, CredentialE
         .await?)
 }
 
-fn session_of(task: &Task) -> Result<Session, CredentialError> {
+pub(crate) fn session_of(task: &Task) -> Result<Session, CredentialError> {
     serde_json::from_value(task.definition["Session"]["Definition"].clone())
         .map_err(|error| unavailable(format!("the task's session does not parse: {error}")))
 }

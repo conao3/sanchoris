@@ -10,7 +10,10 @@ import type { FakeControl } from "../src/testing/fake-control.ts";
 import type { WorkerFactory } from "../src/worker.ts";
 
 export const RUN_ID = "run-1";
-export const TOKEN = "test-token";
+export const BOOTSTRAP_TOKEN = "test-bootstrap-token";
+export const NEXT_BOOTSTRAP_TOKEN = "test-bootstrap-token-2";
+export const RUN_TOKEN = "test-run-token";
+export const CONTROL_TOKENS = { bootstrapTokens: [BOOTSTRAP_TOKEN, NEXT_BOOTSTRAP_TOKEN], runToken: RUN_TOKEN };
 
 export interface Sandbox {
   root: string;
@@ -49,11 +52,11 @@ export function startAgent(
   sandbox: Sandbox,
   control: FakeControl,
   createWorker: WorkerFactory,
-  overrides: { token?: string; credentialSource?: CredentialSource; egress?: AgentConfig["egress"]; providerUpstream?: string } = {},
+  overrides: { bootstrapToken?: string; credentialSource?: CredentialSource; egress?: AgentConfig["egress"]; providerUpstream?: string } = {},
 ): { agent: WorkspaceAgent; exitCode: Promise<number> } {
   const agent = new WorkspaceAgent({
     runId: RUN_ID,
-    token: overrides.token ?? TOKEN,
+    bootstrapToken: overrides.bootstrapToken ?? BOOTSTRAP_TOKEN,
     controlUrl: control.url,
     socketPath: sandbox.socketPath,
     workspaceDir: sandbox.workspaceDir,

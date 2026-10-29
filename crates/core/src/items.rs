@@ -2406,6 +2406,7 @@ pub struct RunChannel {
     pub connection_id: Option<String>,
     pub connection_instance: Option<Uuid>,
     pub connection_started: bool,
+    pub connection_bootstrap: Option<Uuid>,
 }
 
 impl Entity for RunChannel {
@@ -2423,7 +2424,8 @@ impl Entity for RunChannel {
             .n("instances", self.instances)
             .opt_s("connection_id", self.connection_id.as_ref())
             .opt_uuid("connection_instance", self.connection_instance)
-            .b("connection_started", self.connection_started);
+            .b("connection_started", self.connection_started)
+            .opt_uuid("connection_bootstrap", self.connection_bootstrap);
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -2436,6 +2438,7 @@ impl Entity for RunChannel {
             connection_id: r.opt_s("connection_id")?,
             connection_instance: r.opt_uuid("connection_instance")?,
             connection_started: r.b("connection_started")?,
+            connection_bootstrap: r.opt_uuid("connection_bootstrap")?,
         })
     }
 }
@@ -2477,6 +2480,41 @@ impl Entity for ChannelInstance {
             processed_seq: r.n("processed_seq")?,
             start_outbox_seq: r.opt_n("start_outbox_seq")?,
             connected_at: r.time("connected_at")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BootstrapRedemption {
+    pub tenant_id: Uuid,
+    pub run_id: Uuid,
+    pub workspace_id: Uuid,
+    pub connection_id: String,
+    pub redeemed_at: DateTime<Utc>,
+}
+
+impl Entity for BootstrapRedemption {
+    const KIND: &'static str = "bootstrap_redemption";
+
+    fn key(&self) -> Key {
+        keys::bootstrap_redemption_key(self.tenant_id, self.run_id, self.workspace_id)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .uuid("run_id", self.run_id)
+            .uuid("workspace_id", self.workspace_id)
+            .s("connection_id", &self.connection_id)
+            .time("redeemed_at", self.redeemed_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            run_id: r.uuid("run_id")?,
+            workspace_id: r.uuid("workspace_id")?,
+            connection_id: r.s("connection_id")?,
+            redeemed_at: r.time("redeemed_at")?,
         })
     }
 }

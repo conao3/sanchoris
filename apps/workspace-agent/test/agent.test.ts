@@ -1,14 +1,18 @@
 import { execFile } from "node:child_process";
+import { once } from "node:events";
 import { existsSync } from "node:fs";
+import { createServer, type IncomingMessage, type Server } from "node:http";
+import { connect, type AddressInfo, type Socket } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { parseRelayUrl } from "../src/egress-forwarder.ts";
 import { sha256 } from "../src/session-record.ts";
 import { FakeControl } from "../src/testing/fake-control.ts";
 import { fakeWorkerFactory, type CommandResult, type FakeScript } from "../src/testing/fake-worker.ts";
-import { makeSandbox, RUN_ID, startAgent, startMessage, TOKEN, type Sandbox } from "./helpers.ts";
+import { BOOTSTRAP_TOKEN, CONTROL_TOKENS, makeSandbox, NEXT_BOOTSTRAP_TOKEN, RUN_ID, RUN_TOKEN, startAgent, startMessage, type Sandbox } from "./helpers.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -24,6 +28,61 @@ async function runCli(sandbox: Sandbox, args: string[]): Promise<CommandResult> 
 
 const cleanups: Array<() => Promise<void>> = [];
 
+async function listening(server: Server): Promise<number> {
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  cleanups.push(() => new Promise((resolve) => server.close(() => resolve())));
+  return (server.address() as AddressInfo).port;
+}
+
+async function fakeRelay(accepted: string): Promise<{ port: number; seen: string[] }> {
+  const seen: string[] = [];
+  const relay = createServer();
+  relay.on("connect", (request: IncomingMessage, client: Socket) => {
+    const authorization = request.headers["proxy-authorization"] ?? "";
+    seen.push(authorization);
+    const ok = authorization === `Basic ${Buffer.from(`run:${accepted}`).toString("base64")}`;
+    client.end(ok ? "HTTP/1.1 200 Connection Established\r\n\r\n" : "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n");
+  });
+  return { port: await listening(relay), seen };
+}
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = (server.address() as AddressInfo).port;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+async function connectThrough(port: number): Promise<string> {
+  const socket = connect(port, "127.0.0.1");
+  socket.on("error", () => {});
+  await once(socket, "connect");
+  socket.setEncoding("utf8");
+  socket.write("CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n\r\n");
+  let received = "";
+  socket.on("data", (chunk: string) => {
+    received += chunk;
+  });
+  await once(socket, "close");
+  return received;
+}
+
+async function eventually(check: () => Promise<void>, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      await check();
+      return;
+    } catch (error) {
+      if (Date.now() > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
@@ -31,7 +90,7 @@ afterEach(async () => {
 async function setup(script: FakeScript, worker = "home") {
   const control = await FakeControl.listen({
     runId: RUN_ID,
-    token: TOKEN,
+    ...CONTROL_TOKENS,
     onSkillRequest: (request) => {
       if (request.action === "run" && request.name === "open-pr-green-ci") {
         return { ok: true, result: { RunId: 1, Status: "RUNNING" } };
@@ -227,8 +286,71 @@ describe("workspace agent with a fake worker", () => {
     control.send({ type: "user_message", messageId: "after-reconnect", text: "still there?" });
     const end = await control.waitFor("turn_end");
     expect(end.summary).toBe("echo still there?");
+    expect(control.authorizations).toEqual([BOOTSTRAP_TOKEN, RUN_TOKEN]);
     control.send({ type: "shutdown", reason: "done" });
     expect(await exitCode).toBe(0);
+  });
+
+  it("exits with an error without reconnecting when the channel drops before the credentials arrive", async () => {
+    const control = await FakeControl.listen({
+      runId: RUN_ID,
+      ...CONTROL_TOKENS,
+      deliverCredentials: false,
+      onSkillRequest: () => ({ ok: false, error: { code: "unused", message: "unused" } }),
+    });
+    cleanups.push(() => control.close());
+    const sandbox = await makeSandbox();
+    cleanups.push(sandbox.cleanup);
+    const { exitCode } = startAgent(sandbox, control, fakeWorkerFactory(async () => "unused"));
+    await control.waitFor("hello");
+    control.dropConnection();
+    expect(await exitCode).toBe(1);
+    expect(control.authorizations).toEqual([BOOTSTRAP_TOKEN]);
+  });
+
+  it("exits with an error on a second credentials message", async () => {
+    const { control, exitCode } = await setup(async () => "unused");
+    await control.waitFor("hello");
+    control.send({ type: "credentials", runToken: "another", relayToken: null });
+    expect(await exitCode).toBe(1);
+  });
+
+  it("switches the egress forwarder to the relay token that the credentials bring", async () => {
+    const relay = await fakeRelay("relay-12h");
+    const port = await freePort();
+    const control = await FakeControl.listen({
+      runId: RUN_ID,
+      ...CONTROL_TOKENS,
+      relayToken: "relay-12h",
+      onSkillRequest: () => ({ ok: false, error: { code: "unused", message: "unused" } }),
+    });
+    cleanups.push(() => control.close());
+    const sandbox = await makeSandbox();
+    cleanups.push(sandbox.cleanup);
+    const { exitCode } = startAgent(sandbox, control, fakeWorkerFactory(async () => "unused"), {
+      egress: { relay: parseRelayUrl(`http://run:relay-15m@127.0.0.1:${relay.port}`), port },
+    });
+    await control.waitFor("hello");
+    await eventually(async () => expect(await connectThrough(port)).toMatch(/^HTTP\/1\.1 200 /));
+    expect(relay.seen.at(-1)).toBe(`Basic ${Buffer.from("run:relay-12h").toString("base64")}`);
+    control.send({ type: "shutdown", reason: "done" });
+    expect(await exitCode).toBe(0);
+  });
+
+  it("exits with an error when the credentials leave out the relay token that its egress needs", async () => {
+    const relay = await fakeRelay("relay-12h");
+    const control = await FakeControl.listen({
+      runId: RUN_ID,
+      ...CONTROL_TOKENS,
+      onSkillRequest: () => ({ ok: false, error: { code: "unused", message: "unused" } }),
+    });
+    cleanups.push(() => control.close());
+    const sandbox = await makeSandbox();
+    cleanups.push(sandbox.cleanup);
+    const { exitCode } = startAgent(sandbox, control, fakeWorkerFactory(async () => "unused"), {
+      egress: { relay: parseRelayUrl(`http://run:relay-15m@127.0.0.1:${relay.port}`), port: await freePort() },
+    });
+    expect(await exitCode).toBe(1);
   });
 
   it("answers sanchoris with not_started before the start message", async () => {
@@ -246,13 +368,13 @@ describe("workspace agent with a fake worker", () => {
   it("exits with an error when the token is rejected", async () => {
     const control = await FakeControl.listen({
       runId: RUN_ID,
-      token: TOKEN,
+      ...CONTROL_TOKENS,
       onSkillRequest: () => ({ ok: false, error: { code: "unused", message: "unused" } }),
     });
     cleanups.push(() => control.close());
     const sandbox = await makeSandbox();
     cleanups.push(sandbox.cleanup);
-    const { exitCode } = startAgent(sandbox, control, fakeWorkerFactory(async () => "unused"), { token: "wrong" });
+    const { exitCode } = startAgent(sandbox, control, fakeWorkerFactory(async () => "unused"), { bootstrapToken: "wrong" });
     expect(await exitCode).toBe(1);
   });
 
@@ -300,7 +422,7 @@ describe("session record round trip", () => {
     const sandbox = await makeSandbox();
     cleanups.push(sandbox.cleanup);
     sandbox.env.FAKE_WORKER_HOME = join(sandbox.root, "home-b");
-    const second = { control, exitCode: startAgent(sandbox, control, fakeWorkerFactory(rememberScript)).exitCode };
+    const second = { control, exitCode: startAgent(sandbox, control, fakeWorkerFactory(rememberScript), { bootstrapToken: NEXT_BOOTSTRAP_TOKEN }).exitCode };
     await control.waitFor("hello", (message) => control.received.indexOf(message) >= received);
     second.control.send(
       startMessage({

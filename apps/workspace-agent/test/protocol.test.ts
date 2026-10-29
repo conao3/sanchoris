@@ -7,6 +7,7 @@ import type { ZodType } from "zod";
 import {
   AckMessage,
   CloseMessage,
+  CredentialsMessage,
   EventMessage,
   ExecMessage,
   ExecResultMessage,
@@ -49,6 +50,7 @@ const inbound: Record<string, ZodType> = {
   worker_credential_response: WorkerCredentialResponseMessage,
   ack: AckMessage,
   close: CloseMessage,
+  credentials: CredentialsMessage,
 };
 
 const outbound: Record<string, ZodType> = {
