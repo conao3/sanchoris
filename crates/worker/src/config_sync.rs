@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sanchoris_config::{
     Checkout, Compute, Config as RepoConfig, ConfigRepository, PlanLimits, Trigger as RepoTrigger,
     TriggerSource, TriggerState, ValidationContext, parse_repository, validate,
@@ -28,6 +28,7 @@ use crate::ports::{ConfigSource, Installation, installation_with};
 use crate::{Worker, installation_for, installations};
 
 const CONFLICT_ATTEMPTS: u32 = 8;
+const OVERDUE_SCHEDULE_MINUTES: i64 = 10;
 
 pub async fn sweep(worker: &Worker) -> Result<usize> {
     let cutoff = worker.now() - worker.settings.config_poll_interval;
@@ -940,7 +941,10 @@ pub async fn settle(
             || listed.schedule_expression != settled.schedule_expression
             || (settled.is_active()
                 && settled.schedule_expression.is_some()
-                && settled.schedule_message_id.is_none());
+                && (settled.schedule_message_id.is_none()
+                    || settled
+                        .next_run_at
+                        .is_some_and(|at| at < now - Duration::minutes(OVERDUE_SCHEDULE_MINUTES))));
         if !reschedule && settled == listed {
             continue;
         }

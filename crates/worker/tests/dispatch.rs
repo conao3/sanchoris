@@ -404,6 +404,47 @@ async fn schedules_emit_events_at_due_times() {
     );
 }
 
+#[tokio::test]
+async fn a_schedule_that_never_fired_is_armed_again_by_the_config_sync() {
+    let world = World::new("pro").await;
+    {
+        let mut state = world.github.state.lock().unwrap();
+        state.head_sha = "config-2".into();
+        let yaml = format!(
+            "{}  nightly:\n    State: ENABLED\n    ScheduleExpression: rate(1 hour)\n    Start:\n      Session: all\n      Instruction: 'Triage new issues.'\n      Skills: []\n      RequiredSkills: []\n      MaxNudges: 0\n      Limits: {{ Turns: 10, CostUsd: 5, TimeoutSeconds: 3600, HeartbeatSeconds: 600, Children: {{ MaxDepth: 1, MaxCount: 5 }} }}\n",
+            common::CONFIG_YAML
+        );
+        state.files.insert("sanchoris.yaml".into(), yaml);
+    }
+    world.resync_config().await;
+    world.worker.settle().await.unwrap();
+    let lost = world
+        .scheduler
+        .take_due(common::epoch() + chrono::Duration::hours(1));
+    assert_eq!(lost.len(), 1);
+
+    world.clock.advance(chrono::Duration::minutes(69));
+    world.resync_config().await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(
+        trigger(&world, "nightly").await.next_run_at,
+        Some(common::epoch() + chrono::Duration::hours(1))
+    );
+    world.clock.advance(chrono::Duration::minutes(2));
+    world.resync_config().await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(
+        trigger(&world, "nightly").await.next_run_at,
+        Some(world.clock_now() + chrono::Duration::hours(1))
+    );
+    world.clock.advance(chrono::Duration::hours(1));
+    world.worker.settle().await.unwrap();
+    assert_eq!(
+        world.task("nightly@2026-10-27T11:11:00Z").await.status,
+        "RUNNING"
+    );
+}
+
 async fn legacy_pattern(world: &World, name: &str, pattern: serde_json::Value) {
     world
         .dynamo
