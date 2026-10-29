@@ -30,33 +30,20 @@
           targets = [ "aarch64-unknown-linux-musl" ];
         };
         lambdaCc = pkgs.pkgsCross.aarch64-multiplatform-musl.stdenv.cc;
-      in
-      {
-        devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
-            nodejs_latest
-            pnpm
-            rust
-            rust-analyzer
-            cargo-watch
-            cargo-lambda
-            dynamodb-local
-            jre_headless
-            gh
-            jq
-            openssl
-            worktrunk
-            sccache
-            mold
-            cargo-nextest
-          ];
-
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER = "${lambdaCc}/bin/${lambdaCc.targetPrefix}cc";
-          CC_aarch64_unknown_linux_musl = "${lambdaCc}/bin/${lambdaCc.targetPrefix}cc";
-          AR_aarch64_unknown_linux_musl = "${lambdaCc}/bin/${lambdaCc.targetPrefix}ar";
+        verifyPackages = with pkgs; [
+          nodejs_latest
+          pnpm
+          rust
+          dynamodb-local
+          jre_headless
+          jq
+          openssl
+          sccache
+          mold
+          cargo-nextest
+        ];
+        rustEnv = {
           RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
-          SCCACHE_CACHE_SIZE = "30G";
-          CARGO_BUILD_JOBS = "6";
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
 
           shellHook = ''
@@ -64,6 +51,36 @@
             export SCCACHE_DIR="$HOME/.cache/sccache"
           '';
         };
+      in
+      {
+        devShells.default = pkgs.mkShell (
+          rustEnv
+          // {
+            packages =
+              verifyPackages
+              ++ (with pkgs; [
+                rust-analyzer
+                cargo-watch
+                cargo-lambda
+                gh
+                worktrunk
+              ]);
+
+            CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER = "${lambdaCc}/bin/${lambdaCc.targetPrefix}cc";
+            CC_aarch64_unknown_linux_musl = "${lambdaCc}/bin/${lambdaCc.targetPrefix}cc";
+            AR_aarch64_unknown_linux_musl = "${lambdaCc}/bin/${lambdaCc.targetPrefix}ar";
+            SCCACHE_CACHE_SIZE = "30G";
+            CARGO_BUILD_JOBS = "6";
+          }
+        );
+
+        devShells.ci = pkgs.mkShell (
+          rustEnv
+          // {
+            packages = verifyPackages;
+            SCCACHE_CACHE_SIZE = "4G";
+          }
+        );
       }
     );
 }
