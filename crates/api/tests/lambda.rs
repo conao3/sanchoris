@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sanchoris_api::channel::credentials::NoRunCredentials;
 use sanchoris_api::channel::{Channel, ConnectionSender, SendError};
 use sanchoris_api::config::AllowedSources;
@@ -17,12 +17,12 @@ use sanchoris_api::lambda::{
 use sanchoris_api::records::LocalRecordStore;
 use sanchoris_api::signing::HmacKey;
 use sanchoris_core::clock::{Clock, SystemClock};
-use sanchoris_core::items::{OutboxItem, RunChannel, RunEventItem};
+use sanchoris_core::items::{OutboxItem, RunChannel, RunEventItem, Task, Workspace};
 use sanchoris_core::jobs::{Envelope, Job, Relayed};
 use sanchoris_core::keys;
 use sanchoris_core::local::{MemoryQueue, MemoryScheduler};
 use sanchoris_core::testing::TestDynamo;
-use sanchoris_core::tokens::{RunTokenSigner, Signer};
+use sanchoris_core::tokens::{RelayTokenSigner, RunClaims, RunTokenSigner, Signer};
 use sanchoris_graphql::ClientIp;
 use sanchoris_worker::github::transport::ReqwestTransport;
 use sanchoris_worker::github::{AppAuth, GitHubApi};
@@ -149,6 +149,7 @@ async fn the_lambda_handlers_run_the_channel_from_recorded_events() {
     let channel = Channel {
         store: direct.store.clone(),
         run_tokens: run_tokens.clone(),
+        relay_tokens: None,
         records: Arc::new(LocalRecordStore::new(
             dir.path(),
             HmacKey::strong(&[5u8; 32]).unwrap(),
@@ -280,7 +281,7 @@ async fn the_lambda_handlers_run_the_channel_from_recorded_events() {
     assert_eq!(stored.connection_id.as_deref(), Some(connection.as_str()));
 
     let run = run_id.to_string();
-    let hello = json!({ "type": "hello", "runId": run, "protocolVersion": 1, "instanceId": Uuid::new_v4(), "started": false, "sessionId": null });
+    let hello = json!({ "type": "hello", "runId": run, "protocolVersion": 2, "instanceId": Uuid::new_v4(), "started": false, "sessionId": null });
     let message = websocket_event("websocket-message.json", &vars, Some(&hello));
     assert_eq!(lambda::websocket(&channel, &message).await.unwrap(), ok);
     let delivery = direct
@@ -427,6 +428,217 @@ async fn the_lambda_handlers_run_the_channel_from_recorded_events() {
         lambda::websocket(&channel, &anonymous).await,
         Err(LambdaError::Unauthorized)
     ));
+}
+
+fn authorized_event(
+    name: &str,
+    vars: &[(&str, String)],
+    context: &Value,
+    body: Option<&Value>,
+) -> WebSocketEvent {
+    let mut event = fixture(name, vars);
+    let authorizer = event["requestContext"]["authorizer"]
+        .as_object_mut()
+        .unwrap();
+    authorizer.remove("tenantId");
+    authorizer.remove("runId");
+    authorizer.extend(context.as_object().unwrap().clone());
+    if let Some(body) = body {
+        event["body"] = Value::String(body.to_string());
+    }
+    serde_json::from_value(event).unwrap()
+}
+
+#[tokio::test]
+async fn a_bootstrap_token_opens_one_connection_whose_hello_brings_the_run_and_relay_tokens() {
+    let dynamo = TestDynamo::start().await;
+    let seeded = seed(&dynamo).await;
+    let tenant = seeded.tenant.tenant_id;
+    let (task_id, run_id) = task_with_run(&dynamo, &seeded).await;
+    let store = dynamo.store(sanchoris_core::store::Relay::Stream);
+    let mut task = store
+        .get::<Task>(&keys::task_key(tenant, task_id))
+        .await
+        .unwrap()
+        .unwrap();
+    task.definition["Session"]["Definition"] = json!({
+        "Worker": { "Agent": "claude", "Model": "m", "Credential": "c" },
+        "Repos": ["acme/shop-web"],
+        "GitHub": { "Repos": ["acme/shop-web"], "Permissions": { "contents": "write" } },
+        "Network": { "Allow": ["registry.npmjs.org"] },
+        "UsageLimit": { "Resume": "auto" },
+        "Workspace": { "Compute": "standard", "Architecture": "arm64", "IdleSeconds": 60 },
+    });
+    dynamo.put(&task).await;
+    let started_at = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
+    let workspace_id = Uuid::new_v4();
+    dynamo
+        .put(&Workspace {
+            id: workspace_id,
+            tenant_id: tenant,
+            task_id,
+            run_id,
+            compute: "standard".into(),
+            architecture: "arm64".into(),
+            cpu: 1024,
+            memory_mib: 4096,
+            platform: "ecs".into(),
+            platform_ref: Some("arn:aws:ecs:ap-northeast-1:123456789012:task/c/1".into()),
+            capacity_provider: Some("FARGATE_SPOT".into()),
+            repositories: vec!["acme/shop-web".into()],
+            branch: "sanchoris/x".into(),
+            base_commit: None,
+            started_at,
+            signaled_at: None,
+            stopped_at: None,
+        })
+        .await;
+    let direct = dynamo.direct_store(Arc::new(SystemClock));
+    let dir = tempfile::tempdir().unwrap();
+    let sender = Arc::new(FakeSender::default());
+    let run_tokens = RunTokenSigner::new(Signer::new(RUN_KEY).unwrap());
+    let relay_tokens = RelayTokenSigner::new(Signer::new(&[6u8; 32]).unwrap());
+    let channel = Channel {
+        store: direct.store.clone(),
+        run_tokens: run_tokens.clone(),
+        relay_tokens: Some(relay_tokens.clone()),
+        records: Arc::new(LocalRecordStore::new(
+            dir.path(),
+            HmacKey::strong(&[5u8; 32]).unwrap(),
+            "https://records.example",
+        )),
+        sender: sender.clone(),
+        credentials: Arc::new(NoRunCredentials),
+    };
+
+    let bootstrap = run_tokens.sign_bootstrap(
+        tenant,
+        run_id,
+        workspace_id,
+        started_at + Duration::minutes(15),
+    );
+    let connection = "B0OTsTrApCOnn1=".to_string();
+    let vars = [
+        ("token", bootstrap.clone()),
+        ("connectionId", connection.clone()),
+    ];
+    let authorizer: AuthorizerEvent =
+        serde_json::from_value(fixture("authorizer.json", &vars)).unwrap();
+    let allowed = lambda::authorize(
+        &direct.store,
+        &run_tokens,
+        AllowedSources::Any,
+        &authorizer,
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        allowed["policyDocument"]["Statement"][0]["Effect"],
+        json!("Allow")
+    );
+    let context = allowed["context"].clone();
+    assert_eq!(
+        context,
+        json!({
+            "tenantId": tenant.to_string(),
+            "runId": run_id.to_string(),
+            "bootstrapWorkspaceId": workspace_id.to_string(),
+        })
+    );
+
+    let ok = WebSocketResponse { status_code: 200 };
+    let connect = authorized_event("websocket-connect.json", &vars, &context, None);
+    assert_eq!(lambda::websocket(&channel, &connect).await.unwrap(), ok);
+    let replay = authorized_event(
+        "websocket-connect.json",
+        &[
+            ("token", bootstrap.clone()),
+            ("connectionId", "R3pLaYeD=".into()),
+        ],
+        &context,
+        None,
+    );
+    assert_eq!(
+        lambda::websocket(&channel, &replay).await.unwrap(),
+        WebSocketResponse { status_code: 403 }
+    );
+    let stored = store
+        .get::<RunChannel>(&keys::run_channel_key(tenant, run_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.connection_id.as_deref(), Some(connection.as_str()));
+    assert_eq!(stored.connection_bootstrap, Some(workspace_id));
+
+    let run = run_id.to_string();
+    let hello = json!({ "type": "hello", "runId": run, "protocolVersion": 2, "instanceId": Uuid::new_v4(), "started": false, "sessionId": null });
+    let message = authorized_event("websocket-message.json", &vars, &context, Some(&hello));
+    assert_eq!(lambda::websocket(&channel, &message).await.unwrap(), ok);
+    let sent = sender.sent_to(&connection);
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0], json!({ "type": "ack", "runId": run, "seq": 0 }));
+    assert_eq!(sent[1]["type"], "credentials");
+    assert_eq!(sent[1]["runId"], run);
+    let delivered = sent[1]["runToken"].as_str().unwrap();
+    assert_eq!(
+        run_tokens.verify(delivered, Utc::now()).unwrap(),
+        RunClaims {
+            tenant_id: tenant,
+            run_id
+        }
+    );
+    assert!(
+        run_tokens
+            .verify(delivered, started_at + Duration::hours(12))
+            .is_err()
+    );
+    let relay = relay_tokens
+        .verify(sent[1]["relayToken"].as_str().unwrap(), Utc::now())
+        .unwrap();
+    assert_eq!(relay.allow, vec!["registry.npmjs.org".to_string()]);
+    assert_eq!(relay.exp, (started_at + Duration::hours(12)).timestamp());
+
+    let disconnect = authorized_event("websocket-disconnect.json", &vars, &context, None);
+    assert_eq!(lambda::websocket(&channel, &disconnect).await.unwrap(), ok);
+    let reconnect_vars = [
+        ("token", delivered.to_string()),
+        ("connectionId", "R3c0nNeCt=".to_string()),
+    ];
+    let reauthorized: AuthorizerEvent =
+        serde_json::from_value(fixture("authorizer.json", &reconnect_vars)).unwrap();
+    let readmitted = lambda::authorize(
+        &direct.store,
+        &run_tokens,
+        AllowedSources::Any,
+        &reauthorized,
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        readmitted["context"],
+        json!({ "tenantId": tenant.to_string(), "runId": run })
+    );
+    let reconnect = authorized_event(
+        "websocket-connect.json",
+        &reconnect_vars,
+        &readmitted["context"],
+        None,
+    );
+    assert_eq!(lambda::websocket(&channel, &reconnect).await.unwrap(), ok);
+    let hello = json!({ "type": "hello", "runId": run, "protocolVersion": 2, "instanceId": Uuid::new_v4(), "started": false, "sessionId": null });
+    let message = authorized_event(
+        "websocket-message.json",
+        &reconnect_vars,
+        &readmitted["context"],
+        Some(&hello),
+    );
+    assert_eq!(lambda::websocket(&channel, &message).await.unwrap(), ok);
+    assert_eq!(
+        sender.sent_to("R3c0nNeCt="),
+        vec![json!({ "type": "ack", "runId": run, "seq": 0 })]
+    );
 }
 
 #[tokio::test]

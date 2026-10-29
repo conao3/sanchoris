@@ -7,7 +7,7 @@ import { type CredentialProxy, providerCredential, startCredentialProxy } from "
 import { type EgressForwarder, type Relay, startEgressForwarder } from "./egress-forwarder.ts";
 import { runCommands } from "./exec.ts";
 import type { Logger } from "./log.ts";
-import type { ExecMessage, InboundMessage, SocketRequest, SocketResponse, StartMessage } from "./protocol.ts";
+import type { CredentialsMessage, ExecMessage, InboundMessage, SocketRequest, SocketResponse, StartMessage } from "./protocol.ts";
 import { downloadRecord, redactTokens, sha256, uploadRecord } from "./session-record.ts";
 import { validateSkillRun } from "./skills.ts";
 import { listenSocket } from "./socket-server.ts";
@@ -19,7 +19,7 @@ const GIT_TOKEN_MARGIN_MS = 5 * 60_000;
 
 export interface AgentConfig {
   runId: string;
-  token: string;
+  bootstrapToken: string;
   controlUrl: string;
   socketPath: string;
   workspaceDir: string;
@@ -66,7 +66,7 @@ export class WorkspaceAgent {
     });
     this.channel = new RunChannel({
       url: config.controlUrl,
-      token: config.token,
+      bootstrapToken: config.bootstrapToken,
       runId: config.runId,
       env: config.env,
       logger: config.logger,
@@ -74,6 +74,7 @@ export class WorkspaceAgent {
       maxBackoffMs: config.maxBackoffMs,
       hello: () => ({ started: this.start !== null, sessionId: this.sessionId }),
       onCommand: (message) => this.handleCommand(message),
+      onCredentials: (message) => this.useCredentials(message),
       onFatal: (error) => void this.fail(error),
     });
   }
@@ -93,7 +94,7 @@ export class WorkspaceAgent {
   private handleCommand(
     message: Exclude<
       InboundMessage,
-      { type: "ack" | "close" | "skill_response" | "record_upload_response" | "git_token_response" | "worker_credential_response" }
+      { type: "ack" | "close" | "credentials" | "skill_response" | "record_upload_response" | "git_token_response" | "worker_credential_response" }
     >,
   ): void {
     switch (message.type) {
@@ -132,6 +133,18 @@ export class WorkspaceAgent {
         void this.shutdown();
         return;
     }
+  }
+
+  private useCredentials(message: CredentialsMessage): void {
+    if (message.relayToken === null) {
+      if (this.forwarder) void this.fail(new Error("The credentials carry no relay token for the egress relay"));
+      return;
+    }
+    if (!this.forwarder) {
+      void this.fail(new Error("The credentials carry a relay token, but this workspace has no egress relay"));
+      return;
+    }
+    this.forwarder.usePassword(message.relayToken);
   }
 
   private async whenReady(action: () => void | Promise<void>): Promise<void> {

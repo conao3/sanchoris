@@ -162,13 +162,14 @@ describe("Claude Code on SIGTERM", () => {
     cleanups.push(() => upstream.close());
     const control = await FakeControl.listen({
       runId: "sigterm-run",
-      token: "sigterm-token",
+      bootstrapTokens: ["sigterm-bootstrap-a", "sigterm-bootstrap-b"],
+      runToken: "sigterm-run-token",
       onSkillRequest: () => ({ ok: false, error: { code: "unused", message: "unused" } }),
     });
     cleanups.push(() => control.close());
 
     const first = await workspace("a");
-    const agentA = spawnAgent(agentEnv(first.root, first.workspaceDir, upstream, control), "sigterm-token", (line) =>
+    const agentA = spawnAgent(agentEnv(first.root, first.workspaceDir, upstream, control), "sigterm-bootstrap-a", (line) =>
       process.stderr.write(`[a] ${line}\n`),
     );
     await control.waitFor("hello", () => true, 30_000);
@@ -204,7 +205,7 @@ describe("Claude Code on SIGTERM", () => {
 
     const received = control.received.length;
     const second = await workspace("b");
-    const agentB = spawnAgent(agentEnv(second.root, second.workspaceDir, upstream, control), "sigterm-token", (line) =>
+    const agentB = spawnAgent(agentEnv(second.root, second.workspaceDir, upstream, control), "sigterm-bootstrap-b", (line) =>
       process.stderr.write(`[b] ${line}\n`),
     );
     await control.waitFor("hello", (message) => control.received.indexOf(message) >= received, 30_000);

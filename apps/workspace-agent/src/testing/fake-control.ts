@@ -17,7 +17,10 @@ interface Waiter {
 
 export interface FakeControlOptions {
   runId: string;
-  token: string;
+  bootstrapTokens: string[];
+  runToken: string;
+  relayToken?: string | null;
+  deliverCredentials?: boolean;
   onSkillRequest: (request: SkillRequest) => SkillReply;
 }
 
@@ -35,6 +38,8 @@ export class FakeControl {
   private readonly http: Server;
   private readonly wss = new WebSocketServer({ noServer: true });
   private socket: WebSocket | null = null;
+  private readonly spent = new Set<string>();
+  readonly authorizations: string[] = [];
   private instanceId: string | null = null;
   private lastSeq = 0;
   private waiters: Waiter[] = [];
@@ -48,11 +53,19 @@ export class FakeControl {
       void this.serveRecord(request, response);
     });
     this.http.on("upgrade", (request, socket, head) => {
-      if (request.headers.authorization !== `Bearer ${options.token}`) {
+      const token = request.headers.authorization?.replace(/^Bearer /, "") ?? "";
+      const bootstrap = options.bootstrapTokens.includes(token);
+      if (!bootstrap && token !== options.runToken) {
         socket.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
         return;
       }
-      this.wss.handleUpgrade(request, socket, head, (ws) => this.attach(ws));
+      if (this.spent.has(token)) {
+        socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+        return;
+      }
+      if (bootstrap) this.spent.add(token);
+      this.authorizations.push(token);
+      this.wss.handleUpgrade(request, socket, head, (ws) => this.attach(ws, bootstrap));
     });
   }
 
@@ -131,7 +144,7 @@ export class FakeControl {
     await new Promise<void>((resolve) => this.http.close(() => resolve()));
   }
 
-  private attach(ws: WebSocket): void {
+  private attach(ws: WebSocket, bootstrap: boolean): void {
     this.socket = ws;
     this.connections += 1;
     for (const waiter of this.connectionWaiters) waiter();
@@ -144,6 +157,16 @@ export class FakeControl {
           this.lastSeq = 0;
         }
         ws.send(JSON.stringify({ type: "ack", runId: this.options.runId, seq: this.lastSeq }));
+        if (bootstrap && this.options.deliverCredentials !== false) {
+          ws.send(
+            JSON.stringify({
+              type: "credentials",
+              runId: this.options.runId,
+              runToken: this.options.runToken,
+              relayToken: this.options.relayToken ?? null,
+            }),
+          );
+        }
       }
       if ("seq" in message) {
         if (message.seq <= this.lastSeq) {

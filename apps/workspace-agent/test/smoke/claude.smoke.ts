@@ -47,7 +47,7 @@ async function run(label: string, control: FakeControl, root: string, workspaceD
       SANCHORIS_WORKSPACE_DIR: workspaceDir,
       SANCHORIS_CREDENTIAL_SOURCE: "environment",
     },
-    "smoke-token",
+    `smoke-bootstrap-${label}`,
     (line) => process.stderr.write(`[${label}] ${line}\n`),
   );
 }
@@ -56,7 +56,8 @@ describe("ClaudeWorker smoke", () => {
   it("answers a trivial instruction and resumes in a new workspace from the uploaded record", async () => {
     const control = await FakeControl.listen({
       runId: "smoke-run",
-      token: "smoke-token",
+      bootstrapTokens: ["smoke-bootstrap-a", "smoke-bootstrap-b"],
+      runToken: "smoke-run-token",
       onSkillRequest: () => ({ ok: false, error: { code: "unused", message: "unused" } }),
     });
     cleanups.push(() => control.close());

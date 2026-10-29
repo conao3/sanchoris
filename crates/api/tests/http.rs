@@ -13,7 +13,7 @@ use sanchoris_core::audit::audit_events;
 use sanchoris_core::billing::PAYMENT_PENDING;
 use sanchoris_core::items::{
     ApprovalWait, ChatMessage, Config, InboundEvent, Integration, Member, OutboxItem, ReceiveRate,
-    RunEventItem, RunLogEntry, Task, Tenant,
+    RunEventItem, RunLogEntry, Task, Tenant, Workspace,
 };
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
@@ -963,7 +963,7 @@ async fn record_uploads_are_bounded_and_follow_the_last_recorded_turn() {
     let run = run_id.to_string();
     send(
         &mut socket,
-        json!({ "type": "hello", "runId": run, "protocolVersion": 1, "instanceId": Uuid::new_v4().to_string(), "started": false, "sessionId": null }),
+        json!({ "type": "hello", "runId": run, "protocolVersion": 2, "instanceId": Uuid::new_v4().to_string(), "started": false, "sessionId": null }),
     )
     .await;
     assert_eq!(receive(&mut socket).await["type"], "ack");
@@ -1015,6 +1015,88 @@ async fn record_uploads_are_bounded_and_follow_the_last_recorded_turn() {
     };
     assert_eq!(upload(7, 1).await, json!(false));
     assert_eq!(upload(8, 2).await, json!(true));
+}
+
+#[tokio::test]
+async fn a_bootstrap_token_connects_once_and_the_delivered_run_token_reconnects() {
+    let server = Server::start().await;
+    let (task_id, run_id) = server.task_with_run().await;
+    let tenant = server.tenant();
+    let started_at = Utc::now();
+    let workspace_id = Uuid::new_v4();
+    server
+        .dynamo
+        .put(&Workspace {
+            id: workspace_id,
+            tenant_id: tenant,
+            task_id,
+            run_id,
+            compute: "standard".into(),
+            architecture: "arm64".into(),
+            cpu: 1024,
+            memory_mib: 4096,
+            platform: "local".into(),
+            platform_ref: Some("pid:1".into()),
+            capacity_provider: None,
+            repositories: vec![],
+            branch: "sanchoris/x".into(),
+            base_commit: None,
+            started_at,
+            signaled_at: None,
+            stopped_at: None,
+        })
+        .await;
+    let signer = RunTokenSigner::new(Signer::new(RUN_KEY).unwrap());
+    let bootstrap = signer.sign_bootstrap(
+        tenant,
+        run_id,
+        workspace_id,
+        started_at + chrono::Duration::minutes(15),
+    );
+    let expired = signer.sign_bootstrap(
+        tenant,
+        run_id,
+        workspace_id,
+        Utc::now() - chrono::Duration::seconds(1),
+    );
+    assert_eq!(connect(&server, &expired).await.err(), Some(401));
+
+    let mut socket = connect(&server, &bootstrap).await.unwrap();
+    assert_eq!(connect(&server, &bootstrap).await.err(), Some(403));
+    let run = run_id.to_string();
+    send(
+        &mut socket,
+        json!({ "type": "hello", "runId": run, "protocolVersion": 2, "instanceId": Uuid::new_v4().to_string(), "started": false, "sessionId": null }),
+    )
+    .await;
+    assert_eq!(
+        receive(&mut socket).await,
+        json!({ "type": "ack", "runId": run, "seq": 0 })
+    );
+    let credentials = receive(&mut socket).await;
+    assert_eq!(credentials["type"], "credentials");
+    assert_eq!(credentials["relayToken"], Value::Null);
+    let token = credentials["runToken"].as_str().unwrap().to_string();
+    assert_eq!(signer.verify(&token, Utc::now()).unwrap().run_id, run_id);
+    drop(socket);
+
+    let mut socket = connect(&server, &token).await.unwrap();
+    send(
+        &mut socket,
+        json!({ "type": "hello", "runId": run, "protocolVersion": 2, "instanceId": Uuid::new_v4().to_string(), "started": false, "sessionId": null }),
+    )
+    .await;
+    assert_eq!(
+        receive(&mut socket).await,
+        json!({ "type": "ack", "runId": run, "seq": 0 })
+    );
+    send(
+        &mut socket,
+        json!({ "type": "hello", "runId": run, "protocolVersion": 1, "instanceId": Uuid::new_v4().to_string(), "started": false, "sessionId": null }),
+    )
+    .await;
+    assert_eq!(receive(&mut socket).await["type"], "close");
+    assert_eq!(connect(&server, &bootstrap).await.err(), Some(403));
 }
 
 #[tokio::test]
@@ -1088,7 +1170,7 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     let mut socket = connect(&server, &token).await.unwrap();
     send(
         &mut socket,
-        json!({ "type": "hello", "runId": run, "protocolVersion": 1, "instanceId": instance, "started": false, "sessionId": null }),
+        json!({ "type": "hello", "runId": run, "protocolVersion": 2, "instanceId": instance, "started": false, "sessionId": null }),
     )
     .await;
     assert_eq!(
@@ -1208,7 +1290,7 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     let next = Uuid::new_v4().to_string();
     send(
         &mut second,
-        json!({ "type": "hello", "runId": run, "protocolVersion": 1, "instanceId": next, "started": true, "sessionId": "s-1" }),
+        json!({ "type": "hello", "runId": run, "protocolVersion": 2, "instanceId": next, "started": true, "sessionId": "s-1" }),
     )
     .await;
     assert_eq!(

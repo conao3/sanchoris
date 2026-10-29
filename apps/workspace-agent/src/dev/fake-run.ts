@@ -34,7 +34,7 @@ const agent = WorkerAgent.parse(values.agent);
 const notifyAfterMs = Number(values["notify-after-ms"] ?? "3000");
 
 const runId = "dev-run";
-const token = "dev-token";
+const bootstrapToken = "dev-bootstrap-token";
 let nextSkillRunId = 1;
 const outstanding = new Set<number>();
 let expectedTurns = 1;
@@ -42,7 +42,8 @@ let endedTurns = 0;
 
 const control = await FakeControl.listen({
   runId,
-  token,
+  bootstrapTokens: [bootstrapToken],
+  runToken: "dev-run-token",
   onSkillRequest: (request) => {
     if (request.action !== "run") return { ok: true, result: { RunId: request.skillRunId, Status: "RUNNING" } };
     const id = nextSkillRunId;
@@ -75,7 +76,7 @@ const spawned = spawnAgent(
     SANCHORIS_SOCKET_PATH: join(root, "agent.sock"),
     SANCHORIS_WORKSPACE_DIR: workspaceDir,
   },
-  token,
+  bootstrapToken,
   (line) => process.stderr.write(`agent: ${line}\n`),
 );
 

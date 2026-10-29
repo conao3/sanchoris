@@ -9,7 +9,7 @@ import { type CredentialProxy, providerCredential, startCredentialProxy } from "
 import { parseSecrets } from "../src/secrets.ts";
 import { FakeControl } from "../src/testing/fake-control.ts";
 import type { Worker, WorkerContext } from "../src/worker.ts";
-import { makeSandbox, RUN_ID, startAgent, startMessage, TOKEN } from "./helpers.ts";
+import { BOOTSTRAP_TOKEN, CONTROL_TOKENS, makeSandbox, RUN_ID, RUN_TOKEN, startAgent, startMessage } from "./helpers.ts";
 
 const OAUTH = "sk-ant-oat01-real-secret";
 const API_KEY = "sk-ant-api03-real-secret";
@@ -111,19 +111,20 @@ describe("credential proxy", () => {
 });
 
 describe("agent secrets", () => {
-  it("reads the run token and the relay URL from one JSON document", () => {
-    expect(parseSecrets('{"runToken":"t","relayUrl":"http://run:x@10.0.0.1:3128"}')).toEqual({
-      runToken: "t",
+  it("reads the bootstrap token and the relay URL from one JSON document", () => {
+    expect(parseSecrets('{"bootstrapToken":"t","relayUrl":"http://run:x@10.0.0.1:3128"}')).toEqual({
+      bootstrapToken: "t",
       relayUrl: "http://run:x@10.0.0.1:3128",
     });
-    expect(parseSecrets('{"runToken":"t"}\n')).toEqual({ runToken: "t", relayUrl: null });
+    expect(parseSecrets('{"bootstrapToken":"t"}\n')).toEqual({ bootstrapToken: "t", relayUrl: null });
     expect(() => parseSecrets("")).toThrow(/not JSON/);
-    expect(() => parseSecrets('{"runToken":""}')).toThrow();
+    expect(() => parseSecrets('{"bootstrapToken":""}')).toThrow();
+    expect(() => parseSecrets('{"runToken":"t"}')).toThrow();
   });
 
   it("keeps the run token and the provider credential out of the worker's and exec's environment", async () => {
     const provider = await fakeProvider();
-    const control = await FakeControl.listen({ runId: RUN_ID, token: TOKEN, onSkillRequest: () => ({ ok: true, result: {} }) });
+    const control = await FakeControl.listen({ runId: RUN_ID, ...CONTROL_TOKENS, onSkillRequest: () => ({ ok: true, result: {} }) });
     cleanups.push(() => control.close());
     const sandbox = await makeSandbox({ HTTPS_PROXY: "http://127.0.0.1:3129", NO_PROXY: "127.0.0.1,localhost" });
     cleanups.push(sandbox.cleanup);
@@ -152,7 +153,8 @@ describe("agent secrets", () => {
     if (env === null) throw new Error("the worker did not start");
     const serialized = JSON.stringify(env);
     expect(serialized).not.toContain(OAUTH);
-    expect(serialized).not.toContain(TOKEN);
+    expect(serialized).not.toContain(BOOTSTRAP_TOKEN);
+    expect(serialized).not.toContain(RUN_TOKEN);
     expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
     expect(env.HTTPS_PROXY).toBe("http://127.0.0.1:3129");
@@ -170,7 +172,8 @@ describe("agent secrets", () => {
     const output = result.results[0]?.stdout ?? "";
     expect(output).toContain("SANCHORIS_SOCKET_PATH=");
     expect(output).not.toContain(OAUTH);
-    expect(output).not.toContain(TOKEN);
+    expect(output).not.toContain(BOOTSTRAP_TOKEN);
+    expect(output).not.toContain(RUN_TOKEN);
 
     control.send({ type: "shutdown", reason: "done" });
     expect(await exitCode).toBe(0);

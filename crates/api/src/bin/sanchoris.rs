@@ -89,10 +89,7 @@ async fn run() -> Result<(), String> {
             reader: github_app.clone(),
             config_source: github_app.clone(),
             resources: Arc::new(GitHubResources::new(github_app.clone())),
-            runner: Arc::new(LocalProcessRunner::new(
-                LocalRunnerConfig::from_env(),
-                clock,
-            )),
+            runner: Arc::new(LocalProcessRunner::new(LocalRunnerConfig::from_env())),
             pusher: Arc::new(channel.channel.clone()),
         },
         Settings::default(),

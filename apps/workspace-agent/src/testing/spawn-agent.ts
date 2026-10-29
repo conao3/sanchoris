@@ -8,9 +8,9 @@ export interface SpawnedAgent {
   exitCode: Promise<number>;
 }
 
-export function spawnAgent(env: NodeJS.ProcessEnv, runToken: string, onStderr: (line: string) => void): SpawnedAgent {
+export function spawnAgent(env: NodeJS.ProcessEnv, bootstrapToken: string, onStderr: (line: string) => void): SpawnedAgent {
   const child = spawn(process.execPath, ["--no-warnings", agentBin], { env, stdio: ["pipe", "inherit", "pipe"] });
-  child.stdin?.end(JSON.stringify({ runToken }));
+  child.stdin?.end(JSON.stringify({ bootstrapToken }));
   child.stderr?.setEncoding("utf8");
   child.stderr?.on("data", (data: string) => {
     for (const line of data.split("\n")) if (line !== "") onStderr(line);

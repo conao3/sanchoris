@@ -108,7 +108,7 @@ if (secrets.relayUrl !== null) throw new Error("the scripted agent runs without 
 
 const agent = new WorkspaceAgent({
   runId: requireEnv(env, "SANCHORIS_RUN_ID"),
-  token: secrets.runToken,
+  bootstrapToken: secrets.bootstrapToken,
   controlUrl: requireEnv(env, "SANCHORIS_CONTROL_URL"),
   socketPath: requireEnv(env, "SANCHORIS_SOCKET_PATH"),
   workspaceDir,

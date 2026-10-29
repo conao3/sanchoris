@@ -265,19 +265,15 @@ pub async fn start_api(
             git_url,
         } => {
             let (program, args) = command.split_first().unwrap();
-            Arc::new(LocalProcessRunner::new(
-                LocalRunnerConfig {
-                    program: PathBuf::from(program),
-                    args: args.to_vec(),
-                    control_url: format!("ws://{address}/runs/channel"),
-                    socket_dir,
-                    workspaces_dir,
-                    git_url,
-                    run_tokens: run_tokens.clone(),
-                    token_ttl: chrono::Duration::hours(1),
-                },
-                clock.clone(),
-            ))
+            Arc::new(LocalProcessRunner::new(LocalRunnerConfig {
+                program: PathBuf::from(program),
+                args: args.to_vec(),
+                control_url: format!("ws://{address}/runs/channel"),
+                socket_dir,
+                workspaces_dir,
+                git_url,
+                run_tokens: run_tokens.clone(),
+            }))
         }
     };
     let deps = Deps {
@@ -606,6 +602,7 @@ pub async fn task_with_run(dynamo: &TestDynamo, seeded: &Seeded) -> (Uuid, Uuid)
         connection_id: None,
         connection_instance: None,
         connection_started: false,
+        connection_bootstrap: None,
     })
     .unwrap();
     tx.commit().await.unwrap();

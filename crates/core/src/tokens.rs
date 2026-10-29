@@ -9,6 +9,10 @@ type HmacSha256 = Hmac<Sha256>;
 pub const TASK_TOKEN_SIGNING_KEY_ENV: &str = "TASK_TOKEN_SIGNING_KEY";
 pub const RUN_TOKEN_SIGNING_KEY_ENV: &str = "RUN_TOKEN_SIGNING_KEY";
 pub const RELAY_TOKEN_SIGNING_KEY_ENV: &str = "RELAY_TOKEN_SIGNING_KEY";
+pub const RUN_TOKEN_HOURS: i64 = 12;
+pub const BOOTSTRAP_TOKEN_MINUTES: i64 = 15;
+const RUN_TOKEN_KIND: &str = "run";
+const BOOTSTRAP_TOKEN_KIND: &str = "bootstrap";
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TokenError {
@@ -108,18 +112,30 @@ impl RunTokenSigner {
         Self(Signer::from_env(RUN_TOKEN_SIGNING_KEY_ENV))
     }
 
-    pub fn sign(&self, tenant_id: Uuid, run_id: Uuid, expires_at: DateTime<Utc>) -> String {
-        let message = format!("{tenant_id}.{run_id}.{}", expires_at.timestamp());
+    fn sign_parts(&self, kind: &str, ids: &[Uuid], expires_at: DateTime<Utc>) -> String {
+        let mut message = kind.to_string();
+        for id in ids {
+            message.push_str(&format!(".{id}"));
+        }
+        message.push_str(&format!(".{}", expires_at.timestamp()));
         let signature = self.0.mac(&message);
         format!("{message}.{signature}")
     }
 
-    pub fn verify(&self, token: &str, now: DateTime<Utc>) -> Result<RunClaims, TokenError> {
+    fn verify_parts(
+        &self,
+        token: &str,
+        kind: &str,
+        ids: usize,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<Uuid>, TokenError> {
         let (message, signature) = token.rsplit_once('.').ok_or(TokenError::Malformed)?;
+        let parts = message.split('.').collect::<Vec<_>>();
+        if parts.len() != ids + 2 || parts[0] != kind {
+            return Err(TokenError::Malformed);
+        }
         self.0.verify(message, signature)?;
-        let (tenant_id, rest) = message.split_once('.').ok_or(TokenError::Malformed)?;
-        let (run_id, expires) = rest.split_once('.').ok_or(TokenError::Malformed)?;
-        let expires_at = expires
+        let expires_at = parts[ids + 1]
             .parse::<i64>()
             .ok()
             .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
@@ -127,10 +143,62 @@ impl RunTokenSigner {
         if now >= expires_at {
             return Err(TokenError::Expired(expires_at));
         }
+        parts[1..=ids]
+            .iter()
+            .map(|id| id.parse().map_err(|_| TokenError::Malformed))
+            .collect()
+    }
+
+    pub fn sign(&self, tenant_id: Uuid, run_id: Uuid, expires_at: DateTime<Utc>) -> String {
+        self.sign_parts(RUN_TOKEN_KIND, &[tenant_id, run_id], expires_at)
+    }
+
+    pub fn verify(&self, token: &str, now: DateTime<Utc>) -> Result<RunClaims, TokenError> {
+        let ids = self.verify_parts(token, RUN_TOKEN_KIND, 2, now)?;
         Ok(RunClaims {
-            tenant_id: tenant_id.parse().map_err(|_| TokenError::Malformed)?,
-            run_id: run_id.parse().map_err(|_| TokenError::Malformed)?,
+            tenant_id: ids[0],
+            run_id: ids[1],
         })
+    }
+
+    pub fn sign_bootstrap(
+        &self,
+        tenant_id: Uuid,
+        run_id: Uuid,
+        workspace_id: Uuid,
+        expires_at: DateTime<Utc>,
+    ) -> String {
+        self.sign_parts(
+            BOOTSTRAP_TOKEN_KIND,
+            &[tenant_id, run_id, workspace_id],
+            expires_at,
+        )
+    }
+
+    pub fn verify_bootstrap(
+        &self,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<BootstrapClaims, TokenError> {
+        let ids = self.verify_parts(token, BOOTSTRAP_TOKEN_KIND, 3, now)?;
+        Ok(BootstrapClaims {
+            tenant_id: ids[0],
+            run_id: ids[1],
+            workspace_id: ids[2],
+        })
+    }
+
+    pub fn verify_channel(
+        &self,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<ChannelClaims, TokenError> {
+        match token.split_once('.') {
+            Some((BOOTSTRAP_TOKEN_KIND, _)) => self
+                .verify_bootstrap(token, now)
+                .map(ChannelClaims::Bootstrap),
+            _ => self.verify(token, now).map(ChannelClaims::Run),
+        }
     }
 }
 
@@ -179,6 +247,31 @@ impl RelayTokenSigner {
 pub struct RunClaims {
     pub tenant_id: Uuid,
     pub run_id: Uuid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootstrapClaims {
+    pub tenant_id: Uuid,
+    pub run_id: Uuid,
+    pub workspace_id: Uuid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelClaims {
+    Run(RunClaims),
+    Bootstrap(BootstrapClaims),
+}
+
+impl ChannelClaims {
+    pub fn run(self) -> RunClaims {
+        match self {
+            Self::Run(claims) => claims,
+            Self::Bootstrap(claims) => RunClaims {
+                tenant_id: claims.tenant_id,
+                run_id: claims.run_id,
+            },
+        }
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -240,6 +333,46 @@ mod tests {
             signer.verify(&token, now + Duration::hours(1)),
             Err(TokenError::Expired(_))
         ));
+    }
+
+    #[test]
+    fn bootstrap_tokens_and_run_tokens_are_never_taken_for_each_other() {
+        let signer = RunTokenSigner::new(signer());
+        let (tenant_id, run_id, workspace_id) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let now = Utc.with_ymd_and_hms(2026, 10, 27, 9, 0, 0).unwrap();
+        let bootstrap =
+            signer.sign_bootstrap(tenant_id, run_id, workspace_id, now + Duration::minutes(15));
+        let run = signer.sign(tenant_id, run_id, now + Duration::hours(12));
+        let claims = BootstrapClaims {
+            tenant_id,
+            run_id,
+            workspace_id,
+        };
+        assert_eq!(signer.verify_bootstrap(&bootstrap, now).unwrap(), claims);
+        assert_eq!(signer.verify(&bootstrap, now), Err(TokenError::Malformed));
+        assert_eq!(
+            signer.verify_bootstrap(&run, now),
+            Err(TokenError::Malformed)
+        );
+        assert_eq!(
+            signer.verify_channel(&bootstrap, now).unwrap(),
+            ChannelClaims::Bootstrap(claims)
+        );
+        assert_eq!(
+            signer.verify_channel(&run, now).unwrap(),
+            ChannelClaims::Run(RunClaims { tenant_id, run_id })
+        );
+        assert!(matches!(
+            signer.verify_bootstrap(&bootstrap, now + Duration::minutes(15)),
+            Err(TokenError::Expired(_))
+        ));
+        let relabeled = bootstrap.replacen("bootstrap.", "run.", 1);
+        assert!(signer.verify_channel(&relabeled, now).is_err());
+        let other = RunTokenSigner::new(Signer::new(&[8u8; 32]).unwrap());
+        assert_eq!(
+            other.verify_bootstrap(&bootstrap, now),
+            Err(TokenError::BadSignature)
+        );
     }
 
     #[test]

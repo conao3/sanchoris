@@ -12,7 +12,8 @@ use sanchoris_core::channel::{
 use sanchoris_core::db::{DbError, Store, TenantTx, tenant_plan};
 use sanchoris_core::item::Entity;
 use sanchoris_core::items::{
-    ChannelInstance, ChatMessage, OutboxItem, RunChannel, RunEventItem, RunLogEntry,
+    BootstrapRedemption, ChannelInstance, ChatMessage, OutboxItem, RunChannel, RunEventItem,
+    RunLogEntry, Workspace,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
@@ -21,16 +22,19 @@ use sanchoris_core::ports::PortError;
 use sanchoris_core::skillrun::{
     SkillRunError, accept_skill_request, continue_skill_run, skill_run_status,
 };
-use sanchoris_core::tasks::load_run;
-use sanchoris_core::tokens::{RunClaims, RunTokenSigner};
+use sanchoris_core::tasks::{load_run, load_task};
+use sanchoris_core::tokens::{
+    ChannelClaims, RUN_TOKEN_HOURS, RelayTokenSigner, RunClaims, RunTokenSigner,
+};
 use sanchoris_worker::ports::OutboxPusher;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::records::{MAX_RECORD_BYTES, RecordError, RecordStore, record_key};
-use credentials::{CredentialError, RunCredentials};
+use credentials::{CredentialError, RunCredentials, session_of};
 
 pub use sanchoris_core::channel::SEQ_STRIDE;
+pub const PROTOCOL_VERSION: i64 = 2;
 pub const CLOSE_PROTOCOL_ERROR: u16 = 4000;
 pub const CLOSE_INTERNAL_ERROR: u16 = 1011;
 const ATTEMPTS: u32 = 20;
@@ -104,15 +108,22 @@ where
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Admission {
-    Accepted(RunClaims),
+    Accepted(ChannelClaims),
     Unauthorized,
     Forbidden,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Connected {
+    Accepted,
+    Spent,
 }
 
 #[derive(Clone)]
 pub struct Channel {
     pub store: Store,
     pub run_tokens: RunTokenSigner,
+    pub relay_tokens: Option<RelayTokenSigner>,
     pub records: Arc<dyn RecordStore>,
     pub sender: Arc<dyn ConnectionSender>,
     pub credentials: Arc<dyn RunCredentials>,
@@ -184,11 +195,12 @@ pub async fn admit(
     token: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Admission, ChannelError> {
-    let Some(claims) = token.and_then(|token| run_tokens.verify(token, now).ok()) else {
+    let Some(claims) = token.and_then(|token| run_tokens.verify_channel(token, now).ok()) else {
         return Ok(Admission::Unauthorized);
     };
-    let mut tx = store.tx(claims.tenant_id);
-    match load_run(&mut tx, claims.run_id).await? {
+    let run = claims.run();
+    let mut tx = store.tx(run.tenant_id);
+    match load_run(&mut tx, run.run_id).await? {
         Some(run) if !run.is_finished() => Ok(Admission::Accepted(claims)),
         _ => Ok(Admission::Forbidden),
     }
@@ -205,18 +217,37 @@ impl Channel {
 
     pub async fn connect(
         &self,
-        claims: RunClaims,
+        claims: ChannelClaims,
         connection_id: &str,
-    ) -> Result<(), ChannelError> {
+    ) -> Result<Connected, ChannelError> {
+        let run = claims.run();
+        let bootstrap = match claims {
+            ChannelClaims::Run(_) => None,
+            ChannelClaims::Bootstrap(bootstrap) => Some(bootstrap.workspace_id),
+        };
         retrying(|| async {
-            let mut tx = self.store.tx(claims.tenant_id);
-            let mut channel = channel_item(&mut tx, claims.run_id).await?;
+            let mut tx = self.store.tx(run.tenant_id);
+            let mut channel = channel_item(&mut tx, run.run_id).await?;
+            if let Some(workspace_id) = bootstrap {
+                let key = keys::bootstrap_redemption_key(run.tenant_id, run.run_id, workspace_id);
+                if tx.get::<BootstrapRedemption>(&key).await?.is_some() {
+                    return Ok(Connected::Spent);
+                }
+                tx.insert(&BootstrapRedemption {
+                    tenant_id: run.tenant_id,
+                    run_id: run.run_id,
+                    workspace_id,
+                    connection_id: connection_id.to_string(),
+                    redeemed_at: Utc::now(),
+                })?;
+            }
             channel.connection_id = Some(connection_id.to_string());
             channel.connection_instance = None;
             channel.connection_started = false;
+            channel.connection_bootstrap = bootstrap;
             tx.put(&channel)?;
             tx.commit().await?;
-            Ok(())
+            Ok(Connected::Accepted)
         })
         .await
     }
@@ -245,6 +276,7 @@ impl Channel {
             channel.connection_id = None;
             channel.connection_instance = None;
             channel.connection_started = false;
+            channel.connection_bootstrap = None;
             tx.put(&channel)?;
             tx.commit().await?;
             Ok(())
@@ -350,7 +382,7 @@ impl Channel {
         connection_id: &str,
         hello: &Value,
     ) -> Result<(), ChannelError> {
-        if hello["protocolVersion"] != 1 {
+        if hello["protocolVersion"] != PROTOCOL_VERSION {
             return Err(protocol("unsupported protocolVersion"));
         }
         let instance_id = hello["instanceId"]
@@ -360,7 +392,7 @@ impl Channel {
         let started = hello["started"]
             .as_bool()
             .ok_or_else(|| protocol("hello needs started"))?;
-        let processed = retrying(|| async {
+        let (processed, bootstrap) = retrying(|| async {
             let tenant_id = claims.tenant_id;
             let mut tx = self.store.tx(tenant_id);
             let mut channel = channel_item(&mut tx, claims.run_id).await?;
@@ -403,12 +435,54 @@ impl Channel {
                 run_id: claims.run_id,
             });
             tx.commit().await?;
-            Ok(processed)
+            Ok((processed, channel.connection_bootstrap))
         })
         .await?;
         let ack = json!({ "type": "ack", "runId": claims.run_id.to_string(), "seq": processed });
         self.sender.send(connection_id, &ack).await?;
+        if let Some(workspace_id) = bootstrap {
+            let credentials = self.run_credentials(claims, workspace_id).await?;
+            self.sender.send(connection_id, &credentials).await?;
+        }
         Ok(())
+    }
+
+    async fn run_credentials(
+        &self,
+        claims: RunClaims,
+        workspace_id: Uuid,
+    ) -> Result<Value, ChannelError> {
+        let mut tx = self.store.tx(claims.tenant_id);
+        let channel = channel_item(&mut tx, claims.run_id).await?;
+        let workspace = tx
+            .require::<Workspace>(&keys::workspace_key(
+                claims.tenant_id,
+                channel.task_id,
+                workspace_id,
+            ))
+            .await?;
+        if workspace.run_id != claims.run_id {
+            return Err(ChannelError::Internal(format!(
+                "workspace {workspace_id} does not belong to run {}",
+                claims.run_id
+            )));
+        }
+        let expires_at = workspace.started_at + Duration::hours(RUN_TOKEN_HOURS);
+        let relay_token = match &self.relay_tokens {
+            Some(relay_tokens) => {
+                let task = load_task(&mut tx, channel.task_id).await?;
+                let session =
+                    session_of(&task).map_err(|error| ChannelError::Internal(error.to_string()))?;
+                Value::String(relay_tokens.sign(claims.run_id, &session.network.allow, expires_at))
+            }
+            None => Value::Null,
+        };
+        Ok(json!({
+            "type": "credentials",
+            "runId": claims.run_id.to_string(),
+            "runToken": self.run_tokens.sign(claims.tenant_id, claims.run_id, expires_at),
+            "relayToken": relay_token,
+        }))
     }
 
     async fn sequenced(

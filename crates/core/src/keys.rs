@@ -433,6 +433,10 @@ pub fn channel_instance_key(tenant_id: Uuid, run_id: Uuid, instance_id: Uuid) ->
     Key::main(run_pk(tenant_id, run_id), format!("INST#{instance_id}"))
 }
 
+pub fn bootstrap_redemption_key(tenant_id: Uuid, run_id: Uuid, workspace_id: Uuid) -> Key {
+    Key::main(run_pk(tenant_id, run_id), format!("BOOT#{workspace_id}"))
+}
+
 pub fn run_log_key(tenant_id: Uuid, run_id: Uuid, seq: i64) -> Key {
     Key::main(run_pk(tenant_id, run_id), format!("LOG#{seq:020}"))
 }

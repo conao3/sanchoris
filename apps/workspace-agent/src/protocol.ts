@@ -29,6 +29,8 @@ const ErrorBody = z.strictObject({
 });
 export type ErrorBody = z.infer<typeof ErrorBody>;
 
+export const PROTOCOL_VERSION = 2;
+
 const RunId = z.string().min(1);
 const RequestId = z.string().min(1);
 const SkillRunId = z.number().int().positive();
@@ -162,6 +164,14 @@ export const CloseMessage = z.strictObject({
   reason: z.string(),
 });
 
+export const CredentialsMessage = z.strictObject({
+  type: z.literal("credentials"),
+  runId: RunId,
+  runToken: z.string().min(1),
+  relayToken: z.string().min(1).nullable(),
+});
+export type CredentialsMessage = z.infer<typeof CredentialsMessage>;
+
 export const InboundMessage = z.union([
   StartMessage,
   UserMessage,
@@ -174,6 +184,7 @@ export const InboundMessage = z.union([
   WorkerCredentialResponseMessage,
   AckMessage,
   CloseMessage,
+  CredentialsMessage,
 ]);
 export type InboundMessage = z.infer<typeof InboundMessage>;
 
@@ -205,7 +216,7 @@ export type EventKind = z.infer<typeof EventKind>;
 export const HelloMessage = z.strictObject({
   type: z.literal("hello"),
   runId: RunId,
-  protocolVersion: z.literal(1),
+  protocolVersion: z.literal(PROTOCOL_VERSION),
   instanceId: z.uuid(),
   started: z.boolean(),
   sessionId: z.string().nullable(),

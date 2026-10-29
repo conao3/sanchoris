@@ -8,12 +8,12 @@ use sanchoris_core::db::Store;
 use sanchoris_core::item::Item;
 use sanchoris_core::ports::{Queue, Scheduler};
 use sanchoris_core::store::{Relay, relay, relayed_from_item};
-use sanchoris_core::tokens::{RunClaims, RunTokenSigner};
+use sanchoris_core::tokens::{BootstrapClaims, ChannelClaims, RunClaims, RunTokenSigner};
 use sanchoris_worker::Worker;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::channel::{Admission, Channel, admit};
+use crate::channel::{Admission, Channel, Connected, admit};
 use crate::config::AllowedSources;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -21,6 +21,7 @@ use crate::config::AllowedSources;
 pub struct AuthorizerContext {
     pub tenant_id: String,
     pub run_id: String,
+    pub bootstrap_workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -163,21 +164,28 @@ pub async fn authorize(
         .await
         .map_err(|error| LambdaError::Internal(error.to_string()))?
     {
-        Admission::Accepted(claims) => Ok(policy(
-            &claims.run_id.to_string(),
-            "Allow",
-            &event.method_arn,
-            json!({
-                "tenantId": claims.tenant_id.to_string(),
-                "runId": claims.run_id.to_string(),
-            }),
-        )),
+        Admission::Accepted(claims) => {
+            let run = claims.run();
+            let mut context = json!({
+                "tenantId": run.tenant_id.to_string(),
+                "runId": run.run_id.to_string(),
+            });
+            if let ChannelClaims::Bootstrap(bootstrap) = claims {
+                context["bootstrapWorkspaceId"] = json!(bootstrap.workspace_id.to_string());
+            }
+            Ok(policy(
+                &run.run_id.to_string(),
+                "Allow",
+                &event.method_arn,
+                context,
+            ))
+        }
         Admission::Forbidden => Ok(policy("forbidden", "Deny", &event.method_arn, json!({}))),
         Admission::Unauthorized => Err(LambdaError::Unauthorized),
     }
 }
 
-fn claims_of(context: &WebSocketContext) -> Result<RunClaims, LambdaError> {
+fn claims_of(context: &WebSocketContext) -> Result<ChannelClaims, LambdaError> {
     let authorizer = context
         .authorizer
         .as_ref()
@@ -187,9 +195,15 @@ fn claims_of(context: &WebSocketContext) -> Result<RunClaims, LambdaError> {
             LambdaError::Invalid(format!("authorizer context {value:?} is not a UUID"))
         })
     };
-    Ok(RunClaims {
-        tenant_id: parse(&authorizer.tenant_id)?,
-        run_id: parse(&authorizer.run_id)?,
+    let tenant_id = parse(&authorizer.tenant_id)?;
+    let run_id = parse(&authorizer.run_id)?;
+    Ok(match &authorizer.bootstrap_workspace_id {
+        Some(workspace_id) => ChannelClaims::Bootstrap(BootstrapClaims {
+            tenant_id,
+            run_id,
+            workspace_id: parse(workspace_id)?,
+        }),
+        None => ChannelClaims::Run(RunClaims { tenant_id, run_id }),
     })
 }
 
@@ -198,14 +212,19 @@ pub async fn websocket(
     event: &WebSocketEvent,
 ) -> Result<WebSocketResponse, LambdaError> {
     let context = &event.request_context;
-    let claims = claims_of(context)?;
+    let channel_claims = claims_of(context)?;
+    let claims = channel_claims.run();
     let connection = context.connection_id.as_str();
     let internal = |error: crate::channel::ChannelError| LambdaError::Internal(error.to_string());
     match context.route_key.as_str() {
-        "$connect" => channel
-            .connect(claims, connection)
+        "$connect" => match channel
+            .connect(channel_claims, connection)
             .await
-            .map_err(internal)?,
+            .map_err(internal)?
+        {
+            Connected::Accepted => {}
+            Connected::Spent => return Ok(WebSocketResponse { status_code: 403 }),
+        },
         "$disconnect" => channel
             .disconnect(claims, connection)
             .await

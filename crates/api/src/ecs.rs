@@ -14,21 +14,20 @@ use aws_sdk_ecs::types::{
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use sanchoris_core::clock::Clock;
 use sanchoris_core::store::Store;
-use sanchoris_core::tokens::{RELAY_TOKEN_SIGNING_KEY_ENV, RelayTokenSigner, RunTokenSigner};
+use sanchoris_core::tokens::{BOOTSTRAP_TOKEN_MINUTES, RelayTokenSigner, RunTokenSigner};
 use sanchoris_worker::deadline;
 use sanchoris_worker::ports::{
     RunnerError, RunnerPort, RunningWorkspace, WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
 };
 use uuid::Uuid;
 
-use crate::config::{ConfigError, Reader, Secrets, run_tokens, signer};
+use crate::config::{ConfigError, Reader, Secrets, relay_tokens, run_tokens};
 
 pub const PLATFORM: &str = "ecs";
 const TAG_TENANT: &str = "sanchoris:tenant";
 const TAG_TASK: &str = "sanchoris:task";
 const TAG_RUN: &str = "sanchoris:run";
 const TAG_WORKSPACE: &str = "sanchoris:workspace";
-const TOKEN_TTL_HOURS: i64 = 12;
 const RELAY_LEASE_PK: &str = "RELAY";
 const RELAY_LEASE_SK: &str = "#";
 const RELAY_LEASE_KIND: &str = "relay_lease";
@@ -93,7 +92,6 @@ impl EcsRunnerConfig {
         let git_url = env.get("SANCHORIS_GIT_URL");
         let relay_service = env.get("SANCHORIS_RELAY_SERVICE");
         let relay_port = env.get("SANCHORIS_RELAY_PORT");
-        let relay_key = env.secret(secrets, RELAY_TOKEN_SIGNING_KEY_ENV);
         env.finish()?;
         let assign_public_ip = match assign_public_ip.as_str() {
             "ENABLED" => AssignPublicIp::Enabled,
@@ -124,7 +122,7 @@ impl EcsRunnerConfig {
             relay_service,
             relay_port,
             run_tokens: run_tokens(secrets)?,
-            relay_tokens: RelayTokenSigner::new(signer(RELAY_TOKEN_SIGNING_KEY_ENV, &relay_key)?),
+            relay_tokens: relay_tokens(secrets)?,
         })
     }
 }
@@ -163,11 +161,13 @@ impl EcsRunner {
         spec: &WorkspaceSpec,
         relay_host: &str,
     ) -> Vec<(&'static str, String)> {
-        let expires_at = spec.started_at + Duration::hours(TOKEN_TTL_HOURS);
-        let token = self
-            .config
-            .run_tokens
-            .sign(spec.tenant_id, spec.run_id, expires_at);
+        let expires_at = spec.started_at + Duration::minutes(BOOTSTRAP_TOKEN_MINUTES);
+        let bootstrap = self.config.run_tokens.sign_bootstrap(
+            spec.tenant_id,
+            spec.run_id,
+            spec.workspace_id,
+            expires_at,
+        );
         let relay_token =
             self.config
                 .relay_tokens
@@ -178,7 +178,7 @@ impl EcsRunner {
         );
         vec![
             ("SANCHORIS_RUN_ID", spec.run_id.to_string()),
-            ("SANCHORIS_RUN_TOKEN", token),
+            ("SANCHORIS_BOOTSTRAP_TOKEN", bootstrap),
             ("SANCHORIS_CONTROL_URL", self.config.control_url.clone()),
             ("SANCHORIS_GIT_URL", self.config.git_url.clone()),
             ("SANCHORIS_BRANCH", spec.branch.clone()),
@@ -910,6 +910,56 @@ mod tests {
             run_tokens: RunTokenSigner::new(signer()),
             relay_tokens: RelayTokenSigner::new(signer()),
         }
+    }
+
+    #[tokio::test]
+    async fn the_task_overrides_carry_only_a_bootstrap_token_and_a_short_relay_token() {
+        let (runner, requests) = fake_ecs(json!({
+            "tasks": [{ "taskArn": "arn:aws:ecs:ap-northeast-1:1:task/c/spot" }],
+            "failures": []
+        }));
+        let mut spec = spec();
+        spec.started_at = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
+        spec.network_allow = vec!["registry.npmjs.org".into()];
+        runner.run_task(&spec, "10.1.0.5").await.unwrap();
+        let overrides =
+            requests.lock().unwrap()[0]["overrides"]["containerOverrides"][0]["environment"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|pair| {
+                    (
+                        pair["name"].as_str().unwrap().to_string(),
+                        pair["value"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
+        assert!(!overrides.contains_key("SANCHORIS_RUN_TOKEN"));
+        let config = runner_config();
+        let bootstrap = &overrides["SANCHORIS_BOOTSTRAP_TOKEN"];
+        let now = spec.started_at + Duration::minutes(14);
+        assert!(config.run_tokens.verify(bootstrap, now).is_err());
+        let claims = config.run_tokens.verify_bootstrap(bootstrap, now).unwrap();
+        assert_eq!(
+            (claims.tenant_id, claims.run_id, claims.workspace_id),
+            (spec.tenant_id, spec.run_id, spec.workspace_id)
+        );
+        assert!(
+            config
+                .run_tokens
+                .verify_bootstrap(bootstrap, spec.started_at + Duration::minutes(15))
+                .is_err()
+        );
+        let relay = overrides["SANCHORIS_RELAY_URL"]
+            .strip_prefix("http://run:")
+            .and_then(|rest| rest.strip_suffix("@10.1.0.5:3128"))
+            .unwrap();
+        let relay = config.relay_tokens.verify(relay, now).unwrap();
+        assert_eq!(relay.allow, vec!["registry.npmjs.org".to_string()]);
+        assert_eq!(
+            relay.exp,
+            (spec.started_at + Duration::minutes(15)).timestamp()
+        );
     }
 
     #[test]

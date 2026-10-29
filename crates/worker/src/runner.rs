@@ -1,17 +1,15 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Duration;
-use sanchoris_core::tokens::RunTokenSigner;
+use sanchoris_core::tokens::{BOOTSTRAP_TOKEN_MINUTES, RunTokenSigner};
 use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::clock::Clock;
 use crate::ports::{
     RunnerError, RunnerPort, RunningWorkspace, WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
 };
@@ -25,7 +23,6 @@ pub struct LocalRunnerConfig {
     pub workspaces_dir: PathBuf,
     pub git_url: String,
     pub run_tokens: RunTokenSigner,
-    pub token_ttl: Duration,
 }
 
 fn required(name: &str) -> String {
@@ -49,7 +46,6 @@ impl LocalRunnerConfig {
                 .trim_end_matches('/')
                 .to_string(),
             run_tokens: RunTokenSigner::from_env(),
-            token_ttl: Duration::hours(12),
         }
     }
 }
@@ -62,7 +58,6 @@ struct LocalWorkspace {
 
 pub struct LocalProcessRunner {
     config: LocalRunnerConfig,
-    clock: Arc<dyn Clock>,
     workspaces: Mutex<HashMap<String, LocalWorkspace>>,
 }
 
@@ -96,10 +91,9 @@ fn repository_dir(root: &Path, repo: &str) -> Result<PathBuf, RunnerError> {
 }
 
 impl LocalProcessRunner {
-    pub fn new(config: LocalRunnerConfig, clock: Arc<dyn Clock>) -> Self {
+    pub fn new(config: LocalRunnerConfig) -> Self {
         Self {
             config,
-            clock,
             workspaces: Mutex::new(HashMap::new()),
         }
     }
@@ -108,13 +102,14 @@ impl LocalProcessRunner {
         self.config.socket_dir.join(format!("{run_id}.sock"))
     }
 
-    pub fn secrets(&self, tenant_id: Uuid, run_id: Uuid) -> String {
-        let token = self.config.run_tokens.sign(
-            tenant_id,
-            run_id,
-            self.clock.now() + self.config.token_ttl,
+    pub fn secrets(&self, spec: &WorkspaceSpec) -> String {
+        let token = self.config.run_tokens.sign_bootstrap(
+            spec.tenant_id,
+            spec.run_id,
+            spec.workspace_id,
+            spec.started_at + Duration::minutes(BOOTSTRAP_TOKEN_MINUTES),
         );
-        serde_json::json!({ "runToken": token }).to_string()
+        serde_json::json!({ "bootstrapToken": token }).to_string()
     }
 
     pub fn environment(&self, run_id: Uuid, workspace_dir: &Path) -> Vec<(&'static str, String)> {
@@ -235,10 +230,7 @@ impl RunnerPort for LocalProcessRunner {
             .stdin
             .take()
             .ok_or_else(|| RunnerError("the workspace process has no stdin".into()))?;
-        match stdin
-            .write_all(self.secrets(spec.tenant_id, spec.run_id).as_bytes())
-            .await
-        {
+        match stdin.write_all(self.secrets(spec).as_bytes()).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
             Err(error) => {
@@ -335,7 +327,6 @@ impl RunnerPort for LocalProcessRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::FakeClock;
     use chrono::TimeZone;
     use sanchoris_core::tokens::Signer;
 
@@ -356,13 +347,9 @@ mod tests {
             workspaces_dir: root.path().join("workspaces"),
             git_url: format!("file://{}", root.path().join("git").display()),
             run_tokens: tokens.clone(),
-            token_ttl: Duration::hours(1),
         };
-        let clock = Arc::new(FakeClock::new(
-            chrono::Utc.with_ymd_and_hms(2026, 10, 27, 9, 0, 0).unwrap(),
-        ));
         Fixture {
-            runner: LocalProcessRunner::new(config, clock),
+            runner: LocalProcessRunner::new(config),
             tokens,
             root,
         }
@@ -434,12 +421,16 @@ mod tests {
     }
 
     #[test]
-    fn the_run_token_goes_to_stdin_and_not_to_the_environment() {
+    fn only_a_bootstrap_token_goes_to_stdin_and_nothing_to_the_environment() {
         let fixture = fixture("true", &[]);
-        let run_id = Uuid::new_v4();
-        let tenant_id = Uuid::new_v4();
+        let mut spec = spec(vec![]);
+        spec.started_at = chrono::Utc.with_ymd_and_hms(2026, 10, 27, 9, 0, 0).unwrap();
+        let run_id = spec.run_id;
         let env = fixture.runner.environment(run_id, Path::new("/w/1"));
-        assert!(env.iter().all(|(name, _)| *name != "SANCHORIS_RUN_TOKEN"));
+        assert!(
+            env.iter()
+                .all(|(name, _)| !name.ends_with("_TOKEN") && *name != "SANCHORIS_RELAY_URL")
+        );
         let get = |name: &str| env.iter().find(|(k, _)| *k == name).unwrap().1.clone();
         assert_eq!(get("SANCHORIS_RUN_ID"), run_id.to_string());
         assert_eq!(
@@ -456,17 +447,25 @@ mod tests {
                 .join("sockets")
                 .join(format!("{run_id}.sock"))
         );
-        let now = chrono::Utc
-            .with_ymd_and_hms(2026, 10, 27, 9, 30, 0)
-            .unwrap();
         let secrets: serde_json::Value =
-            serde_json::from_str(&fixture.runner.secrets(tenant_id, run_id)).unwrap();
+            serde_json::from_str(&fixture.runner.secrets(&spec)).unwrap();
+        assert_eq!(secrets.as_object().unwrap().len(), 1);
+        let token = secrets["bootstrapToken"].as_str().unwrap();
+        let now = spec.started_at + Duration::minutes(14);
+        assert!(fixture.tokens.verify(token, now).is_err());
         assert_eq!(
+            fixture.tokens.verify_bootstrap(token, now).unwrap(),
+            sanchoris_core::tokens::BootstrapClaims {
+                tenant_id: spec.tenant_id,
+                run_id,
+                workspace_id: spec.workspace_id,
+            }
+        );
+        assert!(
             fixture
                 .tokens
-                .verify(secrets["runToken"].as_str().unwrap(), now)
-                .unwrap(),
-            sanchoris_core::tokens::RunClaims { tenant_id, run_id }
+                .verify_bootstrap(token, spec.started_at + Duration::minutes(15))
+                .is_err()
         );
     }
 
