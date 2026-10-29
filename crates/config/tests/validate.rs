@@ -530,7 +530,7 @@ fn plan_limits_are_enforced() {
 }
 
 #[test]
-fn the_workspace_architecture_is_required_and_docker_runs_on_arm64() {
+fn the_workspace_architecture_is_required_and_docker_compute_is_rejected() {
     config_error(
         &replaced(
             "    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }\n  all:",
@@ -554,19 +554,21 @@ fn the_workspace_architecture_is_required_and_docker_runs_on_arm64() {
         repository.config.sessions["shop"].workspace.architecture,
         Architecture::X86_64
     );
-    let mut context = context();
-    context.plan.computes.insert(Compute::Docker);
-    let docker_x86 = replaced(
-        "    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }\n  all:",
-        "    Workspace: { Compute: docker, Architecture: x86_64, IdleSeconds: 900 }\n  all:",
-    );
-    let errors = errors_with(&example_files(&docker_x86), &context);
-    assert_error(&errors, "Sessions.shop.Workspace.Architecture");
-    let docker_arm = replaced(
+    let docker = replaced(
         "    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }\n  all:",
         "    Workspace: { Compute: docker, Architecture: arm64, IdleSeconds: 900 }\n  all:",
     );
-    load_repository(&example_files(&docker_arm), &context).unwrap();
+    let mut context = context();
+    context.plan.computes.insert(Compute::Docker);
+    let errors = errors_with(&example_files(&docker), &context);
+    assert_eq!(
+        errors
+            .at("Sessions.shop.Workspace.Compute")
+            .iter()
+            .map(|e| e.message.as_str())
+            .collect::<Vec<_>>(),
+        vec!["compute docker is not supported; use standard"]
+    );
 }
 
 #[test]

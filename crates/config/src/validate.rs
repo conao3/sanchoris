@@ -1,6 +1,5 @@
 use crate::config::{
-    Architecture, Checkout, Compute, Config, PermissionLevel, Session, Trigger, TriggerSource,
-    is_repo_name,
+    Checkout, Compute, Config, PermissionLevel, Session, Trigger, TriggerSource, is_repo_name,
 };
 use crate::error::{ValidationError, ValidationErrors, at, index};
 use crate::repository::{ConfigFiles, ConfigRepository, Skill, parse_repository};
@@ -218,15 +217,10 @@ impl Validator<'_> {
                 ),
             );
         }
-        if session.workspace.compute == Compute::Docker
-            && session.workspace.architecture != Architecture::Arm64
-        {
+        if session.workspace.compute == Compute::Docker {
             self.error(
-                at(&workspace, "Architecture"),
-                format!(
-                    "compute docker runs on arm64 only, not {}",
-                    session.workspace.architecture.as_str()
-                ),
+                at(&workspace, "Compute"),
+                "compute docker is not supported; use standard",
             );
         }
         if session.workspace.idle_seconds > plan.max_idle_seconds {
