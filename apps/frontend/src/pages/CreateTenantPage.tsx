@@ -139,7 +139,7 @@ export function CreateTenantPage() {
               {selected?.requiresPayment ? t('tenantNew.createAndPay') : t('tenantNew.create')}
             </Button>
           </div>
-          <Dim className="mt-2.5">{t('tenantNew.after')}</Dim>
+          <Dim className="mt-2.5">{t(selected?.requiresPayment ? 'tenantNew.afterPayment' : 'tenantNew.afterCreate')}</Dim>
         </form>
       ) : null}
     </AuthLayout>

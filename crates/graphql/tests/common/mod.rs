@@ -1254,6 +1254,28 @@ impl World {
             error: None,
         })
         .unwrap();
+        for (seq, status, reset_at, minutes) in [
+            (2, "allowed", None, 80),
+            (3, "rejected", Some(1793061000), 40),
+        ] {
+            tx.insert(&RunEventItem {
+                id: Uuid::new_v4(),
+                tenant_id: acme,
+                run_id: issue_run,
+                seq: Some(seq),
+                kind: "rate_limit".into(),
+                payload: json!({
+                    "status": status,
+                    "resetsAt": reset_at,
+                    "rateLimitType": "five_hour",
+                    "windows": {},
+                }),
+                received_at: now - Duration::minutes(minutes),
+                processed_at: Some(now - Duration::minutes(minutes)),
+                error: None,
+            })
+            .unwrap();
+        }
         tx.insert(&UsageRecord {
             id: Uuid::new_v4(),
             tenant_id: acme,

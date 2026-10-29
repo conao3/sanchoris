@@ -778,8 +778,8 @@ function buildAcme(): Obj {
     ['GiveUp', 'FAIL', 'FAILED', 'Skill.FixesExhausted · checks fail after 3 fixes'],
   ]);
 
-  const simpleLog = (task: Obj, run: Obj, lines: [string, number, string][]) => {
-    run.lines = lines.map(([kind, minutes, text], index) => ({ sequence: index + 1, at: ago(minutes), kind, text }));
+  const simpleLog = (task: Obj, run: Obj, lines: [string, number, string, Obj?][]) => {
+    run.lines = lines.map(([kind, minutes, text, rateLimit], index) => ({ sequence: index + 1, at: ago(minutes), kind, text, rateLimit: rateLimit ?? null }));
     return task;
   };
   const run38 = makeRun(t38, { status: 'RUNNING', startedAt: ago(35) });
@@ -807,6 +807,9 @@ function buildAcme(): Obj {
   const run44 = makeRun(t44, { status: 'IDLE', startedAt: ago(60 * 20) });
   simpleLog(t44, run44, [
     ['SYSTEM', 60 * 20, 'workspace created · Fargate 2 vCPU'],
+    ['EVENT', 60 * 19, 'usage limit status: allowed', { status: 'allowed', resetsAt: ahead(60 * 2) }],
+    ['EVENT', 60 * 5, 'usage limit status: allowed_warning', { status: 'allowed_warning', resetsAt: ahead(60 * 2) }],
+    ['EVENT', 60 * 3, 'usage limit status: rejected', { status: 'rejected', resetsAt: ahead(60 * 2) }],
     ['ERROR', 60 * 3, 'Worker.UsageLimit: the Claude limit is reached. Resumes at the reset.'],
   ]);
   const run33 = makeRun(t33, { status: 'COMPLETED', startedAt: ago(60 * 3 + 20), endedAt: ago(60 * 3) });

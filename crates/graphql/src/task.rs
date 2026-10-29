@@ -752,7 +752,7 @@ impl Run {
     }
 
     async fn log_lines(&self, ctx: &Context<'_>) -> Result<Vec<LogLine>> {
-        let mut entries: Vec<(DateTime<Utc>, u8, LogLineKind, String)> = Vec::new();
+        let mut entries: Vec<LogEntry> = Vec::new();
         for workspace in self.workspaces(ctx).await? {
             entries.push((
                 workspace.started_at,
@@ -764,6 +764,7 @@ impl Run {
                     workspace.compute,
                     workspace.cpu / 1024
                 ),
+                None,
             ));
             if let Some(stopped) = workspace.stopped_at {
                 entries.push((
@@ -771,6 +772,7 @@ impl Run {
                     0,
                     LogLineKind::System,
                     "workspace stopped".to_string(),
+                    None,
                 ));
             }
         }
@@ -816,12 +818,32 @@ impl Run {
                 "chat_post" => (LogLineKind::Agent, text("text")),
                 other => (LogLineKind::System, other.to_string()),
             };
-            entries.push((outbox.created_at, 1, line.0, line.1));
+            entries.push((outbox.created_at, 1, line.0, line.1, None));
         }
         let mut events = tx.query::<RunEventItem>(&run_pk, "EVT#").await?;
         events.sort_by_key(|a| (a.received_at, a.seq, a.id));
         for event in events {
             let payload = &event.payload;
+            if event.kind == "rate_limit" {
+                let status = payload["status"].as_str().ok_or_else(|| {
+                    async_graphql::Error::new(format!(
+                        "rate_limit event {} has no status",
+                        event.id
+                    ))
+                })?;
+                entries.push((
+                    event.received_at,
+                    2,
+                    LogLineKind::Event,
+                    format!("usage limit status: {status}"),
+                    Some(LogRateLimit {
+                        status: status.to_string(),
+                        resets_at: payload["resetsAt"]
+                            .as_i64()
+                            .and_then(|seconds| DateTime::from_timestamp(seconds, 0)),
+                    }),
+                ));
+            }
             let line = match event.kind.as_str() {
                 "ready" => Some((LogLineKind::System, "session ready".to_string())),
                 "turn_end" => Some((
@@ -831,10 +853,6 @@ impl Run {
                         (Some(turn), None) => format!("turn {turn} ended"),
                         (None, _) => "turn ended".to_string(),
                     },
-                )),
-                "rate_limit" => Some((
-                    LogLineKind::Event,
-                    "the worker reached its usage limit".to_string(),
                 )),
                 "session_record" => Some((LogLineKind::System, "session record saved".to_string())),
                 "exec_result" => Some((
@@ -848,10 +866,10 @@ impl Run {
                 _ => None,
             };
             if let Some((kind, text)) = line {
-                entries.push((event.received_at, 2, kind, text));
+                entries.push((event.received_at, 2, kind, text, None));
             }
             if let Some(error) = event.error {
-                entries.push((event.received_at, 3, LogLineKind::Error, error));
+                entries.push((event.received_at, 3, LogLineKind::Error, error, None));
             }
         }
         if let Some(error) = &self.row.error {
@@ -860,17 +878,19 @@ impl Run {
                 4,
                 LogLineKind::Error,
                 error.clone(),
+                None,
             ));
         }
         entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         Ok(entries
             .into_iter()
             .enumerate()
-            .map(|(index, (at, _, kind, text))| LogLine {
+            .map(|(index, (at, _, kind, text, rate_limit))| LogLine {
                 sequence: i32::try_from(index + 1).expect("log lines fit in i32"),
                 at,
                 kind,
                 text,
+                rate_limit,
             })
             .collect())
     }
@@ -1043,11 +1063,30 @@ impl Workspace {
     }
 }
 
+type LogEntry = (DateTime<Utc>, u8, LogLineKind, String, Option<LogRateLimit>);
+
 pub(crate) struct LogLine {
     sequence: i32,
     at: DateTime<Utc>,
     kind: LogLineKind,
     text: String,
+    rate_limit: Option<LogRateLimit>,
+}
+
+pub(crate) struct LogRateLimit {
+    status: String,
+    resets_at: Option<DateTime<Utc>>,
+}
+
+#[Object]
+impl LogRateLimit {
+    async fn status(&self) -> &str {
+        &self.status
+    }
+
+    async fn resets_at(&self) -> Option<Timestamp> {
+        ts_opt(self.resets_at)
+    }
 }
 
 #[Object]
@@ -1066,6 +1105,10 @@ impl LogLine {
 
     async fn text(&self) -> &str {
         &self.text
+    }
+
+    async fn rate_limit(&self) -> Option<&LogRateLimit> {
+        self.rate_limit.as_ref()
     }
 }
 
