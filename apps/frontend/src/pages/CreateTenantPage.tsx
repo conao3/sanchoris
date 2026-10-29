@@ -1,13 +1,14 @@
-import { useApolloClient, useMutation } from '@apollo/client/react';
+import { useApolloClient } from '@apollo/client/react';
 import { useNavigate, useSearch } from '@tanstack/react-router';
 import { Check, ExternalLink, ShieldCheck, Users } from 'lucide-react';
 import { type FormEvent, type ReactNode, useState } from 'react';
 import { Button } from '../components/Button';
 import { CheckoutNote, useCheckoutOutcome } from '../components/billing';
-import { Dim, ErrorNote, Note, Row, Skeleton, State, Sub, Title } from '../components/ui';
+import { ActionError, Dim, ErrorNote, Note, Row, Skeleton, State, Sub, Title } from '../components/ui';
 import { AcceptInvitationDocument, CreateTenantDocument, CreateTenantPageDocument } from '../graphql/generated/graphql';
 import { type MessageKey, t } from '../i18n';
 import { until } from '../lib/format';
+import { useAction } from '../lib/mutation';
 import { planPrice } from '../lib/plan';
 import { useData } from '../lib/query';
 import { rememberTenant } from '../lib/tenant';
@@ -30,8 +31,8 @@ export function CreateTenantPage() {
   const { data, error, refetch } = useData(CreateTenantPageDocument, {});
   const [name, setName] = useState('');
   const [planId, setPlanId] = useState<string>();
-  const [create, createState] = useMutation(CreateTenantDocument);
-  const [accept, acceptState] = useMutation(AcceptInvitationDocument);
+  const [create, createState] = useAction(CreateTenantDocument);
+  const [accept, acceptState] = useAction(AcceptInvitationDocument);
   const plans = data?.viewer.newTenantPlans ?? [];
   const selected = plans.find((plan) => plan.id === planId) ?? plans.find((plan) => plan.name === 'Pro') ?? plans[0];
 
@@ -45,8 +46,8 @@ export function CreateTenantPage() {
     if (!selected) {
       return;
     }
-    void create({ variables: { input: { name, planId: selected.id } } }).then((result) => {
-      const payload = result.data?.createTenant;
+    void create({ input: { name, planId: selected.id } }).then((result) => {
+      const payload = result?.createTenant;
       if (payload?.checkoutUrl && payload.tenant) {
         rememberTenant(payload.tenant.slug);
         window.location.assign(payload.checkoutUrl);
@@ -77,8 +78,8 @@ export function CreateTenantPage() {
               icon={Check}
               isDisabled={acceptState.loading}
               onPress={() =>
-                void accept({ variables: { invitationId: invitation.id } }).then((result) => {
-                  const slug = result.data?.acceptInvitation.tenant.slug;
+                void accept({ invitationId: invitation.id }).then((result) => {
+                  const slug = result?.acceptInvitation.tenant.slug;
                   if (slug) {
                     enter(slug);
                   }
@@ -88,6 +89,7 @@ export function CreateTenantPage() {
               {t('tenantNew.join', { tenant: invitation.tenantName })}
             </Button>
           </div>
+          <ActionError error={acceptState.error} className="mt-1.5" />
         </Note>
       ))}
       {data ? (
@@ -137,7 +139,7 @@ export function CreateTenantPage() {
               );
             })}
           </div>
-          {createState.error ? <Dim className="mt-2 text-err">{createState.error.message}</Dim> : null}
+          <ActionError error={createState.error} className="mt-2" />
           <div className="mt-3.5">
             <Button type="submit" variant="primary" icon={selected?.requiresPayment ? ExternalLink : Check} isDisabled={createState.loading || !name.trim()}>
               {selected?.requiresPayment ? t('tenantNew.createAndPay') : t('tenantNew.create')}

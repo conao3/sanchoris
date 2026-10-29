@@ -1,4 +1,3 @@
-import { useMutation } from '@apollo/client/react';
 import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import clsx from 'clsx';
 import { ChevronDown, CircleDot, Plus } from 'lucide-react';
@@ -7,11 +6,12 @@ import { Button } from '../components/Button';
 import { Menu } from '../components/Menu';
 import { Page } from '../components/Shell';
 import { TaskState } from '../components/status';
-import { Chip, Dim, ErrorNote, Icon, Id, Kbd, Lk, Row, Section, Skeleton, Sub, Th, Title } from '../components/ui';
+import { ActionError, Chip, Dim, ErrorNote, Icon, Id, Kbd, Lk, Row, Section, Skeleton, Sub, Th, Title } from '../components/ui';
 import { type ChatQuery, ChatDocument, SendChatMessageDocument } from '../graphql/generated/graphql';
 import { locale, t, tx } from '../i18n';
 import { clock } from '../lib/format';
 import { useKeys } from '../lib/keys';
+import { useAction } from '../lib/mutation';
 import { IDLE_POLL, LIVE_POLL, useData } from '../lib/query';
 import { isActive, skillStep } from '../lib/taskText';
 import { useTenant } from '../lib/tenant';
@@ -50,14 +50,18 @@ function scopes(tenant: Tenant) {
     });
 }
 
-function Composer({ disabled, onSend }: { disabled: boolean; onSend: (text: string) => Promise<unknown> }) {
+function Composer({ disabled, onSend }: { disabled: boolean; onSend: (text: string) => Promise<boolean> }) {
   const [text, setText] = useState('');
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       if (text.trim() && !disabled) {
-        void onSend(text.trim()).then(() => setText(''));
+        void onSend(text.trim()).then((sent) => {
+          if (sent) {
+            setText('');
+          }
+        });
       }
     }
   }
@@ -80,7 +84,7 @@ function Composer({ disabled, onSend }: { disabled: boolean; onSend: (text: stri
 }
 
 function Thread({ task, tenant }: { task: ChatTask; tenant: Tenant }) {
-  const [send, { error }] = useMutation(SendChatMessageDocument, { refetchQueries: [ChatDocument] });
+  const [send, { error }] = useAction(SendChatMessageDocument, { refetchQueries: [ChatDocument] });
   const repos = task.session.repositories.join(', ');
   const run = task.runs[task.runs.length - 1];
   const requester = task.requester?.member?.user.name;
@@ -133,16 +137,16 @@ function Thread({ task, tenant }: { task: ChatTask; tenant: Tenant }) {
       ))}
       <Composer
         disabled={task.status === 'SUCCEEDED' && task.channel?.kind === 'SLACK'}
-        onSend={(text) => send({ variables: { input: { tenantId: tenant.id, taskId: task.id, text } } })}
+        onSend={(text) => send({ input: { tenantId: tenant.id, taskId: task.id, text } }).then(Boolean)}
       />
-      {error ? <Dim className="mt-2 text-err">{error.message}</Dim> : null}
+      <ActionError error={error} className="mt-2" />
     </>
   );
 }
 
 function NewChat({ tenant, scope, onPickScope }: { tenant: Tenant; scope?: string; onPickScope: () => void }) {
   const navigate = useNavigate();
-  const [send, { error }] = useMutation(SendChatMessageDocument, { refetchQueries: [ChatDocument] });
+  const [send, { error }] = useAction(SendChatMessageDocument, { refetchQueries: [ChatDocument] });
   const options = scopes(tenant);
   const option = options.find((item) => item.value === scope);
   return (
@@ -166,15 +170,16 @@ function NewChat({ tenant, scope, onPickScope }: { tenant: Tenant; scope?: strin
       <Composer
         disabled={!scope}
         onSend={(text) =>
-          send({ variables: { input: { tenantId: tenant.id, scope, text } } }).then((result) => {
-            const task = result.data?.sendChatMessage.task;
+          send({ input: { tenantId: tenant.id, scope, text } }).then((result) => {
+            const task = result?.sendChatMessage.task;
             if (task) {
               void navigate({ to: '/chat/$task', params: { task: task.id } });
             }
+            return !!result;
           })
         }
       />
-      {error ? <Dim className="mt-2 text-err">{error.message}</Dim> : null}
+      <ActionError error={error} className="mt-2" />
     </>
   );
 }

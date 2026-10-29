@@ -1,15 +1,15 @@
-import { useMutation } from '@apollo/client/react';
 import type { LucideIcon } from 'lucide-react';
 import { Bot, ExternalLink, ShieldCheck, UserCheck, Users, Zap } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Button } from '../../components/Button';
 import { Menu } from '../../components/Menu';
 import { SettingsPage } from '../../components/SettingsTabs';
-import { Dim, Empty, ErrorNote, Icon, Lk, Row, Skeleton, Sub, Th, Title } from '../../components/ui';
+import { ActionError, Dim, Empty, ErrorNote, Icon, Lk, Row, Skeleton, Sub, Th, Title } from '../../components/ui';
 import { type ActorKind, type AuditFilter, AuditLogDocument, type AuditOrigin, ExportAuditLogDocument } from '../../graphql/generated/graphql';
 import { type MessageKey, t } from '../../i18n';
 import { dayTime } from '../../lib/format';
 import { useListNav } from '../../lib/keys';
+import { useAction } from '../../lib/mutation';
 import { useData } from '../../lib/query';
 import { useTenant } from '../../lib/tenant';
 
@@ -47,15 +47,15 @@ export function AuditPage() {
     ...(action ? { action } : {}),
   };
   const { data, error, refetch } = useData(AuditLogDocument, { tenant: slug, filter });
-  const [exportLog, exportState] = useMutation(ExportAuditLogDocument);
+  const [exportLog, exportState] = useAction(ExportAuditLogDocument);
   const tenant = data?.tenant;
   const events = tenant?.auditEvents ?? [];
   const actions = [...new Set(events.map((event) => event.action))].sort();
 
   function doExport() {
     if (tenant) {
-      void exportLog({ variables: { tenantId: tenant.id, filter } }).then((result) => {
-        const url = result.data?.exportAuditLog.url;
+      void exportLog({ tenantId: tenant.id, filter }).then((result) => {
+        const url = result?.exportAuditLog.url;
         if (url) {
           window.open(url, '_blank', 'noreferrer');
         }
@@ -109,6 +109,7 @@ export function AuditPage() {
           options={periods.map((item) => ({ value: item.value, label: t(item.label) }))}
         />
       </div>
+      <ActionError error={exportState.error} className="mb-3" />
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
       {!data && !error ? <Skeleton rows={8} /> : null}
       {tenant && events.length === 0 ? <Empty>{t('audit.empty')}</Empty> : null}

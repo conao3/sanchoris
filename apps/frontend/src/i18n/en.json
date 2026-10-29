@@ -452,6 +452,7 @@
   "integrations.slackConnected": "Connected to the workspace {workspace}.",
   "integrations.manageInSlack": "Manage in Slack",
   "integrations.addSlack": "Add Slack",
+  "integrations.slackLater": "Slack comes later; it is not available yet.",
   "integrations.outcome.linked": "Linked your GitHub account.",
   "integrations.outcome.inUse": "This GitHub account is linked to another user.",
   "integrations.outcome.installed": "Installed the GitHub App.",

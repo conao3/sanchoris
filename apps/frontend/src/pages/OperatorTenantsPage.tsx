@@ -1,12 +1,12 @@
-import { useMutation } from '@apollo/client/react';
 import { Ban, CircleCheck } from 'lucide-react';
 import { Button } from '../components/Button';
 import { Page, Pg } from '../components/Shell';
-import { Empty, ErrorNote, Row, Skeleton, State, Sub, Th, Title } from '../components/ui';
+import { ActionError, Empty, ErrorNote, Row, Skeleton, State, Sub, Th, Title } from '../components/ui';
 import { OperatorTenantsDocument, SuspendTenantDocument, UnsuspendTenantDocument } from '../graphql/generated/graphql';
 import { t } from '../i18n';
 import { hours } from '../lib/format';
 import { useListNav } from '../lib/keys';
+import { useAction } from '../lib/mutation';
 import { useData } from '../lib/query';
 
 function ratio(value: number, limit: number | null | undefined, total: boolean): string {
@@ -18,8 +18,8 @@ function ratio(value: number, limit: number | null | undefined, total: boolean):
 
 export function OperatorTenantsPage() {
   const { data, error, refetch } = useData(OperatorTenantsDocument, {});
-  const [suspend] = useMutation(SuspendTenantDocument);
-  const [unsuspend] = useMutation(UnsuspendTenantDocument);
+  const [suspend, suspendState] = useAction(SuspendTenantDocument);
+  const [unsuspend, unsuspendState] = useAction(UnsuspendTenantDocument);
   const operator = data?.operator;
   const tenants = operator?.tenants ?? [];
   const nav = useListNav(tenants.length, () => undefined);
@@ -47,6 +47,7 @@ export function OperatorTenantsPage() {
             : ' '}
         </Sub>
         {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
+        <ActionError error={suspendState.error ?? unsuspendState.error} className="mb-2" />
         {!data && !error ? <Skeleton rows={4} /> : null}
         {data && !operator ? <Empty>{t('operator.notOperator')}</Empty> : null}
         {tenants.length > 0 ? (
@@ -96,14 +97,14 @@ export function OperatorTenantsPage() {
                           onPress={() => {
                             const reason = window.prompt(t('operator.suspendReason'));
                             if (reason) {
-                              void suspend({ variables: { tenantId: tenant.id, reason } });
+                              void suspend({ tenantId: tenant.id, reason });
                             }
                           }}
                         >
                           {t('operator.suspend')}
                         </Button>
                       ) : (
-                        <Button small onPress={() => void unsuspend({ variables: { tenantId: tenant.id } })}>
+                        <Button small onPress={() => void unsuspend({ tenantId: tenant.id })} isDisabled={unsuspendState.loading}>
                           {t('operator.unsuspend')}
                         </Button>
                       )

@@ -250,6 +250,17 @@ export function ErrorNote({ message, onRetry }: { message: string; onRetry?: () 
   );
 }
 
+export function ActionError({ error, className }: { error?: { message: string } | null; className?: string }) {
+  if (!error) {
+    return null;
+  }
+  return (
+    <div role="alert" className={clsx('text-xs text-err', className)}>
+      {error.message}
+    </div>
+  );
+}
+
 export function Note({ icon, children }: { icon: LucideIcon; children: ReactNode }) {
   return (
     <div className="my-1.5 mb-3.5 flex items-start gap-2.5 border-y border-line py-2.5">

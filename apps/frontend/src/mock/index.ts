@@ -75,7 +75,9 @@ function createResolvers() {
         viewerUser.githubLogin = null;
         return viewer;
       },
-      connectSlack: () => ({ url: 'https://slack.com/oauth/v2/authorize?client_id=mock' }),
+      connectSlack: () => {
+        throw new Error('Slack is not available yet');
+      },
       inviteMember: (_: unknown, { input }: Obj) => {
         const tenant = tenantById(input.tenantId);
         if (tenant.usage.seatsUsed >= tenant.plan.memberLimit) {
@@ -108,6 +110,11 @@ function createResolvers() {
         const member = tenants.flatMap((tenant) => tenant.memberList as Obj[]).find((item) => item.id === memberId);
         if (!member) {
           throw new Error('The member was not found');
+        }
+        const tenant = tenants.find((item) => item.memberList.includes(member)) as Obj;
+        const owners = tenant.memberList.filter((item: Obj) => item.role === 'OWNER');
+        if (member.role === 'OWNER' && role !== 'OWNER' && owners.length === 1) {
+          throw new Error('the tenant needs at least one owner');
         }
         member.role = role;
         return member;
@@ -161,6 +168,9 @@ function createResolvers() {
       },
       stopTask: (_: unknown, { taskId }: Obj) => {
         const task = taskById(taskId);
+        if (['SUCCEEDED', 'FAILED', 'ABORTED'].includes(task.status)) {
+          throw new Error('the task has already finished');
+        }
         task.status = 'ABORTED';
         task.endedAt = new Date().toISOString();
         for (const run of task.runs) {
@@ -177,6 +187,9 @@ function createResolvers() {
           .find((item) => item.id === runId);
         if (!run) {
           throw new Error('The run was not found');
+        }
+        if (run.status === 'COMPLETED' || run.status === 'FAILED') {
+          throw new Error('the session has already ended');
         }
         run.status = 'COMPLETED';
         appendLog(run, 'EVENT', 'session stopped by a member');

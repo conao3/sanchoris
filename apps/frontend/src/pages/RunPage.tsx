@@ -1,4 +1,3 @@
-import { useMutation } from '@apollo/client/react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import clsx from 'clsx';
 import { Square } from 'lucide-react';
@@ -6,11 +5,12 @@ import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { Button } from '../components/Button';
 import { Cols, Page } from '../components/Shell';
 import { RunState, SkillRunState } from '../components/status';
-import { Dim, Empty, ErrorNote, ExternalLk, Kv, Lk, Row, Section, Skeleton, Sub, Title } from '../components/ui';
+import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Kv, Lk, Row, Section, Skeleton, Sub, Title } from '../components/ui';
 import { type LogLineKind, RunDocument, SendChatMessageDocument, StopRunDocument, type WorkspaceArchitecture } from '../graphql/generated/graphql';
 import { type MessageKey, t } from '../i18n';
 import { clock, dayTime } from '../lib/format';
 import { useKeys } from '../lib/keys';
+import { useAction } from '../lib/mutation';
 import { LIVE_POLL, useData } from '../lib/query';
 import { useTenant } from '../lib/tenant';
 
@@ -58,8 +58,8 @@ export function RunPage() {
   const navigate = useNavigate();
   const [follow, setFollow] = useState(true);
   const { data, error, refetch } = useData(RunDocument, { tenant: slug, task: taskId, number: Number(n) }, { poll: () => (follow ? LIVE_POLL : 0) });
-  const [stopRun, stopState] = useMutation(StopRunDocument);
-  const [send, sendState] = useMutation(SendChatMessageDocument);
+  const [stopRun, stopState] = useAction(StopRunDocument);
+  const [send, sendState] = useAction(SendChatMessageDocument);
   const [text, setText] = useState('');
   const input = useRef<HTMLInputElement>(null);
   const logEnd = useRef<HTMLDivElement>(null);
@@ -81,7 +81,10 @@ export function RunPage() {
     if (!task || !tenantId || !text.trim()) {
       return;
     }
-    void send({ variables: { input: { tenantId, taskId: task.id, text: text.trim() } } }).then(() => {
+    void send({ input: { tenantId, taskId: task.id, text: text.trim() } }).then((done) => {
+      if (!done) {
+        return;
+      }
       setText('');
       refetch();
     });
@@ -93,7 +96,7 @@ export function RunPage() {
     m: () => input.current?.focus(),
     s: () => {
       if (run && live) {
-        void stopRun({ variables: { runId: run.id } });
+        void stopRun({ runId: run.id });
       }
     },
   });
@@ -132,6 +135,7 @@ export function RunPage() {
             </Lk>
           </span>
         </Sub>
+        <ActionError error={stopState.error} className="-mt-3 mb-3.5" />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-ui bg-term-bg py-3 font-mono text-sm leading-[1.75] text-term-fg">
           <div className="min-h-0 flex-1 overflow-auto">
             {run.log.map((line, index) => {
@@ -167,7 +171,7 @@ export function RunPage() {
             <span>{t('run.enterSend')}</span>
           </form>
         </div>
-        {sendState.error ? <Dim className="mt-2 text-err">{sendState.error.message}</Dim> : null}
+        <ActionError error={sendState.error} className="mt-2" />
       </div>
     );
     const prs = run.outputs.filter((output) => output.kind === 'PULL_REQUEST');
@@ -236,7 +240,7 @@ export function RunPage() {
       ]}
       actions={
         <>
-          <Button variant="danger" icon={Square} kbd="s" isDisabled={!live || stopState.loading} onPress={() => run && void stopRun({ variables: { runId: run.id } })}>
+          <Button variant="danger" icon={Square} kbd="s" isDisabled={!live || stopState.loading} onPress={() => run && void stopRun({ runId: run.id })}>
             {t('run.stop')}
           </Button>
           <Button kbd="m" isDisabled={!live} onPress={() => input.current?.focus()}>
