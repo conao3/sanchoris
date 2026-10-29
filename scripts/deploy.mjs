@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   aws,
+  awsAsync,
   awsProcessEnv,
   environment,
   exportsOf,
@@ -314,7 +315,7 @@ async function updateFunctionCode(fn) {
     return { fn, result: 'would update' };
   }
   const local = createHash('sha256').update(readFileSync(zip)).digest('base64');
-  const deployed = aws(env, ['lambda', 'get-function-configuration', '--function-name', functionName(fn)]).CodeSha256;
+  const deployed = (await awsAsync(env, ['lambda', 'get-function-configuration', '--function-name', functionName(fn)])).CodeSha256;
   if (deployed === local) {
     return { fn, result: 'unchanged' };
   }

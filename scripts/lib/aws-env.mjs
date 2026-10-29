@@ -77,6 +77,25 @@ export function aws(env, args, input) {
   return out.trim() === '' ? null : JSON.parse(out);
 }
 
+export function awsAsync(env, args) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn('aws', [...args, '--output', 'json'], { env: awsProcessEnv(env), stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on('data', (chunk) => stdout.push(chunk));
+    child.stderr.on('data', (chunk) => stderr.push(chunk));
+    child.on('error', (error) => rejectPromise(new Error(`aws failed to start: ${error.message}`)));
+    child.on('close', (code) => {
+      if (code !== 0) {
+        rejectPromise(new Error(`aws ${args.join(' ')} exited with ${code}\n${Buffer.concat(stderr).toString('utf8').trim()}`));
+        return;
+      }
+      const out = Buffer.concat(stdout).toString('utf8');
+      resolvePromise(out.trim() === '' ? null : JSON.parse(out));
+    });
+  });
+}
+
 export function exportsOf(env) {
   const exports = new Map(aws(env, ['cloudformation', 'list-exports']).Exports.map((item) => [item.Name, item.Value]));
   return {
