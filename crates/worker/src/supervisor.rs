@@ -676,6 +676,12 @@ fn skills_payload(definition: &TaskDefinition, required: &[String]) -> Result<Ve
         .collect()
 }
 
+fn wants_workspace(task: &Task) -> bool {
+    task.status == TaskStatus::Running
+        || (task.status == TaskStatus::Waiting
+            && matches!(task.wait_reason, Some(WaitReason::Skill | WaitReason::Chat)))
+}
+
 fn wakes_the_session(item: &OutboxItem) -> bool {
     item.delivered_at.is_none() && matches!(item.kind.as_str(), "user_message" | "exec")
 }
@@ -708,7 +714,7 @@ pub async fn reconcile(
     match open.into_iter().next() {
         None => {
             let startable = matches!(run.status.as_str(), "creating" | "idle")
-                && !task.status.is_terminal()
+                && wants_workspace(&task)
                 && (run.status == "creating" || pending);
             if !startable {
                 return Ok(0);

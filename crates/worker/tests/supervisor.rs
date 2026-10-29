@@ -530,3 +530,55 @@ async fn tasks_wait_pending_at_the_plan_concurrency() {
     assert_eq!(world.task(&format!("{REPO}#1")).await.status, "SUCCEEDED");
     assert_eq!(world.task(&format!("{REPO}#2")).await.status, "RUNNING");
 }
+
+#[tokio::test]
+async fn a_skill_notification_waits_in_the_outbox_while_the_usage_limit_holds() {
+    let world = World::new("pro").await;
+    let task = world.started_task(35).await;
+    let run_id = task.run_id.unwrap();
+    world.request_skill(run_id, common::skill_input(35)).await;
+    let reset_at = world.clock_now() + Duration::hours(2);
+    world
+        .sequenced_event(
+            run_id,
+            1,
+            RunEventType::TurnEnd,
+            turn_end_payload(
+                1,
+                json!({ "code": "Worker.UsageLimit", "message": "limit", "resetAt": reset_at.timestamp() }),
+            ),
+        )
+        .await;
+    world.drive().await;
+    assert_eq!(
+        world
+            .task(&format!("{REPO}#35"))
+            .await
+            .wait_reason
+            .as_deref(),
+        Some("usage_limit")
+    );
+    world.clock.advance(Duration::seconds(900));
+    world.worker.settle().await.unwrap();
+    assert_eq!(*world.runner.stopped.lock().unwrap(), vec![run_id]);
+
+    world.github.state.lock().unwrap().check_results.clear();
+    world.github.script_checks(&["success"]);
+    world.clock.advance(Duration::minutes(5));
+    world.drive().await;
+    assert_eq!(world.skill_runs().await[0].status.as_str(), "SUCCEEDED");
+    assert_eq!(world.runner.started.lock().unwrap().len(), 1);
+    assert_eq!(
+        world
+            .task(&format!("{REPO}#35"))
+            .await
+            .wait_reason
+            .as_deref(),
+        Some("usage_limit")
+    );
+
+    world.clock.advance(Duration::hours(2));
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "RUNNING");
+    assert_eq!(world.runner.started.lock().unwrap().len(), 2);
+}
