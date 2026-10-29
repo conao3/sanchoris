@@ -25,6 +25,7 @@ pub struct Plan {
     pub workspace_limit_period: String,
     pub member_limit: Option<i64>,
     pub max_concurrency: i64,
+    pub inbound_events_per_minute: i64,
     pub retention_days: i64,
     pub audit_retention_days: i64,
     pub max_task_turns: i64,
@@ -58,6 +59,7 @@ impl Entity for Plan {
             .s("workspace_limit_period", &self.workspace_limit_period)
             .null_or_n("member_limit", self.member_limit)
             .n("max_concurrency", self.max_concurrency)
+            .n("inbound_events_per_minute", self.inbound_events_per_minute)
             .n("retention_days", self.retention_days)
             .n("audit_retention_days", self.audit_retention_days)
             .n("max_task_turns", self.max_task_turns)
@@ -85,6 +87,7 @@ impl Entity for Plan {
             workspace_limit_period: r.s("workspace_limit_period")?,
             member_limit: r.null_or_n("member_limit")?,
             max_concurrency: r.n("max_concurrency")?,
+            inbound_events_per_minute: r.n("inbound_events_per_minute")?,
             retention_days: r.n("retention_days")?,
             audit_retention_days: r.n("audit_retention_days")?,
             max_task_turns: r.n("max_task_turns")?,
@@ -2386,6 +2389,42 @@ impl Entity for RunLogEntry {
             at: r.time("at")?,
             expires_at: DateTime::from_timestamp(r.n(crate::item::TTL)?, 0)
                 .ok_or_else(|| DbError::Decode("run log expires_at".into()))?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReceiveRate {
+    pub tenant_id: Uuid,
+    pub window_start: DateTime<Utc>,
+    pub received: i64,
+    pub dropped: i64,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl Entity for ReceiveRate {
+    const KIND: &'static str = "receive_rate";
+
+    fn key(&self) -> Key {
+        keys::receive_rate_key(self.tenant_id, self.window_start)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .time("window_start", self.window_start)
+            .n("received", self.received)
+            .n("dropped", self.dropped)
+            .ttl(self.expires_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            window_start: r.time("window_start")?,
+            received: r.n("received")?,
+            dropped: r.n("dropped")?,
+            expires_at: DateTime::from_timestamp(r.n(crate::item::TTL)?, 0)
+                .ok_or_else(|| DbError::Decode("receive rate expires_at".into()))?,
         })
     }
 }

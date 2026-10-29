@@ -513,6 +513,8 @@
   "billing.plan": "Plan",
   "billing.nextBilling": "Next billing",
   "billing.concurrentRuns": "Concurrent runs",
+  "billing.inboundEvents": "Inbound events",
+  "billing.perMinute": "{n} per minute",
   "billing.workspaceHours": "Workspace hours this period",
   "billing.thresholds": "you are told at 80% · new tasks wait at 100%",
   "billing.plans": "Plans",

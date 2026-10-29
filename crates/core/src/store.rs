@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use aws_sdk_dynamodb::error::DisplayErrorContext;
 use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
+use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::{
-    AttributeValue, ConditionCheck, Delete, Put, TransactWriteItem, Update as UpdateOp,
+    AttributeValue, ConditionCheck, Delete, Put, ReturnValue, TransactWriteItem, Update as UpdateOp,
 };
 use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
@@ -519,6 +520,65 @@ impl Store {
             self.query_items(Table::Main, Some(index), pk, &sort, true, None)
                 .await?,
         )
+    }
+
+    pub async fn increment(
+        &self,
+        key: &Key,
+        fields: &Item,
+        counter: &str,
+        below: Option<i64>,
+    ) -> Result<Option<i64>, DbError> {
+        let mut names = HashMap::from([
+            ("#v".to_string(), VERSION.to_string()),
+            ("#c".to_string(), counter.to_string()),
+        ]);
+        let mut values = HashMap::from([(":one".to_string(), AttributeValue::N("1".into()))]);
+        let mut sets = Vec::new();
+        for (n, (name, value)) in fields.iter().enumerate() {
+            names.insert(format!("#f{n}"), name.clone());
+            values.insert(format!(":f{n}"), value.clone());
+            sets.push(format!("#f{n} = if_not_exists(#f{n}, :f{n})"));
+        }
+        let mut expression = String::new();
+        if !sets.is_empty() {
+            expression.push_str(&format!("SET {} ", sets.join(", ")));
+        }
+        expression.push_str("ADD #c :one, #v :one");
+        let mut request = self
+            .inner
+            .client
+            .update_item()
+            .table_name(self.inner.tables.name(key.table))
+            .set_key(Some(key.attributes()))
+            .update_expression(expression)
+            .return_values(ReturnValue::UpdatedNew);
+        if let Some(below) = below {
+            values.insert(":below".into(), AttributeValue::N(below.to_string()));
+            request = request.condition_expression("attribute_not_exists(#c) OR #c < :below");
+        }
+        let result = Box::pin(
+            request
+                .set_expression_attribute_names(Some(names))
+                .set_expression_attribute_values(Some(values))
+                .send(),
+        )
+        .await;
+        match result {
+            Ok(output) => {
+                let attributes = output.attributes.unwrap_or_default();
+                ItemReader::new(&attributes).n(counter).map(Some)
+            }
+            Err(error)
+                if matches!(
+                    error.as_service_error(),
+                    Some(UpdateItemError::ConditionalCheckFailedException(_))
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(dynamo_error(error)),
+        }
     }
 
     async fn transact(&self, writes: Vec<TransactWriteItem>) -> Result<(), DbError> {

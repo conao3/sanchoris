@@ -54,6 +54,7 @@ struct PlanSpec {
     #[serde(deserialize_with = "Option::deserialize")]
     member_limit: Option<i64>,
     max_concurrency: i64,
+    inbound_events_per_minute: i64,
     retention_days: i64,
     audit_retention_days: i64,
     max_task_turns: i64,
@@ -88,6 +89,7 @@ pub fn plans() -> Vec<Plan> {
             workspace_limit_period: p.workspace_limit_period,
             member_limit: p.member_limit,
             max_concurrency: p.max_concurrency,
+            inbound_events_per_minute: p.inbound_events_per_minute,
             retention_days: p.retention_days,
             audit_retention_days: p.audit_retention_days,
             max_task_turns: p.max_task_turns,

@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
+use axum::http::header::RETRY_AFTER;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
@@ -14,6 +15,7 @@ use sanchoris_core::items::{
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
+use sanchoris_core::receive::ReceiveLimited;
 use sanchoris_worker::config_sync::{disable_config, rename_repository};
 use sanchoris_worker::error::WorkerError;
 use serde_json::{Map, Value, json};
@@ -36,6 +38,20 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, ApiError> {
 
 fn status(code: StatusCode, value: &str) -> Response {
     (code, Json(json!({ "status": value }))).into_response()
+}
+
+fn receive_limited(limited: &ReceiveLimited) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(RETRY_AFTER, limited.retry_after_seconds.to_string())],
+        Json(json!({
+            "status": "dropped",
+            "reason": limited.reason(),
+            "limit": limited.limit,
+            "retryAfterSeconds": limited.retry_after_seconds,
+        })),
+    )
+        .into_response()
 }
 
 pub fn verify_github_signature(secret: &HmacKey, signature: &str, body: &[u8]) -> bool {
@@ -80,6 +96,7 @@ pub async fn github(
             eprintln!("sanchoris api: GitHub delivery {delivery} is for unknown installation {id}");
             Ok(status(StatusCode::OK, "ignored"))
         }
+        Err(IngestError::ReceiveLimit(limited)) => Ok(receive_limited(&limited)),
         Err(IngestError::Event(error)) => Err(ApiError::BadRequest(error.to_string())),
         Err(IngestError::Db(error)) => Err(error.into()),
     }

@@ -160,6 +160,8 @@ type Plan {
   "Null when the plan has no limit."
   memberLimit: Int
   concurrencyLimit: Int!
+  "Inbound events (GitHub webhooks, chat messages, replies) that the tenant can send in one minute; later ones in the minute are dropped."
+  inboundEventsPerMinute: Int!
   retentionDays: Int!
   auditRetentionDays: Int!
   requiresPayment: Boolean!

@@ -7,11 +7,12 @@ use common::World;
 use sanchoris_core::item::Table;
 use sanchoris_core::items::{
     CONFIG_DISABLED, ChangeRequest, Config, Credential, Guard, InboundEvent, Invitation, Member,
-    Membership, OutboxItem, Pending, Run, RunEventItem, Tenant, Trigger,
+    Membership, OutboxItem, Pending, ReceiveRate, Run, RunEventItem, Tenant, Trigger,
 };
 use sanchoris_core::jobs::{Job, Relayed};
 use sanchoris_core::keys;
 use sanchoris_core::model::{AuditOrigin, TaskStatus};
+use sanchoris_core::receive::window_start;
 use sanchoris_core::tenants::{
     NewTenant, PendingSession, create_tenant, free_tenant_key, pending_checkout,
 };
@@ -1223,6 +1224,7 @@ async fn a_verified_sancode_email_creates_admin_tenants_that_billing_cannot_chan
             "priceUsd": 0,
             "memberLimit": null,
             "concurrencyLimit": 10,
+            "inboundEventsPerMinute": 300,
             "taskLimit": null,
             "workspaceHourLimit": null,
             "limitPeriod": "TOTAL",
@@ -1310,4 +1312,78 @@ async fn a_sancode_member_joining_a_tenant_leaves_its_plan() {
     let billing = w.ok(&w.aya, "Billing", json!({ "tenant": slug })).await;
     assert_eq!(billing["tenant"]["plan"]["isAdmin"], false);
     assert_eq!(billing["tenant"]["plan"]["taskLimit"], 50);
+}
+
+#[tokio::test]
+async fn chat_messages_and_resumes_over_the_receive_limit_are_rate_limited() {
+    let w = World::new().await;
+    let plan_id = w
+        .get::<Tenant>(&keys::tenant_key(w.acme))
+        .await
+        .unwrap()
+        .plan_id;
+    let limit = sanchoris_core::db::plan(&w.store, &plan_id)
+        .await
+        .unwrap()
+        .inbound_events_per_minute;
+    let start = window_start(w.now);
+    w.dynamo
+        .put(&ReceiveRate {
+            tenant_id: w.acme,
+            window_start: start,
+            received: limit,
+            dropped: 0,
+            expires_at: start + Duration::days(1),
+        })
+        .await;
+
+    let response = w
+        .run(
+            &w.ken,
+            "SendChatMessage",
+            json!({ "input": { "tenantId": w.acme, "scope": "all", "text": "Flood" } }),
+        )
+        .await;
+    let extensions = response.errors[0].extensions.as_ref().unwrap();
+    assert_eq!(
+        extensions.get("code").unwrap().to_string(),
+        "\"RATE_LIMITED\""
+    );
+    assert_eq!(
+        extensions.get("limit").unwrap().to_string(),
+        limit.to_string()
+    );
+    assert!(response.errors[0].message.starts_with(&format!(
+        "receive limit: the tenant already received {limit} events"
+    )));
+    assert!(
+        w.all::<InboundEvent>()
+            .await
+            .iter()
+            .all(|event| event.event["detail"]["text"] != "Flood")
+    );
+    assert_eq!(
+        w.error_code(
+            &w.ken,
+            "ResumeTask",
+            json!({ "input": { "taskId": w.issue_task, "message": "Go on." } }),
+        )
+        .await,
+        "RATE_LIMITED"
+    );
+    assert!(
+        w.all::<RunEventItem>()
+            .await
+            .iter()
+            .all(|event| event.kind != "human_reply")
+    );
+    let rate = w
+        .get::<ReceiveRate>(&keys::receive_rate_key(w.acme, start))
+        .await
+        .unwrap();
+    assert_eq!((rate.received, rate.dropped), (limit, 2));
+    assert_eq!(
+        w.audit(w.acme, "tenant.receive_limit").await.metadata["source"],
+        "web"
+    );
 }

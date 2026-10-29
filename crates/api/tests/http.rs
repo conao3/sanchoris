@@ -12,11 +12,12 @@ use sanchoris_api::signing::HmacKey;
 use sanchoris_core::audit::audit_events;
 use sanchoris_core::billing::PAYMENT_PENDING;
 use sanchoris_core::items::{
-    ApprovalWait, ChatMessage, Config, Integration, Member, OutboxItem, RunEventItem, RunLogEntry,
-    Task, Tenant,
+    ApprovalWait, ChatMessage, Config, InboundEvent, Integration, Member, OutboxItem, ReceiveRate,
+    RunEventItem, RunLogEntry, Task, Tenant,
 };
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
+use sanchoris_core::receive::window_start;
 use sanchoris_core::skillrun::accept_skill_request;
 use sanchoris_core::testing::{SEED_CONFIG_REPOSITORY_ID, TestDynamo};
 use sanchoris_core::tokens::{RunTokenSigner, Signer, TaskTokenSigner};
@@ -363,6 +364,111 @@ async fn a_push_to_the_config_branch_syncs_the_config_right_away() {
     let config = configs.iter().find(|c| c.id == config_id).unwrap();
     assert!(config.synced_at.is_some());
     assert_eq!(config.sync_error, None);
+}
+
+async fn fill_receive_windows(server: &Server, received: i64) {
+    let start = window_start(Utc::now());
+    for window in [start, start + chrono::Duration::seconds(60)] {
+        server
+            .dynamo
+            .put(&ReceiveRate {
+                tenant_id: server.tenant(),
+                window_start: window,
+                received,
+                dropped: 0,
+                expires_at: window + chrono::Duration::days(1),
+            })
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn inbound_events_over_the_receive_limit_are_answered_429_and_counted() {
+    let server = Server::start().await;
+    let (task_id, _) = server.task_with_run().await;
+    let accepted = server
+        .webhook("issues", "delivery-36", &labeled_payload(36, "Before"))
+        .await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    fill_receive_windows(&server, 120).await;
+
+    let dropped = server
+        .webhook("issues", "delivery-37", &labeled_payload(37, "Flood"))
+        .await;
+    assert_eq!(dropped.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry_after: i64 = dropped.headers()["retry-after"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((1..=60).contains(&retry_after));
+    let body = dropped.json::<Value>().await.unwrap();
+    assert_eq!(body["status"], "dropped");
+    assert_eq!(body["limit"], 120);
+    assert_eq!(body["retryAfterSeconds"], retry_after);
+    assert!(
+        body["reason"].as_str().unwrap().starts_with(
+            "receive limit: the tenant already received 120 events in the minute from "
+        )
+    );
+    let inbound = server.dynamo.all::<InboundEvent>().await;
+    assert!(inbound.iter().any(|e| e.key == "delivery-36"));
+    assert!(inbound.iter().all(|e| e.key != "delivery-37"));
+    let again = server
+        .webhook("issues", "delivery-36", &labeled_payload(36, "Before"))
+        .await;
+    assert_eq!(again.json::<Value>().await.unwrap()["status"], "duplicate");
+
+    let pushed = server
+        .webhook(
+            "push",
+            "push-over-limit",
+            &push_payload(SEED_CONFIG_REPOSITORY_ID, "refs/heads/main"),
+        )
+        .await;
+    assert_eq!(
+        pushed.json::<Value>().await.unwrap()["status"],
+        "config_sync"
+    );
+    let renamed = json!({
+        "action": "renamed",
+        "repository": { "id": support::SHOP_WEB_ID, "full_name": "acme/shop-site" },
+        "installation": { "id": support::INSTALLATION },
+    });
+    let processed = server
+        .webhook("repository", "rename-over-limit", &renamed)
+        .await;
+    assert_eq!(
+        processed.json::<Value>().await.unwrap()["status"],
+        "processed"
+    );
+
+    let reply = server
+        .post(
+            &format!("/api/tasks/{task_id}/replies"),
+            Some(&server.seeded.member_token()),
+            &json!({ "text": "One more thing." }),
+        )
+        .await;
+    assert_eq!(reply.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(reply.headers().contains_key("retry-after"));
+    assert_eq!(
+        reply.json::<Value>().await.unwrap()["error"]["code"],
+        "rate_limited"
+    );
+
+    let rates = server.dynamo.all::<ReceiveRate>().await;
+    let dropped: i64 = rates.iter().map(|rate| rate.dropped).sum();
+    assert_eq!(dropped, 2);
+    let audits = audit_events(&mut server.api.store.tx(server.tenant()))
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.action == "tenant.receive_limit")
+        .collect::<Vec<_>>();
+    assert!((1..=2).contains(&audits.len()));
+    assert_eq!(audits[0].metadata["source"], "github");
+    assert_eq!(audits[0].metadata["key"], "delivery-37");
 }
 
 fn stripe_header(body: &[u8]) -> String {

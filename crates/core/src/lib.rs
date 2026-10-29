@@ -15,6 +15,7 @@ pub mod messages;
 pub mod model;
 pub mod pattern;
 pub mod ports;
+pub mod receive;
 pub mod schema;
 pub mod skillrun;
 pub mod store;

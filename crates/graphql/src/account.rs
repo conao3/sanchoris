@@ -193,6 +193,10 @@ impl Plan {
         Ok(i32::try_from(self.0.max_concurrency)?)
     }
 
+    async fn inbound_events_per_minute(&self) -> Result<i32> {
+        Ok(i32::try_from(self.0.inbound_events_per_minute)?)
+    }
+
     async fn retention_days(&self) -> Result<i32> {
         Ok(i32::try_from(self.0.retention_days)?)
     }
