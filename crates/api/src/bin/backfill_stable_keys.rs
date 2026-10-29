@@ -35,7 +35,7 @@ async fn run() -> Result<(), String> {
         },
         Settings::default(),
     );
-    let report = backfill::repository_ids(&worker)
+    let report = backfill::stable_keys(&worker)
         .await
         .map_err(|error| error.to_string())?;
     for line in report.lines {
@@ -49,7 +49,7 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("sanchoris-backfill-repository-ids: {error}");
+            eprintln!("sanchoris-backfill-stable-keys: {error}");
             ExitCode::FAILURE
         }
     }

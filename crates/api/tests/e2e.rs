@@ -136,7 +136,7 @@ impl World {
             .all::<Task>()
             .await
             .into_iter()
-            .find(|task| task.name == name)?;
+            .find(|task| task.display_name(&[]) == name)?;
         let run_id = self
             .dynamo
             .all::<Run>()

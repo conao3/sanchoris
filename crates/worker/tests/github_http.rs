@@ -343,8 +343,8 @@ async fn issue_relations_come_from_graphql() {
             "/graphql",
             200,
             json!({ "data": { "repository": { "issue": {
-                "parent": { "number": 10, "repository": { "nameWithOwner": "acme/idea" } },
-                "blockedBy": { "nodes": [{ "number": 34, "repository": { "nameWithOwner": "acme/shop-web" } }] },
+                "parent": { "number": 10, "repository": { "nameWithOwner": "acme/idea", "databaseId": 7103 } },
+                "blockedBy": { "nodes": [{ "number": 34, "repository": { "nameWithOwner": "acme/shop-web", "databaseId": 7101 } }] },
             } } } }),
         ),
     ]);
@@ -353,10 +353,11 @@ async fn issue_relations_come_from_graphql() {
         relations.parent,
         Some(IssueRef {
             repository: "acme/idea".into(),
+            repository_id: 7103,
             number: 10
         })
     );
-    assert_eq!(relations.blocked_by[0].task_name(), "acme/shop-web#34");
+    assert_eq!(relations.blocked_by[0].task_name(), "github:7101#34");
     let seen = recorded.seen.lock().unwrap();
     assert_eq!(
         seen[1].body.as_ref().unwrap()["variables"],

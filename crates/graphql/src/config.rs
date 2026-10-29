@@ -48,17 +48,46 @@ pub(crate) async fn config_rows(ctx: &Context<'_>, scope: Scope) -> Result<Vec<i
 pub(crate) async fn in_configs<E: sanchoris_core::item::Entity>(
     ctx: &Context<'_>,
     scope: Scope,
-    prefix: &str,
+    prefix: fn(Uuid) -> String,
 ) -> Result<Vec<E>> {
     let mut found = Vec::new();
     let mut tx = tx(ctx, scope.tenant_id);
     for config in config_rows(ctx, scope).await? {
-        found.extend(
-            tx.query::<E>(&keys::config_pk(scope.tenant_id, config.id), prefix)
+        if let Some(revision_id) = config.active_revision_id {
+            found.extend(
+                tx.query::<E>(
+                    &keys::config_pk(scope.tenant_id, config.id),
+                    &prefix(revision_id),
+                )
                 .await?,
-        );
+            );
+        }
     }
     Ok(found)
+}
+
+pub(crate) async fn active_revision(
+    ctx: &Context<'_>,
+    scope: Scope,
+    config_id: Uuid,
+) -> Result<Option<Uuid>> {
+    Ok(tx(ctx, scope.tenant_id)
+        .get::<items::Config>(&keys::config_key(scope.tenant_id, config_id))
+        .await?
+        .and_then(|config| config.active_revision_id))
+}
+
+pub(crate) async fn active_triggers(
+    ctx: &Context<'_>,
+    scope: Scope,
+    config: &items::Config,
+) -> Result<Vec<TriggerItem>> {
+    Ok(tx(ctx, scope.tenant_id)
+        .query::<TriggerItem>(&keys::config_pk(scope.tenant_id, config.id), "TRIGGER#")
+        .await?
+        .iter()
+        .filter_map(|trigger| trigger.in_revision(config.active_revision_id))
+        .collect())
 }
 
 pub(crate) struct Config {
@@ -190,18 +219,16 @@ impl Config {
     }
 
     async fn trigger_count(&self, ctx: &Context<'_>) -> Result<i32> {
-        let count = tx(ctx, self.scope.tenant_id)
-            .query::<TriggerItem>(&self.pk(), "TRIGGER#")
-            .await?
-            .iter()
-            .filter(|trigger| trigger.removed_at.is_none())
-            .count();
+        let count = active_triggers(ctx, self.scope, &self.row).await?.len();
         Ok(i32::try_from(count)?)
     }
 
     async fn skill_count(&self, ctx: &Context<'_>) -> Result<i32> {
+        let Some(revision_id) = self.row.active_revision_id else {
+            return Ok(0);
+        };
         let count = tx(ctx, self.scope.tenant_id)
-            .query::<SkillDef>(&self.pk(), "SKILL#")
+            .query::<SkillDef>(&self.pk(), &keys::skills_prefix(revision_id))
             .await?
             .len();
         Ok(i32::try_from(count)?)
@@ -351,13 +378,19 @@ impl Project {
     pub async fn all(ctx: &Context<'_>, scope: Scope) -> Result<Vec<Self>> {
         Ok(Self::sorted(
             scope,
-            in_configs::<ProjectItem>(ctx, scope, "PROJECT#").await?,
+            in_configs::<ProjectItem>(ctx, scope, keys::projects_prefix).await?,
         ))
     }
 
     pub async fn of_config(ctx: &Context<'_>, scope: Scope, config_id: Uuid) -> Result<Vec<Self>> {
+        let Some(revision_id) = active_revision(ctx, scope, config_id).await? else {
+            return Ok(Vec::new());
+        };
         let rows = tx(ctx, scope.tenant_id)
-            .query::<ProjectItem>(&keys::config_pk(scope.tenant_id, config_id), "PROJECT#")
+            .query::<ProjectItem>(
+                &keys::config_pk(scope.tenant_id, config_id),
+                &keys::projects_prefix(revision_id),
+            )
             .await?;
         Ok(Self::sorted(scope, rows))
     }
@@ -368,8 +401,16 @@ impl Project {
         config_id: Uuid,
         name: &str,
     ) -> Result<Option<Self>> {
+        let Some(revision_id) = active_revision(ctx, scope, config_id).await? else {
+            return Ok(None);
+        };
         Ok(tx(ctx, scope.tenant_id)
-            .get::<ProjectItem>(&keys::project_key(scope.tenant_id, config_id, name))
+            .get::<ProjectItem>(&keys::project_key(
+                scope.tenant_id,
+                config_id,
+                revision_id,
+                name,
+            ))
             .await?
             .map(|row| Project { scope, row }))
     }
@@ -378,7 +419,7 @@ impl Project {
         let mut rows = tx(ctx, self.scope.tenant_id)
             .query::<RepositoryItem>(
                 &keys::config_pk(self.scope.tenant_id, self.row.config_id),
-                &format!("PROJECT#{}#REPO#", self.row.name),
+                &keys::project_repositories_prefix(self.row.config_revision_id, &self.row.name),
             )
             .await?;
         rows.sort_by(|a, b| a.name.cmp(&b.name));
@@ -511,7 +552,7 @@ impl Session {
     }
 
     pub async fn all(ctx: &Context<'_>, scope: Scope) -> Result<Vec<Self>> {
-        let mut rows = in_configs::<SessionDef>(ctx, scope, "SESSION#").await?;
+        let mut rows = in_configs::<SessionDef>(ctx, scope, keys::sessions_prefix).await?;
         rows.sort_by(|a, b| (&a.name, a.id).cmp(&(&b.name, b.id)));
         Ok(rows
             .into_iter()
@@ -525,8 +566,16 @@ impl Session {
         config_id: Uuid,
         name: &str,
     ) -> Result<Option<Self>> {
+        let Some(revision_id) = active_revision(ctx, scope, config_id).await? else {
+            return Ok(None);
+        };
         Ok(tx(ctx, scope.tenant_id)
-            .get::<SessionDef>(&keys::session_key(scope.tenant_id, config_id, name))
+            .get::<SessionDef>(&keys::session_key(
+                scope.tenant_id,
+                config_id,
+                revision_id,
+                name,
+            ))
             .await?
             .map(|row| Self::from_row(scope, row)))
     }

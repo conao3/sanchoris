@@ -2,21 +2,21 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, DurationRound, SecondsFormat, Utc};
 use sanchoris_config::validate::{constrains_actor, github_actor_conditions};
-use sanchoris_config::{Skill, SkillOrigin, Start, builtin_skill};
+use sanchoris_config::{Checkout, Skill, SkillOrigin, Start, builtin_skill};
 use sanchoris_core::audit::{AuditEntry, record_audit};
 use sanchoris_core::db::{
     self, DbError, NewTask, NewTriggerEvent, REF_CHECK_WAIT, REF_TRIGGER, Recorded, TenantTx,
     TriggerEventOutcome, locate,
 };
 use sanchoris_core::github::CHECK_RUN_COMPLETED;
-use sanchoris_core::item::Key;
+use sanchoris_core::item::{Entity, Key};
 use sanchoris_core::items::{
     CheckWait, CheckWaitMarker, Config, Guard, InboundEvent, Membership, Pending, Project,
-    SessionDef, SkillDef, Task, TaskName, Trigger, TriggerRate, uniq,
+    Repository, SessionDef, SkillDef, Task, TaskName, Trigger, TriggerRate, github_task_name, uniq,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
-use sanchoris_core::messages::{self, OfferedSkill, StartMessage};
+use sanchoris_core::messages::{self, OfferedInput, OfferedSkill, StartMessage};
 use sanchoris_core::model::{ActorKind, AuditOrigin, NamedDefinition, TaskDefinition, TaskStatus};
 use sanchoris_core::pattern::EventPattern;
 use sanchoris_core::store::{Index, SortKey, Update};
@@ -277,8 +277,8 @@ async fn record_failed(
 
 async fn nudge_check_waits(worker: &Worker, tx: &mut TenantTx, event: &Value) -> Result<()> {
     let detail = &event["detail"];
-    let (Some(repo), Some(sha)) = (
-        detail["repository"].as_str(),
+    let (Some(repository_id), Some(sha)) = (
+        detail["repository_id"].as_i64(),
         detail["check_run"]["head_sha"].as_str(),
     ) else {
         return Ok(());
@@ -287,17 +287,22 @@ async fn nudge_check_waits(worker: &Worker, tx: &mut TenantTx, event: &Value) ->
     let markers = tx
         .query::<CheckWaitMarker>(&keys::tenant_pk(tenant_id), "CHECKWAIT#")
         .await?;
-    for marker in markers
-        .into_iter()
-        .filter(|m| m.repos.iter().any(|r| r == repo))
-    {
+    for marker in markers {
+        let Some(repo) = marker
+            .repository_ids
+            .iter()
+            .position(|id| *id == repository_id)
+            .and_then(|index| marker.repos.get(index))
+        else {
+            continue;
+        };
         let Some(location) = locate(tx, marker.wait_id, REF_CHECK_WAIT).await? else {
             continue;
         };
         let Some(mut wait) = tx.get::<CheckWait>(&location.target).await? else {
             continue;
         };
-        let head = wait.head_shas[repo].as_str();
+        let head = wait.head_shas[repo.as_str()].as_str();
         if wait.status != "waiting" || head.is_some_and(|head| head != sha) {
             continue;
         }
@@ -316,7 +321,17 @@ pub async fn load_trigger(tx: &mut TenantTx, trigger_id: Uuid) -> Result<Option<
     let Some(location) = locate(tx, trigger_id, REF_TRIGGER).await? else {
         return Ok(None);
     };
-    Ok(tx.get::<Trigger>(&location.target).await?)
+    let Some(trigger) = tx.get::<Trigger>(&location.target).await? else {
+        return Ok(None);
+    };
+    let config_key = keys::config_key(tx.tenant_id(), trigger.config_id);
+    let config = tx.get::<Config>(&config_key).await?;
+    if config.is_some() {
+        tx.assert_unchanged(&config_key)?;
+    }
+    Ok(config
+        .filter(Config::is_active)
+        .and_then(|config| trigger.in_revision(config.active_revision_id)))
 }
 
 async fn event_triggers(tx: &mut TenantTx) -> Result<Vec<(Trigger, Config)>> {
@@ -326,9 +341,12 @@ async fn event_triggers(tx: &mut TenantTx) -> Result<Vec<(Trigger, Config)>> {
         .await?;
     let mut triggers = Vec::new();
     for config in configs.into_iter().filter(Config::is_active) {
+        tx.assert_unchanged(&config.key())?;
         for trigger in tx
             .query::<Trigger>(&keys::config_pk(tenant_id, config.id), "TRIGGER#")
             .await?
+            .iter()
+            .filter_map(|trigger| trigger.in_revision(config.active_revision_id))
         {
             if trigger.is_active() && trigger.event_pattern.is_some() {
                 triggers.push((trigger, config.clone()));
@@ -467,6 +485,7 @@ fn shorten(text: &str) -> String {
 
 struct Placement {
     name: String,
+    display: String,
     title: String,
     parent_task_id: Option<Uuid>,
     blocked_by: Vec<Uuid>,
@@ -504,8 +523,13 @@ async fn start(
         Plan::Create(placement) => placement,
         Plan::Done(outcome) => return Ok(outcome),
     };
-    let Some((session_definition, system_prompt)) =
-        load_session(tx, trigger.config_id, &start.session).await?
+    let Some((session_definition, system_prompt)) = load_session(
+        tx,
+        trigger.config_id,
+        trigger.config_revision_id,
+        &start.session,
+    )
+    .await?
     else {
         return Ok(discarded(format!(
             "session {} does not exist",
@@ -513,14 +537,18 @@ async fn start(
         )));
     };
     let mut skills = Vec::new();
+    let mut loaded = Vec::new();
     for name in &start.skills {
-        let Some(skill) = load_skill(tx, trigger.config_id, name).await? else {
+        let Some(skill) =
+            load_skill(tx, trigger.config_id, trigger.config_revision_id, name).await?
+        else {
             return Ok(discarded(format!("skill {name} does not exist")));
         };
         skills.push(NamedDefinition {
             name: name.clone(),
             definition: serde_json::to_value(&skill)?,
         });
+        loaded.push(skill);
     }
     let definition = TaskDefinition {
         trigger: NamedDefinition {
@@ -535,13 +563,16 @@ async fn start(
         },
         session: NamedDefinition {
             name: start.session.clone(),
-            definition: session_definition,
+            definition: session_definition.clone(),
         },
         skills,
     };
     let name_key = keys::task_name_key(tx.tenant_id(), trigger.id, &placement.name);
     if tx.get::<TaskName>(&name_key).await?.is_some() {
-        return Ok(discarded(format!("task {} already exists", placement.name)));
+        return Ok(discarded(format!(
+            "task {} already exists",
+            placement.display
+        )));
     }
     if let Some(outcome) = admit_start(worker, tx, trigger).await? {
         return Ok(outcome);
@@ -563,14 +594,36 @@ async fn start(
     )
     .await?;
     let Recorded::New(task_id) = recorded else {
-        return Ok(discarded(format!("task {} already exists", placement.name)));
+        return Ok(discarded(format!(
+            "task {} already exists",
+            placement.display
+        )));
     };
-    let offered = start
-        .skills
+    let known = known_inputs(tx, trigger, &session_definition, &inbound.event).await?;
+    let offered = loaded
         .iter()
-        .map(|name| OfferedSkill {
-            name: name.clone(),
-            required: start.required_skills.contains(name),
+        .map(|skill| OfferedSkill {
+            name: skill.name.clone(),
+            required: start.required_skills.contains(&skill.name),
+            inputs: skill
+                .definition
+                .iter()
+                .flat_map(|definition| &definition.inputs)
+                .map(|(name, kind)| {
+                    let kind = serde_json::to_value(kind)
+                        .ok()
+                        .and_then(|kind| kind.as_str().map(str::to_string))
+                        .unwrap_or_default();
+                    OfferedInput {
+                        value: known
+                            .get(name.as_str())
+                            .filter(|(expected, _)| *expected == kind)
+                            .map(|(_, value)| value.clone()),
+                        name: name.clone(),
+                        kind,
+                    }
+                })
+                .collect(),
         })
         .collect::<Vec<_>>();
     let text = messages::start_message(&StartMessage {
@@ -583,6 +636,53 @@ async fn start(
     task.start_payload = Some(json!({ "instruction": text, "systemPrompt": system_prompt }));
     tx.put(&task)?;
     Ok(TriggerEventOutcome::Started)
+}
+
+async fn known_inputs(
+    tx: &mut TenantTx,
+    trigger: &Trigger,
+    session_definition: &Value,
+    event: &Value,
+) -> Result<BTreeMap<&'static str, (String, Value)>> {
+    let mut known = BTreeMap::new();
+    let session: sanchoris_config::Session = serde_json::from_value(session_definition.clone())?;
+    let repositories = match session.checkout {
+        Checkout::Repos(names) => {
+            let config = tx
+                .require::<Config>(&keys::config_key(tx.tenant_id(), trigger.config_id))
+                .await?;
+            names
+                .iter()
+                .map(|name| {
+                    config
+                        .repository_named(name)
+                        .map_or_else(|| name.clone(), |r| r.full_name.clone())
+                })
+                .collect::<Vec<_>>()
+        }
+        Checkout::Project(project) => {
+            let mut rows = tx
+                .query::<Repository>(
+                    &keys::config_pk(tx.tenant_id(), trigger.config_id),
+                    &keys::project_repositories_prefix(trigger.config_revision_id, &project),
+                )
+                .await?;
+            rows.sort_by(|a, b| a.name.cmp(&b.name));
+            rows.into_iter().map(|r| r.full_name).collect()
+        }
+    };
+    known.insert("Repos", ("array".to_string(), json!(repositories)));
+    let detail = &event["detail"];
+    if event["source"] == "github"
+        && let (Some(repo), Some(number)) = (
+            detail["repository"].as_str(),
+            detail["issue"]["number"].as_i64(),
+        )
+    {
+        known.insert("Repo", ("string".to_string(), json!(repo)));
+        known.insert("Issue", ("number".to_string(), json!(number)));
+    }
+    Ok(known)
 }
 
 async fn admit_start(
@@ -657,6 +757,7 @@ async fn place(
             let time = detail["time"].as_str().unwrap_or(&inbound.key).to_string();
             Ok(Plan::Create(Placement {
                 name: format!("{}@{time}", trigger.name),
+                display: format!("{}@{time}", trigger.name),
                 title: format!("{} at {time}", trigger.name),
                 parent_task_id: None,
                 blocked_by: Vec::new(),
@@ -737,12 +838,17 @@ async fn place_github(
         Some(login) => member_by_github_login(tx, login).await?,
         None => None,
     };
-    let channel = json!({ "source": "github", "repository": repo });
+    let repository_id = detail["repository_id"]
+        .as_i64()
+        .ok_or_else(|| WorkerError::Invalid("GitHub events carry detail.repository_id".into()))?;
+    let channel = json!({ "source": "github", "repository": repo, "repository_id": repository_id });
     let Some(number) = detail["issue"]["number"].as_i64() else {
         let check = &detail["check_run"];
         let id = check["id"].as_i64().unwrap_or_default();
+        let suffix = format!("@{}#{id}", check["head_sha"].as_str().unwrap_or(""));
         return Ok(Plan::Create(Placement {
-            name: format!("{repo}@{}#{id}", check["head_sha"].as_str().unwrap_or("")),
+            name: github_task_name(repository_id, &suffix),
+            display: format!("{repo}{suffix}"),
             title: format!(
                 "Check {} {} on {repo}",
                 check["name"].as_str().unwrap_or(""),
@@ -779,7 +885,7 @@ async fn place_github(
     let parent = match &relations.parent {
         Some(parent) => task_by_name(worker, tx, &parent.task_name())
             .await?
-            .map(|id| (parent.task_name(), id)),
+            .map(|id| (format!("{}#{}", parent.repository, parent.number), id)),
         None => None,
     };
     let mut parent_task_id = None;
@@ -828,7 +934,8 @@ async fn place_github(
     }
     let title = detail["issue"]["title"].as_str().unwrap_or("");
     Ok(Plan::Create(Placement {
-        name: format!("{repo}#{number}"),
+        name: github_task_name(repository_id, &format!("#{number}")),
+        display: format!("{repo}#{number}"),
         title: format!("{title} ({repo}#{number})"),
         parent_task_id,
         blocked_by,
@@ -907,6 +1014,7 @@ async fn place_chat(
     }
     Ok(Plan::Create(Placement {
         name: format!("{thread}/{}", count + 1),
+        display: format!("{thread}/{}", count + 1),
         title: shorten(text),
         parent_task_id: None,
         blocked_by: Vec::new(),
@@ -920,18 +1028,24 @@ async fn place_chat(
 async fn load_session(
     tx: &mut TenantTx,
     config_id: Uuid,
+    revision_id: Uuid,
     name: &str,
 ) -> Result<Option<(Value, Option<String>)>> {
     let tenant_id = tx.tenant_id();
     let Some(session) = tx
-        .get::<SessionDef>(&keys::session_key(tenant_id, config_id, name))
+        .get::<SessionDef>(&keys::session_key(tenant_id, config_id, revision_id, name))
         .await?
     else {
         return Ok(None);
     };
     let system_prompt = match session.definition.get("Project").and_then(Value::as_str) {
         Some(project) => tx
-            .get::<Project>(&keys::project_key(tenant_id, config_id, project))
+            .get::<Project>(&keys::project_key(
+                tenant_id,
+                config_id,
+                revision_id,
+                project,
+            ))
             .await?
             .map(|p| p.system_prompt),
         None => None,
@@ -939,9 +1053,19 @@ async fn load_session(
     Ok(Some((session.definition, system_prompt)))
 }
 
-async fn load_skill(tx: &mut TenantTx, config_id: Uuid, name: &str) -> Result<Option<Skill>> {
+async fn load_skill(
+    tx: &mut TenantTx,
+    config_id: Uuid,
+    revision_id: Uuid,
+    name: &str,
+) -> Result<Option<Skill>> {
     let Some(stored) = tx
-        .get::<SkillDef>(&keys::skill_key(tx.tenant_id(), config_id, name))
+        .get::<SkillDef>(&keys::skill_key(
+            tx.tenant_id(),
+            config_id,
+            revision_id,
+            name,
+        ))
         .await?
     else {
         return Ok(None);

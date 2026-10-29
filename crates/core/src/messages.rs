@@ -1,11 +1,88 @@
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 pub const PREFIX: &str = "[sanchoris]";
+pub const REDACTED: &str = "<redacted>";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OfferedSkill {
     pub name: String,
     pub required: bool,
+    pub inputs: Vec<OfferedInput>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OfferedInput {
+    pub name: String,
+    pub kind: String,
+    pub value: Option<Value>,
+}
+
+const SECRET_NAMES: [&str; 6] = ["token", "secret", "password", "credential", "apikey", "key"];
+const SECRET_PREFIXES: [&str; 9] = [
+    "sk-",
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "ghu_",
+    "github_pat_",
+    "xox",
+    "AKIA",
+    "-----BEGIN",
+];
+
+pub fn is_secret_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase().replace(['_', '-'], "");
+    SECRET_NAMES.iter().any(|word| lower.contains(word))
+}
+
+pub fn redact(name: &str, value: &Value) -> Value {
+    if is_secret_name(name) {
+        return Value::String(REDACTED.into());
+    }
+    match value {
+        Value::String(text) if SECRET_PREFIXES.iter().any(|p| text.starts_with(p)) => {
+            Value::String(REDACTED.into())
+        }
+        Value::Array(items) => Value::Array(items.iter().map(|item| redact("", item)).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, item)| (key.clone(), redact(key, item)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn inputs_line(skill: &OfferedSkill) -> Option<String> {
+    if skill.inputs.is_empty() {
+        return None;
+    }
+    let mut resolved = Map::new();
+    let listed = skill
+        .inputs
+        .iter()
+        .map(|input| match &input.value {
+            Some(value) => {
+                let shown = redact(&input.name, value);
+                if shown == *value {
+                    resolved.insert(input.name.clone(), value.clone());
+                }
+                format!("{} ({}) = {shown}", input.name, input.kind)
+            }
+            None => format!("{} ({}) not resolved", input.name, input.kind),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut line = format!("Inputs of {}: {listed}.", skill.name);
+    if !resolved.is_empty() {
+        line.push_str(&format!(
+            " Run it with `sanchoris skill run {} --input '{}'`.",
+            skill.name,
+            Value::Object(resolved).to_string().replace('\'', "'\\''")
+        ));
+    }
+    Some(line)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +116,10 @@ pub fn start_message(message: &StartMessage<'_>) -> String {
             _ => "Run one with `sanchoris skill run <name>`.".to_string(),
         };
         text.push_str(&format!("\nSkills: {listed}. {how}"));
+        for line in message.skills.iter().filter_map(inputs_line) {
+            text.push('\n');
+            text.push_str(&line);
+        }
     }
     text
 }
@@ -92,6 +173,7 @@ mod tests {
         let skills = [OfferedSkill {
             name: "open-pr-green-ci".into(),
             required: true,
+            inputs: Vec::new(),
         }];
         let text = start_message(&StartMessage {
             trigger_name: "labeled-issue",
@@ -113,10 +195,12 @@ mod tests {
             OfferedSkill {
                 name: "open-pr-green-ci".into(),
                 required: true,
+                inputs: Vec::new(),
             },
             OfferedSkill {
                 name: "lint".into(),
                 required: false,
+                inputs: Vec::new(),
             },
         ];
         let text = start_message(&StartMessage {
@@ -128,6 +212,77 @@ mod tests {
         assert!(text.ends_with(
             "Skills: open-pr-green-ci (required), lint. Run one with `sanchoris skill run <name>`."
         ));
+    }
+
+    #[test]
+    fn start_message_shows_the_resolved_inputs_of_each_skill() {
+        let skills = [OfferedSkill {
+            name: "open-pr-green-ci".into(),
+            required: true,
+            inputs: vec![
+                OfferedInput {
+                    name: "Issue".into(),
+                    kind: "number".into(),
+                    value: Some(json!(35)),
+                },
+                OfferedInput {
+                    name: "MaxFixes".into(),
+                    kind: "number".into(),
+                    value: None,
+                },
+                OfferedInput {
+                    name: "Repo".into(),
+                    kind: "string".into(),
+                    value: Some(json!("acme/shop-web")),
+                },
+                OfferedInput {
+                    name: "Repos".into(),
+                    kind: "array".into(),
+                    value: Some(json!(["acme/shop-web"])),
+                },
+            ],
+        }];
+        let text = start_message(&StartMessage {
+            trigger_name: "labeled-issue",
+            task_title: "Fix flaky checkout test (acme/shop-web#35)",
+            instruction: "Resolve issue 35 in acme/shop-web.",
+            skills: &skills,
+        });
+        assert_eq!(
+            text.lines().last().unwrap(),
+            "Inputs of open-pr-green-ci: Issue (number) = 35, MaxFixes (number) not resolved, Repo (string) = \"acme/shop-web\", Repos (array) = [\"acme/shop-web\"]. Run it with `sanchoris skill run open-pr-green-ci --input '{\"Issue\":35,\"Repo\":\"acme/shop-web\",\"Repos\":[\"acme/shop-web\"]}'`."
+        );
+    }
+
+    #[test]
+    fn secret_like_inputs_are_redacted_and_left_out_of_the_command() {
+        let skills = [OfferedSkill {
+            name: "deploy".into(),
+            required: false,
+            inputs: vec![
+                OfferedInput {
+                    name: "ApiToken".into(),
+                    kind: "string".into(),
+                    value: Some(json!("abc")),
+                },
+                OfferedInput {
+                    name: "Env".into(),
+                    kind: "object".into(),
+                    value: Some(json!({ "GITHUB": "ghp_0123", "Region": "ap-northeast-1" })),
+                },
+            ],
+        }];
+        let text = start_message(&StartMessage {
+            trigger_name: "t",
+            task_title: "T",
+            instruction: "Do it.",
+            skills: &skills,
+        });
+        assert_eq!(
+            text.lines().last().unwrap(),
+            "Inputs of deploy: ApiToken (string) = \"<redacted>\", Env (object) = {\"GITHUB\":\"<redacted>\",\"Region\":\"ap-northeast-1\"}."
+        );
+        assert!(!text.contains("abc") && !text.contains("ghp_0123"));
     }
 
     #[test]

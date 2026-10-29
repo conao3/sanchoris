@@ -72,13 +72,31 @@ pub struct MergeResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssueRef {
     pub repository: String,
+    pub repository_id: i64,
     pub number: i64,
 }
 
 impl IssueRef {
     pub fn task_name(&self) -> String {
-        format!("{}#{}", self.repository, self.number)
+        sanchoris_core::items::github_task_name(self.repository_id, &format!("#{}", self.number))
     }
+}
+
+impl Installation {
+    pub fn repository_named(&self, name: &str) -> Option<&GitHubRepository> {
+        self.repositories
+            .iter()
+            .find(|r| r.full_name.eq_ignore_ascii_case(name))
+    }
+}
+
+pub fn repository_named<'a>(
+    installations: &'a [Installation],
+    name: &str,
+) -> Option<&'a GitHubRepository> {
+    installations
+        .iter()
+        .find_map(|installation| installation.repository_named(name))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

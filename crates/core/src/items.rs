@@ -792,7 +792,12 @@ impl Entity for Project {
     const KIND: &'static str = "project";
 
     fn key(&self) -> Key {
-        keys::project_key(self.tenant_id, self.config_id, &self.name)
+        keys::project_key(
+            self.tenant_id,
+            self.config_id,
+            self.config_revision_id,
+            &self.name,
+        )
     }
 
     fn write(&self, w: &mut ItemWriter) {
@@ -823,6 +828,7 @@ pub struct Repository {
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub config_id: Uuid,
+    pub config_revision_id: Uuid,
     pub project: String,
     pub name: String,
     pub url: String,
@@ -838,13 +844,20 @@ impl Entity for Repository {
     const KIND: &'static str = "repository";
 
     fn key(&self) -> Key {
-        keys::repository_key(self.tenant_id, self.config_id, &self.project, &self.name)
+        keys::repository_key(
+            self.tenant_id,
+            self.config_id,
+            self.config_revision_id,
+            &self.project,
+            &self.name,
+        )
     }
 
     fn write(&self, w: &mut ItemWriter) {
         w.uuid("id", self.id)
             .uuid("tenant_id", self.tenant_id)
             .uuid("config_id", self.config_id)
+            .uuid("config_revision_id", self.config_revision_id)
             .s("project", &self.project)
             .s("name", &self.name)
             .s("url", &self.url)
@@ -861,6 +874,7 @@ impl Entity for Repository {
             id: r.uuid("id")?,
             tenant_id: r.uuid("tenant_id")?,
             config_id: r.uuid("config_id")?,
+            config_revision_id: r.uuid("config_revision_id")?,
             project: r.s("project")?,
             name: r.s("name")?,
             url: r.s("url")?,
@@ -888,7 +902,12 @@ impl Entity for SessionDef {
     const KIND: &'static str = "session";
 
     fn key(&self) -> Key {
-        keys::session_key(self.tenant_id, self.config_id, &self.name)
+        keys::session_key(
+            self.tenant_id,
+            self.config_id,
+            self.config_revision_id,
+            &self.name,
+        )
     }
 
     fn write(&self, w: &mut ItemWriter) {
@@ -931,7 +950,12 @@ impl Entity for SkillDef {
     const KIND: &'static str = "skill";
 
     fn key(&self) -> Key {
-        keys::skill_key(self.tenant_id, self.config_id, &self.name)
+        keys::skill_key(
+            self.tenant_id,
+            self.config_id,
+            self.config_revision_id,
+            &self.name,
+        )
     }
 
     fn write(&self, w: &mut ItemWriter) {
@@ -980,11 +1004,62 @@ pub struct Trigger {
     pub removed_at: Option<DateTime<Utc>>,
     pub next_run_at: Option<DateTime<Utc>>,
     pub schedule_message_id: Option<Uuid>,
+    pub next: Option<NextTrigger>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NextTrigger {
+    pub config_revision_id: Uuid,
+    pub definition: Option<TriggerSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TriggerSpec {
+    pub state: String,
+    pub event_pattern: Option<Value>,
+    pub schedule_expression: Option<String>,
+    pub input_transformer: Option<Value>,
+    pub start: Value,
 }
 
 impl Trigger {
     pub fn is_active(&self) -> bool {
         self.state == "ENABLED" && self.removed_at.is_none()
+    }
+
+    pub fn spec(&self) -> TriggerSpec {
+        TriggerSpec {
+            state: self.state.clone(),
+            event_pattern: self.event_pattern.clone(),
+            schedule_expression: self.schedule_expression.clone(),
+            input_transformer: self.input_transformer.clone(),
+            start: self.start.clone(),
+        }
+    }
+
+    pub fn in_revision(&self, revision_id: Option<Uuid>) -> Option<Trigger> {
+        let revision_id = revision_id?;
+        match &self.next {
+            Some(next) if next.config_revision_id == revision_id => {
+                next.definition.as_ref().map(|spec| Trigger {
+                    config_revision_id: revision_id,
+                    state: spec.state.clone(),
+                    event_pattern: spec.event_pattern.clone(),
+                    schedule_expression: spec.schedule_expression.clone(),
+                    input_transformer: spec.input_transformer.clone(),
+                    start: spec.start.clone(),
+                    removed_at: None,
+                    next: None,
+                    ..self.clone()
+                })
+            }
+            _ => (self.config_revision_id == revision_id && self.removed_at.is_none()).then(|| {
+                Trigger {
+                    next: None,
+                    ..self.clone()
+                }
+            }),
+        }
     }
 }
 
@@ -1008,7 +1083,14 @@ impl Entity for Trigger {
             .json("start", &self.start)
             .opt_time("removed_at", self.removed_at)
             .opt_time("next_run_at", self.next_run_at)
-            .opt_uuid("schedule_message_id", self.schedule_message_id);
+            .opt_uuid("schedule_message_id", self.schedule_message_id)
+            .opt_json(
+                "next",
+                self.next
+                    .as_ref()
+                    .map(|next| serde_json::to_value(next).expect("JSON values serialize"))
+                    .as_ref(),
+            );
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -1026,6 +1108,11 @@ impl Entity for Trigger {
             removed_at: r.opt_time("removed_at")?,
             next_run_at: r.opt_time("next_run_at")?,
             schedule_message_id: r.opt_uuid("schedule_message_id")?,
+            next: r
+                .opt_json("next")?
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| DbError::Decode(format!("trigger next: {e}")))?,
         })
     }
 }
@@ -1208,6 +1295,42 @@ pub struct Task {
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+}
+
+pub const GITHUB_TASK_PREFIX: &str = "github:";
+
+pub fn github_task_name(repository_id: i64, suffix: &str) -> String {
+    format!("{GITHUB_TASK_PREFIX}{repository_id}{suffix}")
+}
+
+pub fn split_github_task_name(name: &str) -> Option<(i64, &str)> {
+    let rest = name.strip_prefix(GITHUB_TASK_PREFIX)?;
+    let end = rest.find(['#', '@']).unwrap_or(rest.len());
+    Some((rest[..end].parse().ok()?, &rest[end..]))
+}
+
+impl Task {
+    pub fn repository_id(&self) -> Option<i64> {
+        split_github_task_name(&self.name).map(|(id, _)| id)
+    }
+
+    pub fn display_name(&self, repositories: &[GitHubRepository]) -> String {
+        let Some((id, suffix)) = split_github_task_name(&self.name) else {
+            return self.name.clone();
+        };
+        let current = repositories
+            .iter()
+            .find(|repository| repository.id == id)
+            .map(|repository| repository.full_name.clone())
+            .or_else(|| {
+                self.channel
+                    .as_ref()
+                    .and_then(|channel| channel["repository"].as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| format!("#{id}"));
+        format!("{current}{suffix}")
+    }
 }
 
 impl Entity for Task {
@@ -1713,6 +1836,7 @@ pub struct Output {
     pub skill_run_number: i32,
     pub kind: String,
     pub repository: String,
+    pub repository_id: i64,
     pub number: i64,
     pub url: String,
     pub state: Option<String>,
@@ -1729,7 +1853,7 @@ impl Entity for Output {
             self.task_id,
             self.skill_run_number,
             &self.kind,
-            &self.repository,
+            self.repository_id,
             self.number,
         )
     }
@@ -1742,6 +1866,7 @@ impl Entity for Output {
             .n("skill_run_number", i64::from(self.skill_run_number))
             .s("output_kind", &self.kind)
             .s("repository", &self.repository)
+            .n("repository_id", self.repository_id)
             .n("number", self.number)
             .s("url", &self.url)
             .opt_s("state", self.state.as_ref())
@@ -1760,6 +1885,7 @@ impl Entity for Output {
             skill_run_number: r.i32("skill_run_number")?,
             kind: r.s("output_kind")?,
             repository: r.s("repository")?,
+            repository_id: r.n("repository_id")?,
             number: r.n("number")?,
             url: r.s("url")?,
             state: r.opt_s("state")?,
@@ -1911,6 +2037,7 @@ pub struct CheckWaitMarker {
     pub wait_id: Uuid,
     pub task_id: Uuid,
     pub repos: Vec<String>,
+    pub repository_ids: Vec<i64>,
 }
 
 impl Entity for CheckWaitMarker {
@@ -1924,7 +2051,8 @@ impl Entity for CheckWaitMarker {
         w.uuid("tenant_id", self.tenant_id)
             .uuid("wait_id", self.wait_id)
             .uuid("task_id", self.task_id)
-            .strs("repos", &self.repos);
+            .strs("repos", &self.repos)
+            .json("repository_ids", &serde_json::json!(self.repository_ids));
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -1933,6 +2061,8 @@ impl Entity for CheckWaitMarker {
             wait_id: r.uuid("wait_id")?,
             task_id: r.uuid("task_id")?,
             repos: r.strs("repos")?,
+            repository_ids: serde_json::from_value(r.json("repository_ids")?)
+                .map_err(|e| DbError::Decode(format!("check wait marker repository_ids: {e}")))?,
         })
     }
 }

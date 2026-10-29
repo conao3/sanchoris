@@ -1,88 +1,41 @@
-use std::collections::BTreeMap;
-
-use sanchoris_core::audit::{AuditEntry, record_audit};
-use sanchoris_core::item::{Item, ItemReader, KIND, Key, Table};
-use sanchoris_core::items::{CONFIG_ACTIVE, Config, Guard, Integration, Tenant};
+use sanchoris_core::db::{REF_TRIGGER_EVENT, locate};
+use sanchoris_core::item::{Entity, Item, ItemReader, KIND, Key, Table};
+use sanchoris_core::items::{
+    CheckWaitMarker, Config, GITHUB_TASK_PREFIX, Output, Task, TaskName, Tenant, TriggerEvent,
+    github_task_name,
+};
 use sanchoris_core::keys;
-use sanchoris_core::model::{ActorKind, AuditOrigin};
 use sanchoris_core::store::{Index, SortKey};
-use serde_json::{Map, json};
+use serde_json::json;
 use uuid::Uuid;
 
-use crate::config_sync::{disable_config, reactivate, resolve_repository};
-use crate::error::{Result, WorkerError};
+use crate::config_sync::reactivate;
+use crate::error::Result;
+use crate::ports::{Installation, repository_named};
 use crate::{Worker, installations};
+
+const LEGACY_DEFINITION_PREFIXES: [&str; 3] = ["PROJECT#", "SESSION#", "SKILL#"];
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BackfillReport {
     pub lines: Vec<String>,
 }
 
-pub async fn repository_ids(worker: &Worker) -> Result<BackfillReport> {
+pub async fn stable_keys(worker: &Worker) -> Result<BackfillReport> {
     let mut report = BackfillReport::default();
     let tenants = worker
         .store
         .query_index::<Tenant>(Index::Gsi2, keys::TENANTS_INDEX, SortKey::All)
         .await?;
     for tenant in tenants {
-        backfill_tenant(worker, tenant.id, &mut report).await?;
+        let mut tx = worker.tx(tenant.id);
+        let installations = installations(&mut tx).await?;
+        definitions(worker, tenant.id, &installations, &mut report).await?;
+        task_names(worker, tenant.id, &mut report).await?;
+        check_wait_markers(worker, tenant.id, &installations, &mut report).await?;
+        outputs(worker, tenant.id, &installations, &mut report).await?;
     }
     Ok(report)
-}
-
-async fn backfill_tenant(
-    worker: &Worker,
-    tenant_id: Uuid,
-    report: &mut BackfillReport,
-) -> Result<()> {
-    let mut tx = worker.tx(tenant_id);
-    for mut integration in tx
-        .query::<Integration>(&keys::tenant_pk(tenant_id), "INTEG#")
-        .await?
-    {
-        let Some(installation) = integration
-            .github_installation_id
-            .filter(|_| integration.kind == "github_installation")
-        else {
-            continue;
-        };
-        let repositories = if integration.status == "connected" {
-            worker
-                .deps
-                .config_source
-                .installation_repositories(installation)
-                .await?
-        } else {
-            Vec::new()
-        };
-        report.lines.push(format!(
-            "tenant {tenant_id} installation {installation} ({}): {} repositories: {}",
-            integration.status,
-            repositories.len(),
-            repositories
-                .iter()
-                .map(|r| format!("{} ({})", r.full_name, r.id))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-        integration.details["repositories"] = json!(repositories);
-        integration.updated_at = worker.now();
-        tx.put(&integration)?;
-    }
-    tx.commit().await?;
-
-    let mut tx = worker.tx(tenant_id);
-    let installations = installations(&mut tx).await?;
-    let legacy = tx
-        .query_items(Table::Main, &keys::tenant_pk(tenant_id), "CONFIG#")
-        .await?
-        .into_iter()
-        .filter(|item| kind_of(item) == Some("config") && !item.contains_key("status"))
-        .collect::<Vec<_>>();
-    for item in legacy {
-        backfill_config(worker, tenant_id, &installations, &item, report).await?;
-    }
-    Ok(())
 }
 
 fn kind_of(item: &Item) -> Option<&str> {
@@ -91,125 +44,250 @@ fn kind_of(item: &Item) -> Option<&str> {
         .map(String::as_str)
 }
 
-async fn backfill_config(
+async fn definitions(
     worker: &Worker,
     tenant_id: Uuid,
-    installations: &[crate::ports::Installation],
-    item: &Item,
+    installations: &[Installation],
     report: &mut BackfillReport,
 ) -> Result<()> {
-    let r = ItemReader::new(item);
-    let config_id = r.uuid("id")?;
-    let name = r.s("repository")?;
-    let root_path = r.s("root_path")?;
-    let resolved =
-        match resolve_repository(worker.deps.config_source.as_ref(), installations, &name).await {
-            Ok(found) => Some(found),
-            Err(WorkerError::Invalid(_)) => None,
-            Err(error) => return Err(error),
-        };
-    let now = worker.now();
-    let mut tx = worker.tx(tenant_id);
-    tx.get_item(&keys::config_key(tenant_id, config_id)).await?;
-    let legacy_guard = Key::main(
-        keys::tenant_pk(tenant_id),
-        format!("CONFIGREPO#{name}#{root_path}"),
-    );
-    if tx.get_item(&legacy_guard).await?.is_some() {
-        tx.delete(&legacy_guard)?;
+    let configs = worker
+        .store
+        .query::<Config>(&keys::tenant_pk(tenant_id), "CONFIG#")
+        .await?;
+    for config in configs {
+        let pk = keys::config_pk(tenant_id, config.id);
+        let mut legacy = Vec::new();
+        for prefix in LEGACY_DEFINITION_PREFIXES {
+            for item in worker
+                .store
+                .query_items(Table::Main, None, &pk, &SortKey::prefix(prefix), true, None)
+                .await?
+            {
+                legacy.push(Key::of(Table::Main, &item)?);
+            }
+        }
+        if legacy.is_empty() {
+            continue;
+        }
+        if config.is_active() && config.active_revision_id.is_some() {
+            reactivate(worker, tenant_id, config.id, installations).await?;
+        }
+        for chunk in legacy.chunks(90) {
+            let mut tx = worker.tx(tenant_id);
+            for key in chunk {
+                tx.get_item(key).await?;
+                tx.delete(key)?;
+            }
+            tx.commit().await?;
+        }
+        report.lines.push(format!(
+            "tenant {tenant_id} config {} ({}): moved the definitions under the active revision and deleted {} items of the former layout",
+            config.id,
+            config.repository,
+            legacy.len()
+        ));
     }
-    for repository in tx
+    Ok(())
+}
+
+async fn task_names(worker: &Worker, tenant_id: Uuid, report: &mut BackfillReport) -> Result<()> {
+    let tasks = worker
+        .store
+        .query_index::<Task>(Index::Gsi1, &keys::tasks_index(tenant_id), SortKey::All)
+        .await?;
+    for listed in tasks {
+        if listed.name.starts_with(GITHUB_TASK_PREFIX) {
+            continue;
+        }
+        let Some(repository) = listed
+            .channel
+            .as_ref()
+            .filter(|channel| channel["source"] == "github")
+            .and_then(|channel| channel["repository"].as_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let Some(suffix) = listed.name.strip_prefix(&repository).map(str::to_string) else {
+            report.lines.push(format!(
+                "tenant {tenant_id} task {}: the name {} does not start with {repository}, left as it is",
+                listed.id, listed.name
+            ));
+            continue;
+        };
+        let mut tx = worker.tx(tenant_id);
+        let mut task = tx.require::<Task>(&listed.key()).await?;
+        let Some(trigger_event_id) = task.trigger_event_id else {
+            continue;
+        };
+        let Some(location) = locate(&mut tx, trigger_event_id, REF_TRIGGER_EVENT).await? else {
+            continue;
+        };
+        let event = tx.require::<TriggerEvent>(&location.target).await?;
+        let Some(repository_id) = event.event["detail"]["repository_id"].as_i64() else {
+            report.lines.push(format!(
+                "tenant {tenant_id} task {}: the trigger event has no repository id, left as it is",
+                task.id
+            ));
+            continue;
+        };
+        let old_name = std::mem::replace(&mut task.name, github_task_name(repository_id, &suffix));
+        if let Some(channel) = task.channel.as_mut() {
+            channel["repository_id"] = json!(repository_id);
+        }
+        tx.put(&task)?;
+        let old_key = keys::task_name_key(tenant_id, task.trigger_id, &old_name);
+        let created_at = match tx.get::<TaskName>(&old_key).await? {
+            Some(old) => {
+                tx.delete(&old_key)?;
+                old.created_at
+            }
+            None => task.created_at,
+        };
+        let renamed = TaskName {
+            tenant_id,
+            trigger_id: task.trigger_id,
+            name: task.name.clone(),
+            task_id: task.id,
+            created_at,
+        };
+        if tx.get::<TaskName>(&renamed.key()).await?.is_none() {
+            tx.insert(&renamed)?;
+        }
+        tx.commit().await?;
+        report.lines.push(format!(
+            "tenant {tenant_id} task {}: {old_name} -> {}",
+            task.id, task.name
+        ));
+    }
+    Ok(())
+}
+
+async fn check_wait_markers(
+    worker: &Worker,
+    tenant_id: Uuid,
+    installations: &[Installation],
+    report: &mut BackfillReport,
+) -> Result<()> {
+    let items = worker
+        .store
         .query_items(
             Table::Main,
-            &keys::config_pk(tenant_id, config_id),
-            "PROJECT#",
-        )
-        .await?
-        .into_iter()
-        .filter(|item| {
-            kind_of(item) == Some("repository") && !item.contains_key("github_repository_id")
-        })
-    {
-        tx.delete(&Key::of(Table::Main, &repository)?)?;
-    }
-    let config = Config {
-        id: config_id,
-        tenant_id,
-        repository_id: resolved.as_ref().map(|found| found.id),
-        repository: resolved
-            .as_ref()
-            .map_or_else(|| name.clone(), |found| found.full_name.clone()),
-        root_path: root_path.clone(),
-        branch: r.s("branch")?,
-        status: CONFIG_ACTIVE.into(),
-        active_revision_id: r.opt_uuid("active_revision_id")?,
-        revisions: r.n("revisions")?,
-        repositories: BTreeMap::new(),
-        synced_at: r.opt_time("synced_at")?,
-        sync_error: None,
-        created_at: r.time("created_at")?,
-        updated_at: now,
-    };
-    tx.put(&config)?;
-    if let Some(found) = &resolved {
-        tx.insert(&Guard::new(
-            keys::config_repository_key(tenant_id, found.id, &root_path),
-            config_id,
-        ))?;
-        let config_ref = config_id.to_string();
-        let mut metadata = Map::new();
-        metadata.insert("repository_id".into(), json!(found.id));
-        metadata.insert("stored_name".into(), json!(name));
-        record_audit(
-            &mut tx,
-            &AuditEntry {
-                at: now,
-                actor_kind: ActorKind::System,
-                actor_ref: "backfill",
-                action: "config.repository_id",
-                target_kind: "config",
-                target_ref: &config_ref,
-                summary: &format!(
-                    "The config {name} follows the repository {} ({})",
-                    found.full_name, found.id
-                ),
-                origin: AuditOrigin::System,
-                source_ip: None,
-                metadata,
-            },
+            None,
+            &keys::tenant_pk(tenant_id),
+            &SortKey::prefix("CHECKWAIT#"),
+            true,
+            None,
         )
         .await?;
+    for item in items.iter().filter(|item| {
+        kind_of(item) == Some("check_wait_marker") && !item.contains_key("repository_ids")
+    }) {
+        let r = ItemReader::new(item);
+        let repos = r.strs("repos")?;
+        let ids = repos
+            .iter()
+            .map(|repo| repository_named(installations, repo).map(|found| found.id))
+            .collect::<Option<Vec<_>>>();
+        let key = Key::of(Table::Main, item)?;
+        let mut tx = worker.tx(tenant_id);
+        tx.get_item(&key).await?;
+        match ids {
+            Some(repository_ids) => {
+                let marker = CheckWaitMarker {
+                    tenant_id,
+                    wait_id: r.uuid("wait_id")?,
+                    task_id: r.uuid("task_id")?,
+                    repos: repos.clone(),
+                    repository_ids,
+                };
+                tx.put(&marker)?;
+                report.lines.push(format!(
+                    "tenant {tenant_id} check wait {}: {} -> {:?}",
+                    marker.wait_id,
+                    repos.join(", "),
+                    marker.repository_ids
+                ));
+            }
+            None => {
+                tx.delete(&key)?;
+                report.lines.push(format!(
+                    "tenant {tenant_id} check wait {}: {} is not in the installation lists; deleted the webhook marker, polling continues",
+                    r.uuid("wait_id")?,
+                    repos.join(", ")
+                ));
+            }
+        }
+        tx.commit().await?;
     }
-    tx.commit().await?;
-    match resolved {
-        Some(found) => {
-            let outcome = match reactivate(worker, tenant_id, config_id, installations).await {
-                Ok(()) => "active".to_string(),
-                Err(WorkerError::Invalid(message)) => {
-                    let mut tx = worker.tx(tenant_id);
-                    let mut config = tx
-                        .require::<Config>(&keys::config_key(tenant_id, config_id))
-                        .await?;
-                    config.sync_error = Some(message.clone());
-                    tx.put(&config)?;
-                    tx.commit().await?;
-                    format!("active with a sync error: {message}")
+    Ok(())
+}
+
+async fn outputs(
+    worker: &Worker,
+    tenant_id: Uuid,
+    installations: &[Installation],
+    report: &mut BackfillReport,
+) -> Result<()> {
+    let items = worker
+        .store
+        .query_items(
+            Table::Main,
+            Some(Index::Gsi1),
+            &keys::outputs_index(tenant_id),
+            &SortKey::All,
+            true,
+            None,
+        )
+        .await?;
+    for item in items
+        .iter()
+        .filter(|item| kind_of(item) == Some("output") && !item.contains_key("repository_id"))
+    {
+        let r = ItemReader::new(item);
+        let repository = r.s("repository")?;
+        let url = r.s("url")?;
+        let resolved = repository_named(installations, &repository)
+            .or_else(|| {
+                let path = url.strip_prefix("https://github.com/")?;
+                let mut parts = path.split('/');
+                let name = format!("{}/{}", parts.next()?, parts.next()?);
+                repository_named(installations, &name)
+            })
+            .map(|found| found.id);
+        let old_key = Key::of(Table::Main, item)?;
+        let mut tx = worker.tx(tenant_id);
+        tx.get_item(&old_key).await?;
+        tx.delete(&old_key)?;
+        match resolved {
+            Some(repository_id) => {
+                let output = Output {
+                    id: r.uuid("id")?,
+                    tenant_id,
+                    task_id: r.uuid("task_id")?,
+                    skill_run_id: r.uuid("skill_run_id")?,
+                    skill_run_number: r.i32("skill_run_number")?,
+                    kind: r.s("output_kind")?,
+                    repository: repository.clone(),
+                    repository_id,
+                    number: r.n("number")?,
+                    url: url.clone(),
+                    state: r.opt_s("state")?,
+                    created_at: r.time("created_at")?,
+                    updated_at: r.time("updated_at")?,
+                };
+                if tx.get::<Output>(&output.key()).await?.is_none() {
+                    tx.insert(&output)?;
                 }
-                Err(error) => return Err(error),
-            };
-            report.lines.push(format!(
-                "tenant {tenant_id} config {config_id}: {name} -> {} ({}), {outcome}",
-                found.full_name, found.id
-            ));
+                report.lines.push(format!(
+                    "tenant {tenant_id} output {url}: {repository} -> {repository_id}"
+                ));
+            }
+            None => report.lines.push(format!(
+                "tenant {tenant_id} output {url}: {repository} is not in the installation lists; deleted"
+            )),
         }
-        None => {
-            let reason =
-                format!("{name} is not a repository of the tenant's GitHub App installation");
-            disable_config(&worker.store, tenant_id, config_id, &reason, now).await?;
-            report.lines.push(format!(
-                "tenant {tenant_id} config {config_id}: {name} disabled: {reason}"
-            ));
-        }
+        tx.commit().await?;
     }
     Ok(())
 }

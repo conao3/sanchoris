@@ -156,23 +156,63 @@ pub fn revision_sha_key(tenant_id: Uuid, config_id: Uuid, sha: &str) -> Key {
     Key::main(config_pk(tenant_id, config_id), format!("REVSHA#{sha}"))
 }
 
-pub fn project_key(tenant_id: Uuid, config_id: Uuid, name: &str) -> Key {
-    Key::main(config_pk(tenant_id, config_id), format!("PROJECT#{name}"))
+pub const DEFINITIONS_PREFIX: &str = "DEF#";
+
+pub fn definitions_prefix(revision_id: Uuid) -> String {
+    format!("{DEFINITIONS_PREFIX}{revision_id}#")
 }
 
-pub fn repository_key(tenant_id: Uuid, config_id: Uuid, project: &str, name: &str) -> Key {
+pub fn projects_prefix(revision_id: Uuid) -> String {
+    format!("{}PROJECT#", definitions_prefix(revision_id))
+}
+
+pub fn project_repositories_prefix(revision_id: Uuid, project: &str) -> String {
+    format!("{}{project}#REPO#", projects_prefix(revision_id))
+}
+
+pub fn sessions_prefix(revision_id: Uuid) -> String {
+    format!("{}SESSION#", definitions_prefix(revision_id))
+}
+
+pub fn skills_prefix(revision_id: Uuid) -> String {
+    format!("{}SKILL#", definitions_prefix(revision_id))
+}
+
+pub fn project_key(tenant_id: Uuid, config_id: Uuid, revision_id: Uuid, name: &str) -> Key {
     Key::main(
         config_pk(tenant_id, config_id),
-        format!("PROJECT#{project}#REPO#{name}"),
+        format!("{}{name}", projects_prefix(revision_id)),
     )
 }
 
-pub fn session_key(tenant_id: Uuid, config_id: Uuid, name: &str) -> Key {
-    Key::main(config_pk(tenant_id, config_id), format!("SESSION#{name}"))
+pub fn repository_key(
+    tenant_id: Uuid,
+    config_id: Uuid,
+    revision_id: Uuid,
+    project: &str,
+    name: &str,
+) -> Key {
+    Key::main(
+        config_pk(tenant_id, config_id),
+        format!(
+            "{}{name}",
+            project_repositories_prefix(revision_id, project)
+        ),
+    )
 }
 
-pub fn skill_key(tenant_id: Uuid, config_id: Uuid, name: &str) -> Key {
-    Key::main(config_pk(tenant_id, config_id), format!("SKILL#{name}"))
+pub fn session_key(tenant_id: Uuid, config_id: Uuid, revision_id: Uuid, name: &str) -> Key {
+    Key::main(
+        config_pk(tenant_id, config_id),
+        format!("{}{name}", sessions_prefix(revision_id)),
+    )
+}
+
+pub fn skill_key(tenant_id: Uuid, config_id: Uuid, revision_id: Uuid, name: &str) -> Key {
+    Key::main(
+        config_pk(tenant_id, config_id),
+        format!("{}{name}", skills_prefix(revision_id)),
+    )
 }
 
 pub fn trigger_key(tenant_id: Uuid, config_id: Uuid, name: &str) -> Key {
@@ -257,13 +297,13 @@ pub fn output_key(
     task_id: Uuid,
     number: i32,
     kind: &str,
-    repository: &str,
+    repository_id: i64,
     output_number: i64,
 ) -> Key {
     Key::main(
         task_pk(tenant_id, task_id),
         format!(
-            "{}#OUT#{kind}#{repository}#{}",
+            "{}#OUT#{kind}#{repository_id}#{}",
             skill_run_prefix(number),
             padded(output_number)
         ),

@@ -125,12 +125,28 @@ impl FakeGitHub {
         self.state.lock().unwrap().check_script = results.iter().copied().collect();
     }
 
+    pub fn set_parent_ref(
+        &self,
+        repo: &str,
+        number: i64,
+        parent: sanchoris_worker::ports::IssueRef,
+    ) {
+        self.state.lock().unwrap().relations.insert(
+            (repo.to_string(), number),
+            IssueRelations {
+                parent: Some(parent),
+                blocked_by: Vec::new(),
+            },
+        );
+    }
+
     pub fn set_parent(&self, number: i64, parent: Option<i64>) {
         self.state.lock().unwrap().relations.insert(
             (REPO.to_string(), number),
             IssueRelations {
                 parent: parent.map(|n| sanchoris_worker::ports::IssueRef {
                     repository: REPO.into(),
+                    repository_id: SHOP_WEB_ID,
                     number: n,
                 }),
                 blocked_by: Vec::new(),

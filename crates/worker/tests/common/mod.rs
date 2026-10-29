@@ -448,11 +448,26 @@ pub struct TaskView {
     pub run_id: Option<Uuid>,
 }
 
+pub fn stable_task_name(name: &str) -> String {
+    [
+        (REPO, SHOP_WEB_ID),
+        ("acme/shop-api", SHOP_API_ID),
+        ("acme/idea", IDEA_ID),
+    ]
+    .iter()
+    .find_map(|(repo, id)| {
+        name.strip_prefix(repo)
+            .filter(|rest| rest.starts_with(['#', '@']))
+            .map(|rest| sanchoris_core::items::github_task_name(*id, rest))
+    })
+    .unwrap_or_else(|| name.to_string())
+}
+
 pub async fn task_id_by_name(store: &Store, tenant_id: Uuid, name: &str) -> Option<Uuid> {
     store
         .query_index::<TaskName>(
             Index::Gsi1,
-            &keys::task_name_index(tenant_id, name),
+            &keys::task_name_index(tenant_id, &stable_task_name(name)),
             SortKey::All,
         )
         .await

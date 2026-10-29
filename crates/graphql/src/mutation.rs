@@ -993,6 +993,13 @@ impl MutationRoot {
             let mut tx = tx(ctx, scope.tenant_id);
             let mut trigger = tx.require::<TriggerItem>(&location.target).await?;
             trigger.state = state.as_db().to_string();
+            if let Some(spec) = trigger
+                .next
+                .as_mut()
+                .and_then(|next| next.definition.as_mut())
+            {
+                spec.state = state.as_db().to_string();
+            }
             schedule_trigger(&mut tx, &mut trigger, now(ctx)).map_err(worker_error)?;
             tx.put(&trigger)?;
             let (action, verb) = match state {

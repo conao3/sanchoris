@@ -11,8 +11,8 @@ use sanchoris_core::db::{
 };
 use sanchoris_core::item::{Entity, Key, format_time};
 use sanchoris_core::items::{
-    CONFIG_DISABLED, Config, ConfigRevision, Credential, GitHubRepository, Guard, Project,
-    Repository, SessionDef, SkillDef, Task, Trigger,
+    CONFIG_DISABLED, Config, ConfigRevision, Credential, GitHubRepository, Guard, NextTrigger,
+    Project, Repository, SessionDef, SkillDef, Task, Trigger, TriggerSpec,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
@@ -228,8 +228,11 @@ async fn sync_active(worker: &Worker, tenant_id: Uuid, config_id: Uuid) -> Resul
     tx.put(&config)?;
     worker.faults.check("config_sync.before_commit")?;
     tx.commit().await?;
-    if revision.validation_status != "valid" || config.active_revision_id == Some(revision.id) {
+    if revision.validation_status != "valid" {
         return Ok(());
+    }
+    if config.active_revision_id == Some(revision.id) {
+        return settle(worker, tenant_id, config_id, now).await;
     }
     let parsed = revision.parsed.clone().ok_or_else(|| {
         WorkerError::Invalid(format!(
@@ -249,7 +252,6 @@ async fn sync_active(worker: &Worker, tenant_id: Uuid, config_id: Uuid) -> Resul
         revision.id,
         &repository,
         &repositories,
-        now,
     )
     .await?;
     let mut tx = worker.tx(tenant_id);
@@ -285,7 +287,7 @@ async fn sync_active(worker: &Worker, tenant_id: Uuid, config_id: Uuid) -> Resul
     )
     .await?;
     tx.commit().await?;
-    Ok(())
+    settle(worker, tenant_id, config_id, now).await
 }
 
 pub async fn reactivate(
@@ -319,7 +321,6 @@ pub async fn reactivate(
         revision_id,
         &repository,
         &repositories,
-        worker.now(),
     )
     .await?;
     let mut tx = worker.tx(tenant_id);
@@ -330,7 +331,7 @@ pub async fn reactivate(
     config.updated_at = worker.now();
     tx.put(&config)?;
     tx.commit().await?;
-    Ok(())
+    settle(worker, tenant_id, config_id, worker.now()).await
 }
 
 async fn retrying<T, F, Fut>(mut operation: F) -> Result<T>
@@ -427,35 +428,7 @@ async fn retire_definitions(
         })
         .await?;
     }
-    let mut definitions: Vec<Key> = Vec::new();
-    definitions.extend(
-        store
-            .query::<SkillDef>(&pk, "SKILL#")
-            .await?
-            .iter()
-            .map(Entity::key),
-    );
-    definitions.extend(
-        store
-            .query::<SessionDef>(&pk, "SESSION#")
-            .await?
-            .iter()
-            .map(Entity::key),
-    );
-    definitions.extend(
-        store
-            .query::<Repository>(&pk, "PROJECT#")
-            .await?
-            .iter()
-            .map(Entity::key),
-    );
-    definitions.extend(
-        store
-            .query::<Project>(&pk, "PROJECT#")
-            .await?
-            .iter()
-            .map(Entity::key),
-    );
+    let definitions = all_definitions(store, &pk).await?;
     for chunk in definitions.chunks(BATCH_WRITES) {
         let mut tx = store.tx(tenant_id);
         for key in chunk {
@@ -540,7 +513,10 @@ pub async fn rename_repository(
         })
         .await?;
         let pk = keys::config_pk(tenant_id, listed.id);
-        for row in store.query::<Repository>(&pk, "PROJECT#").await? {
+        for row in store
+            .query::<Repository>(&pk, keys::DEFINITIONS_PREFIX)
+            .await?
+        {
             if row.github_repository_id != repository.id || row.full_name == repository.full_name {
                 continue;
             }
@@ -730,10 +706,14 @@ async fn activate(
     revision_id: Uuid,
     repository: &ConfigRepository,
     repositories: &BTreeMap<String, GitHubRepository>,
-    now: DateTime<Utc>,
 ) -> Result<()> {
     let pk = keys::config_pk(tenant_id, config_id);
     let config = &repository.config;
+    let previous_revision = worker
+        .store
+        .get::<Config>(&keys::config_key(tenant_id, config_id))
+        .await?
+        .and_then(|c| c.active_revision_id);
     let mut batches = Batches::new(worker, tenant_id);
 
     for (name, project) in &config.projects {
@@ -760,6 +740,17 @@ async fn activate(
                         repo.repo
                     ))
                 })?;
+            let previous = match previous_revision {
+                Some(previous) => {
+                    worker
+                        .store
+                        .get::<Repository>(&keys::repository_key(
+                            tenant_id, config_id, previous, name, repo_name,
+                        ))
+                        .await?
+                }
+                None => None,
+            };
             upsert(
                 &mut batches,
                 &Repository {
@@ -770,6 +761,7 @@ async fn activate(
                     ),
                     tenant_id,
                     config_id,
+                    config_revision_id: revision_id,
                     project: name.clone(),
                     name: repo_name.clone(),
                     url: repo.repo.clone(),
@@ -785,8 +777,8 @@ async fn activate(
                         .as_ref()
                         .map(serde_json::to_value)
                         .transpose()?,
-                    prebuild_status: None,
-                    prebuild_at: None,
+                    prebuild_status: previous.as_ref().and_then(|r| r.prebuild_status.clone()),
+                    prebuild_at: previous.as_ref().and_then(|r| r.prebuild_at),
                 },
             )
             .await?;
@@ -850,21 +842,13 @@ async fn activate(
             }
             TriggerSource::ScheduleExpression(expression) => (None, Some(expression.clone())),
         };
-        let key = keys::trigger_key(tenant_id, config_id, name);
-        let existing = tx.get::<Trigger>(&key).await?;
-        let state = if trigger.state == TriggerState::Enabled {
-            "ENABLED"
-        } else {
-            "DISABLED"
-        };
-        let id = keys::trigger_id(config_id, name);
-        let mut next = Trigger {
-            id,
-            tenant_id,
-            config_id,
-            config_revision_id: revision_id,
-            name: name.clone(),
-            state: state.to_string(),
+        let spec = TriggerSpec {
+            state: if trigger.state == TriggerState::Enabled {
+                "ENABLED"
+            } else {
+                "DISABLED"
+            }
+            .to_string(),
             event_pattern,
             schedule_expression,
             input_transformer: trigger
@@ -873,70 +857,143 @@ async fn activate(
                 .map(serde_json::to_value)
                 .transpose()?,
             start: serde_json::to_value(&trigger.start)?,
-            removed_at: None,
-            next_run_at: existing.as_ref().and_then(|t| t.next_run_at),
-            schedule_message_id: existing.as_ref().and_then(|t| t.schedule_message_id),
         };
-        let reschedule = match &existing {
-            None => true,
-            Some(previous) => {
-                previous.is_active() != next.is_active()
-                    || previous.schedule_expression != next.schedule_expression
-                    || (next.is_active()
-                        && next.schedule_expression.is_some()
-                        && next.schedule_message_id.is_none())
+        let key = keys::trigger_key(tenant_id, config_id, name);
+        match tx.get::<Trigger>(&key).await? {
+            Some(mut existing) => {
+                existing.next = Some(NextTrigger {
+                    config_revision_id: revision_id,
+                    definition: Some(spec),
+                });
+                tx.put(&existing)?;
             }
-        };
-        if reschedule {
-            schedule_trigger(tx, &mut next, now)?;
-        }
-        match existing {
-            Some(_) => tx.put(&next)?,
             None => {
-                tx.insert(&next)?;
+                let id = keys::trigger_id(config_id, name);
+                tx.insert(&Trigger {
+                    id,
+                    tenant_id,
+                    config_id,
+                    config_revision_id: revision_id,
+                    name: name.clone(),
+                    state: spec.state,
+                    event_pattern: spec.event_pattern,
+                    schedule_expression: spec.schedule_expression,
+                    input_transformer: spec.input_transformer,
+                    start: spec.start,
+                    removed_at: None,
+                    next_run_at: None,
+                    schedule_message_id: None,
+                    next: None,
+                })?;
                 insert_ref(tx, id, REF_TRIGGER, key, Some(config_id))?;
             }
         }
     }
 
-    let store = &worker.store;
-    for listed in store.query::<Trigger>(&pk, "TRIGGER#").await? {
-        if config.triggers.contains_key(&listed.name) || listed.removed_at.is_some() {
+    for listed in worker.store.query::<Trigger>(&pk, "TRIGGER#").await? {
+        if config.triggers.contains_key(&listed.name) {
             continue;
         }
-        let tx = batches.room(TRIGGER_WRITES).await?;
+        let tx = batches.room(1).await?;
         let Some(mut previous) = tx.get::<Trigger>(&listed.key()).await? else {
             continue;
         };
-        previous.removed_at = Some(now);
-        schedule_trigger(tx, &mut previous, now)?;
+        previous.next = Some(NextTrigger {
+            config_revision_id: revision_id,
+            definition: None,
+        });
         tx.put(&previous)?;
     }
-    for skill in store.query::<SkillDef>(&pk, "SKILL#").await? {
-        if !repository.skills.contains_key(&skill.name) {
-            delete(&mut batches, &skill.key()).await?;
+    batches.finish().await
+}
+
+pub async fn settle(
+    worker: &Worker,
+    tenant_id: Uuid,
+    config_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let Some(config) = worker
+        .store
+        .get::<Config>(&keys::config_key(tenant_id, config_id))
+        .await?
+    else {
+        return Ok(());
+    };
+    let Some(active) = config.active_revision_id.filter(|_| config.is_active()) else {
+        return Ok(());
+    };
+    let pk = keys::config_pk(tenant_id, config_id);
+    let store = &worker.store;
+    let mut batches = Batches::new(worker, tenant_id);
+    for listed in store.query::<Trigger>(&pk, "TRIGGER#").await? {
+        let settled = match listed.in_revision(Some(active)) {
+            Some(view) => view,
+            None if listed.removed_at.is_some() && listed.next.is_none() => continue,
+            None => Trigger {
+                removed_at: listed.removed_at.or(Some(now)),
+                next: None,
+                ..listed.clone()
+            },
+        };
+        let reschedule = listed.is_active() != settled.is_active()
+            || listed.schedule_expression != settled.schedule_expression
+            || (settled.is_active()
+                && settled.schedule_expression.is_some()
+                && settled.schedule_message_id.is_none());
+        if !reschedule && settled == listed {
+            continue;
         }
+        let tx = batches.room(TRIGGER_WRITES).await?;
+        let Some(current) = tx.get::<Trigger>(&listed.key()).await? else {
+            continue;
+        };
+        if current != listed {
+            continue;
+        }
+        let mut settled = settled;
+        if reschedule {
+            schedule_trigger(tx, &mut settled, now)?;
+        }
+        tx.put(&settled)?;
     }
-    for session in store.query::<SessionDef>(&pk, "SESSION#").await? {
-        if !config.sessions.contains_key(&session.name) {
-            delete(&mut batches, &session.key()).await?;
-        }
-    }
-    for repo in store.query::<Repository>(&pk, "PROJECT#").await? {
-        let keep = config
-            .projects
-            .get(&repo.project)
-            .is_some_and(|p| p.repos.contains_key(&repo.name));
-        if !keep {
-            delete(&mut batches, &repo.key()).await?;
-        }
-    }
-    for project in store.query::<Project>(&pk, "PROJECT#").await? {
-        if !config.projects.contains_key(&project.name) {
-            delete(&mut batches, &project.key()).await?;
-        }
+    for key in stale_definitions(store, &pk, active).await? {
+        delete(&mut batches, &key).await?;
     }
     batches.finish().await
+}
+
+async fn definition_keys<E: Entity>(
+    store: &Store,
+    pk: &str,
+    keep: impl Fn(&E) -> bool,
+) -> Result<Vec<Key>> {
+    Ok(store
+        .query::<E>(pk, keys::DEFINITIONS_PREFIX)
+        .await?
+        .iter()
+        .filter(|item| !keep(item))
+        .map(Entity::key)
+        .collect())
+}
+
+async fn stale_definitions(store: &Store, pk: &str, active: Uuid) -> Result<Vec<Key>> {
+    let mut stale =
+        definition_keys::<Repository>(store, pk, |r| r.config_revision_id == active).await?;
+    stale.extend(definition_keys::<Project>(store, pk, |p| p.config_revision_id == active).await?);
+    stale.extend(
+        definition_keys::<SessionDef>(store, pk, |s| s.config_revision_id == active).await?,
+    );
+    stale.extend(definition_keys::<SkillDef>(store, pk, |s| s.config_revision_id == active).await?);
+    Ok(stale)
+}
+
+async fn all_definitions(store: &Store, pk: &str) -> Result<Vec<Key>> {
+    let mut all = definition_keys::<Repository>(store, pk, |_| false).await?;
+    all.extend(definition_keys::<Project>(store, pk, |_| false).await?);
+    all.extend(definition_keys::<SessionDef>(store, pk, |_| false).await?);
+    all.extend(definition_keys::<SkillDef>(store, pk, |_| false).await?);
+    Ok(all)
 }
 
 pub fn trigger_definition(

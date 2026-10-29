@@ -154,6 +154,7 @@ fn comment(value: &Value) -> Result<IssueComment, GitHubError> {
 fn issue_ref(value: &Value) -> Result<IssueRef, GitHubError> {
     Ok(IssueRef {
         repository: string(value, "/repository/nameWithOwner")?,
+        repository_id: integer(value, "/repository/databaseId")?,
         number: integer(value, "/number")?,
     })
 }
@@ -632,7 +633,7 @@ impl GitHubClient for GitHubApi {
     }
 }
 
-const RELATIONS_QUERY: &str = "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { parent { number repository { nameWithOwner } } blockedBy(first: 50) { nodes { number repository { nameWithOwner } } } } } }";
+const RELATIONS_QUERY: &str = "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { parent { number repository { nameWithOwner databaseId } } blockedBy(first: 50) { nodes { number repository { nameWithOwner databaseId } } } } } }";
 
 #[async_trait]
 impl GitHubReader for GitHubApi {

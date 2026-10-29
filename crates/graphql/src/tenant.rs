@@ -79,8 +79,14 @@ impl Tenant {
                 .query::<TriggerItem>(&pk, "TRIGGER#")
                 .await?
                 .iter()
-                .any(TriggerItem::is_active);
-            project_created |= !tx.query::<ProjectItem>(&pk, "PROJECT#").await?.is_empty();
+                .filter_map(|trigger| trigger.in_revision(config.active_revision_id))
+                .any(|trigger| trigger.is_active());
+            if let Some(revision_id) = config.active_revision_id {
+                project_created |= !tx
+                    .query::<ProjectItem>(&pk, &keys::projects_prefix(revision_id))
+                    .await?
+                    .is_empty();
+            }
         }
         let first_task_started = !tx
             .list::<TaskItem>(
@@ -706,4 +712,34 @@ impl Operator {
         }
         Ok(i32::try_from(cents / 100)?)
     }
+}
+
+pub(crate) async fn tenant_repositories(
+    ctx: &Context<'_>,
+    tenant_id: Uuid,
+) -> Result<Vec<items::GitHubRepository>> {
+    let mut repositories = Vec::new();
+    for row in tx(ctx, tenant_id)
+        .query::<IntegrationItem>(&keys::tenant_pk(tenant_id), "INTEG#")
+        .await?
+        .iter()
+        .filter(|row| row.kind == "github_installation")
+    {
+        repositories.extend(github_repositories(&row.details)?);
+    }
+    Ok(repositories)
+}
+
+pub(crate) fn current_name(
+    repositories: &[items::GitHubRepository],
+    repository_id: i64,
+    stored: &str,
+) -> String {
+    repositories
+        .iter()
+        .find(|repository| repository.id == repository_id)
+        .map_or_else(
+            || stored.to_string(),
+            |repository| repository.full_name.clone(),
+        )
 }

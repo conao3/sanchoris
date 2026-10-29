@@ -31,8 +31,8 @@ name = "relay"
 path = "src/bin/relay.rs"
 
 [[bin]]
-name = "sanchoris-backfill-repository-ids"
-path = "src/bin/backfill_repository_ids.rs"
+name = "sanchoris-backfill-stable-keys"
+path = "src/bin/backfill_stable_keys.rs"
 
 [dependencies]
 sanchoris-config.workspace = true

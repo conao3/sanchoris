@@ -2,8 +2,8 @@ use crate::common;
 
 use common::{REPO, World};
 use sanchoris_core::items::{
-    ConfigRevision, InboundEvent, Pending, SkillDef, Task, Tenant, Trigger, TriggerEvent,
-    TriggerRate,
+    ConfigRevision, InboundEvent, Pending, SessionDef, SkillDef, Task, Tenant, Trigger,
+    TriggerEvent, TriggerRate,
 };
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
@@ -14,7 +14,8 @@ use serde_json::json;
 
 const START_TEXT: &str = "[sanchoris] Trigger labeled-issue started this task: Fix flaky checkout test (acme/shop-web#35).\n\
 Instruction: Resolve issue 35 in acme/shop-web: Fix flaky checkout test. Write tests for the change.\n\
-Skills: open-pr-green-ci (required). Run it with `sanchoris skill run open-pr-green-ci`.";
+Skills: open-pr-green-ci (required). Run it with `sanchoris skill run open-pr-green-ci`.\n\
+Inputs of open-pr-green-ci: Issue (number) = 35, Repo (string) = \"acme/shop-web\", Repos (array) = [\"acme/shop-api\",\"acme/shop-web\"]. Run it with `sanchoris skill run open-pr-green-ci --input '{\"Issue\":35,\"Repo\":\"acme/shop-web\",\"Repos\":[\"acme/shop-api\",\"acme/shop-web\"]}'`.";
 
 async fn trigger(world: &World, name: &str) -> Trigger {
     world
@@ -466,7 +467,7 @@ async fn comments_need_the_commenter_as_actor() {
             .into_iter()
             .map(|t| t.name)
             .collect::<Vec<_>>(),
-        vec![format!("{REPO}#44")]
+        vec![common::stable_task_name(&format!("{REPO}#44"))]
     );
 }
 
@@ -832,4 +833,100 @@ async fn large_configs_activate_in_batches_and_audit_the_commit() {
         .await;
     world.worker.settle().await.unwrap();
     assert_eq!(world.task(&format!("{REPO}#90")).await.status, "RUNNING");
+}
+
+#[tokio::test]
+async fn readers_see_the_previous_revision_until_an_activation_switches() {
+    let world = World::new("pro").await;
+    let previous = active_revision(&world).await;
+    let extra = (0..150)
+        .map(|i| {
+            format!(
+                "  zz-{i:03}:\n    Worker: {{ Agent: claude, Model: claude-sonnet-5-5, Credential: acme-claude-team }}\n    Repos: [acme/idea]\n    GitHub: {{ Repos: [acme/idea], Permissions: {{ contents: read }} }}\n    Network: {{ Allow: [github.com] }}\n    UsageLimit: {{ Resume: auto }}\n    Workspace: {{ Compute: standard, Architecture: arm64, IdleSeconds: 900 }}\n"
+            )
+        })
+        .collect::<String>();
+    let changed = common::CONFIG_YAML
+        .replace(
+            "Network: { Allow: [github.com, registry.npmjs.org] }",
+            "Network: { Allow: [github.com, registry.npmjs.org, crates.io] }",
+        )
+        .replace("Write tests for the change.", "Keep the diff small.")
+        .replacen("Triggers:\n", &format!("{extra}Triggers:\n"), 1);
+    push_config(&world, "config-next", changed);
+    world
+        .worker
+        .worker
+        .faults
+        .arm("config_sync.between_batches");
+    assert!(sync(&world).await.is_err());
+    let next = stored_revision(&world, "config-next").await;
+    assert_eq!(active_revision(&world).await, previous);
+    assert!(
+        world
+            .dynamo
+            .all::<SessionDef>()
+            .await
+            .iter()
+            .any(|s| s.config_revision_id == next.id && s.name == "shop"),
+        "the activation staged the new shop session before it stopped"
+    );
+
+    world
+        .label_issue("delivery-91", 91, "During the activation", "mika-dev")
+        .await;
+    world.worker.settle().await.unwrap();
+    let during = world.task(&format!("{REPO}#91")).await;
+    let task = world
+        .store
+        .get::<Task>(&keys::task_key(world.tenant(), during.id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(Some(task.config_revision_id), previous);
+    assert_eq!(
+        task.definition["Session"]["Definition"]["Network"]["Allow"],
+        json!(["github.com", "registry.npmjs.org"])
+    );
+    assert!(
+        task.start_payload.unwrap()["instruction"]
+            .as_str()
+            .unwrap()
+            .contains("Write tests for the change.")
+    );
+
+    sync(&world).await.unwrap();
+    assert_eq!(active_revision(&world).await, Some(next.id));
+    let sessions = world.dynamo.all::<SessionDef>().await;
+    assert!(sessions.iter().all(|s| s.config_revision_id == next.id));
+    assert!(
+        world
+            .dynamo
+            .all::<Trigger>()
+            .await
+            .iter()
+            .all(|t| t.next.is_none())
+    );
+    world
+        .label_issue("delivery-92", 92, "After the activation", "mika-dev")
+        .await;
+    world.worker.settle().await.unwrap();
+    let after = world.task(&format!("{REPO}#92")).await;
+    let task = world
+        .store
+        .get::<Task>(&keys::task_key(world.tenant(), after.id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.config_revision_id, next.id);
+    assert_eq!(
+        task.definition["Session"]["Definition"]["Network"]["Allow"],
+        json!(["github.com", "registry.npmjs.org", "crates.io"])
+    );
+    assert!(
+        task.start_payload.unwrap()["instruction"]
+            .as_str()
+            .unwrap()
+            .contains("Keep the diff small.")
+    );
 }

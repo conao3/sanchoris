@@ -26,6 +26,7 @@ use crate::enums::{
 use crate::error::{not_found, parse_id};
 use crate::scalars::{Timestamp, ts, ts_opt};
 use crate::skill::{Skill, SkillRun};
+use crate::tenant::{current_name, tenant_repositories};
 use crate::trigger::{TaskLimits, Trigger, TriggerEvent, sender_login};
 
 #[derive(InputObject, Default)]
@@ -249,8 +250,10 @@ impl Task {
         ID(self.row.id.to_string())
     }
 
-    async fn name(&self) -> &str {
-        &self.row.name
+    async fn name(&self, ctx: &Context<'_>) -> Result<String> {
+        Ok(self
+            .row
+            .display_name(&tenant_repositories(ctx, self.scope.tenant_id).await?))
     }
 
     async fn title(&self) -> &str {
@@ -427,7 +430,12 @@ impl Task {
         let Some(event) = self.trigger_event(ctx).await? else {
             return Ok(None);
         };
-        Ok(IssueRef::from_detail(self.scope, &event.event()["detail"]))
+        let repositories = tenant_repositories(ctx, self.scope.tenant_id).await?;
+        Ok(IssueRef::from_detail(
+            self.scope,
+            &event.event()["detail"],
+            &repositories,
+        ))
     }
 
     async fn channel(&self, ctx: &Context<'_>) -> Result<Option<Channel>> {
@@ -611,17 +619,24 @@ impl Channel {
 pub(crate) struct IssueRef {
     scope: Scope,
     repository: String,
+    repository_id: i64,
     number: i32,
     title: String,
     url: String,
 }
 
 impl IssueRef {
-    fn from_detail(scope: Scope, detail: &Value) -> Option<Self> {
+    fn from_detail(
+        scope: Scope,
+        detail: &Value,
+        repositories: &[sanchoris_core::items::GitHubRepository],
+    ) -> Option<Self> {
         let issue = detail.get("issue")?;
+        let repository_id = detail["repository_id"].as_i64()?;
         Some(Self {
             scope,
-            repository: detail["repository"].as_str()?.to_string(),
+            repository: current_name(repositories, repository_id, detail["repository"].as_str()?),
+            repository_id,
             number: i32::try_from(issue["number"].as_i64()?).ok()?,
             title: issue["title"].as_str()?.to_string(),
             url: issue["url"].as_str()?.to_string(),
@@ -651,7 +666,10 @@ impl IssueRef {
         Task::by_name(
             ctx,
             self.scope,
-            &format!("{}#{}", self.repository, self.number),
+            &sanchoris_core::items::github_task_name(
+                self.repository_id,
+                &format!("#{}", self.number),
+            ),
         )
         .await
     }
@@ -1110,8 +1128,12 @@ impl Output {
         OutputKind::from_db(&self.row.kind)
     }
 
-    async fn repository(&self) -> &str {
-        &self.row.repository
+    async fn repository(&self, ctx: &Context<'_>) -> Result<String> {
+        Ok(current_name(
+            &tenant_repositories(ctx, self.row.tenant_id).await?,
+            self.row.repository_id,
+            &self.row.repository,
+        ))
     }
 
     async fn number(&self) -> Result<i32> {

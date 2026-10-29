@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::error::{Result, WorkerError};
-use crate::ports::{CheckRun, InvocationContext};
+use crate::ports::{CheckRun, InvocationContext, repository_named};
 use crate::resources::param_repos;
 use crate::{Worker, installation_for, installations};
 
@@ -191,11 +191,23 @@ async fn record_outputs(
         )],
         _ => return Ok(()),
     };
+    if items.is_empty() {
+        return Ok(());
+    }
+    let installations = installations(tx).await?;
     for (kind, repo, number, url) in items {
         let (Some(repo), Some(number), Some(url)) = (repo.as_str(), number.as_i64(), url.as_str())
         else {
             continue;
         };
+        let repository_id = repository_named(&installations, repo)
+            .or_else(|| repository_named(&installations, &url_repository(url)?))
+            .map(|repository| repository.id)
+            .ok_or_else(|| {
+                WorkerError::Invalid(format!(
+                    "{repo} is not a repository of the tenant's GitHub App installation"
+                ))
+            })?;
         let output = Output {
             id: Uuid::new_v4(),
             tenant_id: tx.tenant_id(),
@@ -204,6 +216,7 @@ async fn record_outputs(
             skill_run_number: item.skill_run_number,
             kind: kind.to_string(),
             repository: repo.to_string(),
+            repository_id,
             number,
             url: url.to_string(),
             state: (kind == "pull_request").then(|| "open".to_string()),
@@ -215,6 +228,12 @@ async fn record_outputs(
         }
     }
     Ok(())
+}
+
+fn url_repository(url: &str) -> Option<String> {
+    let path = url.strip_prefix("https://github.com/")?;
+    let mut parts = path.split('/');
+    Some(format!("{}/{}", parts.next()?, parts.next()?))
 }
 
 async fn invocation_context(
@@ -229,10 +248,15 @@ async fn invocation_context(
     if task.status.is_terminal() {
         return Ok(None);
     }
+    let installations = installations(tx).await?;
+    let repositories = installations
+        .iter()
+        .flat_map(|installation| installation.repositories.clone())
+        .collect::<Vec<_>>();
     Ok(Some(InvocationContext {
         tenant_id: tx.tenant_id(),
         task_id: locked.meta.task_id,
-        task_name: task.name,
+        task_name: task.display_name(&repositories),
         task_title: task.title,
         skill_run_id,
         skill_run_number: locked.meta.number,
@@ -243,7 +267,7 @@ async fn invocation_context(
             .map(|c| c.state_name.clone())
             .unwrap_or_default(),
         branch: task_branch(locked.meta.task_id),
-        installations: installations(tx).await?,
+        installations,
     }))
 }
 
@@ -339,6 +363,22 @@ async fn invoke_resource(
                 .task_token
                 .clone()
                 .ok_or_else(|| WorkerError::Invalid("checks needs a task token".into()))?;
+            let repository_ids = match repos
+                .iter()
+                .map(|repo| {
+                    repository_named(&context.installations, repo)
+                        .map(|repository| repository.id)
+                        .ok_or_else(|| {
+                            format!(
+                                "{repo} is not a repository of the tenant's GitHub App installation"
+                            )
+                        })
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()
+            {
+                Ok(ids) => ids,
+                Err(cause) => return Ok(Some(failed("Resource.InvalidParameters", cause))),
+            };
             let key = keys::check_wait_key(tenant_id, item.task_id, item.skill_run_number, &token);
             if tx.get::<CheckWait>(&key).await?.is_none() {
                 let id = Uuid::new_v4();
@@ -361,6 +401,7 @@ async fn invoke_resource(
                     wait_id: id,
                     task_id: item.task_id,
                     repos: repos.clone(),
+                    repository_ids,
                 })?;
                 insert_ref(tx, id, REF_CHECK_WAIT, key, Some(item.task_id))?;
                 tx.emit(Job::CheckPoll {

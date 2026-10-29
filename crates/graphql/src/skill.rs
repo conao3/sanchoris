@@ -13,7 +13,7 @@ use sanchoris_core::store::{Index, Listing, SortKey};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::config::{ChangeRequest, Config, config_rows, edit_url};
+use crate::config::{ChangeRequest, Config, active_revision, config_rows, edit_url};
 use crate::context::{Scope, now, tx};
 use crate::enums::{
     ConfigObjectKind, SkillKind, SkillRunStatus, StateEntryStatus, StateType, TransitionKind,
@@ -73,11 +73,17 @@ impl Skill {
             if config_id.is_some_and(|id| id != config.id) {
                 continue;
             }
+            let Some(revision_id) = config.active_revision_id else {
+                continue;
+            };
             rows.extend(
-                tx.query::<SkillDef>(&keys::config_pk(scope.tenant_id, config.id), "SKILL#")
-                    .await?
-                    .into_iter()
-                    .filter(|row| names.is_none_or(|names| names.contains(&row.name))),
+                tx.query::<SkillDef>(
+                    &keys::config_pk(scope.tenant_id, config.id),
+                    &keys::skills_prefix(revision_id),
+                )
+                .await?
+                .into_iter()
+                .filter(|row| names.is_none_or(|names| names.contains(&row.name))),
             );
         }
         rows.sort_by(|a, b| a.name.cmp(&b.name));
@@ -128,10 +134,20 @@ impl Skill {
         name: &str,
         definition: &Value,
     ) -> Result<Self> {
-        if let Some(row) = tx(ctx, scope.tenant_id)
-            .get::<SkillDef>(&keys::skill_key(scope.tenant_id, config_id, name))
-            .await?
-        {
+        let row = match active_revision(ctx, scope, config_id).await? {
+            Some(revision_id) => {
+                tx(ctx, scope.tenant_id)
+                    .get::<SkillDef>(&keys::skill_key(
+                        scope.tenant_id,
+                        config_id,
+                        revision_id,
+                        name,
+                    ))
+                    .await?
+            }
+            None => None,
+        };
+        if let Some(row) = row {
             return Self::from_row(scope, row);
         }
         Ok(Self {

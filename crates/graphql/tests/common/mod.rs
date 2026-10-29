@@ -654,6 +654,7 @@ fn trigger_item(
         removed_at: None,
         next_run_at,
         schedule_message_id: next_run_at.map(|_| Uuid::new_v4()),
+        next: None,
     };
     tx.insert(&item).unwrap();
     insert_ref(tx, id, REF_TRIGGER, item.key(), Some(config_id)).unwrap();
@@ -983,6 +984,7 @@ impl World {
                 id: Uuid::new_v4(),
                 tenant_id: acme,
                 config_id,
+                config_revision_id: revision_id,
                 project: "shop".into(),
                 name: name.into(),
                 url: url.into(),
@@ -1137,6 +1139,7 @@ impl World {
             "detail-type": "Issue Labeled",
             "detail": {
                 "repository": "acme/shop-web",
+                "repository_id": repository_id("acme/shop-web"),
                 "installation": { "id": 1001 },
                 "issue": { "number": 35, "title": "Fix flaky checkout test", "url": "https://github.com/acme/shop-web/issues/35" },
                 "label": "sanchoris",
@@ -1170,11 +1173,16 @@ impl World {
                 trigger_id: labeled_trigger,
                 trigger_event_id: Some(issue_event_id),
                 revision_id,
-                name: "acme/shop-web#35",
+                name: &sanchoris_core::items::github_task_name(
+                    repository_id("acme/shop-web"),
+                    "#35",
+                ),
                 title: "Fix flaky checkout test (acme/shop-web#35)",
                 status: TaskStatus::NeedsYou,
                 definition: serde_json::to_value(issue_definition()).unwrap(),
-                channel: Some(json!({ "source": "github", "repository": "acme/shop-web" })),
+                channel: Some(
+                    json!({ "source": "github", "repository": "acme/shop-web", "repository_id": repository_id("acme/shop-web") }),
+                ),
                 requested_by: Some(mika_member),
                 created_at: now - Duration::hours(2),
                 updated_at: now - Duration::minutes(5),
@@ -1323,6 +1331,7 @@ impl World {
             skill_run_number: 1,
             kind: "pull_request".into(),
             repository: "acme/shop-web".into(),
+            repository_id: repository_id("acme/shop-web"),
             number: 52,
             url: "https://github.com/acme/shop-web/pull/52".into(),
             state: Some("open".into()),

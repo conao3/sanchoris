@@ -9,7 +9,7 @@ use sanchoris_core::store::{Index, Listing, SortKey};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-use crate::config::{ChangeRequest, Config, Session, edit_url, in_configs};
+use crate::config::{ChangeRequest, Config, Session, active_triggers, config_rows, edit_url};
 use crate::context::{Scope, now, tx};
 use crate::enums::{
     ConfigObjectKind, EventSource, TriggerEventKind, TriggerEventReason, TriggerEventResult,
@@ -27,11 +27,10 @@ pub(crate) struct Trigger {
 
 impl Trigger {
     pub async fn all(ctx: &Context<'_>, scope: Scope) -> Result<Vec<Self>> {
-        let mut rows = in_configs::<TriggerItem>(ctx, scope, "TRIGGER#")
-            .await?
-            .into_iter()
-            .filter(|row| row.removed_at.is_none())
-            .collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        for config in config_rows(ctx, scope).await? {
+            rows.extend(active_triggers(ctx, scope, &config).await?);
+        }
         rows.sort_by(|a, b| (&a.name, a.id).cmp(&(&b.name, b.id)));
         Ok(rows.into_iter().map(|row| Trigger { scope, row }).collect())
     }
@@ -42,6 +41,12 @@ impl Trigger {
             .await?
             .ok_or_else(|| not_found(format!("trigger {trigger_id}")))?;
         let row = tx.require::<TriggerItem>(&location.target).await?;
+        let config = tx
+            .get::<sanchoris_core::items::Config>(&keys::config_key(scope.tenant_id, row.config_id))
+            .await?;
+        let row = config
+            .and_then(|config| row.in_revision(config.active_revision_id))
+            .unwrap_or(TriggerItem { next: None, ..row });
         Ok(Trigger { scope, row })
     }
 

@@ -2,11 +2,12 @@ use crate::common;
 
 use std::collections::BTreeMap;
 
-use common::{INSTALLATION, SHOP_API_ID, SHOP_WEB_ID, World, labeled_payload};
-use sanchoris_core::item::Entity;
+use aws_sdk_dynamodb::types::AttributeValue;
+use common::{SHOP_API_ID, SHOP_WEB_ID, World, labeled_payload};
+use sanchoris_core::item::{Entity, Key, Table};
 use sanchoris_core::items::{
     AuditEvent, CONFIG_ACTIVE, CONFIG_DISABLED, Config, GitHubRepository, Guard, Integration,
-    Project, Repository, SessionDef, SkillDef, Trigger, github_repositories,
+    Project, Repository, SessionDef, SkillDef, Task, TaskName, Trigger, github_repositories,
 };
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
@@ -14,6 +15,7 @@ use sanchoris_core::model::TaskStatus;
 use sanchoris_core::testing::SEED_CONFIG_REPOSITORY_ID;
 use sanchoris_worker::backfill;
 use sanchoris_worker::config_sync::{disable_config, rename_repository};
+use sanchoris_worker::ports::IssueRef;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -139,8 +141,45 @@ async fn a_renamed_repository_keeps_starting_its_triggers_by_id() {
     world.worker.settle().await.unwrap();
     let tasks = world.tasks().await;
     assert_eq!(tasks.len(), 1);
-    assert_eq!(tasks[0].name, "acme/storefront#70");
+    assert_eq!(tasks[0].name, format!("github:{SHOP_WEB_ID}#70"));
+    assert_eq!(
+        tasks[0].display_name(std::slice::from_ref(&renamed)),
+        "acme/storefront#70"
+    );
     assert_eq!(tasks[0].trigger_id, trigger_of(world.seeded.config_id));
+}
+
+#[tokio::test]
+async fn a_sub_issue_finds_its_parent_task_created_before_a_rename() {
+    let world = World::new("pro").await;
+    world
+        .label_issue("delivery-35", 35, "Parent", "mika-dev")
+        .await;
+    world.worker.settle().await.unwrap();
+    let parent = world.task("acme/shop-web#35").await;
+    let renamed = world.github.rename(SHOP_WEB_ID, "acme/storefront");
+    install(&world, &renamed).await;
+    world.github.set_parent_ref(
+        &renamed.full_name,
+        36,
+        IssueRef {
+            repository: renamed.full_name.clone(),
+            repository_id: SHOP_WEB_ID,
+            number: 35,
+        },
+    );
+    world
+        .deliver("delivery-36", "issues", &payload_from(36, &renamed))
+        .await;
+    world.worker.settle().await.unwrap();
+    let child = world
+        .tasks()
+        .await
+        .into_iter()
+        .find(|task| task.name == format!("github:{SHOP_WEB_ID}#36"))
+        .expect("the sub-issue started a task");
+    assert_eq!(child.parent_task_id, Some(parent.id));
+    assert_eq!(child.display_name(&[renamed]), "acme/storefront#36");
 }
 
 #[tokio::test]
@@ -185,11 +224,11 @@ async fn configs_on_swapped_names_do_not_start_each_others_triggers() {
     assert_eq!(
         started,
         vec![
-            ("acme/shop-web#71".to_string(), trigger_of(second)),
             (
-                "acme/shop-web-dev#72".to_string(),
+                format!("github:{SHOP_WEB_ID}#72"),
                 trigger_of(world.seeded.config_id)
             ),
+            ("github:7201#71".to_string(), trigger_of(second)),
         ]
     );
 }
@@ -341,140 +380,102 @@ async fn sync_errors_are_recorded_and_cleared_by_the_next_sync() {
 }
 
 #[tokio::test]
-async fn the_backfill_resolves_stored_names_and_disables_the_ones_outside_the_installation() {
+async fn the_backfill_moves_definitions_under_the_active_revision_and_task_names_to_ids() {
     let world = World::new("pro").await;
     let tenant_id = world.tenant();
-    let integration = world.dynamo.all::<Integration>().await.remove(0);
+    let task = world.started_task(35).await;
+    let active = config(&world, world.seeded.config_id)
+        .await
+        .active_revision_id
+        .unwrap();
+    let prefix = keys::definitions_prefix(active);
+    let mut legacy_keys = Vec::new();
+    for kind in ["project", "repository", "session", "skill"] {
+        for mut item in world.dynamo.scan(Table::Main, kind).await {
+            let key = Key::of(Table::Main, &item).unwrap();
+            let mut tx = world.store.tx(tenant_id);
+            tx.get_item(&key).await.unwrap();
+            tx.delete(&key).unwrap();
+            tx.commit().await.unwrap();
+            let legacy_sk = key.sk.strip_prefix(&prefix).unwrap().to_string();
+            item.insert("sk".into(), AttributeValue::S(legacy_sk.clone()));
+            if kind == "repository" {
+                item.remove("config_revision_id");
+            }
+            world.dynamo.put_raw(item).await;
+            legacy_keys.push(Key::main(key.pk, legacy_sk));
+        }
+    }
+    let stored = world
+        .store
+        .get::<Task>(&keys::task_key(tenant_id, task.id))
+        .await
+        .unwrap()
+        .unwrap();
+    let new_guard = keys::task_name_key(tenant_id, stored.trigger_id, &stored.name);
+    let old_guard = keys::task_name_key(tenant_id, stored.trigger_id, "acme/shop-web#35");
     world
         .dynamo
-        .modify::<Integration>(&integration.key(), |integration| {
-            integration.details =
-                json!({ "account_login": "acme", "repositories": ["acme/sanchoris-config"] });
+        .modify::<Task>(&stored.key(), |task| {
+            task.name = "acme/shop-web#35".into();
+            task.channel = Some(json!({ "source": "github", "repository": "acme/shop-web" }));
         })
         .await;
+    let mut tx = world.store.tx(tenant_id);
+    let guard = tx.require::<TaskName>(&new_guard).await.unwrap();
+    tx.delete(&new_guard).unwrap();
+    tx.insert(&TaskName {
+        name: "acme/shop-web#35".into(),
+        ..guard
+    })
+    .unwrap();
+    tx.commit().await.unwrap();
 
-    let moved = world
-        .github
-        .rename(SEED_CONFIG_REPOSITORY_ID, "acme/platform-config");
-    assert_eq!(moved.full_name, "acme/platform-config");
-    let mut seeded = config(&world, world.seeded.config_id).await;
-    seeded.repository = "acme/sanchoris-config".into();
-    let mut legacy_config = seeded.to_item();
-    for name in ["status", "repositories", "repository_id", "sync_error"] {
-        legacy_config.remove(name);
-    }
-    world.dynamo.put_raw(legacy_config).await;
-    for repository in world.dynamo.all::<Repository>().await {
-        let mut legacy = repository.to_item();
-        legacy.remove("github_repository_id");
-        legacy.remove("full_name");
-        world.dynamo.put_raw(legacy).await;
-    }
-    let stale_id = Uuid::new_v4();
-    let mut stale = seeded.clone();
-    stale.id = stale_id;
-    stale.repository = "acme/elsewhere".into();
-    stale.active_revision_id = None;
-    let mut legacy_stale = stale.to_item();
-    for name in ["status", "repositories", "repository_id", "sync_error"] {
-        legacy_stale.remove(name);
-    }
-    world.dynamo.put_raw(legacy_stale).await;
-    let stale_trigger = Trigger {
-        id: trigger_of(stale_id),
-        tenant_id,
-        config_id: stale_id,
-        config_revision_id: world.seeded.config_revision_id,
-        name: "labeled-issue".into(),
-        state: "ENABLED".into(),
-        event_pattern: Some(json!({ "source": ["github"] })),
-        schedule_expression: None,
-        input_transformer: None,
-        start: json!({}),
-        removed_at: None,
-        next_run_at: None,
-        schedule_message_id: None,
-    };
-    world.dynamo.put(&stale_trigger).await;
-    let legacy_guard = sanchoris_core::item::Key::main(
-        keys::tenant_pk(tenant_id),
-        "CONFIGREPO#acme/elsewhere#/".to_string(),
-    );
-    world
-        .dynamo
-        .put(&Guard::new(legacy_guard.clone(), stale_id))
-        .await;
-
-    let report = backfill::repository_ids(&world.worker.worker)
-        .await
-        .unwrap();
+    let report = backfill::stable_keys(&world.worker.worker).await.unwrap();
     world.worker.settle().await.unwrap();
     assert!(
-        report.lines.iter().any(|line| line.ends_with(&format!(
-            "acme/sanchoris-config -> acme/platform-config ({SEED_CONFIG_REPOSITORY_ID}), active"
-        ))),
+        report
+            .lines
+            .iter()
+            .any(|line| line.ends_with("acme/shop-web#35 -> github:7101#35")),
         "{:?}",
         report.lines
     );
-
-    let resolved = config(&world, world.seeded.config_id).await;
-    assert_eq!(resolved.repository_id, Some(SEED_CONFIG_REPOSITORY_ID));
-    assert_eq!(resolved.repository, "acme/platform-config");
-    assert_eq!(resolved.status, CONFIG_ACTIVE);
-    assert_eq!(
-        resolved.repository_named("acme/shop-web").map(|r| r.id),
-        Some(SHOP_WEB_ID)
-    );
-    assert!(
-        world
-            .store
-            .get::<Guard>(&keys::config_repository_key(
-                tenant_id,
-                SEED_CONFIG_REPOSITORY_ID,
-                "/"
-            ))
-            .await
-            .unwrap()
-            .is_some()
-    );
+    for key in &legacy_keys {
+        assert!(
+            world.store.get_item(key).await.unwrap().is_none(),
+            "{key:?}"
+        );
+    }
+    let sessions = world
+        .store
+        .query::<SessionDef>(
+            &keys::config_pk(tenant_id, world.seeded.config_id),
+            &keys::sessions_prefix(active),
+        )
+        .await
+        .unwrap();
+    assert!(!sessions.is_empty());
     assert!(
         world
             .dynamo
             .all::<Repository>()
             .await
             .iter()
-            .all(|r| r.github_repository_id == SHOP_WEB_ID || r.github_repository_id == SHOP_API_ID)
+            .all(|r| r.config_revision_id == active)
     );
-
-    let disabled = config(&world, stale_id).await;
-    assert_eq!(disabled.status, CONFIG_DISABLED);
-    assert_eq!(disabled.repository_id, None);
-    assert_eq!(
-        disabled.sync_error.as_deref(),
-        Some("acme/elsewhere is not a repository of the tenant's GitHub App installation")
-    );
-    assert!(world.store.get_item(&legacy_guard).await.unwrap().is_none());
-    let retired = world
+    let moved = world
         .store
-        .get::<Trigger>(&keys::trigger_key(tenant_id, stale_id, "labeled-issue"))
+        .get::<Task>(&keys::task_key(tenant_id, task.id))
         .await
         .unwrap()
         .unwrap();
-    assert!(retired.removed_at.is_some());
+    assert_eq!(moved.name, "github:7101#35");
+    assert_eq!(moved.channel.unwrap()["repository_id"], SHOP_WEB_ID);
+    assert!(world.store.get_item(&old_guard).await.unwrap().is_none());
+    assert!(world.store.get_item(&new_guard).await.unwrap().is_some());
+    assert_eq!(world.task("acme/shop-web#35").await.id, task.id);
 
-    let integration = world.dynamo.all::<Integration>().await.remove(0);
-    assert_eq!(
-        github_repositories(&integration.details).unwrap().len(),
-        common::known_repositories().len()
-    );
-    assert_eq!(INSTALLATION, integration.github_installation_id.unwrap());
-
-    let again = backfill::repository_ids(&world.worker.worker)
-        .await
-        .unwrap();
-    assert!(
-        again.lines.iter().all(|line| line.contains("installation")),
-        "{:?}",
-        again.lines
-    );
+    let again = backfill::stable_keys(&world.worker.worker).await.unwrap();
+    assert!(again.lines.is_empty(), "{:?}", again.lines);
 }

@@ -392,6 +392,7 @@ impl TestDynamo {
             removed_at: None,
             next_run_at: None,
             schedule_message_id: None,
+            next: None,
         };
         tx.insert(&trigger).expect("seed trigger");
         insert_ref(

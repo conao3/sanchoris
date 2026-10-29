@@ -745,28 +745,29 @@ async fn checkout_repositories(
     let config_id = location
         .parent_id
         .ok_or_else(|| invalid("a trigger reference has no config"))?;
+    let config = tx
+        .require::<Config>(&keys::config_key(tx.tenant_id(), config_id))
+        .await?;
     match &session.checkout {
-        sanchoris_config::Checkout::Repos(repos) => {
-            let config = tx
-                .require::<Config>(&keys::config_key(tx.tenant_id(), config_id))
-                .await?;
-            repos
-                .iter()
-                .map(|name| {
-                    config
-                        .repository_named(name)
-                        .map(|repository| repository.full_name.clone())
-                        .ok_or_else(|| {
-                            invalid(format!("{name} is not a repository of the active config"))
-                        })
-                })
-                .collect()
-        }
+        sanchoris_config::Checkout::Repos(repos) => repos
+            .iter()
+            .map(|name| {
+                config
+                    .repository_named(name)
+                    .map(|repository| repository.full_name.clone())
+                    .ok_or_else(|| {
+                        invalid(format!("{name} is not a repository of the active config"))
+                    })
+            })
+            .collect(),
         sanchoris_config::Checkout::Project(project) => {
+            let revision_id = config
+                .active_revision_id
+                .ok_or_else(|| invalid(format!("config {config_id} has no active revision")))?;
             let mut repositories = tx
                 .query::<Repository>(
                     &keys::config_pk(tx.tenant_id(), config_id),
-                    &format!("PROJECT#{project}#REPO#"),
+                    &keys::project_repositories_prefix(revision_id, project),
                 )
                 .await?;
             repositories.sort_by(|a, b| a.name.cmp(&b.name));
