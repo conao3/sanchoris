@@ -507,19 +507,20 @@ async fn inbound_events_over_the_receive_limit_are_answered_429_and_counted() {
         "processed"
     );
 
-    let reply = server
+    let reply: Value = server
         .post(
-            &format!("/api/tasks/{task_id}/replies"),
+            "/api/graphql",
             Some(&server.seeded.member_token()),
-            &json!({ "text": "One more thing." }),
+            &json!({
+                "query": "mutation($input: ResumeTaskInput!) { resumeTask(input: $input) { id } }",
+                "variables": { "input": { "taskId": task_id, "message": "One more thing." } },
+            }),
         )
-        .await;
-    assert_eq!(reply.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert!(reply.headers().contains_key("retry-after"));
-    assert_eq!(
-        reply.json::<Value>().await.unwrap()["error"]["code"],
-        "rate_limited"
-    );
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(reply["errors"][0]["extensions"]["code"], "RATE_LIMITED");
 
     let rates = server.dynamo.all::<ReceiveRate>().await;
     let dropped: i64 = rates.iter().map(|rate| rate.dropped).sum();
@@ -712,44 +713,25 @@ async fn stripe_webhooks_are_verified_and_update_the_tenant() {
 }
 
 #[tokio::test]
-async fn replies_and_approvals_need_a_member_of_the_tenant() {
+async fn replies_go_through_resume_task_and_approvals_need_a_member_of_the_tenant() {
     let server = Server::start().await;
     let (task_id, run_id) = server.task_with_run().await;
     let member = server.seeded.member_token();
-    let path = format!("/api/tasks/{task_id}/replies");
-    assert_eq!(
-        server
-            .post(&path, Some("user:stranger"), &json!({ "text": "hi" }))
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        server
-            .post(&path, Some(&member), &json!({ "text": "  " }))
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
     let response = server
         .post(
-            &path,
+            &format!("/api/tasks/{task_id}/replies"),
             Some(&member),
             &json!({ "text": "Use the staging database." }),
         )
         .await;
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let replies = server
-        .dynamo
-        .all::<RunEventItem>()
-        .await
-        .into_iter()
-        .filter(|event| event.run_id == run_id && event.kind == "human_reply")
-        .collect::<Vec<_>>();
-    assert_eq!(replies.len(), 1);
-    assert_eq!(
-        replies[0].payload,
-        json!({ "member": "Mika", "text": "Use the staging database." })
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(
+        server
+            .dynamo
+            .all::<RunEventItem>()
+            .await
+            .into_iter()
+            .all(|event| event.run_id != run_id || event.kind != "human_reply")
     );
 
     assert_eq!(

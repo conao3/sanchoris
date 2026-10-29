@@ -228,16 +228,22 @@ impl World {
     }
 
     async fn reply(&self, task_id: Uuid, text: &str) {
-        let response = self
+        let response: Value = self
             .api()
             .http
-            .post(format!("{}/api/tasks/{task_id}/replies", self.api().url))
+            .post(format!("{}/api/graphql", self.api().url))
             .bearer_auth(self.seeded.member_token())
-            .json(&json!({ "text": text }))
+            .json(&json!({
+                "query": "mutation($input: ResumeTaskInput!) { resumeTask(input: $input) { id } }",
+                "variables": { "input": { "taskId": task_id, "message": text } },
+            }))
             .send()
             .await
+            .unwrap()
+            .json()
+            .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert!(response["errors"].is_null(), "{response}");
     }
 
     fn aws_lookup(&self, number: i64, since_ms: i64) -> Value {

@@ -68,7 +68,6 @@ builds the frontend into `apps/frontend/dist`, then, with the Cargo profile `lam
 | `GET /health` | Process health check |
 | `GET /api/me` | The signed-in user (Cognito ID or access token as `Authorization: Bearer`; the user is created on first use) |
 | `POST /api/graphql` | The GraphQL API of the web app (`crates/graphql`). Needs the same bearer token; requests without one get `401` |
-| `POST /api/tasks/{taskId}/replies` | A member's reply to a task (`{ "text": "..." }`), delivered to the agent and resuming a `NEEDS_YOU` task |
 | `POST /api/approvals` | Approve or reject an approval request (`{ "token": "<signed task token>", "approved": true }`). Owners, admins, and the member who requested the task may resolve it (others get 403); each decision writes an `approval.resolve` audit event |
 | `POST /auth/github` | Starts linking the signed-in user's GitHub account; returns `{ "url": "<GitHub authorize URL>" }` and sets the flow cookie (the `connectGitHub` mutation does the same). The flow cookie `__Host-sanchoris-github` (HttpOnly, Secure, SameSite=Lax, 10 minutes) holds a nonce that is also sealed in the `state`, so that the setup and the callback only complete in the browser that started the flow |
 | `GET /auth/github/setup` | GitHub App Setup URL. Checks the signed `state` from the `installGitHubApp` mutation against the flow cookie and sends the user through the GitHub OAuth authorize page to prove access to the new installation |
@@ -202,14 +201,14 @@ The frontend GraphQL documents live in `apps/frontend/src/graphql/` (`schema.gra
 nix develop -c pnpm e2e
 ```
 
-The test (`crates/api/tests/e2e.rs`) starts DynamoDB Local, a fake GitHub (REST, GraphQL, and bare git repositories on disk), and the same assembly as `sanchoris all` in process (`server::LocalServer` with a stub token verifier, so the member reply goes through `POST /api/tasks/{taskId}/replies`). The worker starts the real `apps/workspace-agent` (with the scripted worker in `scripts/e2e/fake-agent.ts`) through `LocalProcessRunner`. It covers:
+The test (`crates/api/tests/e2e.rs`) starts DynamoDB Local, a fake GitHub (REST, GraphQL, and bare git repositories on disk), and the same assembly as `sanchoris all` in process (`server::LocalServer` with a stub token verifier, so the member reply goes through the `resumeTask` mutation). The worker starts the real `apps/workspace-agent` (with the scripted worker in `scripts/e2e/fake-agent.ts`) through `LocalProcessRunner`. It covers:
 
 - A signed `issues.labeled` webhook starts the task; the agent commits and runs `sanchoris skill run open-pr-green-ci`; the skill pushes the branch to the bare repository, opens a pull request, hands the failing check back to the agent, which fixes and continues; the passing check comments on the issue and the task succeeds.
 - Checks that keep failing put the task in `NEEDS_YOU` (`Skill.FixesExhausted`); a member's reply resumes it and the second skill run succeeds.
 
 Run `pnpm install` first; the workspace agent runs from source with Node.
 
-`crates/api/tests/http.rs` covers the HTTP endpoints and the local Run channel (webhook signatures, duplicate deliveries, installation events, Stripe, replies and approvals, records, outbox delivery, sequence deduplication, and the close on an out-of-order message). `crates/api/tests/lambda.rs` drives the Lambda handlers with recorded API Gateway WebSocket and authorizer events, SQS batches, and DynamoDB Streams records (`crates/api/tests/fixtures/`), with a recording connection sender in place of the Management API.
+`crates/api/tests/http.rs` covers the HTTP endpoints and the local Run channel (webhook signatures, duplicate deliveries, installation events, Stripe, approvals, records, outbox delivery, sequence deduplication, and the close on an out-of-order message). `crates/api/tests/lambda.rs` drives the Lambda handlers with recorded API Gateway WebSocket and authorizer events, SQS batches, and DynamoDB Streams records (`crates/api/tests/fixtures/`), with a recording connection sender in place of the Management API.
 
 `crates/api/tests/graphql.rs` (part of `cargo test --workspace`) drives `POST /api/graphql` over HTTP with a stub token verifier and runs every operation in `apps/frontend/src/graphql/*.graphql` against the real ports: the config syncer and trigger dispatcher inline, the GitHub App client against the fake GitHub, Stripe against a fake Stripe API, and local records. It fails when an operation is added to the frontend without being exercised.
 

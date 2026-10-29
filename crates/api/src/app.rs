@@ -51,7 +51,6 @@ pub fn router(state: AppState, frontend: Frontend) -> Router {
         .route("/api/me", get(me))
         .route("/api/graphql", post(graphql::execute))
         .route("/api/approvals", post(tasks::resolve_approval))
-        .route("/api/tasks/{task_id}/replies", post(tasks::reply))
         .route("/auth/github", post(github_oauth::start))
         .route("/auth/github/callback", get(github_oauth::callback))
         .route("/auth/github/setup", get(github_oauth::setup))

@@ -1,17 +1,13 @@
 use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::extract::State;
 use chrono::{DateTime, Utc};
 use sanchoris_core::audit::{AuditEntry, record_audit};
-use sanchoris_core::channel::{RunEventType, record_run_event};
 use sanchoris_core::db::{DbError, REF_SKILL_RUN, Store, TenantTx, locate};
-use sanchoris_core::items::{Member, Membership, Task};
+use sanchoris_core::items::{Member, Membership};
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
-use sanchoris_core::receive::{Admission, SOURCE_REPLY, admit_inbound};
 use sanchoris_core::skillrun::{self, SkillRunError};
-use sanchoris_core::store::retry;
-use sanchoris_core::tasks::{latest_run, load_task};
+use sanchoris_core::tasks::load_task;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -55,23 +51,6 @@ async fn tenant_of_skill_run(
     for tenant_id in tenants_of(store, user_id).await? {
         let mut tx = store.tx(tenant_id);
         if locate(&mut tx, skill_run_id, REF_SKILL_RUN)
-            .await?
-            .is_some()
-        {
-            return Ok(Some(tenant_id));
-        }
-    }
-    Ok(None)
-}
-
-async fn tenant_of_task(
-    store: &Store,
-    user_id: Uuid,
-    task_id: Uuid,
-) -> Result<Option<Uuid>, DbError> {
-    for tenant_id in tenants_of(store, user_id).await? {
-        if store
-            .get::<Task>(&keys::task_key(tenant_id, task_id))
             .await?
             .is_some()
         {
@@ -205,52 +184,4 @@ pub async fn resolve_approval(
     Ok(Json(json!({
         "status": if body.approved { "approved" } else { "rejected" },
     })))
-}
-
-#[derive(Deserialize)]
-pub struct Reply {
-    text: String,
-}
-
-pub async fn reply(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(task_id): Path<Uuid>,
-    Json(body): Json<Reply>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    if body.text.trim().is_empty() {
-        return Err(ApiError::BadRequest("the reply is empty".into()));
-    }
-    let tenant_id = tenant_of_task(&state.store, user.user_id, task_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("task {task_id}")))?;
-    if let Admission::Dropped(limited) = admit_inbound(
-        &state.store,
-        tenant_id,
-        SOURCE_REPLY,
-        &task_id.to_string(),
-        Utc::now(),
-    )
-    .await?
-    {
-        return Err(ApiError::RateLimited(limited));
-    }
-    let payload = json!({ "member": user.display_name, "text": body.text });
-    let replied = retry(ATTEMPTS, || async {
-        let mut tx = state.store.tx(tenant_id);
-        let Some(run_id) = latest_run(&mut tx, task_id).await? else {
-            return Ok(None);
-        };
-        let recorded =
-            record_run_event(&mut tx, run_id, None, RunEventType::HumanReply, &payload).await?;
-        tx.commit().await?;
-        Ok(Some((recorded, run_id)))
-    })
-    .await?;
-    let (recorded, run_id) =
-        replied.ok_or_else(|| ApiError::Conflict("the task has no session to reply to".into()))?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(json!({ "id": recorded.id(), "runId": run_id })),
-    ))
 }
