@@ -1,10 +1,9 @@
 use chrono::{DateTime, Duration, Utc};
 use sanchoris_config::{Session, Start};
 use sanchoris_core::channel::{OutboxType, RunEventType, SEQ_STRIDE, enqueue_outbox, outbox};
-use sanchoris_core::db::{self, REF_TRIGGER, TenantTx, locate};
+use sanchoris_core::db::{self, TenantTx};
 use sanchoris_core::items::{
-    Config, OutboxItem, Pending, Repository, Run, RunEventItem, SkillRunItem, Task, UsageRecord,
-    Workspace,
+    OutboxItem, Pending, Run, RunEventItem, SkillRunItem, Task, UsageRecord, Workspace,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::lifecycle::{
@@ -750,48 +749,6 @@ pub async fn reconcile(
     }
 }
 
-async fn checkout_repositories(
-    tx: &mut TenantTx,
-    task: &Task,
-    session: &Session,
-) -> Result<Vec<String>> {
-    let Some(location) = locate(tx, task.trigger_id, REF_TRIGGER).await? else {
-        return Ok(Vec::new());
-    };
-    let config_id = location
-        .parent_id
-        .ok_or_else(|| invalid("a trigger reference has no config"))?;
-    let config = tx
-        .require::<Config>(&keys::config_key(tx.tenant_id(), config_id))
-        .await?;
-    match &session.checkout {
-        sanchoris_config::Checkout::Repos(repos) => repos
-            .iter()
-            .map(|name| {
-                config
-                    .repository_named(name)
-                    .map(|repository| repository.full_name.clone())
-                    .ok_or_else(|| {
-                        invalid(format!("{name} is not a repository of the active config"))
-                    })
-            })
-            .collect(),
-        sanchoris_config::Checkout::Project(project) => {
-            let revision_id = config
-                .active_revision_id
-                .ok_or_else(|| invalid(format!("config {config_id} has no active revision")))?;
-            let mut repositories = tx
-                .query::<Repository>(
-                    &keys::config_pk(tx.tenant_id(), config_id),
-                    &keys::project_repositories_prefix(revision_id, project),
-                )
-                .await?;
-            repositories.sort_by(|a, b| a.name.cmp(&b.name));
-            Ok(repositories.into_iter().map(|r| r.full_name).collect())
-        }
-    }
-}
-
 async fn start_workspace(
     worker: &Worker,
     mut tx: TenantTx,
@@ -803,7 +760,11 @@ async fn start_workspace(
     let session = session_of(&task)?;
     let start = start_of(&task)?;
     let definition = definition_of(&task)?;
-    let repositories = checkout_repositories(&mut tx, &task, &session).await?;
+    let start_payload = task.start_payload.clone().unwrap_or(Value::Null);
+    let repositories: Vec<String> =
+        serde_json::from_value(start_payload.get("repositories").cloned().ok_or_else(|| {
+            invalid(format!("task {} has no repositories to check out", task.id))
+        })?)?;
     let branch = task_branch(task.id);
     let (_, plan) = db::tenant_plan(&mut tx).await?;
     let workspace = Workspace {
@@ -840,7 +801,6 @@ async fn start_workspace(
         }),
         _ => Value::Null,
     };
-    let start_payload = task.start_payload.clone().unwrap_or(Value::Null);
     let instructed = run.status == "creating" || (run.record_s3_key.is_none() && run.turns == 0);
     let payload = json!({
         "agent": task.definition["Session"]["Definition"]["Worker"]["Agent"],

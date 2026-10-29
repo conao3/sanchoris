@@ -537,6 +537,7 @@ async fn start(
             start.session
         )));
     };
+    let repositories = checkout_repositories(tx, trigger, &session_definition).await?;
     let mut skills = Vec::new();
     let mut loaded = Vec::new();
     for name in &start.skills {
@@ -600,7 +601,7 @@ async fn start(
             placement.display
         )));
     };
-    let known = known_inputs(tx, trigger, &session_definition, &inbound.event).await?;
+    let known = known_inputs(&repositories, &inbound.event);
     let offered = loaded
         .iter()
         .map(|skill| OfferedSkill {
@@ -634,20 +635,22 @@ async fn start(
         skills: &offered,
     });
     let mut task = load_task(tx, task_id).await?;
-    task.start_payload = Some(json!({ "instruction": text, "systemPrompt": system_prompt }));
+    task.start_payload = Some(json!({
+        "instruction": text,
+        "systemPrompt": system_prompt,
+        "repositories": repositories,
+    }));
     tx.put(&task)?;
     Ok(TriggerEventOutcome::Started)
 }
 
-async fn known_inputs(
+async fn checkout_repositories(
     tx: &mut TenantTx,
     trigger: &Trigger,
     session_definition: &Value,
-    event: &Value,
-) -> Result<BTreeMap<&'static str, (String, Value)>> {
-    let mut known = BTreeMap::new();
+) -> Result<Vec<String>> {
     let session: sanchoris_config::Session = serde_json::from_value(session_definition.clone())?;
-    let repositories = match session.checkout {
+    match session.checkout {
         Checkout::Repos(names) => {
             let config = tx
                 .require::<Config>(&keys::config_key(tx.tenant_id(), trigger.config_id))
@@ -657,9 +660,14 @@ async fn known_inputs(
                 .map(|name| {
                     config
                         .repository_named(name)
-                        .map_or_else(|| name.clone(), |r| r.full_name.clone())
+                        .map(|repository| repository.full_name.clone())
+                        .ok_or_else(|| {
+                            WorkerError::Invalid(format!(
+                                "{name} is not a repository of the config"
+                            ))
+                        })
                 })
-                .collect::<Vec<_>>()
+                .collect()
         }
         Checkout::Project(project) => {
             let mut rows = tx
@@ -669,9 +677,13 @@ async fn known_inputs(
                 )
                 .await?;
             rows.sort_by(|a, b| a.name.cmp(&b.name));
-            rows.into_iter().map(|r| r.full_name).collect()
+            Ok(rows.into_iter().map(|r| r.full_name).collect())
         }
-    };
+    }
+}
+
+fn known_inputs(repositories: &[String], event: &Value) -> BTreeMap<&'static str, (String, Value)> {
+    let mut known = BTreeMap::new();
     known.insert("Repos", ("array".to_string(), json!(repositories)));
     let detail = &event["detail"];
     if event["source"] == "github"
@@ -683,7 +695,7 @@ async fn known_inputs(
         known.insert("Repo", ("string".to_string(), json!(repo)));
         known.insert("Issue", ("number".to_string(), json!(number)));
     }
-    Ok(known)
+    known
 }
 
 async fn admit_start(

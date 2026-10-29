@@ -437,6 +437,50 @@ async fn a_spot_interruption_restores_the_session_in_a_new_workspace() {
 }
 
 #[tokio::test]
+async fn a_restored_workspace_clones_the_repositories_of_the_task_and_not_of_a_newer_config() {
+    let world = World::new("pro").await;
+    world.started_task(35).await;
+    assert_eq!(
+        world.runner.specs.lock().unwrap()[0].repositories,
+        vec!["acme/shop-api".to_string(), "acme/shop-web".to_string()]
+    );
+    let yaml = common::CONFIG_YAML
+        .replacen(
+            "Repo: github.com/acme/shop-api",
+            "Repo: github.com/acme/idea",
+            1,
+        )
+        .replacen(
+            "Repos: [acme/shop-web, acme/shop-api]",
+            "Repos: [acme/shop-web, acme/shop-api, acme/idea]",
+            1,
+        );
+    {
+        let mut state = world.github.state.lock().unwrap();
+        state.head_sha = "config-2".into();
+        state.files.insert("sanchoris.yaml".into(), yaml);
+    }
+    world.resync_config().await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.revisions().await.len(), 3);
+
+    let platform_ref = world.runner.refs.lock().unwrap()[0].clone();
+    world.runner.exits.lock().unwrap().insert(
+        platform_ref,
+        sanchoris_worker::ports::WorkspaceExit {
+            reason: "Your Spot Task was interrupted. (SpotInterruption)".into(),
+            interrupted_at: Some(world.clock_now()),
+            stopped_at: None,
+        },
+    );
+    world.clock.advance(Duration::seconds(150));
+    world.worker.settle().await.unwrap();
+    let specs = world.runner.specs.lock().unwrap().clone();
+    assert_eq!(specs.len(), 2);
+    assert_eq!(specs[1].repositories, specs[0].repositories);
+}
+
+#[tokio::test]
 async fn a_workspace_whose_agent_reported_sigterm_restores_and_counts_until_the_signal() {
     let world = World::new("pro").await;
     let task = world.started_task(35).await;
