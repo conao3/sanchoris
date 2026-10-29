@@ -16,6 +16,7 @@ use sanchoris_core::items::{
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
+use sanchoris_core::messages::redact_tokens_in;
 use sanchoris_core::ports::PortError;
 use sanchoris_core::skillrun::{
     SkillRunError, accept_skill_request, continue_skill_run, skill_run_status,
@@ -503,7 +504,7 @@ impl Channel {
             seq,
             turn,
             kind: kind.to_string(),
-            data: payload["data"].clone(),
+            data: redact_tokens_in(&payload["data"]),
             at,
             expires_at: Utc::now() + Duration::days(plan.retention_days),
         })?;

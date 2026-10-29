@@ -113,11 +113,16 @@ describe("workspace agent with a fake worker", () => {
     control.send({
       type: "user_message",
       messageId: "m-1",
-      text: '[sanchoris] Skill open-pr-green-ci (run 1) SUCCEEDED: {"PullRequests":["acme/shop-web#52"]}',
+      text: `[sanchoris] Skill open-pr-green-ci (run 1) SUCCEEDED: {"PullRequests":["acme/shop-web#52"]} pushed with ghs_${"x".repeat(36)}`,
     });
     const secondEnd = await control.waitFor("turn_end", (message) => message.turn === 2);
     expect(secondEnd.summary).toBe("Task finished.");
-    await control.waitFor("session_record", (message) => message.turn === 2);
+    const secondRecord = await control.waitFor("session_record", (message) => message.turn === 2);
+    const secondBytes = control.records.get(secondRecord.key) as Buffer;
+    expect(secondBytes.toString("utf8")).not.toContain("ghs_");
+    expect(secondBytes.toString("utf8")).toContain("pushed with <redacted>");
+    expect(sha256(secondBytes)).toBe(secondRecord.sha256);
+    expect(secondBytes.length).toBe(secondRecord.contentLength);
     await control.waitFor("heartbeat");
 
     const events = control.received.filter((message) => message.type === "event");

@@ -1081,7 +1081,14 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     );
     send(
         &mut socket,
-        json!({ "type": "event", "runId": run, "seq": 4, "turn": 1, "kind": "text", "data": { "text": "hi" }, "at": "2026-10-27T03:15:02.000Z" }),
+        json!({ "type": "event", "runId": run, "seq": 4, "turn": 1, "kind": "text", "data": {
+            "text": format!(
+                "push with ghs_{} as AKIA{}, task-0123456789abcdefghijklmn stays",
+                "x".repeat(36),
+                "Q".repeat(16)
+            ),
+            "calls": [{ "env": format!("ANTHROPIC_API_KEY=sk-ant-{}", "y".repeat(30)), "count": 2 }],
+        }, "at": "2026-10-27T03:15:02.000Z" }),
     )
     .await;
     receive(&mut socket).await;
@@ -1108,7 +1115,15 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
         .map(|event| (event.seq, event.kind))
         .collect::<Vec<_>>();
     assert_eq!(events, vec![(Some(1), "ready".to_string())]);
-    assert_eq!(server.dynamo.all::<RunLogEntry>().await.len(), 1);
+    let logs = server.dynamo.all::<RunLogEntry>().await;
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].data,
+        json!({
+            "text": "push with <redacted> as <redacted>, task-0123456789abcdefghijklmn stays",
+            "calls": [{ "env": "ANTHROPIC_API_KEY=<redacted>", "count": 2 }],
+        })
+    );
     let undelivered = server
         .dynamo
         .all::<OutboxItem>()

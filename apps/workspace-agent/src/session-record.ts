@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
 
+const KNOWN_TOKENS =
+  /(?<![A-Za-z0-9])(?:(?:github_pat_|gh[psou]_|sk-)[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9]))/g;
+
+export function redactTokens(bytes: Buffer): Buffer {
+  return Buffer.from(bytes.toString("utf8").replace(KNOWN_TOKENS, "<redacted>"), "utf8");
+}
+
 export function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
