@@ -3,7 +3,7 @@ import { CircleDot, GitPullRequest, MessageSquare, Plus, Timer } from 'lucide-re
 import { type FormEvent, useState } from 'react';
 import { Button } from '../components/Button';
 import { Page, Pg } from '../components/Shell';
-import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Lk, Row, Section, Skeleton, State, Sub, Th, Title, Toggle } from '../components/ui';
+import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Lk, Row, Section, Skeleton, State, Sub, Table, Th, Title, Toggle } from '../components/ui';
 import {
   ProposeTriggerDocument,
   SetTriggerStateDocument,
@@ -112,7 +112,7 @@ function TemplatePanel({ tenant, templates, onClose }: { tenant: Tenant; templat
   }
 
   return (
-    <form onSubmit={submit} className="absolute right-6 top-[46px] z-10 w-[380px] rounded-[8px] border border-line2 bg-bg p-3.5">
+    <form onSubmit={submit} className="absolute inset-x-4 top-[46px] z-10 rounded-[8px] border border-line2 bg-bg p-3.5 md:left-auto md:right-6 md:w-[380px]">
       <div className="mb-1 text-xs font-semibold uppercase tracking-[.06em] text-faint">{t('triggers.newFromTemplate')}</div>
       <label className="mb-1 mt-2 block text-xs text-muted" htmlFor="template">
         {t('triggers.template')}
@@ -211,7 +211,7 @@ export function TriggersPage() {
           {!tenant && !error ? <Skeleton rows={5} /> : null}
           {tenant && triggers.length === 0 ? <Empty>{t('triggers.empty')}</Empty> : null}
           {triggers.length > 0 ? (
-            <>
+            <Table>
               <Th cols={cols}>
                 <span>{t('col.trigger')}</span>
                 <span>{t('col.startsWhen')}</span>
@@ -257,13 +257,13 @@ export function TriggersPage() {
                   </Row>
                 );
               })}
-            </>
+            </Table>
           ) : null}
 
           <Section count={t('triggers.allTriggers')}>{t('triggers.recentEvents')}</Section>
           {tenant && tenant.triggerEvents.length === 0 ? <Dim>{t('triggers.noEvents')}</Dim> : null}
           {tenant && tenant.triggerEvents.length > 0 ? (
-            <>
+            <Table>
               <Th cols="64px 150px 1fr">
                 <span>{t('col.time')}</span>
                 <span>{t('col.trigger')}</span>
@@ -276,7 +276,7 @@ export function TriggersPage() {
                   {eventResult(event, triggers)}
                 </Row>
               ))}
-            </>
+            </Table>
           ) : null}
           <Dim className="mt-3.5">{t('triggers.footer')}</Dim>
         </Pg>

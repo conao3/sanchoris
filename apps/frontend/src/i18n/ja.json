@@ -9,6 +9,8 @@
   "nav.createTenant": "テナントを作成",
   "shell.switchTenant": "テナントを切り替え",
   "shell.signOut": "ログアウト",
+  "shell.navigation": "ナビゲーション",
+  "shell.openNavigation": "ナビゲーションを開く",
 
   "role.owner": "オーナー",
   "role.admin": "管理者",

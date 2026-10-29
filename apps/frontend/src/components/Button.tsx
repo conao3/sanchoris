@@ -12,6 +12,7 @@ type ButtonProps = {
   small?: boolean;
   icon?: LucideIcon;
   kbd?: string;
+  compact?: boolean;
   href?: string;
   isDisabled?: boolean;
   autoFocus?: boolean;
@@ -32,6 +33,7 @@ export function Button({
   small,
   icon: Icon,
   kbd,
+  compact,
   href,
   isDisabled,
   autoFocus,
@@ -42,13 +44,14 @@ export function Button({
   const classes = clsx(
     'inline-flex items-center gap-1.5 whitespace-nowrap rounded-ui border font-medium outline-none focus-visible:ring-2 focus-visible:ring-line2 disabled:cursor-not-allowed disabled:opacity-50',
     small ? 'h-7 px-2.5 text-sm' : 'h-8 px-3 text-sm',
+    compact && 'max-md:w-8 max-md:justify-center max-md:px-0',
     variantClass[variant],
     className,
   );
   const content = (
     <>
       {Icon ? <Icon className="size-[15px] shrink-0" aria-hidden /> : null}
-      {children}
+      {compact ? <span className="max-md:sr-only">{children}</span> : children}
       {kbd ? <Kbd tone={variant === 'primary' ? 'inverse' : 'button'}>{kbd}</Kbd> : null}
     </>
   );

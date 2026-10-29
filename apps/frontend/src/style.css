@@ -31,6 +31,10 @@
   --color-term-error: #f08a8a;
   --color-term-user: #8fb4ff;
 
+  --breakpoint-*: initial;
+  --breakpoint-md: 42rem;
+  --breakpoint-lg: 66rem;
+
   --radius-ui: 6px;
   --radius-kbd: 4px;
 

@@ -7,7 +7,7 @@ import { Button } from '../components/Button';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Cols, Page } from '../components/Shell';
 import { SkillRunState, StateEntryState, TaskState } from '../components/status';
-import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Kv, Lk, Meter, Row, Section, Skeleton, State, Sub, Th, Title, type Tone } from '../components/ui';
+import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Kv, Lk, Meter, Row, Section, Skeleton, State, Sub, Table, Th, Title, type Tone } from '../components/ui';
 import { ResolveApprovalDocument, ResumeTaskDocument, StopTaskDocument, type TaskQuery, TaskDocument } from '../graphql/generated/graphql';
 import { type MessageKey, t } from '../i18n';
 import { between, clock, duration, issueLabel, usd, usdWhole } from '../lib/format';
@@ -66,8 +66,8 @@ function Step({ kind, icon, tone, stateIcon, children, current, todo }: {
 
 function Arrow() {
   return (
-    <span className="flex w-[26px] items-center justify-center text-faint">
-      <Icon icon={ChevronRight} className="size-3.5" />
+    <span className="flex items-center justify-center text-faint max-md:h-5 md:w-[26px]">
+      <Icon icon={ChevronRight} className="size-3.5 max-md:rotate-90" />
     </span>
   );
 }
@@ -78,7 +78,7 @@ function StepStrip({ task }: { task: Task }) {
   const done = task.status === 'SUCCEEDED';
   const agentWorking = task.status === 'RUNNING' && !skillRun;
   return (
-    <div className="mb-1 mt-0.5 flex items-stretch">
+    <div className="mb-1 mt-0.5 flex items-stretch max-md:flex-col">
       <Step kind={t('task.stepTrigger', { name: task.trigger.name })} icon={Zap} tone="ok" stateIcon={CircleCheck}>
         {task.startedAt ? t('task.startedAt', { at: clock(task.startedAt) }) : t('task.notStarted')}
       </Step>
@@ -192,26 +192,26 @@ export function TaskPage() {
   let body;
   if (error) {
     body = (
-      <div className="p-6">
+      <div className="px-4 py-6 md:px-6">
         <ErrorNote message={error.message} onRetry={refetch} />
       </div>
     );
   } else if (!data) {
     body = (
-      <div className="p-6">
+      <div className="px-4 py-6 md:px-6">
         <Skeleton rows={6} />
       </div>
     );
   } else if (!task) {
     body = (
-      <div className="p-6">
+      <div className="px-4 py-6 md:px-6">
         <Empty>{t('task.notFound')}</Empty>
       </div>
     );
   } else {
     const latestSkillRun = task.skillRuns[task.skillRuns.length - 1];
-    const runCols = '24px 150px 96px 72px 56px 72px minmax(0,1fr)';
-    const stepCols = '28px 110px 64px 100px 56px 60px minmax(0,1fr)';
+    const runCols = '24px 150px 96px 72px 56px 72px 1fr';
+    const stepCols = '28px 110px 64px 100px 56px 60px 1fr';
     const pr = task.outputs.filter((output) => output.kind === 'PULL_REQUEST');
     const relations: [ReactNode, ReactNode][] = [
       [t('col.trigger'), <Lk to="/triggers">{task.trigger.name}</Lk>],
@@ -326,7 +326,7 @@ export function TaskPage() {
         <Section count={task.skillRuns.length}>{t('task.skillRuns')}</Section>
         {task.skillRuns.length === 0 ? <Dim>{t('task.noSkillRuns')}</Dim> : null}
         {task.skillRuns.length > 0 ? (
-          <>
+          <Table>
             <Th cols={runCols}>
               <span>#</span>
               <span>{t('col.skill')}</span>
@@ -347,7 +347,7 @@ export function TaskPage() {
                 <span className="text-muted">{run.error ? [run.error, run.cause].filter(Boolean).join(' · ') : '—'}</span>
               </Row>
             ))}
-          </>
+          </Table>
         ) : null}
 
         {latestSkillRun && latestSkillRun.stateEntries.length > 0 ? (
@@ -355,26 +355,28 @@ export function TaskPage() {
             <Section count={t('task.lastOf', { n: latestSkillRun.stateEntries.length, total: latestSkillRun.stateEntryCount })}>
               {t('task.stepsOfRun', { n: latestSkillRun.number })}
             </Section>
-            <Th cols={stepCols}>
-              <span>#</span>
-              <span>{t('col.state')}</span>
-              <span>{t('col.type')}</span>
-              <span>{t('col.status')}</span>
-              <span>{t('col.entered')}</span>
-              <span className="text-right">{t('col.attempts')}</span>
-              <span>{t('col.result')}</span>
-            </Th>
-            {latestSkillRun.stateEntries.map((entry) => (
-              <Row key={entry.id} cols={stepCols}>
-                <span className="text-right font-mono text-sm">{entry.sequence}</span>
-                <span className="font-medium">{entry.stateName}</span>
-                <span>{t(stateTypeLabels[entry.stateType])}</span>
-                <StateEntryState status={entry.status} />
-                <span className="font-mono text-sm">{clock(entry.enteredAt)}</span>
-                <span className="text-right font-mono text-sm">{entry.attempts}</span>
-                <span className="text-muted wrap-anywhere">{entry.result ?? '—'}</span>
-              </Row>
-            ))}
+            <Table>
+              <Th cols={stepCols}>
+                <span>#</span>
+                <span>{t('col.state')}</span>
+                <span>{t('col.type')}</span>
+                <span>{t('col.status')}</span>
+                <span>{t('col.entered')}</span>
+                <span className="text-right">{t('col.attempts')}</span>
+                <span>{t('col.result')}</span>
+              </Th>
+              {latestSkillRun.stateEntries.map((entry) => (
+                <Row key={entry.id} cols={stepCols}>
+                  <span className="text-right font-mono text-sm">{entry.sequence}</span>
+                  <span className="font-medium">{entry.stateName}</span>
+                  <span>{t(stateTypeLabels[entry.stateType])}</span>
+                  <StateEntryState status={entry.status} />
+                  <span className="font-mono text-sm">{clock(entry.enteredAt)}</span>
+                  <span className="text-right font-mono text-sm">{entry.attempts}</span>
+                  <span className="text-muted wrap-anywhere">{entry.result ?? '—'}</span>
+                </Row>
+              ))}
+            </Table>
           </>
         ) : null}
       </>
@@ -439,12 +441,12 @@ export function TaskPage() {
         task ? (
           <>
             {active ? (
-              <Button variant="danger" icon={Square} kbd="s" onPress={doStop} isDisabled={stopState.loading}>
+              <Button variant="danger" icon={Square} kbd="s" compact onPress={doStop} isDisabled={stopState.loading}>
                 {t('task.stop')}
               </Button>
             ) : null}
             {resumable ? (
-              <Button variant="primary" icon={Play} kbd="⌘↵" onPress={doResume} isDisabled={!message.trim()}>
+              <Button variant="primary" icon={Play} kbd="⌘↵" compact onPress={doResume} isDisabled={!message.trim()}>
                 {t('task.resume')}
               </Button>
             ) : null}

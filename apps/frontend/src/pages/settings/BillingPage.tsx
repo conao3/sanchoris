@@ -6,7 +6,7 @@ import { Button } from '../../components/Button';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { SettingsPage } from '../../components/SettingsTabs';
 import { CheckoutNote, TenantStateNote, useCheckoutOutcome } from '../../components/billing';
-import { ActionError, Chip, Dim, ErrorNote, Kv, Meter, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
+import { ActionError, Chip, Dim, ErrorNote, Kv, Meter, Row, Section, Skeleton, State, Sub, Table, Th, Title } from '../../components/ui';
 import { BillingDocument, ChangePlanDocument, DeleteTenantDocument, OpenBillingPortalDocument } from '../../graphql/generated/graphql';
 import { t, tx } from '../../i18n';
 import { day, elapsedRatio, hours, percent } from '../../lib/format';
@@ -55,7 +55,7 @@ export function BillingPage() {
     const workspaceHours = hours(usage.workspaceSecondsThisPeriod);
     content = (
       <>
-        <div className="grid grid-cols-2 gap-10">
+        <div className="grid grid-cols-1 gap-x-10 gap-y-[22px] lg:grid-cols-2">
           <div>
             <Section count={period} first>
               {t('billing.tasksThisPeriod')}
@@ -86,7 +86,7 @@ export function BillingPage() {
             />
           </div>
         </div>
-        <div className="mt-1.5 grid grid-cols-2 gap-10">
+        <div className="mt-1.5 grid grid-cols-1 gap-x-10 lg:grid-cols-2">
           <div>
             <Section count={period}>{t('billing.workspaceHours')}</Section>
             <div className="mt-2.5">
@@ -101,36 +101,38 @@ export function BillingPage() {
         {admin ? null : (
           <>
             <Section>{t('billing.plans')}</Section>
-            <Th cols={cols}>
-              <span>{t('billing.plan')}</span>
-              <span>{t('col.price')}</span>
-              <span>{t('nav.tasks')}</span>
-              <span>{t('col.workspaceHours')}</span>
-              <span>{t('col.concurrent')}</span>
-              <span>{t('settings.members')}</span>
-              <span />
-            </Th>
-            {data.plans.map((item) => (
-              <Row key={item.id} cols={cols} selected={item.id === plan.id}>
-                <span className="font-medium">{item.name}</span>
-                <span>{planPrice(item)}</span>
-                <span>{planLimit(item.taskLimit, item.limitPeriod)}</span>
-                <span>{planLimit(item.workspaceHourLimit, item.limitPeriod)}</span>
-                <span>{item.concurrencyLimit}</span>
-                <span>{item.memberLimit}</span>
-                {item.id === plan.id ? (
-                  <State tone="ok" icon={ShieldCheck}>
-                    {t('billing.current')}
-                  </State>
-                ) : (
-                  <span className="justify-self-end">
-                    <Button small isDisabled={changeState.loading} onPress={() => change(item.id)}>
-                      {t('billing.change')}
-                    </Button>
-                  </span>
-                )}
-              </Row>
-            ))}
+            <Table>
+              <Th cols={cols}>
+                <span>{t('billing.plan')}</span>
+                <span>{t('col.price')}</span>
+                <span>{t('nav.tasks')}</span>
+                <span>{t('col.workspaceHours')}</span>
+                <span>{t('col.concurrent')}</span>
+                <span>{t('settings.members')}</span>
+                <span />
+              </Th>
+              {data.plans.map((item) => (
+                <Row key={item.id} cols={cols} selected={item.id === plan.id}>
+                  <span className="font-medium">{item.name}</span>
+                  <span>{planPrice(item)}</span>
+                  <span>{planLimit(item.taskLimit, item.limitPeriod)}</span>
+                  <span>{planLimit(item.workspaceHourLimit, item.limitPeriod)}</span>
+                  <span>{item.concurrencyLimit}</span>
+                  <span>{item.memberLimit}</span>
+                  {item.id === plan.id ? (
+                    <State tone="ok" icon={ShieldCheck}>
+                      {t('billing.current')}
+                    </State>
+                  ) : (
+                    <span className="justify-self-end">
+                      <Button small isDisabled={changeState.loading} onPress={() => change(item.id)}>
+                        {t('billing.change')}
+                      </Button>
+                    </span>
+                  )}
+                </Row>
+              ))}
+            </Table>
             <Dim className="mt-3">{t('billing.footer')}</Dim>
           </>
         )}
@@ -197,7 +199,7 @@ function DeleteTenant({ tenantId, name, free }: { tenantId: string; name: string
   return (
     <>
       <Section>{t('billing.deleteTenant')}</Section>
-      <div className="flex items-center justify-between gap-6">
+      <div className="flex items-center justify-between gap-6 max-md:flex-col max-md:items-start max-md:gap-2.5">
         <Dim>{t('billing.deleteTenantNote')}</Dim>
         <Button variant="danger" icon={Trash2} onPress={() => setOpen(true)}>
           {t('billing.deleteTenant')}

@@ -3,7 +3,7 @@ import { CircleCheck, CircleDot, Clock } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { ApiKeyForm, SubscriptionCommands } from '../components/ApiKeyForm';
 import { Cols } from '../components/Shell';
-import { Chip, Dim, Lk, Row, Section, State, Sub, Th, Title } from '../components/ui';
+import { Chip, Dim, Lk, Row, Section, State, Sub, Table, Th, Title } from '../components/ui';
 import type { HomeQuery } from '../graphql/generated/graphql';
 import { type MessageKey, t, tx } from '../i18n';
 import { useKeys } from '../lib/keys';
@@ -110,38 +110,40 @@ export function HomeSetup({ tenant }: { tenant: Tenant }) {
     <>
       <Title>{t('nav.home')}</Title>
       <Sub>{t('setup.intro', { tenant: tenant.name })}</Sub>
-      <Th cols={cols}>
-        <span>{t('col.step')}</span>
-        <span />
-        <span />
-      </Th>
-      {steps.map((step) => {
-        const state = step.done ? (
-          <State tone="ok" icon={CircleCheck}>
-            {t('setup.done')}
-          </State>
-        ) : step === current ? (
-          <State tone="run" icon={CircleDot}>
-            {t('setup.now')}
-          </State>
-        ) : (
-          <State tone="wait" icon={Clock}>
-            {step.optional ? t('setup.optional') : t('setup.next')}
-          </State>
-        );
-        return (
-          <Row key={step.key} cols={cols} tall selected={step === current}>
-            {state}
-            <div>
-              <span className="font-medium">{step.title}</span>
-              <Dim>{step.detail}</Dim>
-            </div>
-            <span className="text-muted">
-              <Lk to={step.to}>{t(step.where)}</Lk>
-            </span>
-          </Row>
-        );
-      })}
+      <Table>
+        <Th cols={cols}>
+          <span>{t('col.step')}</span>
+          <span />
+          <span />
+        </Th>
+        {steps.map((step) => {
+          const state = step.done ? (
+            <State tone="ok" icon={CircleCheck}>
+              {t('setup.done')}
+            </State>
+          ) : step === current ? (
+            <State tone="run" icon={CircleDot}>
+              {t('setup.now')}
+            </State>
+          ) : (
+            <State tone="wait" icon={Clock}>
+              {step.optional ? t('setup.optional') : t('setup.next')}
+            </State>
+          );
+          return (
+            <Row key={step.key} cols={cols} tall selected={step === current}>
+              {state}
+              <div>
+                <span className="font-medium">{step.title}</span>
+                <Dim>{step.detail}</Dim>
+              </div>
+              <span className="text-muted">
+                <Lk to={step.to}>{t(step.where)}</Lk>
+              </span>
+            </Row>
+          );
+        })}
+      </Table>
       <Section>{t('setup.connectSubscription')}</Section>
       <Dim className="mb-2">{t('setup.connectSubscriptionDetail')}</Dim>
       <SubscriptionCommands tenantName={tenant.name} />

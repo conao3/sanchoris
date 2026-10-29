@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { ApiKeyForm, SubscriptionCommands } from '../../components/ApiKeyForm';
 import { Button } from '../../components/Button';
 import { SettingsPage } from '../../components/SettingsTabs';
-import { ActionError, Dim, Empty, ErrorNote, Icon, Meter, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
+import { ActionError, Dim, Empty, ErrorNote, Icon, Meter, Row, Section, Skeleton, State, Sub, Table, Th, Title } from '../../components/ui';
 import { CredentialsDocument, RemoveCredentialDocument } from '../../graphql/generated/graphql';
 import { type MessageKey, t, tx } from '../../i18n';
 import { ago } from '../../lib/format';
@@ -46,7 +46,7 @@ export function CredentialsPage() {
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
       {!data && !error ? <Skeleton rows={4} /> : null}
       {tenant && connect ? (
-        <div className="mb-4 grid grid-cols-[1fr_340px] gap-10 border-b border-line pb-4">
+        <div className="mb-4 grid grid-cols-1 gap-10 border-b border-line pb-4 lg:grid-cols-[1fr_340px]">
           <div>
             <Section first>{t('setup.connectSubscription')}</Section>
             <Dim className="mb-2">{t('setup.connectSubscriptionDetail')}</Dim>
@@ -62,70 +62,72 @@ export function CredentialsPage() {
       {tenant && credentials.length === 0 ? <Empty>{t('credentials.empty')}</Empty> : null}
       {credentials.length > 0 ? (
         <>
-          <Th cols={cols}>
-            <span>{t('col.name')}</span>
-            <span>{t('col.provider')}</span>
-            <span>{t('col.account')}</span>
-            <span>{t('col.kind')}</span>
-            <span>{t('col.scope')}</span>
-            <span>{t('col.owner')}</span>
-            <span>{t('col.status')}</span>
-            <span>{t('col.usage')}</span>
-            <span>{t('col.lastUsed')}</span>
-            <span />
-          </Th>
-          {credentials.map((credential, index) => {
-            const reconnect = credential.status === 'RECONNECT';
-            const week = credential.usage?.sevenDay;
-            const fiveHour = credential.usage?.fiveHour;
-            return (
-              <Row key={credential.id} cols={cols} selected={nav.selected === index} rowRef={nav.rowRef(index)} onClick={() => nav.select(index)}>
-                <span className="font-mono text-sm">{credential.name}</span>
-                <span className="font-medium">
-                  <Icon icon={credential.provider === 'CODEX' ? Terminal : Bot} /> {t(credential.provider === 'CODEX' ? 'provider.codex' : 'provider.claude')}
-                </span>
-                <span className={credential.kind === 'SUBSCRIPTION' ? '' : 'font-mono text-sm'}>{credential.account}</span>
-                <span>
-                  {t(kindLabels[credential.kind])}
-                  {credential.subscriptionPlan ? ` · ${credential.subscriptionPlan}` : ''}
-                </span>
-                <span>{t(credential.scope === 'PERSONAL' ? 'credentials.personal' : 'credentials.organization')}</span>
-                <span>{credential.owner?.user.name ?? tenant?.name}</span>
-                {reconnect ? (
-                  <State tone="err" icon={TriangleAlert}>
-                    {t('status.reconnect')}
-                  </State>
-                ) : (
-                  <State tone="ok" icon={ShieldCheck}>
-                    {t('integrations.connected')}
-                  </State>
-                )}
-                {week ? (
-                  <div title={t('credentials.usageTitle', { week: Math.round(week.utilization * 100), fiveHour: Math.round((fiveHour?.utilization ?? 0) * 100) })}>
-                    <Meter value={week.utilization} />
-                  </div>
-                ) : (
-                  <span className="text-muted">—</span>
-                )}
-                <span className="text-muted">
-                  {reconnect && credential.rejectedAt
-                    ? t('credentials.rejected', { at: ago(credential.rejectedAt) })
-                    : credential.lastUsedAt
-                      ? ago(credential.lastUsedAt)
-                      : t('credentials.never')}
-                </span>
-                {reconnect ? (
-                  <Button variant="primary" small icon={RefreshCw} onPress={() => setConnect(true)}>
-                    {t('credentials.reconnect')}
-                  </Button>
-                ) : (
-                  <Button small icon={credential.kind === 'SUBSCRIPTION' ? LogOut : Ban} onPress={() => void remove({ credentialId: credential.id })} isDisabled={removeState.loading}>
-                    {credential.kind === 'SUBSCRIPTION' ? t('credentials.disconnect') : t('credentials.remove')}
-                  </Button>
-                )}
-              </Row>
-            );
-          })}
+          <Table>
+            <Th cols={cols}>
+              <span>{t('col.name')}</span>
+              <span>{t('col.provider')}</span>
+              <span>{t('col.account')}</span>
+              <span>{t('col.kind')}</span>
+              <span>{t('col.scope')}</span>
+              <span>{t('col.owner')}</span>
+              <span>{t('col.status')}</span>
+              <span>{t('col.usage')}</span>
+              <span>{t('col.lastUsed')}</span>
+              <span />
+            </Th>
+            {credentials.map((credential, index) => {
+              const reconnect = credential.status === 'RECONNECT';
+              const week = credential.usage?.sevenDay;
+              const fiveHour = credential.usage?.fiveHour;
+              return (
+                <Row key={credential.id} cols={cols} selected={nav.selected === index} rowRef={nav.rowRef(index)} onClick={() => nav.select(index)}>
+                  <span className="font-mono text-sm">{credential.name}</span>
+                  <span className="font-medium">
+                    <Icon icon={credential.provider === 'CODEX' ? Terminal : Bot} /> {t(credential.provider === 'CODEX' ? 'provider.codex' : 'provider.claude')}
+                  </span>
+                  <span className={credential.kind === 'SUBSCRIPTION' ? '' : 'font-mono text-sm'}>{credential.account}</span>
+                  <span>
+                    {t(kindLabels[credential.kind])}
+                    {credential.subscriptionPlan ? ` · ${credential.subscriptionPlan}` : ''}
+                  </span>
+                  <span>{t(credential.scope === 'PERSONAL' ? 'credentials.personal' : 'credentials.organization')}</span>
+                  <span>{credential.owner?.user.name ?? tenant?.name}</span>
+                  {reconnect ? (
+                    <State tone="err" icon={TriangleAlert}>
+                      {t('status.reconnect')}
+                    </State>
+                  ) : (
+                    <State tone="ok" icon={ShieldCheck}>
+                      {t('integrations.connected')}
+                    </State>
+                  )}
+                  {week ? (
+                    <div title={t('credentials.usageTitle', { week: Math.round(week.utilization * 100), fiveHour: Math.round((fiveHour?.utilization ?? 0) * 100) })}>
+                      <Meter value={week.utilization} />
+                    </div>
+                  ) : (
+                    <span className="text-muted">—</span>
+                  )}
+                  <span className="text-muted">
+                    {reconnect && credential.rejectedAt
+                      ? t('credentials.rejected', { at: ago(credential.rejectedAt) })
+                      : credential.lastUsedAt
+                        ? ago(credential.lastUsedAt)
+                        : t('credentials.never')}
+                  </span>
+                  {reconnect ? (
+                    <Button variant="primary" small icon={RefreshCw} onPress={() => setConnect(true)}>
+                      {t('credentials.reconnect')}
+                    </Button>
+                  ) : (
+                    <Button small icon={credential.kind === 'SUBSCRIPTION' ? LogOut : Ban} onPress={() => void remove({ credentialId: credential.id })} isDisabled={removeState.loading}>
+                      {credential.kind === 'SUBSCRIPTION' ? t('credentials.disconnect') : t('credentials.remove')}
+                    </Button>
+                  )}
+                </Row>
+              );
+            })}
+          </Table>
           <ActionError error={removeState.error} className="mt-1.5" />
         </>
       ) : null}

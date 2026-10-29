@@ -2,7 +2,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { FileCode, Plus, ShieldCheck } from 'lucide-react';
 import { Button } from '../components/Button';
 import { Page, Pg } from '../components/Shell';
-import { Dim, Empty, ErrorNote, Lk, Row, Skeleton, State, Sub, Th, Title } from '../components/ui';
+import { Dim, Empty, ErrorNote, Lk, Row, Skeleton, State, Sub, Table, Th, Title } from '../components/ui';
 import { SkillsDocument } from '../graphql/generated/graphql';
 import { t, tx } from '../i18n';
 import { duration, percent } from '../lib/format';
@@ -51,7 +51,7 @@ export function SkillsPage() {
         {!data && !error ? <Skeleton rows={3} /> : null}
         {data && skills.length === 0 ? <Empty>{t('skills.empty')}</Empty> : null}
         {skills.length > 0 ? (
-          <>
+          <Table>
             <Th cols={cols}>
               <span>{t('col.skill')}</span>
               <span>{t('col.kind')}</span>
@@ -91,7 +91,7 @@ export function SkillsPage() {
                 </Row>
               );
             })}
-          </>
+          </Table>
         ) : null}
         <Dim className="mt-3.5">
           {tx('skills.footer', {

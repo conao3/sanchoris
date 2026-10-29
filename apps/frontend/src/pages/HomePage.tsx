@@ -5,7 +5,7 @@ import { Button } from '../components/Button';
 import { Cols, Page } from '../components/Shell';
 import { CheckoutNote, TenantStateNote, useCheckoutOutcome } from '../components/billing';
 import { TaskState } from '../components/status';
-import { ActionError, Dim, ErrorNote, Id, Lk, Meter, Row, Section, Segments, Skeleton, State, Sub, Th, Title, Toggle } from '../components/ui';
+import { ActionError, Dim, ErrorNote, Id, Lk, Meter, Row, Section, Segments, Skeleton, State, Sub, Table, Th, Title, Toggle } from '../components/ui';
 import {
   type HomeQuery,
   HomeDocument,
@@ -46,6 +46,8 @@ function Sparkline({ values }: { values: number[] }) {
     </svg>
   );
 }
+
+const stackedRow = 'max-md:grid-cols-[minmax(0,1fr)_auto]! max-md:gap-y-1 max-md:py-2 max-md:[&>:first-child]:col-span-2';
 
 function SnoozeMenu({ taskId }: { taskId: string }) {
   const [open, setOpen] = useState(false);
@@ -146,7 +148,7 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
       {attention.length === 0 ? <Dim>{t('home.nothingNeedsYou')}</Dim> : null}
       {attention.map((item, index) => {
         const cols = '110px 1fr auto';
-        const common = { cols, selected: nav.selected === index, rowRef: nav.rowRef(index), onClick: () => nav.select(index) };
+        const common = { cols, className: stackedRow, selected: nav.selected === index, rowRef: nav.rowRef(index), onClick: () => nav.select(index) };
         if (item.kind === 'task') {
           const { task } = item;
           return (
@@ -213,7 +215,7 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
       {running.length === 0 ? (
         <Dim>{t('home.nothingRunning')}</Dim>
       ) : (
-        <>
+        <Table>
           <Th cols="110px 1fr 150px 120px 70px">
             <span>{t('col.state')}</span>
             <span>{t('col.task')}</span>
@@ -237,13 +239,13 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
               </Row>
             );
           })}
-        </>
+        </Table>
       )}
 
       <Section count={waiting.length}>{t('status.waiting')}</Section>
       {waiting.length === 0 ? <Dim>{t('home.nothingWaiting')}</Dim> : null}
       {waiting.map((task) => (
-        <Row key={task.id} cols="110px 1fr auto" onClick={() => void navigate({ to: '/tasks/$task', params: { task: task.id } })}>
+        <Row key={task.id} cols="110px 1fr auto" className={stackedRow} onClick={() => void navigate({ to: '/tasks/$task', params: { task: task.id } })}>
           <TaskState status={task.status} waitReason={task.waitReason} />
           <div>
             <span className="font-medium">{task.title}</span>{' '}
@@ -387,17 +389,17 @@ export function HomePage() {
       }
     >
       {error ? (
-        <div className="p-6">
+        <div className="px-4 py-6 md:px-6">
           <ErrorNote message={error.message} onRetry={refetch} />
         </div>
       ) : !tenant ? (
-        <div className="p-6">
+        <div className="px-4 py-6 md:px-6">
           <Skeleton rows={6} />
         </div>
       ) : (
         <>
           {checkout || tenant.state === 'SUSPENDED' ? (
-            <div className="px-6 pt-5">
+            <div className="px-4 pt-5 md:px-6">
               <CheckoutNote outcome={checkout} success="checkout.tenantPaid" canceled="checkout.tenantCanceled" />
               <TenantStateNote tenant={tenant} />
             </div>

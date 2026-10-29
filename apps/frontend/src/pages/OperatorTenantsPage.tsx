@@ -2,7 +2,7 @@ import { Ban, CircleCheck, Trash2 } from 'lucide-react';
 import { type FormEvent, Fragment, useState } from 'react';
 import { Button } from '../components/Button';
 import { Page, Pg } from '../components/Shell';
-import { ActionError, Empty, ErrorNote, Row, Skeleton, State, Sub, Th, Title } from '../components/ui';
+import { ActionError, Empty, ErrorNote, Row, Skeleton, State, Sub, Table, Th, Title } from '../components/ui';
 import { OperatorTenantsDocument, SuspendTenantDocument, UnsuspendTenantDocument } from '../graphql/generated/graphql';
 import { t } from '../i18n';
 import { hours } from '../lib/format';
@@ -61,7 +61,7 @@ export function OperatorTenantsPage() {
         {!data && !error ? <Skeleton rows={4} /> : null}
         {data && !operator ? <Empty>{t('operator.notOperator')}</Empty> : null}
         {tenants.length > 0 ? (
-          <>
+          <Table>
             <Th cols={cols}>
               <span>{t('col.tenant')}</span>
               <span>{t('col.github')}</span>
@@ -143,7 +143,7 @@ export function OperatorTenantsPage() {
                 </Fragment>
               );
             })}
-          </>
+          </Table>
         ) : null}
       </Pg>
     </Page>

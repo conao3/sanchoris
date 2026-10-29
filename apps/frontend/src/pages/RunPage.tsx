@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from '@tanstack/react-router';
 import clsx from 'clsx';
-import { Square } from 'lucide-react';
+import { MessageSquare, Square } from 'lucide-react';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { Button } from '../components/Button';
 import { ConfirmDialog } from '../components/ConfirmDialog';
@@ -104,7 +104,7 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
   const [send, sendState] = useAction(SendChatMessageDocument);
   const [text, setText] = useState('');
   const input = useRef<HTMLInputElement>(null);
-  const logEnd = useRef<HTMLDivElement>(null);
+  const logBox = useRef<HTMLDivElement>(null);
   const task = data?.tenant?.task;
   const run = task?.run;
   const live = isLive(run?.status);
@@ -112,7 +112,7 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
 
   useEffect(() => {
     if (follow) {
-      logEnd.current?.scrollIntoView({ block: 'nearest' });
+      logBox.current?.scrollTo({ top: logBox.current.scrollHeight });
     }
   }, [follow, log.length]);
 
@@ -154,26 +154,26 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
   let body;
   if (error) {
     body = (
-      <div className="p-6">
+      <div className="px-4 py-6 md:px-6">
         <ErrorNote message={error.message} onRetry={refetch} />
       </div>
     );
   } else if (!data) {
     body = (
-      <div className="p-6">
+      <div className="px-4 py-6 md:px-6">
         <Skeleton rows={8} />
       </div>
     );
   } else if (!task || !run) {
     body = (
-      <div className="p-6">
+      <div className="px-4 py-6 md:px-6">
         <Empty>{t('run.notFound')}</Empty>
       </div>
     );
   } else {
     const agent = t(run.agent === 'CODEX' ? 'provider.codex' : 'provider.claude');
     const main = (
-      <div className="flex h-full min-h-[480px] flex-col">
+      <div className="flex h-full min-h-[480px] flex-col max-lg:h-[calc(100dvh-5.25rem)]">
         <Title>{t('run.title', { n: run.number })}</Title>
         <Sub>
           <RunState status={run.status} />{' '}
@@ -187,7 +187,7 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
         </Sub>
         <ActionError error={stopState.error} className="-mt-3 mb-3.5" />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-ui bg-term-bg py-3 font-mono text-sm leading-[1.75] text-term-fg">
-          <div className="min-h-0 flex-1 overflow-auto">
+          <div ref={logBox} className="min-h-0 flex-1 overflow-auto">
             {log.map((line, index) => {
               const [first, ...rest] = lineText(line).split('\n');
               const prefix = linePrefix[line.kind];
@@ -206,7 +206,6 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
                 </div>
               );
             })}
-            <div ref={logEnd} />
           </div>
           <form onSubmit={submit} className="mt-2.5 flex items-center justify-between gap-3 border-t border-term-line px-4 pt-2.5 text-muted">
             <input
@@ -299,10 +298,10 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
       ]}
       actions={
         <>
-          <Button variant="danger" icon={Square} kbd="s" isDisabled={!live || stopState.loading} onPress={askStop}>
+          <Button variant="danger" icon={Square} kbd="s" compact isDisabled={!live || stopState.loading} onPress={askStop}>
             {t('run.stop')}
           </Button>
-          <Button kbd="m" isDisabled={!live} onPress={() => input.current?.focus()}>
+          <Button icon={MessageSquare} kbd="m" compact isDisabled={!live} onPress={() => input.current?.focus()}>
             {t('run.sendMessage')}
           </Button>
         </>

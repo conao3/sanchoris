@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { Button } from '../../components/Button';
 import { Menu } from '../../components/Menu';
 import { SettingsPage } from '../../components/SettingsTabs';
-import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Lk, Row, Skeleton, State, Sub, Th, Title } from '../../components/ui';
+import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Lk, Row, Skeleton, State, Sub, Table, Th, Title } from '../../components/ui';
 import { type ActorKind, type AuditFilter, AuditLogDocument, type AuditOrigin, ExportAuditLogDocument } from '../../graphql/generated/graphql';
 import { type MessageKey, t } from '../../i18n';
 import { dayTime } from '../../lib/format';
@@ -83,7 +83,7 @@ export function AuditPage() {
     >
       <Title>{t('settings.audit')}</Title>
       <Sub>{t('audit.intro', { tenant: tenant?.name ?? '' })}</Sub>
-      <div className="mb-3 flex gap-2">
+      <div className="mb-3 flex flex-wrap gap-2">
         <Menu
           icon={Users}
           label={actorName ?? t('audit.allActors')}
@@ -119,34 +119,36 @@ export function AuditPage() {
       {tenant && events.length === 0 ? <Empty>{t('audit.empty')}</Empty> : null}
       {events.length > 0 ? (
         <>
-          <Th cols={cols}>
-            <span>{t('col.time')}</span>
-            <span>{t('col.actor')}</span>
-            <span>{t('col.action')}</span>
-            <span>{t('col.targetSummary')}</span>
-            <span>{t('col.from')}</span>
-          </Th>
-          {events.map((event, index) => {
-            const origin = originLabels[event.origin];
-            return (
-              <Row key={event.id} cols={cols} selected={nav.selected === index} rowRef={nav.rowRef(index)} onClick={() => nav.select(index)}>
-                <span className="font-mono text-sm">{dayTime(event.at)}</span>
-                <span>
-                  <Icon icon={actorIcons[event.actorKind]} /> {event.actorName}
-                </span>
-                <span className="font-mono text-sm wrap-anywhere">{event.action}</span>
-                <span>
-                  {event.targetTask ? <Lk to="/tasks/$task" params={{ task: event.targetTask.id }}>{event.target}</Lk> : event.target}
-                  {event.summary ? <span className="text-muted"> · {event.summary}</span> : null}
-                </span>
-                {event.ip ? (
-                  <span className="font-mono text-sm text-muted wrap-anywhere">{event.ip}</span>
-                ) : (
-                  <Dim>{origin ? t(origin) : '—'}</Dim>
-                )}
-              </Row>
-            );
-          })}
+          <Table>
+            <Th cols={cols}>
+              <span>{t('col.time')}</span>
+              <span>{t('col.actor')}</span>
+              <span>{t('col.action')}</span>
+              <span>{t('col.targetSummary')}</span>
+              <span>{t('col.from')}</span>
+            </Th>
+            {events.map((event, index) => {
+              const origin = originLabels[event.origin];
+              return (
+                <Row key={event.id} cols={cols} selected={nav.selected === index} rowRef={nav.rowRef(index)} onClick={() => nav.select(index)}>
+                  <span className="font-mono text-sm">{dayTime(event.at)}</span>
+                  <span>
+                    <Icon icon={actorIcons[event.actorKind]} /> {event.actorName}
+                  </span>
+                  <span className="font-mono text-sm wrap-anywhere">{event.action}</span>
+                  <span>
+                    {event.targetTask ? <Lk to="/tasks/$task" params={{ task: event.targetTask.id }}>{event.target}</Lk> : event.target}
+                    {event.summary ? <span className="text-muted"> · {event.summary}</span> : null}
+                  </span>
+                  {event.ip ? (
+                    <span className="font-mono text-sm text-muted wrap-anywhere">{event.ip}</span>
+                  ) : (
+                    <Dim>{origin ? t(origin) : '—'}</Dim>
+                  )}
+                </Row>
+              );
+            })}
+          </Table>
           {events.length >= AUDIT_LIST_LIMIT ? <Dim className="mt-2 text-xs">{t('common.latest', { n: AUDIT_LIST_LIMIT })}</Dim> : null}
         </>
       ) : null}

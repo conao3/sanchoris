@@ -5,7 +5,7 @@ import { Button } from '../components/Button';
 import { FlowDiagram } from '../components/FlowDiagram';
 import { Cols, Page } from '../components/Shell';
 import { SkillRunState } from '../components/status';
-import { Code, Dim, Empty, ErrorNote, Id, Kv, Lk, Row, Section, Skeleton, State, Sub, Th, Title } from '../components/ui';
+import { Code, Dim, Empty, ErrorNote, Id, Kv, Lk, Row, Section, Skeleton, State, Sub, Table, Th, Title } from '../components/ui';
 import { SkillDocument } from '../graphql/generated/graphql';
 import { t } from '../i18n';
 import { between, duration, durationLong, issueLabel, percent, when } from '../lib/format';
@@ -35,19 +35,19 @@ export function SkillPage() {
   let body;
   if (error) {
     body = (
-      <div className="p-6">
+      <div className="px-4 py-6 md:px-6">
         <ErrorNote message={error.message} onRetry={refetch} />
       </div>
     );
   } else if (!data) {
     body = (
-      <div className="p-6">
+      <div className="px-4 py-6 md:px-6">
         <Skeleton rows={6} />
       </div>
     );
   } else if (!skill) {
     body = (
-      <div className="p-6">
+      <div className="px-4 py-6 md:px-6">
         <Empty>{t('skill.notFound', { name })}</Empty>
       </div>
     );
@@ -65,7 +65,7 @@ export function SkillPage() {
         <Section count={t('skill.recentRunsOf', { n: stats.runs, days: stats.days })}>{t('skill.recentRuns')}</Section>
         {skill.recentRuns.length === 0 ? <Dim>{t('skill.noRuns')}</Dim> : null}
         {skill.recentRuns.length > 0 ? (
-          <>
+          <Table>
             <Th cols={cols}>
               <span>{t('col.status')}</span>
               <span>{t('col.task')}</span>
@@ -87,7 +87,7 @@ export function SkillPage() {
                 <span className="text-right font-mono text-sm">{run.endedAt ? duration(between(run.startedAt, run.endedAt)) : '—'}</span>
               </Row>
             ))}
-          </>
+          </Table>
         ) : null}
       </>
     );

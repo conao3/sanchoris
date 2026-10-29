@@ -6,7 +6,7 @@ import { Button } from '../components/Button';
 import { Menu } from '../components/Menu';
 import { Page, Pg } from '../components/Shell';
 import { TaskState } from '../components/status';
-import { Dim, Empty, ErrorNote, Id, Row, Skeleton, Sub, Th, Title } from '../components/ui';
+import { Dim, Empty, ErrorNote, Id, Row, Skeleton, Sub, Table, Th, Title } from '../components/ui';
 import { type TaskFilter, type TaskRowFragment, TasksDocument } from '../graphql/generated/graphql';
 import { t } from '../i18n';
 import { age, issueLabel, usd } from '../lib/format';
@@ -98,7 +98,7 @@ export function TasksPage() {
       <Pg>
         <Title>{t('nav.tasks')}</Title>
         <Sub>{t('tasks.intro', { n: rows.length })}</Sub>
-        <div className="mb-3.5 flex gap-2">
+        <div className="mb-3.5 flex flex-wrap gap-2">
           <Menu
             icon={Zap}
             open={filterOpen}
@@ -130,32 +130,34 @@ export function TasksPage() {
         {data && rows.length === 0 ? <Empty>{t('tasks.empty')}</Empty> : null}
         {rows.length > 0 ? (
           <>
-            <Th cols={cols}>
-              <span>{t('col.state')}</span>
-              <span>{t('col.task')}</span>
-              <span>{t('col.trigger')}</span>
-              <span>{t('col.skill')}</span>
-              <span className="text-right">{t('col.cost')}</span>
-              <span className="text-right">{t('col.updated')}</span>
-            </Th>
-            {rows.map(({ task, child }, index) => (
-              <Row key={task.id} cols={cols} selected={nav.selected === index} rowRef={nav.rowRef(index)} onClick={() => open(index)}>
-                <TaskState status={task.status} waitReason={task.waitReason} />
-                <div className={clsx(child && "relative pl-5 before:absolute before:left-1 before:text-faint before:content-['└']")}>
-                  <span className="font-medium">{task.title}</span>{' '}
-                  <Id>
-                    {task.issue ? issueLabel(task.issue.repository, task.issue.number) : t('tasks.chat')}
-                    {task.blockedBy.length > 0
-                      ? ` · ${t('tasks.blockedBy', { ids: task.blockedBy.map((blocker) => `#${blocker.issue?.number ?? ''}`).join(', ') })}`
-                      : null}
-                  </Id>
-                </div>
-                <span className="text-muted">{task.trigger.name}</span>
-                <span className="text-muted">{skillProgress(task)}</span>
-                <span className="text-right font-mono text-sm">{task.costUsd > 0 ? usd(task.costUsd) : '—'}</span>
-                <span className="text-right text-muted">{age(task.updatedAt)}</span>
-              </Row>
-            ))}
+            <Table>
+              <Th cols={cols}>
+                <span>{t('col.state')}</span>
+                <span>{t('col.task')}</span>
+                <span>{t('col.trigger')}</span>
+                <span>{t('col.skill')}</span>
+                <span className="text-right">{t('col.cost')}</span>
+                <span className="text-right">{t('col.updated')}</span>
+              </Th>
+              {rows.map(({ task, child }, index) => (
+                <Row key={task.id} cols={cols} selected={nav.selected === index} rowRef={nav.rowRef(index)} onClick={() => open(index)}>
+                  <TaskState status={task.status} waitReason={task.waitReason} />
+                  <div className={clsx(child && "relative pl-5 before:absolute before:left-1 before:text-faint before:content-['└']")}>
+                    <span className="font-medium">{task.title}</span>{' '}
+                    <Id>
+                      {task.issue ? issueLabel(task.issue.repository, task.issue.number) : t('tasks.chat')}
+                      {task.blockedBy.length > 0
+                        ? ` · ${t('tasks.blockedBy', { ids: task.blockedBy.map((blocker) => `#${blocker.issue?.number ?? ''}`).join(', ') })}`
+                        : null}
+                    </Id>
+                  </div>
+                  <span className="text-muted">{task.trigger.name}</span>
+                  <span className="text-muted">{skillProgress(task)}</span>
+                  <span className="text-right font-mono text-sm">{task.costUsd > 0 ? usd(task.costUsd) : '—'}</span>
+                  <span className="text-right text-muted">{age(task.updatedAt)}</span>
+                </Row>
+              ))}
+            </Table>
             {(tenant?.tasks.length ?? 0) >= TASK_LIST_LIMIT ? <Dim className="mt-2 text-xs">{t('common.latest', { n: TASK_LIST_LIMIT })}</Dim> : null}
           </>
         ) : null}

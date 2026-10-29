@@ -194,6 +194,7 @@ export function FlowDiagram({
   return (
     <div
       ref={container}
+      data-scroll-x
       className="relative overflow-x-auto rounded-ui border border-line bg-sub bg-[radial-gradient(var(--color-line)_1px,transparent_1px)] bg-size-[16px_16px]"
     >
       <div className="relative" style={{ width, height }}>

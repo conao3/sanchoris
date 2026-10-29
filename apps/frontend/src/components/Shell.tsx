@@ -1,8 +1,9 @@
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router';
 import clsx from 'clsx';
 import type { LucideIcon } from 'lucide-react';
-import { Check, ChevronsUpDown, House, ListChecks, LogOut, MessageSquare, Plus, Puzzle, Settings, ShieldCheck, Zap } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
+import { Check, ChevronsUpDown, House, ListChecks, LogOut, Menu, MessageSquare, Plus, Puzzle, Settings, ShieldCheck, Zap } from 'lucide-react';
+import { createContext, type ReactNode, useContext, useState } from 'react';
+import { Dialog, Modal, ModalOverlay, Button as RACButton } from 'react-aria-components';
 import { SignOutDocument } from '../graphql/generated/graphql';
 import { type MessageKey, t } from '../i18n';
 import { signOut } from '../lib/cognito';
@@ -47,7 +48,7 @@ function MenuLink({ item, path }: { item: MenuItem; path: string }) {
     <Link
       to={item.to}
       className={clsx(
-        'flex items-center gap-[9px] rounded-ui px-2 py-[5px]',
+        'flex items-center gap-[9px] rounded-ui px-2 py-[5px] max-lg:min-h-10',
         active ? 'bg-hover font-medium text-ink' : 'text-body hover:bg-hover',
       )}
     >
@@ -65,7 +66,7 @@ function TenantSwitcher() {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center justify-between rounded-ui px-2 py-1.5 font-semibold hover:bg-hover"
+        className="flex w-full items-center justify-between rounded-ui px-2 py-1.5 font-semibold hover:bg-hover max-lg:min-h-10"
         aria-expanded={open}
       >
         {membership.tenant.name}
@@ -122,7 +123,7 @@ function UserMenu() {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center rounded-ui px-2 py-1.5 text-left text-sm text-muted hover:bg-hover"
+        className="flex w-full items-center rounded-ui px-2 py-1.5 text-left text-sm text-muted hover:bg-hover max-lg:min-h-10"
         aria-expanded={open}
       >
         {viewer.user.name} · {t(roleLabels[membership.role])}
@@ -132,11 +133,11 @@ function UserMenu() {
   );
 }
 
-function Sidebar() {
+function Sidebar({ className }: { className?: string }) {
   const { viewer } = useTenant();
   const path = useRouterState({ select: (state) => state.location.pathname });
   return (
-    <nav className="flex flex-col gap-0.5 border-r border-line bg-sub px-2.5 py-3">
+    <nav className={clsx('flex flex-col gap-0.5 border-r border-line bg-sub px-2.5 py-3', className)}>
       <TenantSwitcher />
       <div className="h-2" />
       {topMenu.map((item) => (
@@ -150,8 +151,25 @@ function Sidebar() {
   );
 }
 
+const NavDrawerContext = createContext<() => void>(() => {});
+
+function NavDrawer({ isOpen, onOpenChange }: { isOpen: boolean; onOpenChange: (open: boolean) => void }) {
+  return (
+    <ModalOverlay isOpen={isOpen} onOpenChange={onOpenChange} isDismissable className="fixed inset-0 z-30 bg-ink/20 lg:hidden">
+      <Modal className="h-full w-[232px] outline-none">
+        <Dialog aria-label={t('shell.navigation')} className="h-full outline-none">
+          <Sidebar className="h-full overflow-auto" />
+        </Dialog>
+      </Modal>
+    </ModalOverlay>
+  );
+}
+
 export function AppFrame({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
+  const locationKey = useRouterState({ select: (state) => state.location.state.__TSR_key });
+  const [drawerKey, setDrawerKey] = useState<string>();
+  const drawerOpen = drawerKey !== undefined && drawerKey === locationKey;
   useKeys({
     'g h': () => void navigate({ to: '/' }),
     'g t': () => void navigate({ to: '/tasks' }),
@@ -159,10 +177,13 @@ export function AppFrame({ children }: { children: ReactNode }) {
     'g s': () => void navigate({ to: '/settings' }),
   });
   return (
-    <div className="grid h-screen grid-cols-[232px_1fr] overflow-hidden">
-      <Sidebar />
-      {children}
-    </div>
+    <NavDrawerContext.Provider value={() => setDrawerKey(locationKey)}>
+      <div className="grid h-screen grid-cols-1 overflow-hidden lg:grid-cols-[232px_1fr]">
+        <Sidebar className="max-lg:hidden" />
+        {children}
+      </div>
+      <NavDrawer isOpen={drawerOpen} onOpenChange={(open) => setDrawerKey(open ? locationKey : undefined)} />
+    </NavDrawerContext.Provider>
   );
 }
 
@@ -181,30 +202,38 @@ export function Page({
   keys: [string, MessageKey][];
   children: ReactNode;
 }) {
+  const openDrawer = useContext(NavDrawerContext);
   return (
     <div className="flex min-h-0 min-w-0 flex-col">
-      <header className="flex h-11 flex-none items-center justify-between border-b border-line px-6">
-        <div className="flex items-center gap-[7px] text-muted">
+      <header className="flex h-11 flex-none items-center justify-between gap-3 border-b border-line px-4 md:px-6">
+        <RACButton
+          aria-label={t('shell.openNavigation')}
+          onPress={openDrawer}
+          className="-ml-1.5 inline-flex size-8 flex-none items-center justify-center rounded-ui text-body outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-line2 lg:hidden"
+        >
+          <Icon icon={Menu} />
+        </RACButton>
+        <div className="flex min-w-0 flex-1 items-center gap-[7px] text-muted">
           {crumbs.map((crumb, index) => (
             <span key={index} className="contents">
-              {index > 0 ? <span>/</span> : null}
+              {index > 0 ? <span className="flex-none">/</span> : null}
               {index === crumbs.length - 1 ? (
-                <b className="font-medium text-ink">{crumb.label}</b>
+                <b className="min-w-0 truncate font-medium text-ink">{crumb.label}</b>
               ) : crumb.to ? (
-                <Link to={crumb.to} params={crumb.params} className="hover:text-ink">
+                <Link to={crumb.to} params={crumb.params} className="min-w-0 truncate hover:text-ink max-md:max-w-24">
                   {crumb.label}
                 </Link>
               ) : (
-                <span>{crumb.label}</span>
+                <span className="min-w-0 truncate max-md:max-w-24">{crumb.label}</span>
               )}
             </span>
           ))}
-          {badge}
+          {badge ? <span className="flex-none">{badge}</span> : null}
         </div>
-        <div className="flex items-center gap-2">{actions}</div>
+        <div className="flex flex-none items-center gap-2">{actions}</div>
       </header>
       <div className="flex min-h-0 flex-1 flex-col">{children}</div>
-      <footer className="flex h-[30px] flex-none items-center gap-[18px] border-t border-line bg-sub px-6 text-xs text-muted">
+      <footer className="flex h-[30px] flex-none items-center gap-[18px] border-t border-line bg-sub px-6 text-xs text-muted max-md:hidden">
         {keys.map(([key, label]) => (
           <span key={key} className="inline-flex items-center gap-1.5">
             <Kbd>{key}</Kbd>
@@ -217,14 +246,14 @@ export function Page({
 }
 
 export function Pg({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={clsx('min-h-0 flex-1 overflow-auto px-6 py-5', className)}>{children}</div>;
+  return <div className={clsx('min-h-0 flex-1 overflow-auto px-4 py-5 md:px-6', className)}>{children}</div>;
 }
 
 export function Cols({ main, aside }: { main: ReactNode; aside: ReactNode }) {
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[1fr_340px]">
-      <div className="min-h-0 min-w-0 overflow-auto px-6 py-5">{main}</div>
-      <aside className="min-h-0 overflow-auto border-l border-line px-[22px] py-5">{aside}</aside>
+    <div className="grid min-h-0 flex-1 grid-cols-1 max-lg:content-start max-lg:overflow-auto lg:grid-cols-[1fr_340px]">
+      <div className="min-w-0 px-4 py-5 md:px-6 lg:min-h-0 lg:overflow-auto">{main}</div>
+      <aside className="min-w-0 border-line px-4 py-5 max-lg:border-t md:px-6 lg:min-h-0 lg:overflow-auto lg:border-l lg:px-[22px]">{aside}</aside>
     </div>
   );
 }

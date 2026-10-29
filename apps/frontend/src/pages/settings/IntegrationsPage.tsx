@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { Ban, CircleDashed, ExternalLink, GitBranch, Link2, MessageSquare, Plus, ShieldCheck, TriangleAlert, UserCheck } from 'lucide-react';
 import { Button } from '../../components/Button';
 import { SettingsPage } from '../../components/SettingsTabs';
-import { ActionError, Chip, Dim, ErrorNote, Icon, Row, Skeleton, State, Sub, Th, Title, type Tone, toneClass } from '../../components/ui';
+import { ActionError, Chip, Dim, ErrorNote, Icon, Row, Skeleton, State, Sub, Table, Th, Title, type Tone, toneClass } from '../../components/ui';
 import {
   ConnectGitHubDocument,
   InstallGitHubAppDocument,
@@ -68,7 +68,7 @@ export function IntegrationsPage() {
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
       {!data && !error ? <Skeleton rows={3} /> : null}
       {tenant ? (
-        <>
+        <Table>
           <Th cols={cols}>
             <span />
             <span>{t('col.integration')}</span>
@@ -208,7 +208,7 @@ export function IntegrationsPage() {
               )}
             </span>
           </Row>
-        </>
+        </Table>
       ) : null}
     </SettingsPage>
   );

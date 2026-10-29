@@ -18,8 +18,8 @@ const roleLabels: Record<string, MessageKey> = { OWNER: 'role.owner', ADMIN: 'ro
 export function AuthLayout({ children }: { children: ReactNode }) {
   return (
     <div className="relative flex min-h-screen justify-center">
-      <div className="absolute left-8 top-6 text-base font-semibold">sanchoris</div>
-      <div className="w-[540px] pb-16 pt-[150px]">{children}</div>
+      <div className="absolute left-4 top-6 text-base font-semibold md:left-8">sanchoris</div>
+      <div className="w-full max-w-[540px] px-4 pb-16 pt-20 md:px-0 md:pt-[150px]">{children}</div>
     </div>
   );
 }
@@ -111,7 +111,13 @@ export function CreateTenantPage() {
             {plans.map((plan) => {
               const isSelected = plan.id === selected?.id;
               return (
-                <Row key={plan.id} cols="120px 1fr 100px" selected={isSelected} onClick={() => setPlanId(plan.id)}>
+                <Row
+                  key={plan.id}
+                  cols="120px 1fr 100px"
+                  className="max-md:grid-cols-[minmax(0,1fr)_auto]! max-md:gap-y-0.5 max-md:py-2 max-md:[&>:nth-child(2)]:col-span-2 max-md:[&>:nth-child(2)]:row-start-2"
+                  selected={isSelected}
+                  onClick={() => setPlanId(plan.id)}
+                >
                   <span className="font-medium" role="radio" aria-checked={isSelected}>
                     {plan.name}
                   </span>

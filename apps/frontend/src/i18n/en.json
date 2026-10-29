@@ -9,6 +9,8 @@
   "nav.createTenant": "Create tenant",
   "shell.switchTenant": "Switch tenant",
   "shell.signOut": "Sign out",
+  "shell.navigation": "Navigation",
+  "shell.openNavigation": "Open navigation",
 
   "role.owner": "owner",
   "role.admin": "admin",

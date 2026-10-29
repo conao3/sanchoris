@@ -20,7 +20,7 @@ export function Kbd({ children, tone = 'plain' }: { children: ReactNode; tone?: 
   return (
     <span
       className={clsx(
-        'inline-block rounded-kbd border px-[5px] font-mono text-xs leading-4',
+        'inline-block rounded-kbd border px-[5px] font-mono text-xs leading-4 max-md:hidden',
         tone === 'plain' && 'border-line2 bg-bg text-muted',
         tone === 'button' && 'ml-0.5 border-line bg-bg text-muted',
         tone === 'inverse' && 'ml-0.5 border-[#52525b] bg-transparent text-line2',
@@ -76,6 +76,14 @@ function fixedColumns(cols: string): string {
   return cols.replace(/(^|\s)1fr/g, '$1minmax(160px,1fr)');
 }
 
+export function Table({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <div data-scroll-x className={clsx('overflow-x-auto [&:not(:last-child)>div>.grid:last-child]:border-b!', className)}>
+      <div className="w-fit min-w-full">{children}</div>
+    </div>
+  );
+}
+
 export function Th({ cols, children }: { cols: string; children: ReactNode }) {
   return (
     <div
@@ -94,6 +102,7 @@ export function Row({
   tall,
   onClick,
   rowRef,
+  className,
 }: {
   cols: string;
   children: ReactNode;
@@ -101,6 +110,7 @@ export function Row({
   tall?: boolean;
   onClick?: () => void;
   rowRef?: (element: HTMLDivElement | null) => void;
+  className?: string;
 }) {
   return (
     <div
@@ -111,6 +121,7 @@ export function Row({
         tall ? 'min-h-14 py-1.5' : 'min-h-10',
         selected && 'bg-sub shadow-[inset_2px_0_0_var(--color-ink)]',
         onClick && 'cursor-pointer',
+        className,
       )}
       style={{ gridTemplateColumns: fixedColumns(cols) }}
     >
@@ -199,10 +210,10 @@ export function Dim({ children, className, style }: { children: ReactNode; class
 
 export function Kv({ items }: { items: [ReactNode, ReactNode][] }) {
   return (
-    <div className="grid grid-cols-[112px_1fr] gap-x-2.5 gap-y-[7px]">
+    <div className="grid grid-cols-1 gap-x-2.5 md:grid-cols-[112px_1fr] md:gap-y-[7px]">
       {items.map(([key, value], index) => (
         <div key={index} className="contents">
-          <span className="text-muted">{key}</span>
+          <span className={clsx('text-muted', index > 0 && 'max-md:mt-[7px]')}>{key}</span>
           <span>{value}</span>
         </div>
       ))}

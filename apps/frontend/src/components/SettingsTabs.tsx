@@ -2,7 +2,7 @@ import { Link } from '@tanstack/react-router';
 import clsx from 'clsx';
 import type { LucideIcon } from 'lucide-react';
 import { CreditCard, FolderGit2, GitBranch, KeyRound, ListChecks, Users } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { type ReactNode, useLayoutEffect, useRef } from 'react';
 import { type MessageKey, t } from '../i18n';
 import { Page, Pg } from './Shell';
 import { Icon } from './ui';
@@ -30,23 +30,35 @@ export function SettingsPage({
   children: ReactNode;
 }) {
   const current = tabs.find((item) => item.id === tab) ?? tabs[0];
+  const strip = useRef<HTMLDivElement>(null);
+  const active = useRef<HTMLAnchorElement>(null);
+
+  useLayoutEffect(() => {
+    if (strip.current && active.current) {
+      strip.current.scrollLeft = active.current.offsetLeft + active.current.offsetWidth - strip.current.clientWidth;
+    }
+  }, [tab]);
+
   return (
     <Page crumbs={[{ label: t('nav.settings'), to: '/settings' }, { label: t(current.label) }]} actions={actions} keys={keys}>
       <Pg>
-        <div className="mb-4 flex h-[34px] items-end gap-[18px] border-b border-line">
-          {tabs.map((item) => (
-            <Link
-              key={item.id}
-              to={item.to}
-              className={clsx(
-                'flex items-center gap-1.5 pb-2',
-                item.id === tab ? '-mb-px border-b-2 border-ink font-medium text-ink' : 'text-muted hover:text-ink',
-              )}
-            >
-              <Icon icon={item.icon} />
-              {t(item.label)}
-            </Link>
-          ))}
+        <div ref={strip} data-scroll-x className="relative mb-4 overflow-x-auto">
+          <div className="flex h-[34px] w-max min-w-full items-end gap-[18px] border-b border-line">
+            {tabs.map((item) => (
+              <Link
+                key={item.id}
+                ref={item.id === tab ? active : undefined}
+                to={item.to}
+                className={clsx(
+                  'flex items-center gap-1.5 whitespace-nowrap pb-2',
+                  item.id === tab ? '-mb-px border-b-2 border-ink font-medium text-ink' : 'text-muted hover:text-ink',
+                )}
+              >
+                <Icon icon={item.icon} />
+                {t(item.label)}
+              </Link>
+            ))}
+          </div>
         </div>
         {children}
       </Pg>

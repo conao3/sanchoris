@@ -2,7 +2,7 @@ import { Ban, Plus, Send, ShieldCheck, TriangleAlert } from 'lucide-react';
 import { type FormEvent, type RefObject, useRef, useState } from 'react';
 import { Button } from '../../components/Button';
 import { SettingsPage } from '../../components/SettingsTabs';
-import { ActionError, Dim, ErrorNote, Icon, Id, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
+import { ActionError, Dim, ErrorNote, Icon, Id, Row, Section, Skeleton, State, Sub, Table, Th, Title } from '../../components/ui';
 import {
   ChangeMemberRoleDocument,
   InviteMemberDocument,
@@ -61,7 +61,7 @@ function InviteForm({ tenantId, emailRef, onDone }: { tenantId: string; emailRef
   }
 
   return (
-    <form onSubmit={submit} className="mb-4 flex items-center gap-2 border-b border-line pb-4">
+    <form onSubmit={submit} className="mb-4 flex flex-wrap items-center gap-2 border-b border-line pb-4">
       <span className="text-muted">{t('members.inviteBy')}</span>
       <input
         ref={emailRef}
@@ -135,47 +135,49 @@ export function MembersPage() {
       {tenant && inviting ? <InviteForm tenantId={tenant.id} emailRef={emailRef} onDone={() => setInviting(false)} /> : null}
       {tenant ? (
         <>
-          <Th cols={cols}>
-            <span>{t('col.member')}</span>
-            <span>{t('col.role')}</span>
-            <span>{t('provider.claude')}</span>
-            <span>{t('provider.codex')}</span>
-            <span className="text-right">{t('col.tasksStarted')}</span>
-            <span className="text-right">{t('col.lastActive')}</span>
-          </Th>
-          {members.map((member, index) => (
-            <Row key={member.id} cols={cols} selected={nav.selected === index} rowRef={nav.rowRef(index)} onClick={() => nav.select(index)}>
-              <div>
-                <span className="font-medium">{member.user.name}</span> <Id>{member.user.githubLogin ?? t('members.githubNotLinked')}</Id>
-              </div>
-              {canManage && member.role !== 'OWNER' && (viewerRole === 'OWNER' || member.role !== 'ADMIN') ? (
-                <select
-                  aria-label={t('col.role')}
-                  className="h-7 rounded-ui border border-line2 bg-bg px-1 text-sm"
-                  value={member.role}
-                  onClick={(event) => event.stopPropagation()}
-                  disabled={roleState.loading}
-                  onChange={(event) => void changeRole({ memberId: member.id, role: event.target.value as Role })}
-                >
-                  {viewerRole === 'OWNER' ? <option value="ADMIN">{t('role.admin')}</option> : null}
-                  <option value="MEMBER">{t('role.member')}</option>
-                </select>
-              ) : (
-                <span>
-                  {member.role === 'MEMBER' ? null : <Icon icon={ShieldCheck} />} {t(roleLabels[member.role])}
-                </span>
-              )}
-              <CredentialCell member={member} provider="CLAUDE" />
-              <CredentialCell member={member} provider="CODEX" />
-              <span className="text-right font-mono text-sm">{member.tasksStarted}</span>
-              <span className="text-right text-muted">{member.lastActiveAt ? ago(member.lastActiveAt) : t('credentials.never')}</span>
-            </Row>
-          ))}
+          <Table>
+            <Th cols={cols}>
+              <span>{t('col.member')}</span>
+              <span>{t('col.role')}</span>
+              <span>{t('provider.claude')}</span>
+              <span>{t('provider.codex')}</span>
+              <span className="text-right">{t('col.tasksStarted')}</span>
+              <span className="text-right">{t('col.lastActive')}</span>
+            </Th>
+            {members.map((member, index) => (
+              <Row key={member.id} cols={cols} selected={nav.selected === index} rowRef={nav.rowRef(index)} onClick={() => nav.select(index)}>
+                <div>
+                  <span className="font-medium">{member.user.name}</span> <Id>{member.user.githubLogin ?? t('members.githubNotLinked')}</Id>
+                </div>
+                {canManage && member.role !== 'OWNER' && (viewerRole === 'OWNER' || member.role !== 'ADMIN') ? (
+                  <select
+                    aria-label={t('col.role')}
+                    className="h-7 rounded-ui border border-line2 bg-bg px-1 text-sm"
+                    value={member.role}
+                    onClick={(event) => event.stopPropagation()}
+                    disabled={roleState.loading}
+                    onChange={(event) => void changeRole({ memberId: member.id, role: event.target.value as Role })}
+                  >
+                    {viewerRole === 'OWNER' ? <option value="ADMIN">{t('role.admin')}</option> : null}
+                    <option value="MEMBER">{t('role.member')}</option>
+                  </select>
+                ) : (
+                  <span>
+                    {member.role === 'MEMBER' ? null : <Icon icon={ShieldCheck} />} {t(roleLabels[member.role])}
+                  </span>
+                )}
+                <CredentialCell member={member} provider="CLAUDE" />
+                <CredentialCell member={member} provider="CODEX" />
+                <span className="text-right font-mono text-sm">{member.tasksStarted}</span>
+                <span className="text-right text-muted">{member.lastActiveAt ? ago(member.lastActiveAt) : t('credentials.never')}</span>
+              </Row>
+            ))}
+          </Table>
           <ActionError error={roleState.error} className="mt-1.5" />
           <Section count={tenant.invitations.length}>{t('members.pending')}</Section>
           {tenant.invitations.length === 0 ? <Dim>{t('members.noPending')}</Dim> : null}
           {tenant.invitations.length > 0 ? (
-            <>
+            <Table>
               <Th cols={inviteCols}>
                 <span>{t('col.invited')}</span>
                 <span>{t('col.role')}</span>
@@ -198,7 +200,7 @@ export function MembersPage() {
                   </span>
                 </Row>
               ))}
-            </>
+            </Table>
           ) : null}
           <ActionError error={revokeState.error} className="mt-1.5" />
           <Dim className="mt-3.5">{t('members.footer')}</Dim>

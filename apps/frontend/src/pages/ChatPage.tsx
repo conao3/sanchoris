@@ -6,7 +6,7 @@ import { Button } from '../components/Button';
 import { Menu } from '../components/Menu';
 import { Page } from '../components/Shell';
 import { TaskState } from '../components/status';
-import { ActionError, Chip, Dim, ErrorNote, Icon, Id, Kbd, Lk, Row, Section, Skeleton, Sub, Th, Title } from '../components/ui';
+import { ActionError, Chip, Dim, ErrorNote, Icon, Id, Kbd, Lk, Row, Section, Skeleton, Sub, Table, Th, Title } from '../components/ui';
 import { type ChatQuery, ChatDocument, SendChatMessageDocument } from '../graphql/generated/graphql';
 import { locale, t, tx } from '../i18n';
 import { clock } from '../lib/format';
@@ -193,7 +193,7 @@ function FiledTasks({ task }: { task: ChatTask }) {
       <Dim className="mb-1.5">{t('chat.issuesFiledDetail')}</Dim>
       {task.filedTasks.length === 0 ? <Dim>{t('chat.noIssues')}</Dim> : null}
       {task.filedTasks.length > 0 ? (
-        <>
+        <Table>
           <Th cols="96px 1fr">
             <span>{t('col.state')}</span>
             <span>{t('col.task')}</span>
@@ -221,7 +221,7 @@ function FiledTasks({ task }: { task: ChatTask }) {
               </Row>
             );
           })}
-        </>
+        </Table>
       ) : null}
     </>
   );
@@ -255,7 +255,7 @@ export function ChatPage() {
       crumbs={[{ label: t('nav.chat'), to: '/chat' }, { label: taskId ? (task?.title ?? '…') : t('chat.newChat') }]}
       actions={
         <>
-          <Button variant="primary" icon={Plus} kbd="c" onPress={newChat}>
+          <Button variant="primary" icon={Plus} kbd="c" compact onPress={newChat}>
             {t('common.newChat')}
           </Button>
           {tenant ? (
@@ -264,6 +264,7 @@ export function ChatPage() {
               label={t('chat.scope')}
               title={t('chat.startIn')}
               align="right"
+              compact
               open={scopeOpen && scopes(tenant).length > 0}
               onOpenChange={setScopeOpen}
               value={scope}
@@ -284,16 +285,16 @@ export function ChatPage() {
       ]}
     >
       {error ? (
-        <div className="p-6">
+        <div className="px-4 py-6 md:px-6">
           <ErrorNote message={error.message} onRetry={refetch} />
         </div>
       ) : !tenant ? (
-        <div className="p-6">
+        <div className="px-4 py-6 md:px-6">
           <Skeleton rows={6} />
         </div>
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-[260px_1fr_340px]">
-          <div className="min-h-0 overflow-auto px-5 py-[18px]">
+        <div className="grid min-h-0 flex-1 grid-cols-1 max-lg:content-start max-lg:overflow-auto lg:grid-cols-[260px_1fr_340px]">
+          <div className="min-w-0 border-line px-4 py-[18px] max-lg:order-last max-lg:border-t md:px-5 lg:min-h-0 lg:overflow-auto">
             <Section count={tenant.chats.length} first>
               {t('chat.threads')}
             </Section>
@@ -318,7 +319,7 @@ export function ChatPage() {
               </Link>
             ))}
           </div>
-          <div className="min-h-0 overflow-auto border-l border-line px-5 py-[18px]">
+          <div className="min-w-0 border-line px-4 py-[18px] max-lg:order-first md:px-5 lg:min-h-0 lg:overflow-auto lg:border-l">
             {taskId ? (
               task ? (
                 <Thread task={task} tenant={tenant} />
@@ -329,7 +330,7 @@ export function ChatPage() {
               <NewChat tenant={tenant} scope={scope} onPickScope={() => setScopeOpen(true)} />
             )}
           </div>
-          <div className="min-h-0 overflow-auto border-l border-line px-5 py-[18px]">
+          <div className="min-w-0 border-line px-4 py-[18px] max-lg:border-t md:px-5 lg:min-h-0 lg:overflow-auto lg:border-l">
             {task ? <FiledTasks task={task} /> : <Dim>{t('chat.filedHint')}</Dim>}
           </div>
         </div>
