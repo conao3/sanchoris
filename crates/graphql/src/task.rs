@@ -516,7 +516,7 @@ impl Task {
                 self.scope,
                 config_id,
                 &name,
-                &offered.definition["definition"],
+                &offered.definition["Definition"],
             )
             .await?;
             let latest = runs

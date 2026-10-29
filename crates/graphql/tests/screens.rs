@@ -1,6 +1,7 @@
 use crate::common;
 
 use common::World;
+use sanchoris_core::keys;
 use serde_json::{Value, json};
 
 fn ids(items: &Value) -> Vec<String> {
@@ -385,4 +386,32 @@ async fn timestamps_use_utc_with_a_z_suffix() {
     let updated = data["tenant"]["task"]["updatedAt"].as_str().unwrap();
     assert!(updated.ends_with('Z'), "{updated}");
     assert!(!updated.contains('.'), "{updated}");
+}
+
+#[tokio::test]
+async fn a_task_reads_its_required_skill_from_its_own_definition_when_the_active_revision_lacks_it()
+{
+    let w = World::new().await;
+    let mut tx = w.store.tx(w.acme);
+    tx.delete(&keys::skill_key(
+        w.acme,
+        w.config_id,
+        w.revision_id,
+        "open-pr-green-ci",
+    ))
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let data = w.ok(&w.mika, "Tasks", json!({ "tenant": "acme" })).await;
+    let task = data["tenant"]["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["id"] == w.issue_task.to_string())
+        .unwrap();
+    assert_eq!(
+        task["requiredSkills"][0]["skill"]["name"],
+        "open-pr-green-ci"
+    );
+    assert_eq!(task["requiredSkills"][0]["state"], "FAILED");
 }
