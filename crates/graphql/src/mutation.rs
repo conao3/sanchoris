@@ -415,9 +415,41 @@ impl MutationRoot {
             "Started linking a GitHub account",
         )
         .await?;
-        Ok(RedirectPayload {
-            url: state(ctx).deps.github.link_account(user.user_id),
+        let redirect = state(ctx).deps.github.link_account(user.user_id);
+        ctx.append_http_header("Set-Cookie", redirect.cookie);
+        Ok(RedirectPayload { url: redirect.url })
+    }
+
+    #[graphql(name = "installGitHubApp")]
+    async fn install_github_app(
+        &self,
+        ctx: &Context<'_>,
+        tenant_id: ID,
+    ) -> Result<RedirectPayload> {
+        let user = auth(ctx)?;
+        let scope = tenant_scope(ctx, &tenant_id).await?;
+        let member_id = scope.require(Role::Admin, "installing the GitHub App")?;
+        let redirect = state(ctx)
+            .deps
+            .github
+            .install_app(scope.tenant_id, user.user_id);
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "integration.github_install_start",
+                target("tenant", scope.tenant_id, "github_installation"),
+                "Started the GitHub App installation",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
         })
+        .await?;
+        ctx.append_http_header("Set-Cookie", redirect.cookie);
+        Ok(RedirectPayload { url: redirect.url })
     }
 
     #[graphql(name = "unlinkGitHub")]

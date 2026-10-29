@@ -91,7 +91,6 @@ function buildAcme(): Obj {
     suspendedReason: null,
     createdAt: ago(60 * 24 * 90),
     githubOwner: { kind: 'ORGANIZATION', login: 'acme' },
-    githubAppInstallUrl: 'https://github.com/apps/sanchoris/installations/new',
     activity: {
       runningTasks: 3,
       runsToday: 14,
@@ -978,7 +977,6 @@ export function buildSetupTenant(spec: { slug: string; name: string; planName: s
     suspendedReason: null,
     createdAt: ago(installed ? 60 * 24 * 2 : 0),
     githubOwner: installed ? { kind: 'ORGANIZATION', login: `${slug}-dev` } : null,
-    githubAppInstallUrl: 'https://github.com/apps/sanchoris/installations/new',
     activity: { runningTasks: 0, runsToday: 0, costTodayUsd: 0, pullRequestsOpenedToday: 0, runsLast24h: Array.from({ length: 24 }, () => 0) },
     usage: periodUsage(installed ? 8 : 0, installed ? 31 : 0, 1, 0, plan.limitPeriod),
   };

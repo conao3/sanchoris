@@ -69,6 +69,7 @@ function createResolvers() {
         return tenant.viewerMember;
       },
       connectGitHub: () => ({ url: '/auth/github' }),
+      installGitHubApp: () => ({ url: 'https://github.com/apps/sanchoris/installations/new' }),
       unlinkGitHub: () => {
         viewerUser.githubLogin = null;
         return viewer;

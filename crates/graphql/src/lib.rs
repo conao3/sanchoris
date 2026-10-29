@@ -23,8 +23,8 @@ pub use mutation::MutationRoot;
 pub use ports::{
     AuditExportPort, ChatDispatcher, CheckoutPort, Clock, ConfigCheck, ConfigLocation,
     ConfigProblem, ConfigRepositoryPort, ConfigSyncTrigger, Encrypted, Encryptor, GithubConnectUrl,
-    GraphqlDeps, PlanChange, PortError, SlackConnectUrl, SystemClock, TenantCheckout,
-    TriggerProposal,
+    GithubRedirect, GraphqlDeps, PlanChange, PortError, SlackConnectUrl, SystemClock,
+    TenantCheckout, TriggerProposal,
 };
 pub use query::QueryRoot;
 

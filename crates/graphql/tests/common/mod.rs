@@ -29,8 +29,8 @@ use sanchoris_core::testing::TestDynamo;
 use sanchoris_graphql::{
     AesGcmEncryptor, AuditExportPort, AuthUser, ChatDispatcher, CheckoutPort, Clock, ConfigCheck,
     ConfigLocation, ConfigProblem, ConfigRepositoryPort, ConfigSyncTrigger, GithubConnectUrl,
-    GraphqlDeps, PlanChange, PortError, SanchorisSchema, SlackConnectUrl, TenantCheckout,
-    TriggerProposal, build_schema,
+    GithubRedirect, GraphqlDeps, PlanChange, PortError, SanchorisSchema, SlackConnectUrl,
+    TenantCheckout, TriggerProposal, build_schema,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -181,12 +181,18 @@ impl CheckoutPort for Fakes {
 }
 
 impl GithubConnectUrl for Fakes {
-    fn link_account(&self, user_id: Uuid) -> String {
-        format!("https://sanchoris.test/auth/github?user={user_id}")
+    fn link_account(&self, user_id: Uuid) -> GithubRedirect {
+        GithubRedirect {
+            url: format!("https://sanchoris.test/auth/github?user={user_id}"),
+            cookie: format!("__Host-sanchoris-github={user_id}"),
+        }
     }
 
-    fn install_app(&self, tenant_id: Uuid, _user_id: Uuid) -> String {
-        format!("https://github.com/apps/sanchoris/installations/new?state={tenant_id}")
+    fn install_app(&self, tenant_id: Uuid, _user_id: Uuid) -> GithubRedirect {
+        GithubRedirect {
+            url: format!("https://github.com/apps/sanchoris/installations/new?state={tenant_id}"),
+            cookie: format!("__Host-sanchoris-github={tenant_id}"),
+        }
     }
 }
 

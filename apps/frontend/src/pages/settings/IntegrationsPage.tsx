@@ -6,6 +6,7 @@ import { Chip, Dim, ErrorNote, Icon, Row, Skeleton, State, Sub, Th, Title } from
 import {
   ConnectGitHubDocument,
   ConnectSlackDocument,
+  InstallGitHubAppDocument,
   IntegrationsDocument,
   UnlinkGitHubDocument,
 } from '../../graphql/generated/graphql';
@@ -18,6 +19,7 @@ export function IntegrationsPage() {
   const { slug } = useTenant();
   const { data, error, refetch } = useData(IntegrationsDocument, { tenant: slug });
   const [connectGitHub] = useMutation(ConnectGitHubDocument);
+  const [installGitHubApp] = useMutation(InstallGitHubAppDocument);
   const [unlinkGitHub] = useMutation(UnlinkGitHubDocument);
   const [connectSlack] = useMutation(ConnectSlackDocument);
   const tenant = data?.tenant;
@@ -122,7 +124,18 @@ export function IntegrationsPage() {
                   {t('integrations.manageOnGitHub')}
                 </Button>
               ) : (
-                <Button variant="primary" icon={Plus} href={tenant.githubAppInstallUrl}>
+                <Button
+                  variant="primary"
+                  icon={Plus}
+                  onPress={() =>
+                    void installGitHubApp({ variables: { tenantId: tenant.id } }).then((result) => {
+                      const url = result.data?.installGitHubApp.url;
+                      if (url) {
+                        window.location.assign(url);
+                      }
+                    })
+                  }
+                >
                   {t('integrations.installApp')}
                 </Button>
               )}

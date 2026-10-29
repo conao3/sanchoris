@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::account::{Credential, Invitation, Member, Plan};
 use crate::audit::{AuditEvent, AuditFilter};
 use crate::config::{ChangeRequest, Config, Project, Session};
-use crate::context::{Access, Scope, now, state, tx, viewer_user};
+use crate::context::{Access, Scope, now, tx, viewer_user};
 use crate::enums::{
     ChangeRequestState, GitHubOwnerKind, IntegrationKind, IntegrationStatus, InvitationState,
     LimitPeriod, TenantState,
@@ -162,15 +162,6 @@ impl Tenant {
             kind,
             login: login.to_string(),
         }))
-    }
-
-    async fn github_app_install_url(&self, ctx: &Context<'_>) -> Result<String> {
-        self.scope.member()?;
-        let user = crate::context::auth(ctx)?;
-        Ok(state(ctx)
-            .deps
-            .github
-            .install_app(self.row.id, user.user_id))
     }
 
     async fn viewer_member(&self, ctx: &Context<'_>) -> Result<Member> {

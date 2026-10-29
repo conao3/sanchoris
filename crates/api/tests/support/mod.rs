@@ -112,6 +112,12 @@ impl RunnerPort for NoWorkspaces {
     }
 }
 
+pub fn flow_cookie(response: &reqwest::Response) -> String {
+    let set_cookie = response.headers()["set-cookie"].to_str().unwrap();
+    assert!(set_cookie.contains("; Secure; HttpOnly; SameSite=Lax"));
+    set_cookie.split(';').next().unwrap().to_string()
+}
+
 pub fn rsa_key() -> String {
     let output = Command::new("openssl")
         .args([

@@ -60,7 +60,7 @@ pub async fn execute(
     user: CurrentUser,
     Extension(ip): Extension<ClientIp>,
     Json(request): Json<async_graphql::Request>,
-) -> Json<async_graphql::Response> {
+) -> Response {
     let request = request
         .data(AuthUser {
             user_id: user.user_id,
@@ -69,7 +69,11 @@ pub async fn execute(
             privileged: user.privileged,
         })
         .data(ip);
-    Json(state.schema.execute(request).await)
+    let mut response = state.schema.execute(request).await;
+    let headers = std::mem::take(&mut response.http_headers);
+    let mut http = Json(response).into_response();
+    http.headers_mut().extend(headers);
+    http
 }
 
 pub async fn peer_ip(

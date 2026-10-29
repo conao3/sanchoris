@@ -21,8 +21,10 @@ type Mutation {
   createTenant(input: CreateTenantInput!): CreateTenantPayload!
   "Accepts an invitation addressed to the viewer and returns the new membership."
   acceptInvitation(invitationId: ID!): Member!
-  "Starts linking the viewer's GitHub account. Returns the URL of /auth/github to open."
+  "Starts linking the viewer's GitHub account. Returns the GitHub authorize URL to open and sets the cookie that binds the flow to this browser."
   connectGitHub: RedirectPayload!
+  "Starts installing the GitHub App for a tenant (admins). Returns the GitHub install URL to open and sets the cookie that binds the flow to this browser."
+  installGitHubApp(tenantId: ID!): RedirectPayload!
   "Unlinks the viewer's GitHub account."
   unlinkGitHub: Viewer!
   "Starts the Slack installation for a tenant. Returns the URL to open."
@@ -194,8 +196,6 @@ type Tenant {
   createdAt: DateTime!
   "The GitHub account the GitHub App is installed on."
   githubOwner: GitHubOwner
-  "The URL that installs the GitHub App for this tenant."
-  githubAppInstallUrl: String!
   viewerMember: Member!
   usage: TenantUsage!
   activity: Activity!

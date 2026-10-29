@@ -861,14 +861,39 @@ async fn tenants_billing_and_operator_actions() {
     );
     w.audit(w.acme, "integration.slack_connect_start").await;
 
-    let github = w.ok(&w.mika, "ConnectGitHub", json!({})).await;
+    let github = w.run(&w.mika, "ConnectGitHub", json!({})).await;
+    assert!(github.errors.is_empty(), "{:?}", github.errors);
+    assert_eq!(
+        github.http_headers["set-cookie"],
+        format!("__Host-sanchoris-github={}", w.mika.user_id).as_str()
+    );
     assert!(
-        github["connectGitHub"]["url"]
+        github.data.into_json().unwrap()["connectGitHub"]["url"]
             .as_str()
             .unwrap()
             .contains(&w.mika.user_id.to_string())
     );
     w.audit(w.acme, "integration.github_link_start").await;
+    assert_eq!(
+        w.error_code(&w.ken, "InstallGitHubApp", json!({ "tenantId": w.acme }))
+            .await,
+        "FORBIDDEN"
+    );
+    let install = w
+        .run(&w.sota, "InstallGitHubApp", json!({ "tenantId": w.acme }))
+        .await;
+    assert!(install.errors.is_empty(), "{:?}", install.errors);
+    assert_eq!(
+        install.http_headers["set-cookie"],
+        format!("__Host-sanchoris-github={}", w.acme).as_str()
+    );
+    assert!(
+        install.data.into_json().unwrap()["installGitHubApp"]["url"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("state={}", w.acme))
+    );
+    w.audit(w.acme, "integration.github_install_start").await;
     let unlinked = w.ok(&w.mika, "UnlinkGitHub", json!({})).await;
     assert_eq!(unlinked["unlinkGitHub"]["user"]["githubLogin"], Value::Null);
     w.audit(w.acme, "integration.github_unlink").await;
@@ -908,9 +933,10 @@ async fn tenants_billing_and_operator_actions() {
         .iter()
         .map(|e| e["action"].as_str().unwrap().to_string())
         .collect::<Vec<_>>();
-    assert_eq!(actions.len(), 2);
+    assert_eq!(actions.len(), 3);
     assert!(actions.contains(&"audit_log.export".to_string()));
     assert!(actions.contains(&"integration.slack_connect_start".to_string()));
+    assert!(actions.contains(&"integration.github_install_start".to_string()));
 
     let suspended = w
         .ok(
