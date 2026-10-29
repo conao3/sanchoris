@@ -590,6 +590,7 @@ async fn user(
         github_user_id,
         github_login: github.map(str::to_string),
         is_operator: operator,
+        last_sign_in_at: None,
         created_at: now,
         updated_at: now,
     })

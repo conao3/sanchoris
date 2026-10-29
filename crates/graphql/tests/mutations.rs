@@ -34,6 +34,37 @@ async fn inbound_text(w: &World, text: &str) -> InboundEvent {
 }
 
 #[tokio::test]
+async fn signing_out_is_audited_in_each_tenant_of_the_viewer() {
+    let w = World::new().await;
+    let joined = Uuid::new_v4();
+    let mut tx = w.store.tx(w.globex);
+    tx.insert(&Member {
+        id: joined,
+        tenant_id: w.globex,
+        user_id: w.mika.user_id,
+        role: "member".into(),
+        joined_at: w.now,
+        last_active_at: None,
+    })
+    .unwrap();
+    tx.insert(&Membership {
+        user_id: w.mika.user_id,
+        tenant_id: w.globex,
+        member_id: joined,
+    })
+    .unwrap();
+    tx.commit().await.unwrap();
+    let signed_out = w.ok(&w.mika, "SignOut", json!({})).await;
+    assert_eq!(signed_out["signOut"], true);
+    for (tenant, member) in [(w.acme, w.mika.member_id.unwrap()), (w.globex, joined)] {
+        let event = w.audit(tenant, "auth.sign_out").await;
+        assert_eq!(event.actor_kind, "member");
+        assert_eq!(event.actor_ref, member.to_string());
+        assert_eq!(event.target_ref, w.mika.user_id.to_string());
+    }
+}
+
+#[tokio::test]
 async fn task_and_run_mutations_reach_the_agent_session() {
     let w = World::new().await;
 

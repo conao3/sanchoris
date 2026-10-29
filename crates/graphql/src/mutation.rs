@@ -491,6 +491,11 @@ impl MutationRoot {
         Ok(Viewer)
     }
 
+    async fn sign_out(&self, ctx: &Context<'_>) -> Result<bool> {
+        audit_user_tenants(ctx, "auth.sign_out", "Signed out").await?;
+        Ok(true)
+    }
+
     async fn connect_slack(&self, ctx: &Context<'_>, tenant_id: ID) -> Result<RedirectPayload> {
         let scope = tenant_scope(ctx, &tenant_id).await?;
         let member_id = scope.require(Role::Admin, "connecting Slack")?;

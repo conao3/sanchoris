@@ -19,6 +19,10 @@ query Shell {
   }
 }
 
+mutation SignOut {
+  signOut
+}
+
 fragment TaskRow on Task {
   id
   title

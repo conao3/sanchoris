@@ -27,6 +27,8 @@ type Mutation {
   installGitHubApp(tenantId: ID!): RedirectPayload!
   "Unlinks the viewer's GitHub account."
   unlinkGitHub: Viewer!
+  "Records the viewer's sign-out in the audit log of each of the viewer's tenants. The client then ends the Cognito session."
+  signOut: Boolean!
   "Starts the Slack installation for a tenant. Returns the URL to open."
   connectSlack(tenantId: ID!): RedirectPayload!
 

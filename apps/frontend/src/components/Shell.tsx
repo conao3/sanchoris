@@ -3,9 +3,11 @@ import clsx from 'clsx';
 import type { LucideIcon } from 'lucide-react';
 import { Check, ChevronsUpDown, House, ListChecks, LogOut, MessageSquare, Plus, Puzzle, Settings, ShieldCheck, Zap } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
+import { SignOutDocument } from '../graphql/generated/graphql';
 import { type MessageKey, t } from '../i18n';
 import { signOut } from '../lib/cognito';
 import { useKeys } from '../lib/keys';
+import { useAction } from '../lib/mutation';
 import { useTenant } from '../lib/tenant';
 import { Icon, Kbd } from './ui';
 
@@ -101,6 +103,7 @@ function TenantSwitcher() {
 function UserMenu() {
   const { viewer, membership } = useTenant();
   const [open, setOpen] = useState(false);
+  const [recordSignOut] = useAction(SignOutDocument);
   return (
     <div className="relative">
       {open ? (
@@ -108,7 +111,7 @@ function UserMenu() {
           <div className="truncate px-3.5 pb-1 pt-1.5 text-xs text-muted">{viewer.user.email}</div>
           <button
             type="button"
-            onClick={signOut}
+            onClick={() => void signOut(() => recordSignOut({}))}
             className="flex w-full items-center gap-2 border-t border-line px-3.5 py-[7px] text-left hover:bg-hover"
           >
             <Icon icon={LogOut} />

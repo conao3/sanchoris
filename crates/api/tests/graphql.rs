@@ -748,6 +748,8 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     assert_eq!(query_param(&link_url, "client_id"), "Iv1.http");
     let unlinked = w.ok(owner, "UnlinkGitHub", json!({})).await;
     assert_eq!(unlinked["unlinkGitHub"]["user"]["githubLogin"], Value::Null);
+    let signed_out = w.ok(owner, "SignOut", json!({})).await;
+    assert_eq!(signed_out["signOut"], true);
 
     let (code, message) = w
         .error(owner, "ConnectSlack", json!({ "tenantId": tenant }))
@@ -1150,6 +1152,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         "member.invitation_accept",
         "integration.github_link_start",
         "integration.github_unlink",
+        "auth.sign_out",
         "audit_log.export",
         "tenant.plan_checkout_start",
         "tenant.plan_change",

@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::db::{DbError, TenantTx, tenant_plan};
 use crate::items::AuditEvent;
+use crate::keys;
 use crate::model::{ActorKind, AuditOrigin};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,11 +24,29 @@ pub struct AuditEntry<'a> {
 }
 
 pub async fn record_audit(tx: &mut TenantTx, entry: &AuditEntry<'_>) -> Result<Uuid, DbError> {
+    let id = Uuid::new_v4();
+    insert_audit(tx, id, entry).await?;
+    Ok(id)
+}
+
+pub async fn record_audit_once(
+    tx: &mut TenantTx,
+    id: Uuid,
+    entry: &AuditEntry<'_>,
+) -> Result<bool, DbError> {
+    let key = keys::audit_key(tx.tenant_id(), entry.at, id);
+    if tx.get_item(&key).await?.is_some() {
+        return Ok(false);
+    }
+    insert_audit(tx, id, entry).await?;
+    Ok(true)
+}
+
+async fn insert_audit(tx: &mut TenantTx, id: Uuid, entry: &AuditEntry<'_>) -> Result<(), DbError> {
     let tenant_id = tx.tenant_id();
     let (_, plan) = tenant_plan(tx).await?;
     let mut metadata = entry.metadata.clone();
     metadata.insert("origin".into(), json!(entry.origin.as_str()));
-    let id = Uuid::new_v4();
     tx.insert(&AuditEvent {
         id,
         tenant_id,
@@ -41,12 +60,11 @@ pub async fn record_audit(tx: &mut TenantTx, entry: &AuditEntry<'_>) -> Result<U
         source_ip: entry.source_ip.map(|ip| ip.to_string()),
         metadata: Value::Object(metadata),
         expires_at: entry.at + Duration::days(plan.audit_retention_days),
-    })?;
-    Ok(id)
+    })
 }
 
 pub async fn audit_events(tx: &mut TenantTx) -> Result<Vec<AuditEvent>, DbError> {
-    let pk = crate::keys::tenant_pk(tx.tenant_id());
+    let pk = keys::tenant_pk(tx.tenant_id());
     let items = tx.query_items(crate::item::Table::Audit, &pk, "").await?;
     items
         .iter()

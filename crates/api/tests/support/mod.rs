@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use axum::Router;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use reqwest::redirect::Policy;
 use sanchoris_api::app::AppState;
 use sanchoris_api::auth::{AuthError, Identity, IdentityVerifier};
@@ -62,6 +62,19 @@ pub struct StubVerifier;
 #[async_trait]
 impl IdentityVerifier for StubVerifier {
     async fn verify(&self, token: &str) -> Result<Identity, AuthError> {
+        let (token, auth_time) = match token.split_once('|') {
+            Some((token, seconds)) => (
+                token,
+                Some(
+                    seconds
+                        .parse()
+                        .ok()
+                        .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+                        .ok_or(AuthError::Unauthorized)?,
+                ),
+            ),
+            None => (token, None),
+        };
         let (subject, email, email_verified) = if let Some(subject) = token.strip_prefix("user:") {
             (subject.to_string(), format!("{subject}@example.com"), true)
         } else if let Some(email) = token.strip_prefix("email:") {
@@ -76,6 +89,7 @@ impl IdentityVerifier for StubVerifier {
             subject,
             email: Some(email),
             email_verified,
+            auth_time,
         })
     }
 }

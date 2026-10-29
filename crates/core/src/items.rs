@@ -113,6 +113,7 @@ pub struct User {
     pub github_user_id: Option<i64>,
     pub github_login: Option<String>,
     pub is_operator: bool,
+    pub last_sign_in_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -132,6 +133,7 @@ impl Entity for User {
             .opt_n("github_user_id", self.github_user_id)
             .opt_s("github_login", self.github_login.as_ref())
             .b("is_operator", self.is_operator)
+            .opt_time("last_sign_in_at", self.last_sign_in_at)
             .time("created_at", self.created_at)
             .time("updated_at", self.updated_at);
     }
@@ -145,6 +147,7 @@ impl Entity for User {
             github_user_id: r.opt_n("github_user_id")?,
             github_login: r.opt_s("github_login")?,
             is_operator: r.b("is_operator")?,
+            last_sign_in_at: r.opt_time("last_sign_in_at")?,
             created_at: r.time("created_at")?,
             updated_at: r.time("updated_at")?,
         })

@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use chrono::DateTime;
 use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use tokio::sync::RwLock;
@@ -16,6 +17,7 @@ struct CognitoClaims {
     email_verified: bool,
     #[serde(rename = "cognito:username")]
     username: Option<String>,
+    auth_time: Option<i64>,
     token_use: Option<String>,
     aud: Option<String>,
     client_id: Option<String>,
@@ -140,11 +142,16 @@ impl IdentityVerifier for CognitoVerifier {
             claims.username.as_deref(),
             &claims.sub,
         );
+        let auth_time = claims
+            .auth_time
+            .map(|seconds| DateTime::from_timestamp(seconds, 0).ok_or(AuthError::Unauthorized))
+            .transpose()?;
         Ok(Identity {
             subject: claims.sub,
             email: claims.email,
             email_verified: claims.email_verified,
             display_name,
+            auth_time,
         })
     }
 }
@@ -267,6 +274,20 @@ mod tests {
         assert!(!verified(Some(json!(false))));
         assert!(!verified(Some(json!("false"))));
         assert!(!verified(None));
+    }
+
+    #[test]
+    fn auth_time_is_read_when_the_token_has_it() {
+        let auth_time = |claims: serde_json::Value| {
+            serde_json::from_value::<CognitoClaims>(claims)
+                .unwrap()
+                .auth_time
+        };
+        assert_eq!(
+            auth_time(json!({ "sub": "s", "auth_time": 1_790_000_000 })),
+            Some(1_790_000_000)
+        );
+        assert_eq!(auth_time(json!({ "sub": "s" })), None);
     }
 
     #[test]
