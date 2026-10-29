@@ -9,7 +9,7 @@ use sanchoris_core::db::{
     self, DbError, NewTask, NewTriggerEvent, Recorded, Store, TriggerEventOutcome,
 };
 use sanchoris_core::item::{Entity, Key};
-use sanchoris_core::items::{AuditEvent, Plan, Run, Task, Tenant, TriggerEvent};
+use sanchoris_core::items::{AuditEvent, PendingTask, Plan, Run, Task, Tenant, TriggerEvent};
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin, NamedDefinition, TaskDefinition, TaskStatus};
@@ -706,4 +706,60 @@ async fn a_plan_item_without_a_limit_attribute_does_not_decode() {
         db::plan(&store, "free").await,
         Err(DbError::Decode(message)) if message == "plan has no attribute task_limit"
     ));
+}
+
+#[tokio::test]
+async fn dispatch_deletes_stale_markers_in_bounded_transactions() {
+    let dynamo = TestDynamo::start().await;
+    let direct = dynamo.direct_store(Arc::new(FakeClock::new(Utc::now())));
+    let seeded = dynamo.seed_tenant("pro").await;
+    let mut stale = Vec::new();
+    for n in 0..130 {
+        stale.push(
+            create_task(&direct.store, &seeded, &format!("stale-{n}"), &[])
+                .await
+                .id(),
+        );
+    }
+    for id in &stale {
+        dynamo
+            .modify::<Task>(&keys::task_key(seeded.tenant_id, *id), |task| {
+                task.status = TaskStatus::Aborted
+            })
+            .await;
+    }
+    let live = create_task(&direct.store, &seeded, "live", &[]).await.id();
+    let dispatch_jobs = || {
+        direct
+            .queue
+            .bodies()
+            .iter()
+            .filter(|body| matches!(Envelope::parse(body).unwrap().job, Job::Dispatch { .. }))
+            .count()
+    };
+    let markers = || async {
+        direct
+            .store
+            .query::<PendingTask>(&keys::tenant_pk(seeded.tenant_id), "PENDINGTASK#")
+            .await
+            .unwrap()
+            .len()
+    };
+
+    let before = dispatch_jobs();
+    let first = dispatch(&direct.store, seeded.tenant_id).await;
+    assert_eq!(
+        first.iter().map(|d| d.task_id).collect::<Vec<_>>(),
+        vec![live]
+    );
+    assert!(markers().await > 0);
+    assert_eq!(dispatch_jobs(), before + 1);
+
+    let mut rounds = 0;
+    while markers().await > 0 {
+        assert!(dispatch(&direct.store, seeded.tenant_id).await.is_empty());
+        rounds += 1;
+        assert!(rounds < 3);
+    }
+    assert_eq!(dispatch_jobs(), before + 1 + rounds - 1);
 }

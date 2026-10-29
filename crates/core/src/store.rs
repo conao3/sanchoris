@@ -1155,6 +1155,15 @@ impl TenantTx {
         });
     }
 
+    pub fn write_count(&self) -> usize {
+        self.messages.len()
+            + self
+                .slots
+                .values()
+                .filter(|slot| !matches!(slot.op, Op::None))
+                .count()
+    }
+
     pub fn has_writes(&self) -> bool {
         !self.messages.is_empty()
             || self

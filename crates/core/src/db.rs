@@ -13,7 +13,7 @@ use crate::model::{TaskDefinition, TaskStatus, TriggerEventResult};
 use crate::store::Update;
 use crate::tasks::store_task;
 
-pub use crate::store::{DbError, Store, TenantTx};
+pub use crate::store::{DbError, MAX_TRANSACTION_ITEMS, Store, TenantTx};
 
 pub const REF_TRIGGER_EVENT: &str = "trigger_event";
 pub const REF_RUN: &str = "run";
@@ -289,6 +289,7 @@ pub async fn dispatch_pending_tasks(
         .query::<PendingTask>(&keys::tenant_pk(tenant_id), "PENDINGTASK#")
         .await?;
     let mut picked = Vec::new();
+    let mut stale = Vec::new();
     for marker in markers {
         if i64::try_from(picked.len()).expect("small") >= slots {
             break;
@@ -297,16 +298,13 @@ pub async fn dispatch_pending_tasks(
             .get::<Task>(&keys::task_key(tenant_id, marker.task_id))
             .await?;
         let Some(task) = task.filter(|t| t.status == TaskStatus::Pending) else {
-            tx.delete(&marker.key())?;
+            stale.push(marker.key());
             continue;
         };
         if is_blocked(tx, task.id).await? {
             continue;
         }
         picked.push((marker, task));
-    }
-    if picked.is_empty() {
-        return Ok(Vec::new());
     }
     let mut dispatched = Vec::new();
     for (marker, mut task) in picked {
@@ -370,7 +368,15 @@ pub async fn dispatch_pending_tasks(
             run_id,
         });
     }
-    let count = i64::try_from(dispatched.len()).expect("small");
+    if !dispatched.is_empty() {
+        reserve_dispatched(tx, &plan, dispatched.len())?;
+    }
+    delete_stale_markers(tx, stale)?;
+    Ok(dispatched)
+}
+
+fn reserve_dispatched(tx: &mut TenantTx, plan: &Plan, dispatched: usize) -> Result<(), DbError> {
+    let count = i64::try_from(dispatched).expect("small");
     let mut update = Update::new()
         .add("tasks_this_period", count)
         .cap_after("running_tasks", plan.max_concurrency)
@@ -381,6 +387,18 @@ pub async fn dispatch_pending_tasks(
     if let Some(limit) = plan.task_limit {
         update = update.cap_after("tasks_this_period", limit);
     }
-    tx.update(&keys::tenant_key(tenant_id), update)?;
-    Ok(dispatched)
+    tx.update(&keys::tenant_key(tx.tenant_id()), update)
+}
+
+fn delete_stale_markers(tx: &mut TenantTx, stale: Vec<Key>) -> Result<(), DbError> {
+    for key in stale {
+        if tx.write_count() + 1 >= MAX_TRANSACTION_ITEMS {
+            tx.emit(Job::Dispatch {
+                tenant_id: tx.tenant_id(),
+            });
+            return Ok(());
+        }
+        tx.delete(&key)?;
+    }
+    Ok(())
 }

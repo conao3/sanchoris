@@ -329,7 +329,7 @@ Reads marked "consistent" use the base table; "index" uses `gsi1`/`gsi2`; "app" 
 | Chat thread tasks | Query `T#<t>#TRIGGER#<tr>` `TASK#<thread>/` |
 | Session, project, skill of a config | Get `DEF#<the trigger's revision>#SESSION#`, `PROJECT#`, `SKILL#` in the config partition |
 | Create task | Insert task, `TASK#<name>` guard, `PENDINGTASK#`, `DEP#`, `CHILD#`; update the trigger event's `task_id` |
-| Dispatch | Get tenant, plan; Query `T#<t>` `PENDINGTASK#`; Get each task and its blockers; update tenant counters with caps |
+| Dispatch | Get tenant, plan; Query `T#<t>` `PENDINGTASK#`; Get each task and its blockers; update tenant counters with caps; delete the markers of tasks that are no longer `PENDING` while the transaction stays under 100 writes, and queue another `Dispatch` for the markers left over |
 | Run events | Query `T#<t>#RUN#<r>` `PEND#` → Get the event; Get `T#<t>#REF#<r>` → run |
 | Latest run, runs of a task | Query `T#<t>#TASK#<task>` `RUN#` (app sort by `started_at`) |
 | Latest skill status | Query `T#<t>#TASK#<task>` `SR#` (app) |
