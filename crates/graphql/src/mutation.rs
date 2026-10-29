@@ -19,7 +19,7 @@ use sanchoris_core::receive::{Admission, SOURCE_CHAT, SOURCE_REPLY, admit_inboun
 use sanchoris_core::store::Update;
 use sanchoris_core::tasks::{abort_task, latest_run, load_task, stop_run};
 use sanchoris_core::tenants::{
-    NewTenant, TenantError, create_tenant, free_tenant_key, hold_free_tenant, release_free_tenant,
+    NewTenant, TenantError, create_tenant, hold_free_tenant, release_free_tenant,
 };
 use sanchoris_worker::dispatcher::schedule_trigger;
 use serde_json::{Map, Value, json};
@@ -1483,18 +1483,11 @@ impl MutationRoot {
             write(|| async {
                 let mut tx = tx(ctx, scope.tenant_id);
                 let current = db::tenant(&mut tx).await?;
-                let key = free_tenant_key(current.created_by_user_id);
-                match tx.get::<Guard>(&key).await? {
-                    Some(guard) if guard.target != scope.tenant_id => {
-                        Err(conflict(TenantError::FreeTenantTaken.to_string()).into())
-                    }
-                    Some(_) => Ok(()),
-                    None => {
-                        hold_free_tenant(&mut tx, &current).await?;
-                        tx.commit().await?;
-                        Ok(())
-                    }
+                if !hold_free_tenant(&mut tx, &current).await? {
+                    return Err(conflict(TenantError::FreeTenantTaken.to_string()).into());
                 }
+                tx.commit().await?;
+                Ok(())
             })
             .await?;
         }
