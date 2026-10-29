@@ -50,6 +50,7 @@
           shellHook = ''
             export RUST_BACKTRACE=1
             export SCCACHE_DIR="$HOME/.cache/sccache"
+            mkdir -p "$SCCACHE_DIR"
             export SCCACHE_SERVER_UDS="$SCCACHE_DIR/server.sock"
           '';
         };
