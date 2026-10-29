@@ -227,6 +227,7 @@ async fn cancel_waits(
             tx.delete(&keys::check_wait_marker_key(tenant_id, wait.id))?;
         }
     }
+    let mut approval_cancelled = false;
     for mut wait in tx
         .query::<ApprovalWait>(&pk, &format!("{prefix}#APPROVAL#"))
         .await?
@@ -235,7 +236,30 @@ async fn cancel_waits(
             wait.status = "cancelled".into();
             wait.resolved_at = Some(now);
             tx.put(&wait)?;
+            approval_cancelled = true;
         }
+    }
+    if approval_cancelled {
+        end_approval_request(tx, meta.task_id, now).await?;
+    }
+    Ok(())
+}
+
+async fn end_approval_request(
+    tx: &mut TenantTx,
+    task_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<(), DbError> {
+    let mut task = load_task(tx, task_id).await?;
+    if task.status == TaskStatus::NeedsYou
+        && task.error.as_deref() == Some(ERROR_APPROVAL_REQUESTED)
+    {
+        task.status = TaskStatus::Waiting;
+        task.wait_reason = Some(WaitReason::Skill);
+        task.error = None;
+        task.cause = None;
+        task.updated_at = now;
+        store_task(tx, &task, now).await?;
     }
     Ok(())
 }
@@ -681,17 +705,7 @@ pub async fn resolve_approval(
     wait.status = if approved { "approved" } else { "rejected" }.to_string();
     wait.resolved_at = Some(now);
     tx.put(&wait)?;
-    let mut task = load_task(tx, wait.task_id).await?;
-    if task.status == TaskStatus::NeedsYou
-        && task.error.as_deref() == Some(ERROR_APPROVAL_REQUESTED)
-    {
-        task.status = TaskStatus::Waiting;
-        task.wait_reason = Some(WaitReason::Skill);
-        task.error = None;
-        task.cause = None;
-        task.updated_at = now;
-        store_task(tx, &task, now).await?;
-    }
+    end_approval_request(tx, wait.task_id, now).await?;
     let event = if approved {
         Event::TaskSuccess {
             task_token: verified.task_token,

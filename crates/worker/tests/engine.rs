@@ -291,6 +291,41 @@ async fn a_closed_checks_wait_is_no_longer_polled() {
 }
 
 #[tokio::test]
+async fn an_approval_that_times_out_no_longer_needs_you() {
+    let world = World::new("pro").await;
+    let task = world.started_task(35).await;
+    let run_id = task.run_id.unwrap();
+    add_skill(
+        &world,
+        task.id,
+        "ship",
+        "Inputs: {}\nStartAt: Ask\nTimeoutSeconds: 3600\nStates:\n  Ask:\n    Type: Task\n    Resource: sanchoris:::approval:request.waitForTaskToken\n    Parameters: { Message: Ship it?, TaskToken.$: $$.Task.Token }\n    TimeoutSeconds: 300\n    End: true\n",
+    )
+    .await;
+    world
+        .try_request_skill(run_id, "ship", json!({}))
+        .await
+        .unwrap();
+    world.worker.settle().await.unwrap();
+    let requested = world.task(&format!("{REPO}#35")).await;
+    assert_eq!(requested.status, "NEEDS_YOU");
+    assert_eq!(requested.error.as_deref(), Some("Approval.Requested"));
+
+    world.clock.advance(chrono::Duration::seconds(301));
+    world.worker.settle().await.unwrap();
+    let waits = world.dynamo.all::<ApprovalWait>().await;
+    assert_eq!(waits.len(), 1);
+    assert_eq!(waits[0].status, "cancelled");
+    assert_eq!(
+        skill_run(&world, task.id, 1).await.error.as_deref(),
+        Some("States.Timeout")
+    );
+    let task = world.task(&format!("{REPO}#35")).await;
+    assert_eq!(task.status, "RUNNING");
+    assert_eq!(task.error, None);
+}
+
+#[tokio::test]
 async fn an_old_approval_token_does_not_change_the_task() {
     let world = World::new("pro").await;
     let task = world.started_task(35).await;
