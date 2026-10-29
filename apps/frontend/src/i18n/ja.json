@@ -596,5 +596,7 @@
   "login.after": "初めての場合、サインインでアカウントができ、続けてテナントを作成するか参加します。",
   "login.signingIn": "サインインしています…",
   "login.failed": "サインインに失敗しました: {error}。サインインに戻ります…",
-  "login.failedUnknown": "サインインに失敗しました"
+  "login.failedUnknown": "サインインに失敗しました",
+  "login.denied": "サインインが完了しませんでした: {error}",
+  "login.again": "もう一度サインイン"
 }

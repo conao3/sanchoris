@@ -1,11 +1,11 @@
 import { ApolloClient, ApolloLink, HttpLink, InMemoryCache } from '@apollo/client';
 import { ApolloProvider } from '@apollo/client/react';
-import { createRootRoute, createRoute, createRouter, Outlet, redirect, RouterProvider } from '@tanstack/react-router';
+import { createRootRoute, createRoute, createRouter, Outlet, type ParsedLocation, redirect, RouterProvider } from '@tanstack/react-router';
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { AppFrame } from './components/Shell';
 import { checkoutSearch } from './components/billing';
-import { authorizedFetch, isLoggedIn } from './lib/cognito';
+import { authorizedFetch, isLoggedIn, samePath } from './lib/cognito';
 import { mockApi } from './lib/env';
 import { TenantProvider } from './lib/tenant';
 import { AuthCallbackPage } from './pages/AuthCallbackPage';
@@ -41,15 +41,23 @@ const apolloClient = new ApolloClient({
   cache: new InMemoryCache(),
 });
 
-function authGuard() {
+function authGuard({ location }: { location: ParsedLocation }) {
   if (!mockApi && !isLoggedIn()) {
-    throw redirect({ to: '/login' });
+    throw redirect({ to: '/login', search: { next: samePath(location.href) } });
   }
 }
 
 const rootRoute = createRootRoute({ component: Outlet });
 
-const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login', component: LoginPage });
+const loginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/login',
+  validateSearch: (search: Record<string, unknown>): { next?: string } => {
+    const next = samePath(search.next);
+    return next ? { next } : {};
+  },
+  component: LoginPage,
+});
 const authCallbackRoute = createRoute({ getParentRoute: () => rootRoute, path: '/auth/callback', component: AuthCallbackPage });
 
 const signedInRoute = createRoute({ getParentRoute: () => rootRoute, id: 'signed-in', beforeLoad: authGuard, component: Outlet });

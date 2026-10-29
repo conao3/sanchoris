@@ -596,5 +596,7 @@
   "login.after": "New here? Signing in creates your account, and then you create a tenant or join one.",
   "login.signingIn": "Signing you in…",
   "login.failed": "Sign-in failed: {error}. Going back to sign in…",
-  "login.failedUnknown": "sign-in failed"
+  "login.failedUnknown": "sign-in failed",
+  "login.denied": "Sign-in did not finish: {error}",
+  "login.again": "Sign in again"
 }

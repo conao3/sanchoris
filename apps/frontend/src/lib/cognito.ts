@@ -19,10 +19,27 @@ export type CognitoTokens = {
   token_type: string;
 };
 
-export function getLoginUrl(): string {
+export function samePath(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.startsWith('/\\')) {
+    return undefined;
+  }
+  const url = new URL(value, window.location.origin);
+  if (url.origin !== window.location.origin || url.pathname.startsWith('/login') || url.pathname.startsWith('/auth/')) {
+    return undefined;
+  }
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+export function loginPath(next: string | undefined): string {
+  const path = samePath(next);
+  return path ? `/login?next=${encodeURIComponent(path)}` : '/login';
+}
+
+export function getLoginUrl(next: string | undefined): string {
+  const path = samePath(next);
   return `https://${COGNITO_DOMAIN}/login?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(
     REDIRECT_URI,
-  )}&scope=email+openid+profile`;
+  )}&scope=email+openid+profile${path ? `&state=${encodeURIComponent(path)}` : ''}`;
 }
 
 export function getLogoutUrl(): string {
@@ -128,7 +145,7 @@ export async function authorizedFetch(input: RequestInfo | URL, init?: RequestIn
   );
   if (refreshed.status === 401) {
     clearTokens();
-    window.location.assign('/login');
+    window.location.assign(loginPath(`${window.location.pathname}${window.location.search}${window.location.hash}`));
   }
   return refreshed;
 }
