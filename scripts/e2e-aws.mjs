@@ -74,7 +74,8 @@ run('gh', ['issue', 'edit', String(issue), '-R', repo, '--add-label', label]);
 mark('labeled');
 process.stderr.write(`e2e ${env.name} ${arch}: ${issueUrl} labeled ${label}\n`);
 
-const taskName = `${repo}#${issue}`;
+const repositoryId = run('gh', ['api', `repos/${repo}`, '--jq', '.id']).trim();
+const taskName = `github:${repositoryId}#${issue}`;
 
 function findTask() {
   const tasks = queryAll(env, table, [

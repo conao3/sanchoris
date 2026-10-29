@@ -15,7 +15,7 @@ use serde_json::json;
 const START_TEXT: &str = "[sanchoris] Trigger labeled-issue started this task: Fix flaky checkout test (acme/shop-web#35).\n\
 Instruction: Resolve issue 35 in acme/shop-web: Fix flaky checkout test. Write tests for the change.\n\
 Skills: open-pr-green-ci (required). Run it with `sanchoris skill run open-pr-green-ci`.\n\
-Inputs of open-pr-green-ci: Issue (number) = 35, Repo (string) = \"acme/shop-web\", Repos (array) = [\"acme/shop-api\",\"acme/shop-web\"]. Run it with `sanchoris skill run open-pr-green-ci --input '{\"Issue\":35,\"Repo\":\"acme/shop-web\",\"Repos\":[\"acme/shop-api\",\"acme/shop-web\"]}'`.";
+Inputs of open-pr-green-ci: Issue (number) = 35, Repo (string) = \"acme/shop-web\", Repos (array) = [\"acme/shop-api\",\"acme/shop-web\"]. When your changes are committed, run it with `sanchoris skill run open-pr-green-ci --input '{\"Issue\":35,\"Repo\":\"acme/shop-web\",\"Repos\":[\"acme/shop-api\",\"acme/shop-web\"]}'`.";
 
 async fn trigger(world: &World, name: &str) -> Trigger {
     world

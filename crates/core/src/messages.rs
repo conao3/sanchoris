@@ -77,7 +77,7 @@ fn inputs_line(skill: &OfferedSkill) -> Option<String> {
     let mut line = format!("Inputs of {}: {listed}.", skill.name);
     if !resolved.is_empty() {
         line.push_str(&format!(
-            " Run it with `sanchoris skill run {} --input '{}'`.",
+            " When your changes are committed, run it with `sanchoris skill run {} --input '{}'`.",
             skill.name,
             Value::Object(resolved).to_string().replace('\'', "'\\''")
         ));
@@ -250,7 +250,7 @@ mod tests {
         });
         assert_eq!(
             text.lines().last().unwrap(),
-            "Inputs of open-pr-green-ci: Issue (number) = 35, MaxFixes (number) not resolved, Repo (string) = \"acme/shop-web\", Repos (array) = [\"acme/shop-web\"]. Run it with `sanchoris skill run open-pr-green-ci --input '{\"Issue\":35,\"Repo\":\"acme/shop-web\",\"Repos\":[\"acme/shop-web\"]}'`."
+            "Inputs of open-pr-green-ci: Issue (number) = 35, MaxFixes (number) not resolved, Repo (string) = \"acme/shop-web\", Repos (array) = [\"acme/shop-web\"]. When your changes are committed, run it with `sanchoris skill run open-pr-green-ci --input '{\"Issue\":35,\"Repo\":\"acme/shop-web\",\"Repos\":[\"acme/shop-web\"]}'`."
         );
     }
 
