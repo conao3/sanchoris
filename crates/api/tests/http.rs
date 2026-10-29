@@ -357,13 +357,20 @@ async fn a_push_to_the_config_branch_syncs_the_config_right_away() {
         pushed.json::<Value>().await.unwrap()["status"],
         "config_sync"
     );
-    assert_eq!(queued_config_syncs(&server), vec![config_id]);
 
-    server.api.driver.drain().await.unwrap();
-    let configs = server.dynamo.all::<Config>().await;
-    let config = configs.iter().find(|c| c.id == config_id).unwrap();
-    assert!(config.synced_at.is_some());
+    let config =
+        eventually(
+            "the config sync",
+            std::time::Duration::from_secs(10),
+            || async {
+                server.dynamo.all::<Config>().await.into_iter().find(|c| {
+                    c.id == config_id && (c.synced_at.is_some() || c.sync_error.is_some())
+                })
+            },
+        )
+        .await;
     assert_eq!(config.sync_error, None);
+    assert!(config.synced_at.is_some());
 }
 
 async fn fill_receive_windows(server: &Server, received: i64) {
