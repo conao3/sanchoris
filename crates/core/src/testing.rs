@@ -149,6 +149,10 @@ impl TestDynamo {
         }
     }
 
+    pub fn endpoint_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
     pub fn client(&self) -> &aws_sdk_dynamodb::Client {
         &self.client
     }

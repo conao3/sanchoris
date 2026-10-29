@@ -117,21 +117,3 @@ export function sleep(ms) {
 export function stringAttribute(item, name) {
   return item?.[name]?.S;
 }
-
-export function plainItem(item) {
-  const value = (attribute) => {
-    if ('S' in attribute) return attribute.S;
-    if ('N' in attribute) return Number(attribute.N);
-    if ('BOOL' in attribute) return attribute.BOOL;
-    if ('NULL' in attribute) return null;
-    if ('L' in attribute) return attribute.L.map(value);
-    if ('M' in attribute) return Object.fromEntries(Object.entries(attribute.M).map(([k, v]) => [k, value(v)]));
-    if ('SS' in attribute) return attribute.SS;
-    return attribute;
-  };
-  return Object.fromEntries(Object.entries(item).map(([k, v]) => [k, value(v)]));
-}
-
-export function queryAll(env, table, args) {
-  return aws(env, ['dynamodb', 'query', '--table-name', table, ...args]).Items.map(plainItem);
-}

@@ -131,6 +131,7 @@ quick() {
         dir=${dir%%/*}
         [ -f "crates/$dir/Cargo.toml" ] && crates[$(crate_name "$dir")]=1
         rust_changed=1
+        e2e=1
         ;;
       Cargo.toml | Cargo.lock | flake.nix | flake.lock)
         all_crates=1
@@ -151,7 +152,7 @@ quick() {
         packages[@sanchoris/workspace-agent]=1
         e2e=1
         ;;
-      scripts/e2e/*)
+      scripts/e2e/* | scripts/e2e-aws.mjs | scripts/lib/e2e-task.mjs)
         e2e=1
         ;;
       apps/egress-relay/*)

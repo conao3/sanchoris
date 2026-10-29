@@ -7,13 +7,14 @@ use std::time::Duration;
 
 use reqwest::StatusCode;
 use sanchoris_core::items::{
-    CheckWait, ConfigRevision, Run, RunEventItem, RunLogEntry, SkillRunItem, Task, Workspace,
+    CheckWait, ConfigRevision, Output, Run, RunEventItem, RunLogEntry, SkillRunItem, Task,
+    Workspace,
 };
 use sanchoris_core::testing::TestDynamo;
 use serde_json::{Value, json};
 use support::fake_github::FakeGitHub;
 use support::{
-    Api, CONFIG_YAML, Driving, REPO, Seeded, WEBHOOK_SECRET, Workspaces, bare_repo,
+    Api, CONFIG_YAML, Driving, REPO, SHOP_WEB_ID, Seeded, WEBHOOK_SECRET, Workspaces, bare_repo,
     check_run_payload, eventually, github_signature, labeled_payload, run, seed, start_api,
 };
 use uuid::Uuid;
@@ -239,6 +240,76 @@ impl World {
         assert_eq!(response.status(), StatusCode::ACCEPTED);
     }
 
+    fn aws_lookup(&self, number: i64, since_ms: i64) -> Value {
+        let out = run(
+            &[
+                "node",
+                "scripts/e2e/aws-lookup.mjs",
+                "--endpoint",
+                &self.dynamo.endpoint_url(),
+                "--table",
+                &self.dynamo.tables().main,
+                "--slug",
+                &format!("tenant-{}", self.seeded.tenant.user_id.simple()),
+                "--repository-id",
+                &SHOP_WEB_ID.to_string(),
+                "--issue",
+                &number.to_string(),
+                "--since-ms",
+                &since_ms.to_string(),
+            ],
+            &repo_root(),
+        );
+        serde_json::from_str(&out).unwrap()
+    }
+
+    async fn expected_lookup(&self, task_id: Uuid) -> Value {
+        let task = self
+            .dynamo
+            .all::<Task>()
+            .await
+            .into_iter()
+            .find(|task| task.id == task_id)
+            .unwrap();
+        let mut runs = Vec::new();
+        for run in self.dynamo.all::<Run>().await {
+            if run.task_id == task_id {
+                let logs = self
+                    .dynamo
+                    .all::<RunLogEntry>()
+                    .await
+                    .iter()
+                    .filter(|entry| entry.run_id == run.id)
+                    .count();
+                runs.push(json!({ "id": run.id, "status": run.status.as_str(), "logs": logs }));
+            }
+        }
+        let workspaces = self
+            .dynamo
+            .all::<Workspace>()
+            .await
+            .into_iter()
+            .filter(|workspace| workspace.task_id == task_id)
+            .map(|workspace| json!({ "id": workspace.id, "run": workspace.run_id }))
+            .collect::<Vec<_>>();
+        let outputs = self
+            .dynamo
+            .all::<Output>()
+            .await
+            .into_iter()
+            .filter(|output| output.task_id == task_id)
+            .map(|output| json!({ "kind": output.kind, "url": output.url }))
+            .collect::<Vec<_>>();
+        assert!(!runs.is_empty() && !workspaces.is_empty() && !outputs.is_empty());
+        json!({
+            "tenant": self.seeded.tenant.tenant_id,
+            "task": { "id": task.id, "status": task.status.as_str() },
+            "runs": runs,
+            "workspaces": workspaces,
+            "outputs": outputs,
+        })
+    }
+
     fn workspace_count(&self) -> usize {
         std::fs::read_dir(&self.workspaces_dir)
             .map(|entries| entries.count())
@@ -251,6 +322,15 @@ impl World {
     }
 }
 
+fn sorted_lists(mut value: Value) -> Value {
+    for list in value.as_object_mut().unwrap().values_mut() {
+        if let Some(items) = list.as_array_mut() {
+            items.sort_by_key(|item| item.to_string());
+        }
+    }
+    value
+}
+
 fn branch(task: &TaskRow) -> String {
     format!("sanchoris/{}", task.id)
 }
@@ -259,6 +339,7 @@ fn branch(task: &TaskRow) -> String {
 async fn a_labeled_issue_opens_a_pull_request_that_goes_green_after_a_fix() {
     let mut world = World::start().await;
 
+    let since = chrono::Utc::now().timestamp_millis();
     let task = world.label(35).await;
     let (status, body) = world
         .webhook(
@@ -356,6 +437,10 @@ async fn a_labeled_issue_opens_a_pull_request_that_goes_green_after_a_fix() {
         (open == 0 && world.workspace_count() == 0).then_some(())
     })
     .await;
+    assert_eq!(
+        sorted_lists(world.aws_lookup(35, since)),
+        sorted_lists(world.expected_lookup(task.id).await)
+    );
     world.stop().await;
 }
 

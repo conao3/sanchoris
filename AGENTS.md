@@ -14,7 +14,7 @@ Read this file instead of reading `README.md` and `docs/architecture.md` in full
 
 | Command | Runs | When |
 |---|---|---|
-| `scripts/verify.sh quick` | Against the merge base with the local `master`: `cargo fmt --check` when Rust changed; clippy `-D warnings` on the changed crates and their dependents; nextest on the changed crates; the e2e test when only the workspace agent or `scripts/e2e` changed; `pnpm --filter <package> check` for each changed TS app | While working |
+| `scripts/verify.sh quick` | Against the merge base with the local `master`: `cargo fmt --check` when Rust changed; clippy `-D warnings` on the changed crates and their dependents; nextest on the changed crates; the e2e test (which also runs `scripts/e2e/aws-lookup.mjs`, the DynamoDB lookups of `scripts/e2e-aws.mjs`, against the finished Task) when a crate, the workspace agent, `scripts/e2e`, `scripts/e2e-aws.mjs`, or `scripts/lib/e2e-task.mjs` changed and `sanchoris-api` is not among the tested crates; `pnpm --filter <package> check` for each changed TS app | While working |
 | `scripts/verify.sh full` | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo nextest run --workspace` (with the e2e test), `pnpm check` | Before each commit and merge |
 | `scripts/verify.sh test <nextest arguments>` | `cargo nextest run <arguments>`, e.g. `-p sanchoris-worker -E 'test(/^supervisor::/)'` or `-p sanchoris-core -E 'test(/plan/)'` | One test while iterating |
 
@@ -36,7 +36,7 @@ GitHub Actions (`.github/workflows/verify.yml`) runs `scripts/verify.sh full` on
 | `apps/workspace-agent` | Agent inside a Workspace (`src/agent.ts`, `src/channel.ts`, workers in `src/workers`) and the `sanchoris` command (`src/cli.ts`); protocol in `PROTOCOL.md` |
 | `apps/egress-relay` | Workspace egress `CONNECT` proxy (`src/relay.ts`) |
 | `infra/` | `tables.json`, `plans.json`, the Workspace and relay Dockerfiles |
-| `scripts/` | `dev.mjs` (`pnpm dev`), `build-lambda.mjs` (`pnpm build:lambda`), `verify.sh`, `deploy.mjs`, `e2e-aws.mjs`, `e2e/fake-agent.ts` |
+| `scripts/` | `dev.mjs` (`pnpm dev`), `build-lambda.mjs` (`pnpm build:lambda`), `verify.sh`, `deploy.mjs`, `e2e-aws.mjs` (its DynamoDB lookups in `lib/e2e-task.mjs`), `e2e/fake-agent.ts`, `e2e/aws-lookup.mjs` |
 
 ## Checks per area
 
@@ -47,7 +47,7 @@ GitHub Actions (`.github/workflows/verify.yml`) runs `scripts/verify.sh full` on
 | A crate | `scripts/verify.sh test -p <crate>`; one file: `scripts/verify.sh test -p sanchoris-api -E 'test(/^http::/)'` (each `tests/<file>.rs` is the module `<file>` of the crate's one test binary `tests/main.rs`) |
 | `apps/frontend/src/graphql/*.graphql` | `scripts/verify.sh test -p sanchoris-api -E 'test(/^graphql::/)'` (runs every operation) and `scripts/verify.sh test -p sanchoris-graphql -E 'test(/^schema_contract::/)'` |
 | `apps/frontend` | `pnpm --filter @sanchoris/frontend check`; UI changes also in the browser through `pnpm dev` (README "Development") |
-| `apps/workspace-agent`, `scripts/e2e` | `pnpm --filter @sanchoris/workspace-agent check` and `scripts/verify.sh test -p sanchoris-api -E 'test(/^e2e::/)'` |
+| `apps/workspace-agent`, `scripts/e2e`, `scripts/e2e-aws.mjs`, `scripts/lib/e2e-task.mjs` | `pnpm --filter @sanchoris/workspace-agent check` and `scripts/verify.sh test -p sanchoris-api -E 'test(/^e2e::/)'` |
 | `apps/egress-relay` | `pnpm --filter @sanchoris/egress-relay check` |
 | `infra/tables.json`, `infra/plans.json` | `scripts/verify.sh test -p sanchoris-core`, then the aws-infra-k8s template check (`docs/014-sanchoris.md` "Deploy") |
 | Lambda functions, their variables or IAM | Keep `docs/architecture.md` "Lambda functions" and aws-infra-k8s `docs/014-sanchoris.md` "Lambda functions" in step |

@@ -1,7 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { aws, e2eTenantSlug, environment, exportsOf, fail, plainItem, queryAll, run, sleep } from './lib/aws-env.mjs';
+import { aws, e2eTenantSlug, environment, exportsOf, fail, run, sleep } from './lib/aws-env.mjs';
+import { taskName, taskTable } from './lib/e2e-task.mjs';
 
 const usage = 'usage: node scripts/e2e-aws.mjs <dev|prd> --arch arm64|x86_64 [--title <issue title>] [--timeout-minutes <n>]';
 
@@ -35,7 +36,6 @@ if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
 }
 const repo = env.e2eRepo;
 const startedAt = Date.now();
-const since = new Date(startedAt).toISOString().replace('Z', '000Z');
 const timings = {};
 const mark = (name) => {
   timings[name] = (Date.now() - startedAt) / 1000;
@@ -53,18 +53,8 @@ const exports = exportsOf(env);
 const table = exports.get('SanchorisMainTable');
 const cluster = exports.get('SanchorisCluster');
 
-const slugGuard = aws(env, [
-  'dynamodb',
-  'get-item',
-  '--table-name',
-  table,
-  '--key',
-  JSON.stringify({ pk: { S: `UNIQ#slug#${e2eTenantSlug}` }, sk: { S: '#' } }),
-]);
-if (!slugGuard?.Item) {
-  fail(`tenant ${e2eTenantSlug} not found in ${table}`);
-}
-const tenant = plainItem(slugGuard.Item).tenant_id;
+const tasks = taskTable((args) => aws(env, ['dynamodb', ...args]), table);
+const tenant = tasks.tenantIdBySlug(e2eTenantSlug);
 
 const title = values.title ?? `Add a function triple${startedAt.toString(36)}(x) that returns 3 * x, with a test`;
 const issueUrl = run('gh', ['issue', 'create', '-R', repo, '--title', title, '--body', `sanchoris e2e (${arch}).`]).trim();
@@ -75,32 +65,7 @@ mark('labeled');
 process.stderr.write(`e2e ${env.name} ${arch}: ${issueUrl} labeled ${label}\n`);
 
 const repositoryId = run('gh', ['api', `repos/${repo}`, '--jq', '.id']).trim();
-const taskName = `github:${repositoryId}#${issue}`;
-
-function findTask() {
-  const tasks = queryAll(env, table, [
-    '--index-name',
-    'gsi1',
-    '--key-condition-expression',
-    'gsi1pk = :p AND gsi1sk >= :s',
-    '--expression-attribute-values',
-    JSON.stringify({ ':p': { S: `T#${tenant}#TASKS` }, ':s': { S: since } }),
-  ]);
-  return tasks.find((task) => task.name === taskName);
-}
-
-function readTask(id) {
-  const item = aws(env, [
-    'dynamodb',
-    'get-item',
-    '--consistent-read',
-    '--table-name',
-    table,
-    '--key',
-    JSON.stringify({ pk: { S: `T#${tenant}#TASK#${id}` }, sk: { S: '#TASK' } }),
-  ]);
-  return plainItem(item.Item);
-}
+const name = taskName(repositoryId, issue);
 
 async function waitFor(check, describe) {
   let delay = 3000;
@@ -125,7 +90,7 @@ let outcome = 'timeout';
 let task = null;
 const found = await waitFor(
   () => {
-    const t = findTask();
+    const t = tasks.findTask(tenant, startedAt, name);
     return t ? { done: true, task: t } : null;
   },
   (value) => (value ? 'task created' : 'waiting for the task'),
@@ -134,12 +99,12 @@ if (found) {
   mark('taskCreated');
   const ended = await waitFor(
     () => {
-      const t = readTask(found.task.id);
+      const t = tasks.readTask(tenant, found.task.id);
       return { done: endStatuses.includes(t.status), task: t };
     },
     (value) => `task ${value.task.status}`,
   );
-  task = ended?.task ?? readTask(found.task.id);
+  task = ended?.task ?? tasks.readTask(tenant, found.task.id);
   if (ended) {
     mark('taskEnded');
     outcome = task.status;
@@ -147,24 +112,10 @@ if (found) {
 }
 
 function collect() {
-  const items = queryAll(env, table, [
-    '--consistent-read',
-    '--key-condition-expression',
-    'pk = :p',
-    '--expression-attribute-values',
-    JSON.stringify({ ':p': { S: `T#${tenant}#TASK#${task.id}` } }),
-  ]);
-  const runs = items.filter((item) => item.kind === 'run');
-  const workspaces = items.filter((item) => item.kind === 'workspace');
-  const outputs = items.filter((item) => item.kind === 'output');
+  const { runs, workspaces, outputs } = tasks.taskItems(tenant, task.id);
 
   const runDetails = runs.map((r) => {
-    const logs = queryAll(env, table, [
-      '--key-condition-expression',
-      'pk = :p AND begins_with(sk, :s)',
-      '--expression-attribute-values',
-      JSON.stringify({ ':p': { S: `T#${tenant}#RUN#${r.id}` }, ':s': { S: 'LOG#' } }),
-    ]).map((entry) => ({ seq: entry.seq, at: entry.at, turn: entry.turn, kind: entry.log_kind, data: entry.data }));
+    const logs = tasks.runLogs(tenant, r.id);
     const relay = aws(env, [
       'logs',
       'filter-log-events',
