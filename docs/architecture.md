@@ -173,10 +173,10 @@ A tenant has one plan, `plan_id` on the tenant item, and the plan holds its limi
 | Plan | Price | Tasks | Workspace hours | Period | Members | Concurrent runs | Inbound events per minute | Workspace | Computes |
 |---|---|---|---|---|---|---|---|---|---|
 | Free | 0 | 5 | 10 | total | 1 | 1 | 20 | 1 vCPU, 4 GiB | standard |
-| Starter | USD 20 | 10 | 50 | month | 3 | 2 | 60 | 1 vCPU, 4 GiB | standard, docker |
-| Pro | USD 100 | 50 | 250 | month | 10 | 5 | 120 | 2 vCPU, 4 GiB | standard, docker |
-| Max | USD 200 | 200 | 500 | month | 30 | 10 | 300 | 2 vCPU, 4 GiB | standard, docker |
-| Admin | none | no limit | no limit | total | no limit | 10 | 300 | 2 vCPU, 4 GiB | standard, docker |
+| Starter | USD 20 | 10 | 50 | month | 3 | 2 | 60 | 1 vCPU, 4 GiB | standard |
+| Pro | USD 100 | 50 | 250 | month | 10 | 5 | 120 | 2 vCPU, 4 GiB | standard |
+| Max | USD 200 | 200 | 500 | month | 30 | 10 | 300 | 2 vCPU, 4 GiB | standard |
+| Admin | none | no limit | no limit | total | no limit | 10 | 300 | 2 vCPU, 4 GiB | standard |
 
 The per-task limits (turns, cost, timeout, idle time, children) and the retention of Admin are those of Max.
 

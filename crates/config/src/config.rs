@@ -150,21 +150,12 @@ impl Architecture {
 #[serde(rename_all = "lowercase")]
 pub enum Compute {
     Standard,
-    Docker,
 }
 
 impl Compute {
-    pub fn weight(self) -> u64 {
-        match self {
-            Compute::Standard => 1,
-            Compute::Docker => 3,
-        }
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             Compute::Standard => "standard",
-            Compute::Docker => "docker",
         }
     }
 }
@@ -415,11 +406,7 @@ fn decode_session(d: &mut Decoder, v: &Value, loc: &str) -> Option<Session> {
     let workspace = d.field(m, loc, "Workspace", |d, v, loc| {
         let m = d.object(v, loc, &["Compute", "Architecture", "IdleSeconds"])?;
         let compute = d.field(m, loc, "Compute", |d, v, loc| {
-            d.enumeration(
-                v,
-                loc,
-                &[("standard", Compute::Standard), ("docker", Compute::Docker)],
-            )
+            d.enumeration(v, loc, &[("standard", Compute::Standard)])
         });
         let architecture = d.field(m, loc, "Architecture", |d, v, loc| {
             d.enumeration(

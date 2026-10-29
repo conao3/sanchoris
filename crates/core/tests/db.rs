@@ -671,7 +671,7 @@ async fn an_admin_tenant_dispatches_past_any_task_or_workspace_count() {
         ),
         (None, None, None, 10, 2048, 4096, 0, None)
     );
-    assert_eq!(plan.computes, ["standard", "docker"]);
+    assert_eq!(plan.computes, ["standard"]);
 }
 
 #[tokio::test]

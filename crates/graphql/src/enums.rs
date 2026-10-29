@@ -72,7 +72,6 @@ db_enum!(ConfigStatus, "config status", {
 
 db_enum!(WorkspaceCompute, "workspace compute", {
     Standard => "standard",
-    Docker => "docker",
 });
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]

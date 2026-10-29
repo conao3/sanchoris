@@ -46,7 +46,7 @@
       "maxIdleSeconds": 3600,
       "maxChildrenDepth": 2,
       "maxChildrenCount": 10,
-      "computes": ["standard", "docker"],
+      "computes": ["standard"],
       "workspaceCpu": 1024,
       "workspaceMemoryMib": 4096
     },
@@ -71,7 +71,7 @@
       "maxIdleSeconds": 3600,
       "maxChildrenDepth": 3,
       "maxChildrenCount": 20,
-      "computes": ["standard", "docker"],
+      "computes": ["standard"],
       "workspaceCpu": 2048,
       "workspaceMemoryMib": 4096
     },
@@ -96,7 +96,7 @@
       "maxIdleSeconds": 7200,
       "maxChildrenDepth": 3,
       "maxChildrenCount": 50,
-      "computes": ["standard", "docker"],
+      "computes": ["standard"],
       "workspaceCpu": 2048,
       "workspaceMemoryMib": 4096
     },
@@ -121,7 +121,7 @@
       "maxIdleSeconds": 7200,
       "maxChildrenDepth": 3,
       "maxChildrenCount": 50,
-      "computes": ["standard", "docker"],
+      "computes": ["standard"],
       "workspaceCpu": 2048,
       "workspaceMemoryMib": 4096
     }

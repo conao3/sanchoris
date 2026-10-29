@@ -551,7 +551,6 @@ pub async fn validation_context(tx: &mut TenantTx) -> Result<ValidationContext> 
         .iter()
         .map(|c| match c.as_str() {
             "standard" => Compute::Standard,
-            "docker" => Compute::Docker,
             other => panic!("plans.computes has unknown compute {other}"),
         })
         .collect();

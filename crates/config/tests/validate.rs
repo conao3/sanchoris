@@ -17,7 +17,7 @@ fn plan() -> PlanLimits {
         max_idle_seconds: 3600,
         max_children_depth: 3,
         max_children_count: 10,
-        computes: BTreeSet::from([Compute::Standard, Compute::Docker]),
+        computes: BTreeSet::from([Compute::Standard]),
     }
 }
 
@@ -501,18 +501,14 @@ fn plan_limits_are_enforced() {
         plan: PlanLimits {
             max_turns: 50,
             max_cost_usd: 15.0,
-            max_timeout_seconds: 36_000,
+            max_timeout_seconds: 14_000,
             max_idle_seconds: 600,
             max_children_depth: 0,
             max_children_count: 2,
-            computes: BTreeSet::from([Compute::Standard]),
+            computes: BTreeSet::new(),
         },
     };
-    let config = replaced(
-        "    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }\n  all:",
-        "    Workspace: { Compute: docker, Architecture: arm64, IdleSeconds: 900 }\n  all:",
-    );
-    let errors = errors_with(&example_files(&config), &context);
+    let errors = errors_with(&example_files(EXAMPLE), &context);
     for location in [
         "Triggers.labeled-issue.Start.Limits.Turns",
         "Triggers.labeled-issue.Start.Limits.CostUsd",
@@ -521,6 +517,7 @@ fn plan_limits_are_enforced() {
         "Triggers.labeled-issue.Start.Limits.Children.MaxCount",
         "Triggers.chat-all.Start.Limits.TimeoutSeconds",
         "Sessions.shop.Workspace.Compute",
+        "Sessions.all.Workspace.Compute",
         "Sessions.shop.Workspace.IdleSeconds",
         "Sessions.all.Workspace.IdleSeconds",
     ] {
@@ -558,31 +555,15 @@ fn the_workspace_architecture_is_required_and_docker_compute_is_rejected() {
         "    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }\n  all:",
         "    Workspace: { Compute: docker, Architecture: arm64, IdleSeconds: 900 }\n  all:",
     );
-    let mut context = context();
-    context.plan.computes.insert(Compute::Docker);
-    let errors = errors_with(&example_files(&docker), &context);
+    let errors = errors_with(&example_files(&docker), &context());
     assert_eq!(
         errors
             .at("Sessions.shop.Workspace.Compute")
             .iter()
             .map(|e| e.message.as_str())
             .collect::<Vec<_>>(),
-        vec!["compute docker is not supported; use standard"]
+        vec!["unknown value \"docker\"; expected one of standard"]
     );
-}
-
-#[test]
-fn docker_compute_counts_three_times() {
-    let config = replaced(
-        "    Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }\n  all:",
-        "    Workspace: { Compute: docker, Architecture: arm64, IdleSeconds: 900 }\n  all:",
-    );
-    let mut context = context();
-    context.plan.max_timeout_seconds = 86_400;
-    let errors = errors_with(&example_files(&config), &context);
-    assert_error(&errors, "Triggers.chat-shop.Start.Limits.TimeoutSeconds");
-    assert!(!errors.has("Triggers.labeled-issue.Start.Limits.TimeoutSeconds"));
-    assert!(!errors.has("Triggers.chat-all.Start.Limits.TimeoutSeconds"));
 }
 
 #[test]

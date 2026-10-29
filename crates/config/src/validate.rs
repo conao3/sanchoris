@@ -217,12 +217,6 @@ impl Validator<'_> {
                 ),
             );
         }
-        if session.workspace.compute == Compute::Docker {
-            self.error(
-                at(&workspace, "Compute"),
-                "compute docker is not supported; use standard",
-            );
-        }
         if session.workspace.idle_seconds > plan.max_idle_seconds {
             self.error(
                 at(&workspace, "IdleSeconds"),
@@ -291,10 +285,10 @@ impl Validator<'_> {
             }
         }
 
-        self.limits(trigger, session, &at(&start, "Limits"));
+        self.limits(trigger, &at(&start, "Limits"));
     }
 
-    fn limits(&mut self, trigger: &Trigger, session: Option<&Session>, loc: &str) {
+    fn limits(&mut self, trigger: &Trigger, loc: &str) {
         let limits = &trigger.start.limits;
         let plan = &self.context.plan;
         let mut over = Vec::new();
@@ -316,14 +310,12 @@ impl Validator<'_> {
                 ),
             ));
         }
-        let weight = session.map_or(1, |s| s.workspace.compute.weight());
-        let counted = limits.timeout_seconds.saturating_mul(weight);
-        if counted > plan.max_timeout_seconds {
+        if limits.timeout_seconds > plan.max_timeout_seconds {
             over.push((
                 at(loc, "TimeoutSeconds"),
                 format!(
-                    "{} workspace seconds (x{weight} for the session compute) exceed the plan limit of {}",
-                    counted, plan.max_timeout_seconds
+                    "{} exceeds the plan limit of {}",
+                    limits.timeout_seconds, plan.max_timeout_seconds
                 ),
             ));
         }

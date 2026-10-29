@@ -875,12 +875,8 @@ fn close_workspace(
     workspace: &mut Workspace,
     counted_until: DateTime<Utc>,
 ) -> Result<()> {
-    let weight = match workspace.compute.as_str() {
-        "docker" => 3,
-        _ => 1,
-    };
     let seconds = match workspace.platform_ref {
-        Some(_) => (counted_until - workspace.started_at).num_seconds().max(0) * weight,
+        Some(_) => (counted_until - workspace.started_at).num_seconds().max(0),
         None => 0,
     };
     workspace.stopped_at = Some(counted_until.max(workspace.started_at));
