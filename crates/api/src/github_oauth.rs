@@ -328,6 +328,43 @@ struct UserInstallation {
     kind: String,
 }
 
+async fn administers(
+    state: &AppState,
+    token: &str,
+    github: &GitHubUser,
+    account: &UserInstallation,
+) -> Result<bool, ApiError> {
+    match account.kind.as_str() {
+        "User" => Ok(account.login.eq_ignore_ascii_case(&github.login)),
+        "Organization" => {
+            let response = github_get(
+                state,
+                &format!("/user/memberships/orgs/{}", account.login),
+                token,
+            )
+            .send()
+            .await
+            .map_err(|error| ApiError::Internal(format!("GitHub org membership: {error}")))?;
+            if matches!(
+                response.status(),
+                reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::FORBIDDEN
+            ) {
+                return Ok(false);
+            }
+            let membership: Value = response
+                .error_for_status()
+                .map_err(|error| ApiError::Internal(format!("GitHub org membership: {error}")))?
+                .json()
+                .await
+                .map_err(|error| ApiError::Internal(format!("GitHub org membership: {error}")))?;
+            Ok(membership["role"] == "admin" && membership["state"] == "active")
+        }
+        other => Err(ApiError::Internal(format!(
+            "the GitHub installation account has the unknown type {other}"
+        ))),
+    }
+}
+
 async fn user_installation(
     state: &AppState,
     token: &str,
@@ -530,6 +567,9 @@ async fn connect_installation(
     let Some(account) = user_installation(state, token, installation_id).await? else {
         return Ok(result(state, "not_accessible"));
     };
+    if !administers(state, token, &github, &account).await? {
+        return Ok(result(state, "not_admin_of_account"));
+    }
     let repositories = state
         .github_app
         .installation_repositories(installation_id)

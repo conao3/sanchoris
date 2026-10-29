@@ -968,6 +968,32 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         w.install(&install_url, &cookie, 77, "code-intruder").await,
         "not_linked_account"
     );
+    {
+        let mut github = w.github.state.lock().unwrap();
+        github.user_installations.insert(
+            "gho_code-install".into(),
+            vec![
+                json!({ "id": 77, "account": { "login": "acme-labs", "type": "Organization" } }),
+                json!({ "id": 79, "account": { "login": "sota-dev", "type": "User" } }),
+            ],
+        );
+        github.org_roles.insert(
+            ("gho_code-install".into(), "acme-labs".into()),
+            "member".into(),
+        );
+    }
+    assert_eq!(
+        w.install(&install_url, &cookie, 79, "code-install").await,
+        "not_admin_of_account"
+    );
+    assert_eq!(
+        w.install(&install_url, &cookie, 77, "code-install").await,
+        "not_admin_of_account"
+    );
+    w.github.state.lock().unwrap().org_roles.insert(
+        ("gho_code-install".into(), "acme-labs".into()),
+        "admin".into(),
+    );
     assert_eq!(
         w.install(&install_url, &cookie, 77, "code-install").await,
         "installed"

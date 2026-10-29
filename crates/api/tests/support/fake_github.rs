@@ -53,6 +53,7 @@ pub struct GitHubState {
     pub checks: HashMap<String, String>,
     pub oauth_users: HashMap<String, (i64, String)>,
     pub user_installations: HashMap<String, Vec<Value>>,
+    pub org_roles: HashMap<(String, String), String>,
     pub installation_repositories: HashMap<i64, Vec<(i64, String)>>,
     pub repositories: Vec<(i64, String)>,
     pub refs: HashMap<String, String>,
@@ -181,6 +182,7 @@ impl FakeGitHub {
             )
             .route("/repos/{owner}/{repo}/git/refs", post(create_ref))
             .route("/user/installations", get(user_installations))
+            .route("/user/memberships/orgs/{org}", get(org_membership))
             .route("/installation/repositories", get(installation_repositories))
             .route("/repos/{owner}/{repo}/git/trees/{sha}", get(tree))
             .route("/repos/{owner}/{repo}/git/blobs/{sha}", get(blob))
@@ -591,6 +593,23 @@ async fn user_installations(State(fake): Fake, headers: HeaderMap) -> Response {
             Json(json!({ "message": "Bad credentials" })),
         )
             .into_response(),
+    }
+}
+
+async fn org_membership(
+    State(fake): Fake,
+    UrlPath(org): UrlPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let state = fake.state.lock().unwrap();
+    match bearer(&headers).and_then(|token| state.org_roles.get(&(token, org.clone())).cloned()) {
+        Some(role) => Json(json!({
+            "state": "active",
+            "role": role,
+            "organization": { "login": org },
+        }))
+        .into_response(),
+        None => not_found("membership"),
     }
 }
 
