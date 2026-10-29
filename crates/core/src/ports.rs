@@ -59,4 +59,5 @@ pub trait BlobStore: Send + Sync {
     async fn put(&self, key: &str, body: Vec<u8>) -> Result<(), PortError>;
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, PortError>;
     async fn delete(&self, key: &str) -> Result<(), PortError>;
+    async fn delete_prefix(&self, prefix: &str, limit: usize) -> Result<usize, PortError>;
 }

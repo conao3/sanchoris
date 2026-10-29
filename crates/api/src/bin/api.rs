@@ -34,6 +34,7 @@ async fn main() -> Result<(), lambda_http::Error> {
             resources: Arc::new(GitHubResources::new(github_app.clone())),
             runner: Arc::new(ApiWorkspaces),
             pusher: Arc::new(ApiWorkspaces),
+            records: Arc::new(ApiWorkspaces),
         },
         Settings::default(),
     ));

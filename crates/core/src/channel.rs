@@ -11,6 +11,7 @@ use crate::jobs::Job;
 use crate::keys;
 use crate::receive::{Admission, ReceiveLimited, SOURCE_GITHUB, admit_inbound};
 use crate::store::retry;
+use crate::tenants::accepts_work;
 
 pub const SEQ_STRIDE: i64 = 1_000_000_000;
 
@@ -300,9 +301,12 @@ pub async fn tenant_for_installation(
     let integration = store
         .get::<Integration>(&keys::integration_key(tenant_id, guard.target))
         .await?;
-    Ok(integration
-        .filter(|i| i.status == "connected")
-        .map(|i| i.tenant_id))
+    if !integration.is_some_and(|i| i.status == "connected")
+        || !accepts_work(store, tenant_id).await?
+    {
+        return Ok(None);
+    }
+    Ok(Some(tenant_id))
 }
 
 pub async fn ingest_github_delivery(

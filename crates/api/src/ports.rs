@@ -72,7 +72,7 @@ impl ChatDispatcher for InlineChatDispatcher {
 
 pub struct ApiWorkspaces;
 
-const API_RUNS_NO_WORKSPACES: &str = "the api function runs config sync and chat dispatch inline; workspaces and the outbox belong to the worker function";
+const API_RUNS_NO_WORKSPACES: &str = "the api function runs config sync and chat dispatch inline; workspaces, the outbox and tenant deletion belong to the worker function";
 
 #[async_trait]
 impl RunnerPort for ApiWorkspaces {
@@ -113,6 +113,45 @@ impl OutboxPusher for ApiWorkspaces {
     ) -> Result<(), sanchoris_core::ports::PortError> {
         Err(sanchoris_core::ports::PortError::new(
             "outbox",
+            API_RUNS_NO_WORKSPACES,
+        ))
+    }
+}
+
+#[async_trait]
+impl sanchoris_core::ports::BlobStore for ApiWorkspaces {
+    async fn put(
+        &self,
+        _key: &str,
+        _body: Vec<u8>,
+    ) -> Result<(), sanchoris_core::ports::PortError> {
+        Err(sanchoris_core::ports::PortError::new(
+            "records",
+            API_RUNS_NO_WORKSPACES,
+        ))
+    }
+
+    async fn get(&self, _key: &str) -> Result<Option<Vec<u8>>, sanchoris_core::ports::PortError> {
+        Err(sanchoris_core::ports::PortError::new(
+            "records",
+            API_RUNS_NO_WORKSPACES,
+        ))
+    }
+
+    async fn delete(&self, _key: &str) -> Result<(), sanchoris_core::ports::PortError> {
+        Err(sanchoris_core::ports::PortError::new(
+            "records",
+            API_RUNS_NO_WORKSPACES,
+        ))
+    }
+
+    async fn delete_prefix(
+        &self,
+        _prefix: &str,
+        _limit: usize,
+    ) -> Result<usize, sanchoris_core::ports::PortError> {
+        Err(sanchoris_core::ports::PortError::new(
+            "records",
             API_RUNS_NO_WORKSPACES,
         ))
     }

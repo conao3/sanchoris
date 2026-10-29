@@ -13,7 +13,7 @@ use crate::keys;
 use crate::model::{ActorKind, AuditOrigin};
 use crate::store::Update;
 use crate::tenants::{
-    discard_pending_tenant, hold_free_tenant, is_payment_pending, release_free_tenant,
+    discard_pending_tenant, hold_free_tenant, is_deleting, is_payment_pending, release_free_tenant,
     release_pending_checkout,
 };
 
@@ -236,6 +236,7 @@ async fn open(
         return Ok(None);
     }
     match tenant(&mut tx).await {
+        Ok(current) if is_deleting(&current) => Err(BillingError::TenantGone(tenant_id)),
         Ok(current) => Ok(Some((tx, current))),
         Err(DbError::TenantNotFound(_)) => Err(BillingError::TenantGone(tenant_id)),
         Err(other) => Err(other.into()),

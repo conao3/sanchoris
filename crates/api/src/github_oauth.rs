@@ -11,6 +11,7 @@ use sanchoris_core::items::{Guard, Integration, Member, Membership, User, uniq};
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
 use sanchoris_core::store::retry;
+use sanchoris_core::tenants::accepts_work;
 use sanchoris_graphql::{GithubConnectUrl, GithubRedirect};
 use sanchoris_worker::ports::ConfigSource as _;
 use serde::Deserialize;
@@ -549,6 +550,9 @@ async fn connect_installation(
     else {
         return Ok(result(state, "not_member"));
     };
+    if !accepts_work(&state.store, tenant_id).await? {
+        return Ok(result(state, "not_member"));
+    }
     if member.role == "member" {
         return Ok(result(state, "not_admin"));
     }

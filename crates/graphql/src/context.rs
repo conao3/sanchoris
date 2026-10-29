@@ -11,6 +11,7 @@ use sanchoris_core::items::{self, Member, Ref, Tenant, User};
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
 use sanchoris_core::store::Update;
+use sanchoris_core::tenants::is_deleting;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
@@ -173,7 +174,7 @@ impl Membership {
 async fn membership_of(
     ctx: &Context<'_>,
     item: &items::Membership,
-) -> Result<(String, Membership)> {
+) -> Result<(Tenant, Membership)> {
     let mut tx = tx(ctx, item.tenant_id);
     let member = tx
         .require::<Member>(&keys::member_key(item.tenant_id, item.member_id))
@@ -183,7 +184,7 @@ async fn membership_of(
         .await?
         .ok_or_else(|| not_found(format!("tenant {}", item.tenant_id)))?;
     Ok((
-        tenant.name,
+        tenant,
         Membership {
             member_id: member.id,
             tenant_id: item.tenant_id,
@@ -192,7 +193,11 @@ async fn membership_of(
     ))
 }
 
-pub(crate) async fn memberships(ctx: &Context<'_>) -> Result<Vec<Membership>> {
+pub(crate) fn being_deleted(tenant: &Tenant) -> Error {
+    conflict(format!("the tenant {} is being deleted", tenant.slug))
+}
+
+async fn member_tenants(ctx: &Context<'_>) -> Result<Vec<(Tenant, Membership)>> {
     let user_id = auth(ctx)?.user_id;
     let items = store(ctx)
         .query::<items::Membership>(&keys::user_key(user_id).pk, "MEMBER#")
@@ -201,9 +206,15 @@ pub(crate) async fn memberships(ctx: &Context<'_>) -> Result<Vec<Membership>> {
     for item in &items {
         found.push(membership_of(ctx, item).await?);
     }
-    found.sort_by(|a, b| (&a.0, a.1.tenant_id).cmp(&(&b.0, b.1.tenant_id)));
-    Ok(found
+    found.sort_by(|a, b| (&a.0.name, a.1.tenant_id).cmp(&(&b.0.name, b.1.tenant_id)));
+    Ok(found)
+}
+
+pub(crate) async fn memberships(ctx: &Context<'_>) -> Result<Vec<Membership>> {
+    Ok(member_tenants(ctx)
+        .await?
         .into_iter()
+        .filter(|(tenant, _)| !is_deleting(tenant))
         .map(|(_, membership)| membership)
         .collect())
 }
@@ -213,13 +224,17 @@ pub(crate) async fn membership_in(
     tenant_id: Uuid,
 ) -> Result<Option<Membership>> {
     let user_id = auth(ctx)?.user_id;
-    match store(ctx)
+    let Some(item) = store(ctx)
         .get::<items::Membership>(&keys::membership_key(user_id, tenant_id))
         .await?
-    {
-        Some(item) => Ok(Some(membership_of(ctx, &item).await?.1)),
-        None => Ok(None),
+    else {
+        return Ok(None);
+    };
+    let (tenant, membership) = membership_of(ctx, &item).await?;
+    if is_deleting(&tenant) {
+        return Err(being_deleted(&tenant));
     }
+    Ok(Some(membership))
 }
 
 pub(crate) async fn scope_for_tenant(ctx: &Context<'_>, tenant_id: Uuid) -> Result<Scope> {
@@ -248,11 +263,14 @@ pub(crate) async fn locate_item<E: Entity>(
     id: Uuid,
     key: impl Fn(Uuid) -> Key,
 ) -> Result<(Scope, E)> {
-    for membership in memberships(ctx).await? {
+    for (tenant, membership) in member_tenants(ctx).await? {
         if let Some(item) = tx(ctx, membership.tenant_id)
             .get::<E>(&key(membership.tenant_id))
             .await?
         {
+            if is_deleting(&tenant) {
+                return Err(being_deleted(&tenant));
+            }
             return Ok((membership.scope(), item));
         }
     }
@@ -265,9 +283,12 @@ pub(crate) async fn locate_ref(
     id: Uuid,
     kind: &str,
 ) -> Result<(Scope, Ref)> {
-    for membership in memberships(ctx).await? {
+    for (tenant, membership) in member_tenants(ctx).await? {
         let mut tx = tx(ctx, membership.tenant_id);
         if let Some(found) = db::locate(&mut tx, id, kind).await? {
+            if is_deleting(&tenant) {
+                return Err(being_deleted(&tenant));
+            }
             return Ok((membership.scope(), found));
         }
     }

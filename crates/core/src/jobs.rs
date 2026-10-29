@@ -56,6 +56,10 @@ pub enum Job {
         trigger_id: Uuid,
         due_at: DateTime<Utc>,
     },
+    DeleteTenant {
+        tenant_id: Uuid,
+        phase: Deletion,
+    },
     SweepConfigs,
     SweepChecks,
     SweepTaskLimits,
@@ -77,6 +81,7 @@ impl Job {
             | Self::Reconcile { task_id, .. } => format!("task:{task_id}"),
             Self::DeliverOutbox { run_id, .. } => format!("run:{run_id}"),
             Self::ConfigSync { config_id, .. } => format!("config:{config_id}"),
+            Self::DeleteTenant { tenant_id, .. } => format!("delete:{tenant_id}"),
             Self::SweepConfigs => "sweep:configs".into(),
             Self::SweepChecks => "sweep:checks".into(),
             Self::SweepTaskLimits => "sweep:task-limits".into(),
@@ -84,6 +89,24 @@ impl Job {
             Self::SweepWorkspaces => "sweep:workspaces".into(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "step", rename_all = "snake_case")]
+pub enum Deletion {
+    Release,
+    Items {
+        after: Option<ItemCursor>,
+        deleted: u64,
+    },
+    Blobs,
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemCursor {
+    pub pk: String,
+    pub sk: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

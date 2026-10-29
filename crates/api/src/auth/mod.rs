@@ -14,6 +14,7 @@ use sanchoris_core::items::{Guard, Membership, Tenant, User, uniq};
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
 use sanchoris_core::store::retry;
+use sanchoris_core::tenants::is_deleting;
 use sanchoris_graphql::ClientIp;
 use serde_json::{Map, json};
 use uuid::Uuid;
@@ -170,10 +171,10 @@ async fn record_sign_in(
         let member_ref = membership.member_id.to_string();
         retry(8, || async {
             let mut tx = store.tx(membership.tenant_id);
-            if tx
+            if !tx
                 .get::<Tenant>(&keys::tenant_key(membership.tenant_id))
                 .await?
-                .is_none()
+                .is_some_and(|tenant| !is_deleting(&tenant))
             {
                 return Ok(());
             }

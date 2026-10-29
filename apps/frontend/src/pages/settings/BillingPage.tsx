@@ -1,11 +1,14 @@
-import { useSearch } from '@tanstack/react-router';
-import { ExternalLink, ShieldCheck } from 'lucide-react';
+import { useApolloClient } from '@apollo/client/react';
+import { useNavigate, useSearch } from '@tanstack/react-router';
+import { ExternalLink, ShieldCheck, Trash2 } from 'lucide-react';
+import { useState } from 'react';
 import { Button } from '../../components/Button';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { SettingsPage } from '../../components/SettingsTabs';
 import { CheckoutNote, TenantStateNote, useCheckoutOutcome } from '../../components/billing';
-import { ActionError, Dim, ErrorNote, Kv, Meter, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
-import { BillingDocument, ChangePlanDocument, OpenBillingPortalDocument } from '../../graphql/generated/graphql';
-import { t } from '../../i18n';
+import { ActionError, Chip, Dim, ErrorNote, Kv, Meter, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
+import { BillingDocument, ChangePlanDocument, DeleteTenantDocument, OpenBillingPortalDocument } from '../../graphql/generated/graphql';
+import { t, tx } from '../../i18n';
 import { day, elapsedRatio, hours, percent } from '../../lib/format';
 import { useAction } from '../../lib/mutation';
 import { countOf, hoursOf, planLimit, planPrice, usedShare } from '../../lib/plan';
@@ -13,7 +16,7 @@ import { useData } from '../../lib/query';
 import { useTenant } from '../../lib/tenant';
 
 export function BillingPage() {
-  const { slug } = useTenant();
+  const { slug, membership } = useTenant();
   const { data, error, refetch } = useData(BillingDocument, { tenant: slug });
   const [changePlan, changeState] = useAction(ChangePlanDocument);
   const [openPortal, portalState] = useAction(OpenBillingPortalDocument);
@@ -131,6 +134,7 @@ export function BillingPage() {
             <Dim className="mt-3">{t('billing.footer')}</Dim>
           </>
         )}
+        {membership.role === 'OWNER' ? <DeleteTenant tenantId={tenant.id} name={tenant.name} free={!admin && plan.priceUsd === 0} /> : null}
       </>
     );
   }
@@ -156,5 +160,75 @@ export function BillingPage() {
       {!data && !error ? <Skeleton rows={6} /> : null}
       {content}
     </SettingsPage>
+  );
+}
+
+function DeleteTenant({ tenantId, name, free }: { tenantId: string; name: string; free: boolean }) {
+  const { viewer, slug, switchTenant } = useTenant();
+  const client = useApolloClient();
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState('');
+  const [remove, removeState] = useAction(DeleteTenantDocument);
+
+  function openChange(next: boolean) {
+    setOpen(next);
+    if (!next) {
+      setTyped('');
+    }
+  }
+
+  function confirm() {
+    void remove({ tenantId, slug: typed.trim() }).then((done) => {
+      if (!done) {
+        return;
+      }
+      setOpen(false);
+      const next = viewer.memberships.find((item) => item.tenant.id !== tenantId);
+      if (next) {
+        switchTenant(next.tenant.slug);
+        return;
+      }
+      void navigate({ to: '/tenants/new' });
+      void client.resetStore();
+    });
+  }
+
+  return (
+    <>
+      <Section>{t('billing.deleteTenant')}</Section>
+      <div className="flex items-center justify-between gap-6">
+        <Dim>{t('billing.deleteTenantNote')}</Dim>
+        <Button variant="danger" icon={Trash2} onPress={() => setOpen(true)}>
+          {t('billing.deleteTenant')}
+        </Button>
+      </div>
+      <ConfirmDialog
+        isOpen={open}
+        onOpenChange={openChange}
+        title={t('billing.deleteTenantTitle', { tenant: name })}
+        confirmLabel={t('billing.deleteTenant')}
+        confirmIcon={Trash2}
+        onConfirm={confirm}
+        isConfirmDisabled={typed.trim() !== slug || removeState.loading}
+        focusConfirm={false}
+        error={removeState.error}
+      >
+        <p className="m-0">{t('billing.deleteTenantBody')}</p>
+        {free ? <p className="m-0 mt-2">{t('billing.deleteTenantFree')}</p> : null}
+        <label htmlFor="delete-tenant-slug" className="mb-1 mt-3 block text-xs text-muted">
+          {tx('billing.deleteTenantType', { slug: <Chip>{slug}</Chip> })}
+        </label>
+        <input
+          id="delete-tenant-slug"
+          autoFocus
+          value={typed}
+          onChange={(event) => setTyped(event.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+          className="block h-8 w-full rounded-ui border border-line2 bg-bg px-2.5 font-mono text-sm outline-none focus:border-ink"
+        />
+      </ConfirmDialog>
+    </>
   );
 }

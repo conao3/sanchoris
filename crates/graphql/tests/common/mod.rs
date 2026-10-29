@@ -195,6 +195,7 @@ pub struct Recorder {
     pub free_tenant_race: Mutex<Option<(Uuid, Uuid)>>,
     pub free_tenant_race_won: Mutex<Option<bool>>,
     pub ended_first: Mutex<Option<Uuid>>,
+    pub billing_ended: Mutex<Vec<Uuid>>,
 }
 
 pub struct Fakes {
@@ -276,6 +277,11 @@ impl CheckoutPort for Fakes {
 
     async fn billing_portal(&self, tenant_id: Uuid) -> Result<String, PortError> {
         Ok(format!("https://billing.stripe.test/{tenant_id}"))
+    }
+
+    async fn end_billing(&self, tenant_id: Uuid) -> Result<(), PortError> {
+        self.recorder.billing_ended.lock().unwrap().push(tenant_id);
+        Ok(())
     }
 }
 

@@ -77,6 +77,9 @@ type Mutation {
   "Returns a short-lived URL of the audit log as JSON Lines."
   exportAuditLog(tenantId: ID!, filter: AuditFilter): RedirectPayload!
 
+  "Deletes the tenant (owners). slug must equal the tenant's slug. The tenant becomes DELETING at once: its unfinished tasks stop, its subscription is cancelled, and the worker then removes its data and records."
+  deleteTenant(tenantId: ID!, slug: String!): ID!
+
   "Operator only."
   suspendTenant(tenantId: ID!, reason: String!): Tenant!
   "Operator only."
@@ -178,6 +181,8 @@ type Plan {
 enum TenantState {
   ACTIVE
   SUSPENDED
+  "Set by deleteTenant. Mutations, webhooks, triggers and dispatch stop for the tenant until the worker removes it."
+  DELETING
 }
 
 enum GitHubOwnerKind {

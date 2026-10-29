@@ -1175,6 +1175,69 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .source_ip;
     assert_eq!(audited_ip.as_deref(), Some("127.0.0.1"));
 
+    let (code, _) = w
+        .error(
+            owner,
+            "DeleteTenant",
+            json!({ "tenantId": tenant, "slug": "not-the-slug" }),
+        )
+        .await;
+    assert_eq!(code, "BAD_USER_INPUT");
+    w.api
+        .stripe
+        .state
+        .lock()
+        .unwrap()
+        .subscriptions
+        .get_mut("cus_acme")
+        .unwrap()[1]["status"] = json!("active");
+    let deleted = w
+        .ok(
+            owner,
+            "DeleteTenant",
+            json!({ "tenantId": tenant, "slug": slug }),
+        )
+        .await;
+    assert_eq!(deleted["deleteTenant"], tenant.to_string());
+    assert!(
+        w.api
+            .stripe
+            .requests("/v1/subscriptions/sub_acme")
+            .iter()
+            .any(|request| request.method == "DELETE")
+    );
+    let deleting = World::tenant_of(&w.dynamo, tenant).await;
+    assert_eq!(deleting.status, "deleting");
+    let cancelled = w
+        .stripe_webhook(&json!({
+            "id": "evt_deleted_tenant", "type": "customer.subscription.deleted",
+            "created": Utc::now().timestamp(),
+            "data": { "object": {
+                "id": "sub_acme", "customer": "cus_acme", "status": "canceled",
+                "metadata": { "tenant_id": tenant },
+            } },
+        }))
+        .await;
+    assert_eq!(cancelled.status(), StatusCode::OK);
+    assert_eq!(
+        cancelled.json::<Value>().await.unwrap()["status"],
+        "ignored"
+    );
+    assert_eq!(
+        World::tenant_of(&w.dynamo, tenant).await.plan_id,
+        deleting.plan_id
+    );
+    let shell = w.ok(owner, "Shell", json!({})).await;
+    assert!(
+        shell["viewer"]["memberships"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|membership| membership["tenant"]["id"] != tenant.to_string())
+    );
+    let (code, _) = w.error(owner, "Home", json!({ "tenant": slug })).await;
+    assert_eq!(code, "CONFLICT");
+
     let executed = w.executed.lock().unwrap().clone();
     assert_eq!(executed, operation_names(&w.document));
 }

@@ -32,6 +32,7 @@ async fn run() -> Result<(), String> {
             resources: Arc::new(GitHubResources::new(github)),
             runner: Arc::new(ApiWorkspaces),
             pusher: Arc::new(ApiWorkspaces),
+            records: Arc::new(ApiWorkspaces),
         },
         Settings::default(),
     );

@@ -30,6 +30,7 @@ use sanchoris_core::db::{REF_RUN, Store, insert_ref};
 use sanchoris_core::item::Entity;
 use sanchoris_core::items::{Credential, Guard, Integration, Run, RunChannel, Task, User, uniq};
 use sanchoris_core::keys;
+use sanchoris_core::local::DirBlobStore;
 use sanchoris_core::model::TaskStatus;
 use sanchoris_core::store::Relay;
 use sanchoris_core::testing::{SeededTenant, TestDynamo};
@@ -302,6 +303,7 @@ pub async fn start_api(
         resources: Arc::new(GitHubResources::new(github_app.clone())),
         runner,
         pusher: Arc::new(channel.channel.clone()),
+        records: Arc::new(DirBlobStore::new(&records_dir)),
     };
     let worker = Arc::new(Worker::new(direct.store.clone(), deps, Settings::default()));
     let config = Arc::new(config);

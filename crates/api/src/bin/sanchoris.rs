@@ -7,7 +7,7 @@ use sanchoris_api::channel::credentials::IssuedCredentials;
 use sanchoris_api::config::{LocalConfig, RecordsConfig, STORE_ENV, WORKER_ENV, require};
 use sanchoris_api::frontend::Frontend;
 use sanchoris_api::graphql::{self, GraphqlPorts};
-use sanchoris_api::records::{LocalRecordStore, RecordStore, S3RecordStore};
+use sanchoris_api::records::{LocalRecordStore, RecordStore, S3RecordStore, record_blobs};
 use sanchoris_api::server::{LocalParts, LocalServer, local_channel, serve};
 use sanchoris_core::clock::{Clock, SystemClock};
 use sanchoris_core::db::Store;
@@ -94,6 +94,7 @@ async fn run() -> Result<(), String> {
                 clock,
             )),
             pusher: Arc::new(channel.channel.clone()),
+            records: record_blobs(&config.channel.records, &sdk),
         },
         Settings::default(),
     ));

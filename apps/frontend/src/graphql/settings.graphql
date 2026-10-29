@@ -338,3 +338,7 @@ mutation OpenBillingPortal($tenantId: ID!) {
     url
   }
 }
+
+mutation DeleteTenant($tenantId: ID!, $slug: String!) {
+  deleteTenant(tenantId: $tenantId, slug: $slug)
+}
