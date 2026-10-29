@@ -23,7 +23,7 @@ export function useData<TData, TVariables extends OperationVariables>(
   const visible = usePageVisible();
   const [polled, setPolled] = useState<TData>();
   const pollInterval = visible && polled && options.poll ? options.poll(polled) : 0;
-  const result = useQuery(document, { variables, skip: options.skip, pollInterval } as useQuery.Options<TData, TVariables>);
+  const result = useQuery(document, { variables, skip: options.skip, pollInterval, fetchPolicy: 'cache-and-network' } as useQuery.Options<TData, TVariables>);
   const data = result.dataState === 'complete' ? (result.data as TData) : undefined;
   const wasVisible = useRef(visible);
   const { refetch } = result;

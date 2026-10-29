@@ -103,7 +103,7 @@ function TemplatePanel({ tenant, templates, onClose }: { tenant: Tenant; templat
   const [templateId, setTemplateId] = useState(templates[0]?.id ?? '');
   const [configId, setConfigId] = useState(tenant.configs[0]?.id ?? '');
   const [repository, setRepository] = useState(repositories[0] ?? '');
-  const [propose, { data, loading, error }] = useAction(ProposeTriggerDocument);
+  const [propose, { data, loading, error }] = useAction(ProposeTriggerDocument, { refetchQueries: [TriggersDocument] });
   const selectClass = 'h-[30px] w-full rounded-ui border border-line2 bg-bg px-2.5';
 
   function submit(event: FormEvent) {
