@@ -4,7 +4,7 @@ import { createRootRoute, createRoute, createRouter, Outlet, redirect, RouterPro
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { AppFrame } from './components/Shell';
-import { getIdToken, isLoggedIn } from './lib/cognito';
+import { authorizedFetch, isLoggedIn } from './lib/cognito';
 import { mockApi } from './lib/env';
 import { TenantProvider } from './lib/tenant';
 import { AuthCallbackPage } from './pages/AuthCallbackPage';
@@ -32,16 +32,7 @@ async function createLink(): Promise<ApolloLink> {
     const { createMockLink } = await import('./mock');
     return createMockLink();
   }
-  const authLink = new ApolloLink((operation, forward) => {
-    const token = getIdToken();
-    if (token) {
-      operation.setContext(({ headers = {} }: { headers?: Record<string, string> }) => ({
-        headers: { ...headers, Authorization: `Bearer ${token}` },
-      }));
-    }
-    return forward(operation);
-  });
-  return ApolloLink.from([authLink, new HttpLink({ uri: '/api/graphql' })]);
+  return new HttpLink({ uri: '/api/graphql', fetch: authorizedFetch });
 }
 
 const apolloClient = new ApolloClient({

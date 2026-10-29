@@ -107,3 +107,28 @@ export async function refreshTokens(): Promise<void> {
 
   return refreshPromise;
 }
+
+function withIdToken(init: RequestInit | undefined): RequestInit {
+  const headers = new Headers(init?.headers);
+  const token = getIdToken();
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  return { ...init, headers };
+}
+
+export async function authorizedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const response = await fetch(input, withIdToken(init));
+  if (response.status !== 401) {
+    return response;
+  }
+  const refreshed = await refreshTokens().then(
+    () => fetch(input, withIdToken(init)),
+    () => response,
+  );
+  if (refreshed.status === 401) {
+    clearTokens();
+    window.location.assign('/login');
+  }
+  return refreshed;
+}
