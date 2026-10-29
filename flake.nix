@@ -38,6 +38,7 @@
           jre_headless
           jq
           openssl
+          awscli2
           sccache
           mold
           cargo-nextest
@@ -49,6 +50,7 @@
           shellHook = ''
             export RUST_BACKTRACE=1
             export SCCACHE_DIR="$HOME/.cache/sccache"
+            export SCCACHE_SERVER_UDS="$SCCACHE_DIR/server.sock"
           '';
         };
       in
