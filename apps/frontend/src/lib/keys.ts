@@ -9,6 +9,10 @@ function keyName(event: KeyboardEvent): string {
   return event.metaKey || event.ctrlKey ? `mod+${base}` : base;
 }
 
+function inDialog(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('[role="dialog"], [role="alertdialog"]') !== null;
+}
+
 function isTyping(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -25,7 +29,7 @@ export function useKeys(bindings: KeyBindings) {
     let pendingAt = 0;
 
     function onKeyDown(event: KeyboardEvent) {
-      if (event.altKey || event.isComposing) {
+      if (event.altKey || event.isComposing || inDialog(event.target)) {
         return;
       }
       const name = keyName(event);

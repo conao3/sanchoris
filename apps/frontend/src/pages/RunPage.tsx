@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import { Square } from 'lucide-react';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { Button } from '../components/Button';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Cols, Page } from '../components/Shell';
 import { RunState, SkillRunState } from '../components/status';
 import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Kv, Lk, Row, Section, Skeleton, Sub, Title } from '../components/ui';
@@ -99,6 +100,7 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
   const variables = { tenant: slug, task: taskId, number: Number(n) };
   const { data, error, refetch } = useData(RunDocument, variables, { poll: (result) => (isLive(result.tenant?.task?.run?.status) ? LIVE_POLL : 0) });
   const [stopRun, stopState] = useAction(StopRunDocument);
+  const [confirmingStop, setConfirmingStop] = useState(false);
   const [send, sendState] = useAction(SendChatMessageDocument);
   const [text, setText] = useState('');
   const input = useRef<HTMLInputElement>(null);
@@ -129,15 +131,24 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
     });
   }
 
+  function askStop() {
+    if (run && live) {
+      setConfirmingStop(true);
+    }
+  }
+
+  function confirmStop() {
+    setConfirmingStop(false);
+    if (run && live) {
+      void stopRun({ runId: run.id });
+    }
+  }
+
   useKeys({
     Escape: () => void navigate({ to: '/tasks/$task', params: { task: taskId } }),
     f: () => setFollow(!follow),
     m: () => input.current?.focus(),
-    s: () => {
-      if (run && live) {
-        void stopRun({ runId: run.id });
-      }
-    },
+    s: askStop,
   });
 
   let body;
@@ -270,6 +281,15 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
     body = <Cols main={main} aside={aside} />;
   }
 
+  const keys: [string, MessageKey][] = [
+    ['Esc', 'keys.back'],
+    ['f', follow ? 'run.followOff' : 'run.follow'],
+    ['m', 'run.sendMessage'],
+  ];
+  if (live) {
+    keys.push(['s', 'run.stop']);
+  }
+
   return (
     <Page
       crumbs={[
@@ -279,7 +299,7 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
       ]}
       actions={
         <>
-          <Button variant="danger" icon={Square} kbd="s" isDisabled={!live || stopState.loading} onPress={() => run && void stopRun({ runId: run.id })}>
+          <Button variant="danger" icon={Square} kbd="s" isDisabled={!live || stopState.loading} onPress={askStop}>
             {t('run.stop')}
           </Button>
           <Button kbd="m" isDisabled={!live} onPress={() => input.current?.focus()}>
@@ -287,13 +307,19 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
           </Button>
         </>
       }
-      keys={[
-        ['Esc', 'keys.back'],
-        ['f', follow ? 'run.followOff' : 'run.follow'],
-        ['m', 'run.sendMessage'],
-      ]}
+      keys={keys}
     >
       {body}
+      <ConfirmDialog
+        isOpen={confirmingStop}
+        onOpenChange={setConfirmingStop}
+        title={t('run.stopTitle')}
+        confirmLabel={t('run.stop')}
+        confirmIcon={Square}
+        onConfirm={confirmStop}
+      >
+        {t('run.stopBody')}
+      </ConfirmDialog>
     </Page>
   );
 }

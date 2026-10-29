@@ -4,6 +4,7 @@ import type { LucideIcon } from 'lucide-react';
 import { Bot, Check, ChevronRight, Circle, CircleCheck, CircleDashed, CircleX, Play, Puzzle, Square, X, Zap } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Button } from '../components/Button';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Cols, Page } from '../components/Shell';
 import { SkillRunState, StateEntryState, TaskState } from '../components/status';
 import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Kv, Lk, Meter, Row, Section, Skeleton, State, Sub, Th, Title, type Tone } from '../components/ui';
@@ -137,6 +138,7 @@ export function TaskPage() {
   const [message, setMessage] = useState('');
   const [resume, resumeState] = useAction(ResumeTaskDocument);
   const [stop, stopState] = useAction(StopTaskDocument);
+  const [confirmingStop, setConfirmingStop] = useState(false);
   const [resolveApproval, approvalState] = useAction(ResolveApprovalDocument);
   const task = data?.tenant?.task;
   const needsYou = task?.status === 'NEEDS_YOU';
@@ -163,6 +165,13 @@ export function TaskPage() {
   }
 
   function doStop() {
+    if (task && active) {
+      setConfirmingStop(true);
+    }
+  }
+
+  function confirmStop() {
+    setConfirmingStop(false);
     if (task && active) {
       void stop({ taskId: task.id });
     }
@@ -445,6 +454,16 @@ export function TaskPage() {
       keys={keys}
     >
       {body}
+      <ConfirmDialog
+        isOpen={confirmingStop}
+        onOpenChange={setConfirmingStop}
+        title={t('task.stopTitle')}
+        confirmLabel={t('task.stop')}
+        confirmIcon={Square}
+        onConfirm={confirmStop}
+      >
+        {t('task.stopBody')}
+      </ConfirmDialog>
     </Page>
   );
 }
