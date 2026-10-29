@@ -78,7 +78,12 @@ const tasksRoute = createRoute({ getParentRoute: () => appRoute, path: '/tasks',
 const taskRoute = createRoute({ getParentRoute: () => appRoute, path: '/tasks/$task', component: TaskPage });
 const runRoute = createRoute({ getParentRoute: () => appRoute, path: '/tasks/$task/runs/$n', component: RunPage });
 const operatorTenantsRoute = createRoute({ getParentRoute: () => appRoute, path: '/operator/tenants', component: OperatorTenantsPage });
-const integrationsRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings', component: IntegrationsPage });
+const integrationsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/settings',
+  validateSearch: (search: Record<string, unknown>): { github?: string } => (typeof search.github === 'string' ? { github: search.github } : {}),
+  component: IntegrationsPage,
+});
 const configRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/config', component: ConfigPage });
 const credentialsRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/credentials', component: CredentialsPage });
 const membersRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/members', component: MembersPage });

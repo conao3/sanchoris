@@ -8,7 +8,7 @@ import { Button } from './Button';
 
 export type Tone = 'run' | 'ok' | 'warn' | 'err' | 'wait';
 
-const toneClass: Record<Tone, string> = {
+export const toneClass: Record<Tone, string> = {
   run: 'text-run',
   ok: 'text-ok',
   warn: 'text-warn',

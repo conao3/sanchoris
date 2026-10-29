@@ -13,6 +13,7 @@ type ButtonProps = {
   icon?: LucideIcon;
   kbd?: string;
   href?: string;
+  sameTab?: boolean;
   isDisabled?: boolean;
   type?: 'button' | 'submit';
   onPress?: () => void;
@@ -32,6 +33,7 @@ export function Button({
   icon: Icon,
   kbd,
   href,
+  sameTab,
   isDisabled,
   type = 'button',
   onPress,
@@ -52,7 +54,7 @@ export function Button({
   );
   if (href) {
     return (
-      <a href={href} target="_blank" rel="noreferrer" className={classes}>
+      <a href={href} target={sameTab ? undefined : '_blank'} rel={sameTab ? undefined : 'noreferrer'} className={classes}>
         {content}
       </a>
     );

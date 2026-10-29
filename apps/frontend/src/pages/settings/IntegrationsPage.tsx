@@ -1,22 +1,55 @@
 import { useMutation } from '@apollo/client/react';
+import { useNavigate, useSearch } from '@tanstack/react-router';
+import clsx from 'clsx';
+import { useEffect, useState } from 'react';
 import { Ban, CircleDashed, ExternalLink, GitBranch, Link2, MessageSquare, Plus, ShieldCheck, TriangleAlert, UserCheck } from 'lucide-react';
 import { Button } from '../../components/Button';
 import { SettingsPage } from '../../components/SettingsTabs';
-import { Chip, Dim, ErrorNote, Icon, Row, Skeleton, State, Sub, Th, Title } from '../../components/ui';
+import { Chip, Dim, ErrorNote, Icon, Row, Skeleton, State, Sub, Th, Title, type Tone, toneClass } from '../../components/ui';
 import {
   ConnectGitHubDocument,
   ConnectSlackDocument,
   IntegrationsDocument,
   UnlinkGitHubDocument,
 } from '../../graphql/generated/graphql';
-import { t, tx } from '../../i18n';
+import { type MessageKey, t, tx } from '../../i18n';
 import { ago } from '../../lib/format';
 import { useData } from '../../lib/query';
 import { useTenant } from '../../lib/tenant';
 
+type Outcome = { row: 'account' | 'installation' | 'either'; tone: Tone; text: MessageKey };
+
+const outcomes: Record<string, Outcome> = {
+  linked: { row: 'account', tone: 'ok', text: 'integrations.outcome.linked' },
+  in_use: { row: 'account', tone: 'err', text: 'integrations.outcome.inUse' },
+  installed: { row: 'installation', tone: 'ok', text: 'integrations.outcome.installed' },
+  requested: { row: 'installation', tone: 'wait', text: 'integrations.outcome.requested' },
+  not_member: { row: 'installation', tone: 'err', text: 'integrations.outcome.notMember' },
+  not_admin: { row: 'installation', tone: 'err', text: 'integrations.outcome.notAdmin' },
+  not_linked: { row: 'installation', tone: 'err', text: 'integrations.outcome.notLinked' },
+  not_linked_account: { row: 'installation', tone: 'err', text: 'integrations.outcome.notLinkedAccount' },
+  not_accessible: { row: 'installation', tone: 'err', text: 'integrations.outcome.notAccessible' },
+  not_admin_of_account: { row: 'installation', tone: 'err', text: 'integrations.outcome.notAdminOfAccount' },
+  installation_in_use: { row: 'installation', tone: 'err', text: 'integrations.outcome.installationInUse' },
+  denied: { row: 'either', tone: 'err', text: 'integrations.outcome.denied' },
+};
+
+function OutcomeNote({ outcome }: { outcome: Outcome }) {
+  return <div className={clsx('mt-0.5 text-xs', toneClass[outcome.tone])}>{t(outcome.text)}</div>;
+}
+
 export function IntegrationsPage() {
   const { slug } = useTenant();
+  const navigate = useNavigate();
+  const search = useSearch({ from: '/app/settings' });
+  const [returned] = useState(search.github);
   const { data, error, refetch } = useData(IntegrationsDocument, { tenant: slug });
+
+  useEffect(() => {
+    if (search.github) {
+      void navigate({ to: '/settings', search: {}, replace: true });
+    }
+  }, [search.github, navigate]);
   const [connectGitHub] = useMutation(ConnectGitHubDocument);
   const [unlinkGitHub] = useMutation(UnlinkGitHubDocument);
   const [connectSlack] = useMutation(ConnectSlackDocument);
@@ -25,6 +58,8 @@ export function IntegrationsPage() {
   const github = tenant?.integrations.find((integration) => integration.kind === 'GITHUB_INSTALLATION');
   const slack = tenant?.integrations.find((integration) => integration.kind === 'SLACK');
   const cols = '44px 1fr 130px 170px';
+  const known = returned ? outcomes[returned] : undefined;
+  const outcome: Outcome | undefined = known?.row === 'either' ? { ...known, row: login ? 'installation' : 'account' } : known;
 
   return (
     <SettingsPage tab="integrations">
@@ -45,6 +80,7 @@ export function IntegrationsPage() {
             <div>
               <span className="font-medium">{t('integrations.githubAccount')}</span>
               <Dim>{login ? tx('integrations.linkedAs', { login: <Chip>{login}</Chip> }) : t('integrations.notLinked')}</Dim>
+              {outcome?.row === 'account' ? <OutcomeNote outcome={outcome} /> : null}
             </div>
             {login ? (
               <State tone="ok" icon={ShieldCheck}>
@@ -98,6 +134,7 @@ export function IntegrationsPage() {
                   </span>
                 ) : null}
               </Dim>
+              {outcome?.row === 'installation' ? <OutcomeNote outcome={outcome} /> : null}
             </div>
             {github?.status === 'CONNECTED' ? (
               <State tone="ok" icon={ShieldCheck}>
@@ -122,7 +159,7 @@ export function IntegrationsPage() {
                   {t('integrations.manageOnGitHub')}
                 </Button>
               ) : (
-                <Button variant="primary" icon={Plus} href={tenant.githubAppInstallUrl}>
+                <Button variant="primary" icon={Plus} href={tenant.githubAppInstallUrl} sameTab>
                   {t('integrations.installApp')}
                 </Button>
               )}
