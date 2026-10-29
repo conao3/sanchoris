@@ -32,6 +32,10 @@ query Run($tenant: String!, $task: ID!, $number: Int!) {
           at
           kind
           text
+          rateLimit {
+            status
+            resetsAt
+          }
         }
         skillRuns {
           id

@@ -9,7 +9,7 @@ import { RunState, SkillRunState } from '../components/status';
 import { Dim, Empty, ErrorNote, ExternalLk, Kv, Lk, Row, Section, Skeleton, Sub, Title } from '../components/ui';
 import { type LogLineKind, RunDocument, SendChatMessageDocument, StopRunDocument, type WorkspaceArchitecture } from '../graphql/generated/graphql';
 import { type MessageKey, t } from '../i18n';
-import { clock } from '../lib/format';
+import { clock, dayTime } from '../lib/format';
 import { useKeys } from '../lib/keys';
 import { useData } from '../lib/query';
 import { useTenant } from '../lib/tenant';
@@ -35,6 +35,22 @@ const linePrefix: Partial<Record<LogLineKind, MessageKey>> = {
   TOOL: 'run.prefixTool',
   USER: 'run.prefixYou',
 };
+
+const rateLimitText: Record<string, MessageKey> = {
+  allowed: 'run.rateLimitAllowed',
+  allowed_warning: 'run.rateLimitWarning',
+  rejected: 'run.rateLimitRejected',
+};
+
+function lineText(line: { text: string; rateLimit: { status: string; resetsAt: string | null } | null }): string {
+  if (!line.rateLimit) {
+    return line.text;
+  }
+  const { status, resetsAt } = line.rateLimit;
+  const key = rateLimitText[status];
+  const text = key ? t(key) : t('run.rateLimitOther', { status });
+  return resetsAt ? t('run.rateLimitResets', { text, at: dayTime(resetsAt) }) : text;
+}
 
 export function RunPage() {
   const { task: taskId, n } = useParams({ from: '/app/tasks/$task/runs/$n' });
@@ -119,7 +135,7 @@ export function RunPage() {
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-ui bg-term-bg py-3 font-mono text-sm leading-[1.75] text-term-fg">
           <div className="min-h-0 flex-1 overflow-auto">
             {run.log.map((line, index) => {
-              const [first, ...rest] = line.text.split('\n');
+              const [first, ...rest] = lineText(line).split('\n');
               const prefix = linePrefix[line.kind];
               const current = index === run.log.length - 1;
               return (

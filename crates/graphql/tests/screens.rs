@@ -152,7 +152,39 @@ async fn every_screen_query_validates_and_executes() {
         .collect::<Vec<_>>();
     assert_eq!(
         kinds,
-        vec!["SYSTEM", "INSTRUCTION", "EVENT", "INSTRUCTION", "SYSTEM"]
+        vec![
+            "SYSTEM",
+            "INSTRUCTION",
+            "EVENT",
+            "EVENT",
+            "INSTRUCTION",
+            "EVENT",
+            "SYSTEM"
+        ]
+    );
+    let rate_limits = run["log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|line| !line["rateLimit"].is_null())
+        .map(|line| {
+            (
+                line["text"].as_str().unwrap(),
+                line["rateLimit"]["status"].as_str().unwrap(),
+                &line["rateLimit"]["resetsAt"],
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rate_limits,
+        vec![
+            ("usage limit status: allowed", "allowed", &Value::Null),
+            (
+                "usage limit status: rejected",
+                "rejected",
+                &json!("2026-10-27T00:30:00Z")
+            ),
+        ]
     );
     assert_eq!(run["skillRuns"][0]["skill"]["name"], "open-pr-green-ci");
     assert_eq!(run["outputs"][0]["number"], 52);

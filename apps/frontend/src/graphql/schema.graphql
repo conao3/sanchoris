@@ -927,6 +927,14 @@ type LogLine {
   kind: LogLineKind!
   "May span lines."
   text: String!
+  "Set on the usage-limit snapshots that the worker reports."
+  rateLimit: LogRateLimit
+}
+
+type LogRateLimit {
+  "The provider's status: allowed, allowed_warning, or rejected; rejected means the usage limit was reached."
+  status: String!
+  resetsAt: DateTime
 }
 
 type Run {
