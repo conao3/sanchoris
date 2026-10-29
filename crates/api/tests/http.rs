@@ -935,6 +935,71 @@ async fn receive(socket: &mut Socket) -> Value {
 }
 
 #[tokio::test]
+async fn record_uploads_are_bounded_and_follow_the_last_recorded_turn() {
+    let server = Server::start().await;
+    let (_, run_id) = server.task_with_run().await;
+    let tenant = server.tenant();
+    let signer = RunTokenSigner::new(Signer::new(RUN_KEY).unwrap());
+    let token = signer.sign(tenant, run_id, Utc::now() + chrono::Duration::hours(1));
+    let mut socket = connect(&server, &token).await.unwrap();
+    let run = run_id.to_string();
+    send(
+        &mut socket,
+        json!({ "type": "hello", "runId": run, "protocolVersion": 1, "instanceId": Uuid::new_v4().to_string(), "started": false, "sessionId": null }),
+    )
+    .await;
+    assert_eq!(receive(&mut socket).await["type"], "ack");
+    let sha = "0".repeat(64);
+    let mut upload = async |seq: i64, turn: i64, length: i64| {
+        send(
+            &mut socket,
+            json!({ "type": "record_upload_request", "runId": run, "seq": seq, "requestId": format!("u-{seq}"), "sessionId": "s-1", "turn": turn, "contentLength": length, "sha256": sha }),
+        )
+        .await;
+        assert_eq!(
+            receive(&mut socket).await,
+            json!({ "type": "ack", "runId": run, "seq": seq })
+        );
+        let reply = receive(&mut socket).await;
+        assert_eq!(reply["type"], "record_upload_response");
+        if reply["ok"] == true {
+            Ok(reply["key"].as_str().unwrap().to_string())
+        } else {
+            Err(reply["error"]["code"].as_str().unwrap().to_string())
+        }
+    };
+    assert_eq!(upload(1, 2, 2).await, Err("unexpected_turn".into()));
+    assert_eq!(upload(2, 0, 2).await, Err("unexpected_turn".into()));
+    assert_eq!(
+        upload(3, 1, 64 * 1024 * 1024 + 1).await,
+        Err("record_too_large".into())
+    );
+    assert_eq!(upload(4, 1, -1).await, Err("invalid_request".into()));
+    let key = upload(5, 1, 64 * 1024 * 1024).await.unwrap();
+    drop(upload);
+    send(
+        &mut socket,
+        json!({ "type": "session_record", "runId": run, "seq": 6, "sessionId": "s-1", "turn": 1, "key": key, "relativePath": "s-1.jsonl", "contentLength": 2, "sha256": sha }),
+    )
+    .await;
+    assert_eq!(
+        receive(&mut socket).await,
+        json!({ "type": "ack", "runId": run, "seq": 6 })
+    );
+    let mut upload = async |seq: i64, turn: i64| {
+        send(
+            &mut socket,
+            json!({ "type": "record_upload_request", "runId": run, "seq": seq, "requestId": format!("u-{seq}"), "sessionId": "s-1", "turn": turn, "contentLength": 2, "sha256": sha }),
+        )
+        .await;
+        receive(&mut socket).await;
+        receive(&mut socket).await["ok"].clone()
+    };
+    assert_eq!(upload(7, 1).await, json!(false));
+    assert_eq!(upload(8, 2).await, json!(true));
+}
+
+#[tokio::test]
 async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     let server = Server::start().await;
     let (task_id, run_id) = server.task_with_run().await;

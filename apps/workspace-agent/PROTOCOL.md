@@ -338,7 +338,7 @@ Git asks for credentials through the helper `sanchoris git-credential` (the work
 After every turn, before `turn_end`:
 
 1. The agent reads the worker's session record (Claude: `$CLAUDE_CONFIG_DIR/projects/<dir>/<sessionId>.jsonl`; Codex: the rollout file under `$CODEX_HOME/sessions/`) and sends `record_upload_request` with its byte length and SHA-256.
-2. The control plane answers with a presigned PUT `url`, the `headers` the agent must send with it (for example the SHA-256 checksum), and the object `key`.
+2. The control plane answers with a presigned PUT `url`, the `headers` the agent must send with it (for example the SHA-256 checksum), and the object `key`. The URL signs `contentLength`, which may be at most 64 MiB (`record_too_large` above it), and `turn` must be the turn after the run's last `session_record` (1 for the first; `unexpected_turn` otherwise).
 3. The agent uploads the whole file with `PUT` and sends `session_record`. `relativePath` is the path of the record relative to the worker home (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`).
 4. The agent sends `turn_end`.
 
