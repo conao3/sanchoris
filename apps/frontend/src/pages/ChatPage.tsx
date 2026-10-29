@@ -12,8 +12,8 @@ import { type ChatQuery, ChatDocument, SendChatMessageDocument } from '../graphq
 import { locale, t, tx } from '../i18n';
 import { clock } from '../lib/format';
 import { useKeys } from '../lib/keys';
-import { useData } from '../lib/query';
-import { skillStep } from '../lib/taskText';
+import { IDLE_POLL, LIVE_POLL, useData } from '../lib/query';
+import { isActive, skillStep } from '../lib/taskText';
 import { useTenant } from '../lib/tenant';
 
 type Tenant = NonNullable<ChatQuery['tenant']>;
@@ -227,7 +227,11 @@ export function ChatPage() {
   const taskId = params.task;
   const { slug } = useTenant();
   const navigate = useNavigate();
-  const { data, error, refetch } = useData(ChatDocument, { tenant: slug, task: taskId ?? '', withTask: !!taskId });
+  const { data, error, refetch } = useData(
+    ChatDocument,
+    { tenant: slug, task: taskId ?? '', withTask: !!taskId },
+    { poll: (result) => (!taskId ? IDLE_POLL : result.tenant?.task && isActive(result.tenant.task.status) ? LIVE_POLL : 0) },
+  );
   const [scope, setScope] = useState<string>();
   const [scopeOpen, setScopeOpen] = useState(!taskId);
   const tenant = data?.tenant;

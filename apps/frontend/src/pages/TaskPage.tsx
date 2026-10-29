@@ -12,8 +12,8 @@ import { ResolveApprovalDocument, ResumeTaskDocument, StopTaskDocument, type Tas
 import { type MessageKey, t } from '../i18n';
 import { between, clock, duration, issueLabel, usd, usdWhole } from '../lib/format';
 import { useKeys } from '../lib/keys';
-import { useData } from '../lib/query';
-import { needsYouText, skillProgress } from '../lib/taskText';
+import { LIVE_POLL, useData } from '../lib/query';
+import { isActive, needsYouText, skillProgress } from '../lib/taskText';
 import { useTenant } from '../lib/tenant';
 
 type Task = NonNullable<NonNullable<TaskQuery['tenant']>['task']>;
@@ -34,8 +34,6 @@ const runStatusLabels: Record<string, MessageKey> = {
   COMPLETED: 'status.completed',
   FAILED: 'status.failed',
 };
-
-const finished = ['SUCCEEDED', 'FAILED', 'ABORTED'];
 
 function Step({ kind, icon, tone, stateIcon, children, current, todo }: {
   kind: string;
@@ -131,7 +129,11 @@ export function TaskPage() {
   const { task: taskId } = useParams({ from: '/app/tasks/$task' });
   const { slug } = useTenant();
   const navigate = useNavigate();
-  const { data, error, refetch } = useData(TaskDocument, { tenant: slug, id: taskId });
+  const { data, error, refetch } = useData(
+    TaskDocument,
+    { tenant: slug, id: taskId },
+    { poll: (result) => (result.tenant?.task && isActive(result.tenant.task.status) ? LIVE_POLL : 0) },
+  );
   const [message, setMessage] = useState('');
   const [resume, resumeState] = useMutation(ResumeTaskDocument);
   const [stop, stopState] = useMutation(StopTaskDocument);
@@ -140,7 +142,7 @@ export function TaskPage() {
   const needsYou = task?.status === 'NEEDS_YOU';
   const approval = task?.approval;
   const resumable = needsYou && !approval;
-  const active = task ? !finished.includes(task.status) : false;
+  const active = task ? isActive(task.status) : false;
 
   function doResolve(approved: boolean) {
     if (task && approval) {

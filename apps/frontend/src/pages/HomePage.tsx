@@ -16,7 +16,7 @@ import { type MessageKey, t } from '../i18n';
 import { ago, day, elapsedRatio, hours, issueLabel, percent, usd } from '../lib/format';
 import { useListNav } from '../lib/keys';
 import { countOf, hoursOf, usedShare } from '../lib/plan';
-import { useData } from '../lib/query';
+import { IDLE_POLL, LIVE_POLL, useData } from '../lib/query';
 import { limitedText, needsYouText, skillStep } from '../lib/taskText';
 import { useTenant } from '../lib/tenant';
 import { HomeSetup } from './HomeSetup';
@@ -361,7 +361,7 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
 export function HomePage() {
   const { slug } = useTenant();
   const navigate = useNavigate();
-  const { data, error, refetch } = useData(HomeDocument, { tenant: slug });
+  const { data, error, refetch } = useData(HomeDocument, { tenant: slug }, { poll: (result) => (result.tenant?.tasks.length ? LIVE_POLL : IDLE_POLL) });
   const tenant = data?.tenant;
   const setup = tenant && !tenant.setup.complete;
   return (

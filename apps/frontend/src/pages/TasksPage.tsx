@@ -11,8 +11,8 @@ import { type TaskFilter, type TaskRowFragment, type TaskStatus, TasksDocument }
 import { t } from '../i18n';
 import { age, issueLabel, usd } from '../lib/format';
 import { useListNav } from '../lib/keys';
-import { useData } from '../lib/query';
-import { skillProgress } from '../lib/taskText';
+import { IDLE_POLL, LIVE_POLL, useData } from '../lib/query';
+import { isActive, skillProgress } from '../lib/taskText';
 import { useTenant } from '../lib/tenant';
 
 type StateFilter = 'all' | 'active' | 'needsYou' | 'finished';
@@ -58,7 +58,11 @@ export function TasksPage() {
     ...(triggerId ? { triggerId } : {}),
     ...(skillName ? { skillName } : {}),
   };
-  const { data, error, refetch } = useData(TasksDocument, { tenant: slug, filter });
+  const { data, error, refetch } = useData(
+    TasksDocument,
+    { tenant: slug, filter },
+    { poll: (result) => (result.tenant?.tasks.some((task) => isActive(task.status)) ? LIVE_POLL : IDLE_POLL) },
+  );
   const tenant = data?.tenant;
   const rows = asTree(tenant?.tasks ?? []);
 

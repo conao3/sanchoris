@@ -11,7 +11,7 @@ import { type LogLineKind, RunDocument, SendChatMessageDocument, StopRunDocument
 import { type MessageKey, t } from '../i18n';
 import { clock, dayTime } from '../lib/format';
 import { useKeys } from '../lib/keys';
-import { useData } from '../lib/query';
+import { LIVE_POLL, useData } from '../lib/query';
 import { useTenant } from '../lib/tenant';
 
 const lineClass: Record<LogLineKind, string> = {
@@ -57,7 +57,7 @@ export function RunPage() {
   const { slug } = useTenant();
   const navigate = useNavigate();
   const [follow, setFollow] = useState(true);
-  const { data, error, refetch } = useData(RunDocument, { tenant: slug, task: taskId, number: Number(n) }, { pollInterval: follow ? 5000 : 0 });
+  const { data, error, refetch } = useData(RunDocument, { tenant: slug, task: taskId, number: Number(n) }, { poll: () => (follow ? LIVE_POLL : 0) });
   const [stopRun, stopState] = useMutation(StopRunDocument);
   const [send, sendState] = useMutation(SendChatMessageDocument);
   const [text, setText] = useState('');
