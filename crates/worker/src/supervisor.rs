@@ -384,6 +384,15 @@ pub async fn resume(
         return Ok(0);
     }
     let Some(decision) = decide_usage_limit_resume(resume_at, now) else {
+        tx.emit_at(
+            Job::TaskResume {
+                tenant_id,
+                task_id,
+                resume_at,
+            },
+            resume_at,
+        );
+        tx.commit().await?;
         return Ok(0);
     };
     let Some(run_id) = latest_run(&mut tx, task.id).await? else {

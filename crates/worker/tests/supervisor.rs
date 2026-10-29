@@ -97,6 +97,53 @@ async fn usage_limits_wait_and_resume_automatically() {
 }
 
 #[tokio::test]
+async fn a_usage_limit_resume_delivered_early_is_scheduled_again() {
+    let world = World::new("pro").await;
+    let task = world.started_task(35).await;
+    let run_id = task.run_id.unwrap();
+    let reset_at = world.clock_now() + Duration::hours(2);
+    world
+        .sequenced_event(
+            run_id,
+            1,
+            RunEventType::TurnEnd,
+            turn_end_payload(
+                1,
+                json!({ "code": "Worker.UsageLimit", "message": "limit", "resetAt": reset_at.timestamp() }),
+            ),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    let early = world
+        .scheduler
+        .take_due(reset_at)
+        .into_iter()
+        .filter(|message| {
+            matches!(
+                sanchoris_core::jobs::Envelope::parse(&message.body)
+                    .unwrap()
+                    .job,
+                sanchoris_core::jobs::Job::TaskResume { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(early.len(), 1);
+    world.clock.advance(Duration::minutes(119));
+    world
+        .worker
+        .worker
+        .handle_body(&early[0].body)
+        .await
+        .unwrap();
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "WAITING");
+
+    world.clock.advance(Duration::minutes(1));
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "RUNNING");
+}
+
+#[tokio::test]
 async fn manual_usage_limits_need_you() {
     let world = World::new("pro").await;
     let yaml = common::CONFIG_YAML.replacen(
