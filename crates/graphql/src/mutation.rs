@@ -18,7 +18,9 @@ use sanchoris_core::model::{AuditOrigin, TaskStatus as CoreStatus, WaitReason};
 use sanchoris_core::receive::{Admission, SOURCE_CHAT, SOURCE_REPLY, admit_inbound};
 use sanchoris_core::store::Update;
 use sanchoris_core::tasks::{abort_task, latest_run, load_task, stop_run};
-use sanchoris_core::tenants::{NewTenant, TenantError, create_tenant, free_tenant_key};
+use sanchoris_core::tenants::{
+    NewTenant, TenantError, create_tenant, free_tenant_key, hold_free_tenant, release_free_tenant,
+};
 use sanchoris_worker::dispatcher::schedule_trigger;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -1476,27 +1478,58 @@ impl MutationRoot {
                 plan.0.name
             )));
         }
-        if plan.0.id == FREE_PLAN
-            && store(ctx)
-                .get::<Guard>(&free_tenant_key(tenant.row.created_by_user_id))
-                .await?
-                .is_some_and(|guard| guard.target != scope.tenant_id)
-        {
-            return Err(conflict(TenantError::FreeTenantTaken.to_string()));
+        let to_free = plan.0.id == FREE_PLAN;
+        if to_free {
+            write(|| async {
+                let mut tx = tx(ctx, scope.tenant_id);
+                let current = db::tenant(&mut tx).await?;
+                let key = free_tenant_key(current.created_by_user_id);
+                match tx.get::<Guard>(&key).await? {
+                    Some(guard) if guard.target != scope.tenant_id => {
+                        Err(conflict(TenantError::FreeTenantTaken.to_string()).into())
+                    }
+                    Some(_) => Ok(()),
+                    None => {
+                        hold_free_tenant(&mut tx, &current).await?;
+                        tx.commit().await?;
+                        Ok(())
+                    }
+                }
+            })
+            .await?;
         }
-        let change = state(ctx)
+        let change = match state(ctx)
             .deps
             .checkout
             .change_plan(scope.tenant_id, &plan.0.id)
             .await
-            .map_err(port)?;
+        {
+            Ok(change) => change,
+            Err(error) => {
+                if to_free {
+                    write(|| async {
+                        let mut tx = tx(ctx, scope.tenant_id);
+                        let current = db::tenant(&mut tx).await?;
+                        if current.plan_id != FREE_PLAN {
+                            release_free_tenant(&mut tx, &current).await?;
+                            tx.commit().await?;
+                        }
+                        Ok(())
+                    })
+                    .await?;
+                }
+                return Err(port(error));
+            }
+        };
         let change = &change;
         let checkout_url = write(|| async {
             let mut tx = tx(ctx, scope.tenant_id);
             let checkout_url = match change {
                 PlanChange::Applied => {
                     let current = db::tenant(&mut tx).await?;
-                    if !stage_plan_change(&mut tx, &current, &plan.0.id, now(ctx), true).await? {
+                    if current.plan_id != plan.0.id
+                        && !stage_plan_change(&mut tx, &current, &plan.0.id, now(ctx), true).await?
+                    {
                         return Err(conflict(TenantError::FreeTenantTaken.to_string()).into());
                     }
                     audit_member(

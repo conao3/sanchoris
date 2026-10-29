@@ -25,6 +25,7 @@ use sanchoris_core::model::{
     NamedDefinition, SkillRunStatus, TaskDefinition, TaskStatus, TriggerEventResult, WaitReason,
 };
 use sanchoris_core::store::{Relay, relayed_from_item};
+use sanchoris_core::tenants::free_tenant_key;
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_graphql::{
     AesGcmEncryptor, AuditExportPort, AuthUser, ChatDispatcher, CheckoutPort, Clock, ConfigCheck,
@@ -146,6 +147,11 @@ pub struct Recorder {
     pub checks: Mutex<Vec<ConfigLocation>>,
     pub problems: Mutex<Vec<ConfigProblem>>,
     pub plan_change: Mutex<Option<PlanChange>>,
+    pub plan_change_calls: Mutex<Vec<(Uuid, String)>>,
+    pub plan_change_fails: Mutex<bool>,
+    pub free_tenant_race: Mutex<Option<(Uuid, Uuid)>>,
+    pub free_tenant_race_won: Mutex<Option<bool>>,
+    pub ended_first: Mutex<Option<Uuid>>,
 }
 
 pub struct Fakes {
@@ -163,7 +169,38 @@ impl CheckoutPort for Fakes {
         ))
     }
 
-    async fn change_plan(&self, _tenant_id: Uuid, plan_id: &str) -> Result<PlanChange, PortError> {
+    async fn change_plan(&self, tenant_id: Uuid, plan_id: &str) -> Result<PlanChange, PortError> {
+        self.recorder
+            .plan_change_calls
+            .lock()
+            .unwrap()
+            .push((tenant_id, plan_id.to_string()));
+        let race = *self.recorder.free_tenant_race.lock().unwrap();
+        if let Some((user_id, other_tenant)) = race {
+            let mut tx = self.store.tx(other_tenant);
+            tx.insert(&Guard::of_tenant(
+                free_tenant_key(user_id),
+                other_tenant,
+                other_tenant,
+            ))
+            .unwrap();
+            *self.recorder.free_tenant_race_won.lock().unwrap() = Some(tx.commit().await.is_ok());
+        }
+        let ended = *self.recorder.ended_first.lock().unwrap();
+        if let Some(ended) = ended {
+            let mut tx = self.store.tx(ended);
+            let mut tenant = tx
+                .require::<Tenant>(&keys::tenant_key(ended))
+                .await
+                .unwrap();
+            tenant.plan_id = "free".into();
+            tenant.tasks_this_period = 7;
+            tx.put(&tenant).unwrap();
+            tx.commit().await.unwrap();
+        }
+        if *self.recorder.plan_change_fails.lock().unwrap() {
+            return Err(PortError::Failed("Stripe is unavailable".into()));
+        }
         Ok(self
             .recorder
             .plan_change

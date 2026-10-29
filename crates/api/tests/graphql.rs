@@ -10,10 +10,11 @@ use reqwest::StatusCode;
 use sanchoris_api::signing::HmacKey;
 use sanchoris_core::channel::{OutboxType, enqueue_outbox};
 use sanchoris_core::items::{
-    AuditEvent, ConfigRevision, Credential, Integration, Run, Task, Tenant, User,
+    AuditEvent, ConfigRevision, Credential, Guard, Integration, Run, Task, Tenant, User,
 };
 use sanchoris_core::keys;
 use sanchoris_core::model::TaskStatus;
+use sanchoris_core::tenants::free_tenant_key;
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_graphql::AesGcmEncryptor;
 use serde_json::{Value, json};
@@ -793,6 +794,24 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         sessions_before
     );
     assert_eq!(w.api.stripe.requests("/v1/subscriptions/sub_acme").len(), 1);
+
+    let slot = free_tenant_key(w.seeded.tenant.user_id);
+    let elsewhere = Uuid::new_v4();
+    w.dynamo
+        .put(&Guard::of_tenant(slot.clone(), elsewhere, elsewhere))
+        .await;
+    let (code, _) = w
+        .error(
+            owner,
+            "ChangePlan",
+            json!({ "tenantId": tenant, "planId": "free" }),
+        )
+        .await;
+    assert_eq!(code, "CONFLICT");
+    assert_eq!(w.api.stripe.requests("/v1/subscriptions/sub_acme").len(), 1);
+    let mut release = w.api.store.tx(elsewhere);
+    release.delete(&slot).unwrap();
+    release.commit().await.unwrap();
 
     let free = w
         .ok(

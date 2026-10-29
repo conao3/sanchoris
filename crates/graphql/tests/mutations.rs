@@ -1011,6 +1011,72 @@ async fn pending_tenant(w: &World, name: &str, plan_id: &str, session_id: &str) 
 }
 
 #[tokio::test]
+async fn changing_to_free_holds_the_free_slot_before_the_subscription_is_cancelled() {
+    let w = World::new().await;
+    *w.recorder.plan_change.lock().unwrap() = Some(PlanChange::Applied);
+    let slot = free_tenant_key(w.mika.user_id);
+    let other = Uuid::new_v4();
+    w.dynamo
+        .put(&Guard::of_tenant(slot.clone(), other, other))
+        .await;
+    let to_free = json!({ "tenantId": w.acme, "planId": "free" });
+    assert_eq!(
+        w.error_code(&w.mika, "ChangePlan", to_free.clone()).await,
+        "CONFLICT"
+    );
+    assert!(w.recorder.plan_change_calls.lock().unwrap().is_empty());
+
+    let mut tx = w.store.tx(other);
+    tx.delete(&slot).unwrap();
+    tx.commit().await.unwrap();
+    *w.recorder.plan_change_fails.lock().unwrap() = true;
+    assert!(
+        !w.run(&w.mika, "ChangePlan", to_free.clone())
+            .await
+            .errors
+            .is_empty()
+    );
+    assert!(w.get::<Guard>(&slot).await.is_none());
+    let tenant: Tenant = w.get(&keys::tenant_key(w.acme)).await.unwrap();
+    assert_eq!(tenant.plan_id, "pro");
+
+    *w.recorder.plan_change_fails.lock().unwrap() = false;
+    *w.recorder.free_tenant_race.lock().unwrap() = Some((w.mika.user_id, other));
+    let changed = w.ok(&w.mika, "ChangePlan", to_free).await;
+    assert_eq!(changed["changePlan"]["tenant"]["plan"]["id"], "free");
+    assert_eq!(
+        *w.recorder.free_tenant_race_won.lock().unwrap(),
+        Some(false)
+    );
+    let guard: Guard = w.get(&slot).await.unwrap();
+    assert_eq!(guard.target, w.acme);
+    assert_eq!(w.recorder.plan_change_calls.lock().unwrap().len(), 2);
+    w.audit(w.acme, "tenant.plan_change").await;
+}
+
+#[tokio::test]
+async fn changing_to_free_after_the_subscription_webhook_keeps_the_free_plan() {
+    let w = World::new().await;
+    *w.recorder.plan_change.lock().unwrap() = Some(PlanChange::Applied);
+    *w.recorder.ended_first.lock().unwrap() = Some(w.acme);
+    let changed = w
+        .ok(
+            &w.mika,
+            "ChangePlan",
+            json!({ "tenantId": w.acme, "planId": "free" }),
+        )
+        .await;
+    assert_eq!(changed["changePlan"]["tenant"]["plan"]["id"], "free");
+    let tenant: Tenant = w.get(&keys::tenant_key(w.acme)).await.unwrap();
+    assert_eq!(
+        (tenant.plan_id.as_str(), tenant.tasks_this_period),
+        ("free", 7)
+    );
+    let guard: Guard = w.get(&free_tenant_key(w.mika.user_id)).await.unwrap();
+    assert_eq!(guard.target, w.acme);
+}
+
+#[tokio::test]
 async fn changing_to_free_activates_a_pending_tenant_and_resets_the_period() {
     let w = World::new().await;
     *w.recorder.plan_change.lock().unwrap() = Some(PlanChange::Applied);
