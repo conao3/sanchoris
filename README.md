@@ -134,7 +134,7 @@ Secrets (the rows marked *secret*) come from the environment in `sanchoris all` 
 
 ### GraphQL API
 
-`POST /api/graphql` runs the `crates/graphql` schema behind the Cognito JWT check. Queries and mutations run in a `TenantTx` of a tenant the signed-in user is a member of, which rejects every key outside that tenant's partitions (`docs/architecture.md`, "Tenant isolation").
+`POST /api/graphql` runs the `crates/graphql` schema behind the Cognito JWT check. Queries and mutations run in a `TenantTx` of a tenant the signed-in user is a member of, which rejects every key outside that tenant's partitions (`docs/architecture.md`, "Tenant isolation"). The schema refuses queries deeper than `MAX_DEPTH` (12) or more complex than `MAX_COMPLEXITY` (400 fields) and answers introspection with `null`; the frontend codegen reads `apps/frontend/src/graphql/schema.graphql` instead.
 
 The schema's ports are wired as follows:
 
@@ -210,7 +210,7 @@ Run `pnpm install` first; the workspace agent runs from source with Node.
 
 `crates/api/tests/http.rs` covers the HTTP endpoints and the local Run channel (webhook signatures, duplicate deliveries, installation events, Stripe, approvals, records, outbox delivery, sequence deduplication, and the close on an out-of-order message). `crates/api/tests/lambda.rs` drives the Lambda handlers with recorded API Gateway WebSocket and authorizer events, SQS batches, and DynamoDB Streams records (`crates/api/tests/fixtures/`), with a recording connection sender in place of the Management API.
 
-`crates/api/tests/graphql.rs` (part of `cargo test --workspace`) drives `POST /api/graphql` over HTTP with a stub token verifier and runs every operation in `apps/frontend/src/graphql/*.graphql` against the real ports: the config syncer and trigger dispatcher inline, the GitHub App client against the fake GitHub, Stripe against a fake Stripe API, and local records. It fails when an operation is added to the frontend without being exercised.
+`crates/api/tests/graphql.rs` (part of `cargo test --workspace`) drives `POST /api/graphql` over HTTP with a stub token verifier and runs every operation in `apps/frontend/src/graphql/*.graphql` against the real ports: the config syncer and trigger dispatcher inline, the GitHub App client against the fake GitHub, Stripe against a fake Stripe API, and local records. It sends each operation alone with the fragments it spreads, as Apollo does, so that the depth and complexity limits apply to it, and fails when an operation is added to the frontend without being exercised.
 
 ## Worktrees
 

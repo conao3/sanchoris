@@ -28,11 +28,17 @@ pub use ports::{
 };
 pub use query::QueryRoot;
 
+pub const MAX_DEPTH: usize = 12;
+pub const MAX_COMPLEXITY: usize = 400;
+
 pub type SanchorisSchema = Schema<QueryRoot, MutationRoot, EmptySubscription>;
 
 pub fn build_schema(store: Store, deps: GraphqlDeps) -> SanchorisSchema {
     Schema::build(QueryRoot, MutationRoot, EmptySubscription)
         .data(context::State { store, deps })
+        .limit_depth(MAX_DEPTH)
+        .limit_complexity(MAX_COMPLEXITY)
+        .disable_introspection()
         .finish()
 }
 

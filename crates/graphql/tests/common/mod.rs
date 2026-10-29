@@ -131,6 +131,48 @@ pub fn operations() -> String {
         .join("\n")
 }
 
+fn definitions(document: &str) -> Vec<(String, String)> {
+    let mut definitions: Vec<(String, String)> = Vec::new();
+    for line in document.lines() {
+        let name = ["query ", "mutation ", "fragment "]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix))
+            .map(|rest| rest.split(['(', ' ', '{']).next().unwrap().to_string());
+        match (name, definitions.last_mut()) {
+            (Some(name), _) => definitions.push((name, format!("{line}\n"))),
+            (None, Some((_, text))) => {
+                text.push_str(line);
+                text.push('\n');
+            }
+            (None, None) => {}
+        }
+    }
+    definitions
+}
+
+pub fn operation_document(operation: &str) -> String {
+    let definitions = definitions(&operations());
+    let mut wanted = vec![operation.to_string()];
+    let mut included = std::collections::BTreeSet::new();
+    let mut text = String::new();
+    while let Some(name) = wanted.pop() {
+        if !included.insert(name.clone()) {
+            continue;
+        }
+        let (_, body) = definitions
+            .iter()
+            .find(|(defined, _)| *defined == name)
+            .unwrap_or_else(|| panic!("no definition {name}"));
+        text.push_str(body);
+        for (fragment, _) in &definitions {
+            if body.contains(&format!("...{fragment}\n")) {
+                wanted.push(fragment.clone());
+            }
+        }
+    }
+    text
+}
+
 pub struct FixedClock(pub Mutex<DateTime<Utc>>);
 
 impl Clock for FixedClock {
@@ -1634,7 +1676,7 @@ impl World {
     ) -> async_graphql::Response {
         self.schema
             .execute(
-                Request::new(operations())
+                Request::new(operation_document(operation))
                     .operation_name(operation)
                     .variables(Variables::from_json(variables))
                     .data(who.auth()),

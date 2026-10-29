@@ -647,3 +647,42 @@ async fn requests_without_a_user_are_rejected() {
         );
     }
 }
+
+#[tokio::test]
+async fn deep_complex_and_introspection_queries_are_refused() {
+    let w = World::new().await;
+    let deep = format!(
+        "{{ viewer {{ memberships {}id{} }} }}",
+        "{ tenant { members ".repeat(6),
+        " } }".repeat(6)
+    );
+    let complex = format!(
+        "{{ {} }}",
+        (0..sanchoris_graphql::MAX_COMPLEXITY)
+            .map(|n| format!("p{n}: plans {{ id }}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let introspection = w
+        .inline(&w.mika, "{ __schema { queryType { name } } }", json!({}))
+        .await;
+    assert_eq!(
+        introspection.data.into_json().unwrap(),
+        json!({ "__schema": null })
+    );
+    for (query, message) in [
+        (deep.as_str(), "Query is nested too deep."),
+        (complex.as_str(), "Query is too complex."),
+    ] {
+        let response = w.inline(&w.mika, query, json!({})).await;
+        assert_eq!(
+            response
+                .errors
+                .iter()
+                .map(|error| error.message.as_str())
+                .collect::<Vec<_>>(),
+            vec![message],
+            "{query}"
+        );
+    }
+}

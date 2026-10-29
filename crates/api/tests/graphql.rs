@@ -79,6 +79,48 @@ fn operation_names(document: &str) -> BTreeSet<String> {
         .collect()
 }
 
+fn definitions(document: &str) -> Vec<(String, String)> {
+    let mut definitions: Vec<(String, String)> = Vec::new();
+    for line in document.lines() {
+        let name = ["query ", "mutation ", "fragment "]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix))
+            .map(|rest| rest.split(['(', ' ', '{']).next().unwrap().to_string());
+        match (name, definitions.last_mut()) {
+            (Some(name), _) => definitions.push((name, format!("{line}\n"))),
+            (None, Some((_, text))) => {
+                text.push_str(line);
+                text.push('\n');
+            }
+            (None, None) => {}
+        }
+    }
+    definitions
+}
+
+fn operation_document(document: &str, operation: &str) -> String {
+    let definitions = definitions(document);
+    let mut wanted = vec![operation.to_string()];
+    let mut included = BTreeSet::new();
+    let mut text = String::new();
+    while let Some(name) = wanted.pop() {
+        if !included.insert(name.clone()) {
+            continue;
+        }
+        let (_, body) = definitions
+            .iter()
+            .find(|(defined, _)| *defined == name)
+            .unwrap_or_else(|| panic!("no definition {name}"));
+        text.push_str(body);
+        for (fragment, _) in &definitions {
+            if body.contains(&format!("...{fragment}\n")) {
+                wanted.push(fragment.clone());
+            }
+        }
+    }
+    text
+}
+
 struct World {
     api: Api,
     github: Arc<FakeGitHub>,
@@ -160,7 +202,7 @@ impl World {
         let response = self
             .post(
                 Some(token),
-                &json!({ "query": self.document, "operationName": operation, "variables": variables }),
+                &json!({ "query": operation_document(&self.document, operation), "operationName": operation, "variables": variables }),
             )
             .await;
         assert_eq!(response.status(), StatusCode::OK, "{operation}");
@@ -307,7 +349,7 @@ impl World {
         let response = self
             .post(
                 Some(token),
-                &json!({ "query": self.document, "operationName": operation, "variables": variables }),
+                &json!({ "query": operation_document(&self.document, operation), "operationName": operation, "variables": variables }),
             )
             .await;
         let cookie = flow_cookie(&response);
