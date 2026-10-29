@@ -1,0 +1,67 @@
+name: verify
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31.11.3
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+
+      - name: Cache cargo registry
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-${{ runner.os }}-
+
+      - name: Cache sccache
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            sccache-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+            sccache-${{ runner.os }}-
+
+      - name: Enter the devShell
+        run: nix develop .#ci --command true
+
+      - name: scripts/verify.sh full
+        run: nix develop .#ci --command scripts/verify.sh full
+
+      - name: sccache stats
+        if: ${{ !cancelled() }}
+        run: nix develop .#ci --command sccache --show-stats
