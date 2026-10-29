@@ -10,6 +10,7 @@ export const environments = {
     prefix: 'dev-k8s',
     profile: 'conao3.dev.k8s',
     directCodeUpdates: true,
+    lambdaProfile: 'lambda-dev',
     e2eRepo: 'sancode-org/sanchoris-e2e-dev',
   },
   prd: {
@@ -17,6 +18,7 @@ export const environments = {
     prefix: 'prd-k8s',
     profile: 'conao3.prd.k8s',
     directCodeUpdates: false,
+    lambdaProfile: 'release',
     e2eRepo: 'sancode-org/sanchoris-e2e',
   },
 };

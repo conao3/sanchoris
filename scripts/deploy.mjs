@@ -89,16 +89,16 @@ const lambdaInputs = [
 ];
 
 async function buildLambda(cognito) {
-  const key = contentHash(lambdaInputs, cognito);
+  const key = contentHash(lambdaInputs, { ...cognito, profile: env.lambdaProfile });
   const cacheRoot = join(root, 'target', 'lambda-cache', env.name);
   const cacheDir = join(cacheRoot, key);
   const outputDir = join(root, 'target', 'lambda');
   const cached = lambdaFunctions.every((fn) => existsSync(join(cacheDir, fn, 'bootstrap.zip')));
   if (planOnly) {
-    return { result: cached ? 'would restore' : 'would build', key };
+    return { result: cached ? 'would restore' : 'would build', profile: env.lambdaProfile, key };
   }
   if (!cached) {
-    await runLogged('pnpm', ['build:lambda'], {
+    await runLogged('pnpm', ['build:lambda', env.lambdaProfile], {
       cwd: root,
       env: { ...process.env, VITE_COGNITO_DOMAIN: cognito.domain, VITE_COGNITO_CLIENT_ID: cognito.clientId },
       logFile: join(logDir, 'build-lambda.log'),
@@ -112,13 +112,13 @@ async function buildLambda(cognito) {
       mkdirSync(join(cacheDir, fn), { recursive: true });
       copyFileSync(join(outputDir, fn, 'bootstrap.zip'), join(cacheDir, fn, 'bootstrap.zip'));
     }
-    return { result: 'built', key };
+    return { result: 'built', profile: env.lambdaProfile, key };
   }
   for (const fn of lambdaFunctions) {
     mkdirSync(join(outputDir, fn), { recursive: true });
     copyFileSync(join(cacheDir, fn, 'bootstrap.zip'), join(outputDir, fn, 'bootstrap.zip'));
   }
-  return { result: 'skipped', reason: 'restored from target/lambda-cache', key };
+  return { result: 'skipped', reason: 'restored from target/lambda-cache', profile: env.lambdaProfile, key };
 }
 
 function images(exports) {

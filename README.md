@@ -14,7 +14,7 @@ Sanchoris is a pnpm + Vite frontend and Rust backend monorepo.
 - `docs/architecture.md`: the serverless AWS architecture and the DynamoDB data model
 - `infra/tables.json`, `infra/plans.json`: the DynamoDB table definitions (CloudFormation properties) and the plan catalog, read by `sanchoris-dynamo-create` and the tests
 - `scripts/dev.mjs`: local development process supervisor
-- `scripts/build-lambda.mjs`: builds the frontend and the Lambda zips (`pnpm build:lambda`)
+- `scripts/build-lambda.mjs`: builds the frontend and the Lambda zips (`pnpm build:lambda <release|lambda-dev>`)
 - `scripts/verify.sh`: the checks (`quick` for the changed crates and apps, `full` for everything)
 - `scripts/deploy.mjs`, `scripts/e2e-aws.mjs`: deploy to an AWS environment and run an issue through it end to end (`AGENTS.md`)
 - `scripts/e2e/fake-agent.ts`: the scripted workspace agent used by the end-to-end test
@@ -58,10 +58,10 @@ cargo run -p sanchoris-api --bin sanchoris -- all
 
 ```sh
 VITE_COGNITO_DOMAIN=dev-auth-k8s.sancode.dev VITE_COGNITO_CLIENT_ID=<client id> \
-  nix develop -c pnpm build:lambda
+  nix develop -c pnpm build:lambda lambda-dev
 ```
 
-builds the frontend into `apps/frontend/dist`, then `target/lambda/{api,channel,channel-authorizer,worker,relay}/bootstrap.zip` for `provided.al2023` on `arm64` (static `aarch64-unknown-linux-musl` binaries cross-compiled by `cargo lambda` with the devShell's musl cross linker). The `api` binary embeds `apps/frontend/dist` and serves it on the same origin as the API, so the deployment needs no separate static hosting; it refuses to start when the build embedded no `index.html`. `docs/architecture.md` ("Lambda functions") lists each function's trigger, handler, variables, and IAM actions.
+builds the frontend into `apps/frontend/dist`, then, with the Cargo profile `lambda-dev` for dev (`release` for prd), `target/lambda/{api,channel,channel-authorizer,worker,relay}/bootstrap.zip` for `provided.al2023` on `arm64` (static `aarch64-unknown-linux-musl` binaries cross-compiled by `cargo lambda` with the devShell's musl cross linker). The `api` binary embeds `apps/frontend/dist` and serves it on the same origin as the API, so the deployment needs no separate static hosting; it refuses to start when the build embedded no `index.html`. `docs/architecture.md` ("Lambda functions") lists each function's trigger, handler, variables, and IAM actions.
 
 | Endpoint | Purpose |
 | --- | --- |

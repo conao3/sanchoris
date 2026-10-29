@@ -1,6 +1,13 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 
+const profiles = { release: ['--release'], 'lambda-dev': ['--profile', 'lambda-dev'] };
+const profile = process.argv[2];
+if (process.argv.length !== 3 || !profiles[profile]) {
+  console.error(`usage: pnpm build:lambda <${Object.keys(profiles).join('|')}>`);
+  process.exit(2);
+}
+
 const frontendEnv = ['VITE_COGNITO_DOMAIN', 'VITE_COGNITO_CLIENT_ID'];
 const missing = frontendEnv.filter((key) => !process.env[key]);
 if (missing.length > 0) {
@@ -30,7 +37,7 @@ if (!existsSync('apps/frontend/dist/index.html')) {
 step('cargo', [
   'lambda',
   'build',
-  '--release',
+  ...profiles[profile],
   '--compiler',
   'cargo',
   '--target',

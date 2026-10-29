@@ -22,3 +22,10 @@ chrono = { version = "0.4", default-features = false, features = ["std", "serde"
 
 [profile.dev]
 debug = "line-tables-only"
+
+[profile.lambda-dev]
+inherits = "release"
+opt-level = 1
+incremental = true
+panic = "abort"
+strip = "symbols"
