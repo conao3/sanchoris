@@ -20,7 +20,7 @@ use sanchoris_core::clock::{Clock, SystemClock};
 use sanchoris_core::items::{OutboxItem, RunChannel, RunEventItem, Task, Workspace};
 use sanchoris_core::jobs::{Envelope, Job, Relayed};
 use sanchoris_core::keys;
-use sanchoris_core::local::{MemoryQueue, MemoryScheduler};
+use sanchoris_core::local::{MemoryBlobStore, MemoryQueue, MemoryScheduler};
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_core::tokens::{RelayTokenSigner, RunClaims, RunTokenSigner, Signer};
 use sanchoris_graphql::ClientIp;
@@ -312,6 +312,7 @@ async fn the_lambda_handlers_run_the_channel_from_recorded_events() {
             resources: Arc::new(GitHubResources::new(github)),
             runner: Arc::new(NoWorkspaces),
             pusher: Arc::new(channel.clone()),
+            records: Arc::new(MemoryBlobStore::default()),
         },
         Settings::default(),
     );

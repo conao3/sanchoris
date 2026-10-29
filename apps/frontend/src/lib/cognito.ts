@@ -150,7 +150,8 @@ export async function authorizedFetch(input: RequestInfo | URL, init?: RequestIn
   return refreshed;
 }
 
-export function signOut(): void {
+export async function signOut(record: () => Promise<unknown>): Promise<void> {
+  await record().catch(() => undefined);
   clearTokens();
   window.location.assign(getLogoutUrl());
 }

@@ -3,7 +3,7 @@ use crate::support;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use sanchoris_api::channel::{CLOSE_PROTOCOL_ERROR, SEQ_STRIDE};
@@ -12,8 +12,8 @@ use sanchoris_api::signing::HmacKey;
 use sanchoris_core::audit::audit_events;
 use sanchoris_core::billing::PAYMENT_PENDING;
 use sanchoris_core::items::{
-    ApprovalWait, ChatMessage, Config, InboundEvent, Integration, Member, OutboxItem, ReceiveRate,
-    RunEventItem, RunLogEntry, Task, Tenant, Workspace,
+    ApprovalWait, AuditEvent, ChatMessage, Config, InboundEvent, Integration, Member, Membership,
+    OutboxItem, ReceiveRate, RunEventItem, RunLogEntry, Task, Tenant, User, Workspace,
 };
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
@@ -157,6 +157,112 @@ async fn me_requires_a_token_and_provisions_the_user_once() {
     );
     assert_eq!(member["githubLogin"], "mika-dev");
     assert_eq!(server.get("/health", None).await.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_new_sign_in_is_audited_once_in_each_tenant_of_the_user() {
+    let server = Server::start().await;
+    let user_id = server.seeded.tenant.user_id;
+    let other = server.dynamo.seed_tenant("free").await;
+    let other_member = Uuid::new_v4();
+    server
+        .dynamo
+        .put(&Member {
+            id: other_member,
+            tenant_id: other.tenant_id,
+            user_id,
+            role: "member".into(),
+            joined_at: Utc::now(),
+            last_active_at: None,
+        })
+        .await;
+    server
+        .dynamo
+        .put(&Membership {
+            user_id,
+            tenant_id: other.tenant_id,
+            member_id: other_member,
+        })
+        .await;
+    let token = server.seeded.member_token();
+    let first = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+    let signed_in = |at: DateTime<Utc>| format!("{token}|{}", at.timestamp());
+    let sign_ins = || async {
+        let mut events = server
+            .dynamo
+            .all::<AuditEvent>()
+            .await
+            .into_iter()
+            .filter(|event| event.action == "auth.sign_in")
+            .map(|event| (event.tenant_id, event.at, event.actor_ref, event.source_ip))
+            .collect::<Vec<_>>();
+        events.sort();
+        events
+    };
+    let first_token = signed_in(first);
+    let requests = (0..4).map(|_| server.get("/api/me", Some(&first_token)));
+    for response in futures_util::future::join_all(requests).await {
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let localhost = Some("127.0.0.1".to_string());
+    let mut expected = vec![
+        (
+            server.tenant(),
+            first,
+            server.seeded.tenant.member_id.to_string(),
+            localhost.clone(),
+        ),
+        (
+            other.tenant_id,
+            first,
+            other_member.to_string(),
+            localhost.clone(),
+        ),
+    ];
+    expected.sort();
+    assert_eq!(sign_ins().await, expected);
+    let user = server
+        .dynamo
+        .all::<User>()
+        .await
+        .into_iter()
+        .find(|user| user.id == user_id)
+        .unwrap();
+    assert_eq!(user.last_sign_in_at, Some(first));
+
+    for token in [signed_in(first), token.clone()] {
+        assert_eq!(
+            server.get("/api/me", Some(&token)).await.status(),
+            StatusCode::OK
+        );
+    }
+    assert_eq!(sign_ins().await.len(), 2);
+
+    let second = first + chrono::Duration::hours(3);
+    assert_eq!(
+        server
+            .get("/api/me", Some(&signed_in(second)))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        server
+            .get("/api/me", Some(&signed_in(first)))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let events = sign_ins().await;
+    assert_eq!(events.len(), 4);
+    for tenant in [server.tenant(), other.tenant_id] {
+        let times = events
+            .iter()
+            .filter(|event| event.0 == tenant)
+            .map(|event| event.1)
+            .collect::<Vec<_>>();
+        assert_eq!(times, vec![first, second]);
+    }
 }
 
 #[tokio::test]

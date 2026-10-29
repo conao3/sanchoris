@@ -45,6 +45,7 @@ db_enum!(LimitPeriod, "limit period", {
 db_enum!(TenantState, "tenant state", {
     Active => "active",
     Suspended => "suspended",
+    Deleting => "deleting",
 });
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]

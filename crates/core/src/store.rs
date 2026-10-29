@@ -5,7 +5,8 @@ use aws_sdk_dynamodb::error::DisplayErrorContext;
 use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::{
-    AttributeValue, ConditionCheck, Delete, Put, ReturnValue, TransactWriteItem, Update as UpdateOp,
+    AttributeValue, ConditionCheck, Delete, DeleteRequest, Put, ReturnValue, TransactWriteItem,
+    Update as UpdateOp, WriteRequest,
 };
 use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
@@ -21,6 +22,8 @@ use crate::ports::{BlobStore, OutgoingMessage, PortError, Queue, Scheduler};
 pub const MAIN_TABLE_ENV: &str = "SANCHORIS_TABLE_MAIN";
 pub const AUDIT_TABLE_ENV: &str = "SANCHORIS_TABLE_AUDIT";
 pub const MAX_TRANSACTION_ITEMS: usize = 100;
+pub const BATCH_WRITE_ITEMS: usize = 25;
+const BATCH_WRITE_ATTEMPTS: u32 = 8;
 pub const DOC_INLINE_LIMIT: usize = 32 * 1024;
 pub const MESSAGE_RETENTION_HOURS: i64 = 24;
 pub const GLOBAL_PREFIXES: [&str; 4] = ["UNIQ#", "USER#", "INVITEMAIL#", "MSG#"];
@@ -579,6 +582,82 @@ impl Store {
             }
             Err(error) => Err(dynamo_error(error)),
         }
+    }
+
+    pub async fn scan_tenant_keys(
+        &self,
+        tenant_id: Uuid,
+        after: Option<&Key>,
+        page: usize,
+    ) -> Result<(Vec<Key>, Option<Key>), DbError> {
+        let request = self
+            .inner
+            .client
+            .scan()
+            .table_name(&self.inner.tables.main)
+            .filter_expression("begins_with(#pk, :tenant)")
+            .projection_expression("#pk, #sk")
+            .expression_attribute_names("#pk", "pk")
+            .expression_attribute_names("#sk", "sk")
+            .expression_attribute_values(":tenant", AttributeValue::S(format!("T#{tenant_id}")))
+            .consistent_read(true)
+            .limit(i32::try_from(page).unwrap_or(i32::MAX))
+            .set_exclusive_start_key(after.map(Key::attributes));
+        let output = Box::pin(request.send()).await.map_err(dynamo_error)?;
+        let keys = output
+            .items
+            .unwrap_or_default()
+            .iter()
+            .map(|item| Key::of(Table::Main, item))
+            .collect::<Result<Vec<_>, _>>()?;
+        let next = match output.last_evaluated_key {
+            Some(key) if !key.is_empty() => Some(Key::of(Table::Main, &key)?),
+            _ => None,
+        };
+        Ok((keys, next))
+    }
+
+    pub async fn delete_keys(&self, keys: &[Key]) -> Result<(), DbError> {
+        let table = &self.inner.tables.main;
+        for chunk in keys.chunks(BATCH_WRITE_ITEMS) {
+            let mut requests = chunk
+                .iter()
+                .map(|key| {
+                    let delete = DeleteRequest::builder()
+                        .set_key(Some(key.attributes()))
+                        .build()
+                        .map_err(dynamo_error)?;
+                    Ok(WriteRequest::builder().delete_request(delete).build())
+                })
+                .collect::<Result<Vec<_>, DbError>>()?;
+            let mut attempt = 0;
+            while !requests.is_empty() {
+                attempt += 1;
+                if attempt > BATCH_WRITE_ATTEMPTS {
+                    return Err(DbError::Dynamo(format!(
+                        "{} deletes stayed unprocessed after {BATCH_WRITE_ATTEMPTS} attempts",
+                        requests.len()
+                    )));
+                }
+                if attempt > 1 {
+                    tokio::time::sleep(std::time::Duration::from_millis(50 << attempt)).await;
+                }
+                let output = Box::pin(
+                    self.inner
+                        .client
+                        .batch_write_item()
+                        .request_items(table, requests)
+                        .send(),
+                )
+                .await
+                .map_err(dynamo_error)?;
+                requests = output
+                    .unprocessed_items
+                    .and_then(|mut unprocessed| unprocessed.remove(table))
+                    .unwrap_or_default();
+            }
+        }
+        Ok(())
     }
 
     async fn transact(&self, writes: Vec<TransactWriteItem>) -> Result<(), DbError> {

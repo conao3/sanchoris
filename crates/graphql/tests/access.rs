@@ -117,6 +117,10 @@ fn foreign_mutations(victim: &Victim, own_tenant: Uuid) -> Vec<(&'static str, Va
             json!({ "tenantId": victim.tenant, "filter": null }),
         ),
         ("ConnectSlack", json!({ "tenantId": victim.tenant })),
+        (
+            "DeleteTenant",
+            json!({ "tenantId": victim.tenant, "slug": victim.slug }),
+        ),
     ]
 }
 

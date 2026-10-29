@@ -371,6 +371,19 @@ function createResolvers() {
         tenant.suspendedReason = null;
         return tenant;
       },
+      deleteTenant: (_: unknown, { tenantId, slug }: Obj) => {
+        const tenant = tenantById(tenantId);
+        if (tenant.slug !== String(slug).trim()) {
+          throw new Error(`type the tenant's slug ${tenant.slug} to delete it`);
+        }
+        tenant.state = 'DELETING';
+        if (tenants.includes(tenant)) {
+          tenants.splice(tenants.indexOf(tenant), 1);
+          memberships.splice(memberships.indexOf(tenant.viewerMember), 1);
+        }
+        return tenantId;
+      },
+      signOut: () => true,
     },
   };
 }

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use axum::Router;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use reqwest::redirect::Policy;
 use sanchoris_api::app::AppState;
 use sanchoris_api::auth::{AuthError, Identity, IdentityVerifier};
@@ -30,6 +30,7 @@ use sanchoris_core::db::{REF_RUN, Store, insert_ref};
 use sanchoris_core::item::Entity;
 use sanchoris_core::items::{Credential, Guard, Integration, Run, RunChannel, Task, User, uniq};
 use sanchoris_core::keys;
+use sanchoris_core::local::DirBlobStore;
 use sanchoris_core::model::TaskStatus;
 use sanchoris_core::store::Relay;
 use sanchoris_core::testing::{SeededTenant, TestDynamo};
@@ -62,6 +63,19 @@ pub struct StubVerifier;
 #[async_trait]
 impl IdentityVerifier for StubVerifier {
     async fn verify(&self, token: &str) -> Result<Identity, AuthError> {
+        let (token, auth_time) = match token.split_once('|') {
+            Some((token, seconds)) => (
+                token,
+                Some(
+                    seconds
+                        .parse()
+                        .ok()
+                        .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+                        .ok_or(AuthError::Unauthorized)?,
+                ),
+            ),
+            None => (token, None),
+        };
         let (subject, email, email_verified) = if let Some(subject) = token.strip_prefix("user:") {
             (subject.to_string(), format!("{subject}@example.com"), true)
         } else if let Some(email) = token.strip_prefix("email:") {
@@ -76,6 +90,7 @@ impl IdentityVerifier for StubVerifier {
             subject,
             email: Some(email),
             email_verified,
+            auth_time,
         })
     }
 }
@@ -284,6 +299,7 @@ pub async fn start_api(
         resources: Arc::new(GitHubResources::new(github_app.clone())),
         runner,
         pusher: Arc::new(channel.channel.clone()),
+        records: Arc::new(DirBlobStore::new(&records_dir)),
     };
     let worker = Arc::new(Worker::new(direct.store.clone(), deps, Settings::default()));
     let config = Arc::new(config);

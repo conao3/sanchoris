@@ -309,6 +309,7 @@ impl TestDynamo {
             github_user_id: None,
             github_login: None,
             is_operator: false,
+            last_sign_in_at: None,
             created_at: now,
             updated_at: now,
         })

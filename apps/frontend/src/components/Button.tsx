@@ -14,6 +14,7 @@ type ButtonProps = {
   kbd?: string;
   href?: string;
   isDisabled?: boolean;
+  autoFocus?: boolean;
   type?: 'button' | 'submit';
   onPress?: () => void;
   className?: string;
@@ -33,6 +34,7 @@ export function Button({
   kbd,
   href,
   isDisabled,
+  autoFocus,
   type = 'button',
   onPress,
   className,
@@ -58,7 +60,7 @@ export function Button({
     );
   }
   return (
-    <RACButton type={type} isDisabled={isDisabled} onPress={onPress} className={classes}>
+    <RACButton type={type} isDisabled={isDisabled} autoFocus={autoFocus} onPress={onPress} className={classes}>
       {content}
     </RACButton>
   );

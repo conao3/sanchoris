@@ -252,6 +252,20 @@ impl BlobStore for MemoryBlobStore {
         self.blobs.lock().expect("blob lock").remove(key);
         Ok(())
     }
+
+    async fn delete_prefix(&self, prefix: &str, limit: usize) -> Result<usize, PortError> {
+        let mut blobs = self.blobs.lock().expect("blob lock");
+        let keys = blobs
+            .keys()
+            .filter(|key| key.starts_with(prefix))
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in &keys {
+            blobs.remove(key);
+        }
+        Ok(keys.len())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -302,6 +316,31 @@ impl BlobStore for DirBlobStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(PortError::new("blob store", error.to_string())),
         }
+    }
+
+    async fn delete_prefix(&self, prefix: &str, _limit: usize) -> Result<usize, PortError> {
+        let root = self.path(prefix.trim_end_matches('/'))?;
+        let failed = |error: std::io::Error| PortError::new("blob store", error.to_string());
+        let mut files = 0;
+        let mut pending = vec![root.clone()];
+        while let Some(path) = pending.pop() {
+            let mut entries = match tokio::fs::read_dir(&path).await {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(failed(error)),
+            };
+            while let Some(entry) = entries.next_entry().await.map_err(failed)? {
+                if entry.file_type().await.map_err(failed)?.is_dir() {
+                    pending.push(entry.path());
+                } else {
+                    files += 1;
+                }
+            }
+        }
+        if files > 0 {
+            tokio::fs::remove_dir_all(&root).await.map_err(failed)?;
+        }
+        Ok(files)
     }
 }
 

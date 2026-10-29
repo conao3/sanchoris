@@ -10,7 +10,7 @@ use sanchoris_core::items::{
     Membership, OutboxItem, Pending, ReceiveRate, Run, RunEventItem, SkillRunItem, Tenant, Trigger,
     User,
 };
-use sanchoris_core::jobs::{Job, Relayed};
+use sanchoris_core::jobs::{Deletion, Job, Relayed};
 use sanchoris_core::keys;
 use sanchoris_core::model::{AuditOrigin, SkillRunStatus, TaskStatus};
 use sanchoris_core::receive::window_start;
@@ -32,6 +32,136 @@ async fn inbound_text(w: &World, text: &str) -> InboundEvent {
         .into_iter()
         .find(|event| event.event["detail"]["text"] == text)
         .unwrap_or_else(|| panic!("no inbound event says {text}"))
+}
+
+#[tokio::test]
+async fn signing_out_is_audited_in_each_tenant_of_the_viewer() {
+    let w = World::new().await;
+    let joined = Uuid::new_v4();
+    let mut tx = w.store.tx(w.globex);
+    tx.insert(&Member {
+        id: joined,
+        tenant_id: w.globex,
+        user_id: w.mika.user_id,
+        role: "member".into(),
+        joined_at: w.now,
+        last_active_at: None,
+    })
+    .unwrap();
+    tx.insert(&Membership {
+        user_id: w.mika.user_id,
+        tenant_id: w.globex,
+        member_id: joined,
+    })
+    .unwrap();
+    tx.commit().await.unwrap();
+    let signed_out = w.ok(&w.mika, "SignOut", json!({})).await;
+    assert_eq!(signed_out["signOut"], true);
+    for (tenant, member) in [(w.acme, w.mika.member_id.unwrap()), (w.globex, joined)] {
+        let event = w.audit(tenant, "auth.sign_out").await;
+        assert_eq!(event.actor_kind, "member");
+        assert_eq!(event.actor_ref, member.to_string());
+        assert_eq!(event.target_ref, w.mika.user_id.to_string());
+    }
+}
+
+#[tokio::test]
+async fn owners_delete_a_tenant_by_typing_its_slug_and_its_work_stops() {
+    let w = World::new().await;
+    let delete = |slug: &str| json!({ "tenantId": w.acme, "slug": slug });
+    for who in [&w.sota, &w.ken] {
+        assert_eq!(
+            w.error_code(who, "DeleteTenant", delete("acme")).await,
+            "FORBIDDEN"
+        );
+    }
+    for slug in ["globex", "Acme", ""] {
+        assert_eq!(
+            w.error_code(&w.mika, "DeleteTenant", delete(slug)).await,
+            "BAD_USER_INPUT"
+        );
+    }
+    assert!(w.recorder.billing_ended.lock().unwrap().is_empty());
+    let tenant_key = keys::tenant_key(w.acme);
+    assert_eq!(w.get::<Tenant>(&tenant_key).await.unwrap().status, "active");
+    assert!(!w.task(w.acme, w.issue_task).await.status.is_terminal());
+
+    let deleted = w.ok(&w.mika, "DeleteTenant", delete("acme")).await;
+    assert_eq!(deleted["deleteTenant"], w.acme.to_string());
+    assert_eq!(
+        w.get::<Tenant>(&tenant_key).await.unwrap().status,
+        "deleting"
+    );
+    assert_eq!(*w.recorder.billing_ended.lock().unwrap(), vec![w.acme]);
+    let audit = w.audit(w.acme, "tenant.delete").await;
+    assert_eq!(audit.actor_ref, w.mika.member_id.unwrap().to_string());
+    for task in [w.issue_task, w.chat_task] {
+        assert_eq!(w.task(w.acme, task).await.status, TaskStatus::Aborted);
+    }
+    let cleanup = w
+        .messages()
+        .await
+        .into_iter()
+        .find_map(|message| match message {
+            Relayed::Send {
+                envelope,
+                deliver_at,
+            } => match envelope.job {
+                Job::DeleteTenant { tenant_id, phase } => Some((tenant_id, phase, deliver_at)),
+                _ => None,
+            },
+            Relayed::Cancel { .. } => None,
+        })
+        .expect("the cleanup job is emitted");
+    assert_eq!(cleanup.0, w.acme);
+    assert_eq!(cleanup.1, Deletion::Release);
+    assert_eq!(cleanup.2, Some(w.now + Duration::minutes(1)));
+
+    for (operation, variables) in [
+        ("DeleteTenant", delete("acme")),
+        (
+            "SetTriggerState",
+            json!({ "triggerId": w.labeled_trigger, "state": "DISABLED" }),
+        ),
+        ("SyncConfig", json!({ "configId": w.config_id })),
+        (
+            "SendChatMessage",
+            json!({ "input": { "tenantId": w.acme, "scope": "all", "text": "hi" } }),
+        ),
+        (
+            "InviteMember",
+            json!({ "input": { "tenantId": w.acme, "email": "x@acme.dev", "role": "MEMBER" } }),
+        ),
+        (
+            "RemoveCredential",
+            json!({ "credentialId": w.org_credential }),
+        ),
+    ] {
+        assert_eq!(
+            w.error_code(&w.mika, operation, variables.clone()).await,
+            "CONFLICT",
+            "{operation} {variables}"
+        );
+    }
+    for who in [&w.mika, &w.sota] {
+        let shell = w.ok(who, "Shell", json!({})).await;
+        assert!(
+            shell["viewer"]["memberships"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|m| m["tenant"]["slug"] != "acme")
+        );
+    }
+    let tenants = w.ok(&w.operator, "OperatorTenants", json!({})).await;
+    let acme = tenants["operator"]["tenants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tenant| tenant["id"] == w.acme.to_string())
+        .unwrap()
+        .clone();
+    assert_eq!(acme["state"], "DELETING");
 }
 
 #[tokio::test]

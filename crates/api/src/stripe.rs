@@ -441,4 +441,27 @@ impl CheckoutPort for StripeCheckout {
             })?;
         self.portal(customer).await
     }
+
+    async fn end_billing(&self, tenant_id: Uuid) -> Result<(), PortError> {
+        let tenant = self.tenant(tenant_id).await?;
+        if let Some(pending) = pending_checkout(&self.store, tenant.created_by_user_id)
+            .await
+            .map_err(db_error("read the pending checkout"))?
+            .filter(|pending| pending.tenant_id == tenant_id)
+        {
+            self.close_session(&pending.session_id).await?;
+        }
+        let Some(customer) = &tenant.stripe_customer_id else {
+            return Ok(());
+        };
+        if let Some(subscription) = self.subscription(customer).await? {
+            self.send(
+                Method::DELETE,
+                &format!("/v1/subscriptions/{}", subscription.id),
+                &[],
+            )
+            .await?;
+        }
+        Ok(())
+    }
 }

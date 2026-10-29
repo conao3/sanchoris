@@ -17,6 +17,7 @@ use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
 use sanchoris_core::receive::ReceiveLimited;
+use sanchoris_core::tenants::accepts_work;
 use sanchoris_worker::config_sync::{disable_config, rename_repository};
 use sanchoris_worker::error::WorkerError;
 use serde_json::{Map, Value, json};
@@ -290,6 +291,9 @@ async fn installation_event(
     let tenant_id = guard.tenant_id.ok_or_else(|| {
         ApiError::Internal(format!("installation {installation_id} has no tenant"))
     })?;
+    if !accepts_work(&state.store, tenant_id).await? {
+        return Ok(status(StatusCode::OK, "ignored"));
+    }
     let integration_key = keys::integration_key(tenant_id, guard.target);
     let delivery_key = github_delivery_key(tenant_id, delivery);
     let mut attempt = 0;

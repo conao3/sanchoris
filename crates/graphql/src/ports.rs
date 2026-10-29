@@ -34,6 +34,7 @@ pub trait CheckoutPort: Send + Sync {
     async fn tenant_checkout(&self, checkout: &TenantCheckout) -> Result<String, PortError>;
     async fn change_plan(&self, tenant_id: Uuid, plan_id: &str) -> Result<PlanChange, PortError>;
     async fn billing_portal(&self, tenant_id: Uuid) -> Result<String, PortError>;
+    async fn end_billing(&self, tenant_id: Uuid) -> Result<(), PortError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

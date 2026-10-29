@@ -7,7 +7,7 @@ use sanchoris_api::channel::gateway::GatewaySender;
 use sanchoris_api::config::{ChannelConfig, GitHubAppConfig, Secrets, WORKER_SECRETS};
 use sanchoris_api::ecs::{EcsRunner, EcsRunnerConfig};
 use sanchoris_api::lambda::{self, SqsEvent};
-use sanchoris_api::records::s3_records;
+use sanchoris_api::records::{record_blobs, s3_records};
 use sanchoris_core::clock::{Clock, SystemClock};
 use sanchoris_worker::deadline::with_deadline;
 use sanchoris_worker::resources::GitHubResources;
@@ -38,6 +38,7 @@ async fn main() -> Result<(), lambda_runtime::Error> {
         resources: Arc::new(GitHubResources::new(github)),
         runner: Arc::new(EcsRunner::new(&sdk, &store, runner, clock)),
         pusher: Arc::new(channel),
+        records: record_blobs(&config.records, &sdk),
     };
     let worker = Worker::new(store, deps, Settings::default());
     let worker = &worker;

@@ -13,6 +13,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use base64::Engine;
 use chrono::Utc;
+use sanchoris_core::aws::S3BlobStore;
+use sanchoris_core::local::DirBlobStore;
+use sanchoris_core::ports::BlobStore;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -182,6 +185,16 @@ pub fn s3_records(
             name: "SANCHORIS_RECORDS_STORE",
             message: "Lambda functions store records in S3; set it to s3".into(),
         }),
+    }
+}
+
+pub fn record_blobs(config: &RecordsConfig, sdk: &aws_config::SdkConfig) -> Arc<dyn BlobStore> {
+    match config {
+        RecordsConfig::S3 { bucket } => Arc::new(S3BlobStore::new(
+            aws_sdk_s3::Client::new(sdk),
+            bucket.clone(),
+        )),
+        RecordsConfig::Local { dir, .. } => Arc::new(DirBlobStore::new(dir.clone())),
     }
 }
 

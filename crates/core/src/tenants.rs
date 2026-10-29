@@ -18,6 +18,7 @@ const SLUG_LIMIT: usize = 40;
 const SLUG_ATTEMPTS: u32 = 100;
 const DISCARD_ATTEMPTS: u32 = 8;
 pub const PENDING_CHECKOUT_MINUTES: i64 = 60;
+pub const TENANT_DELETING: &str = "deleting";
 pub const RESERVED_SLUGS: [&str; 14] = [
     "settings", "operator", "api", "auth", "webhooks", "health", "runs", "records", "login",
     "tenants", "chat", "tasks", "triggers", "skills",
@@ -96,6 +97,17 @@ pub fn pending_checkout_key(user_id: Uuid) -> Key {
 
 pub fn free_tenant_key(user_id: Uuid) -> Key {
     keys::uniq_key(uniq::FREE_TENANT, &user_id.to_string())
+}
+
+pub fn is_deleting(tenant: &Tenant) -> bool {
+    tenant.status == TENANT_DELETING
+}
+
+pub async fn accepts_work(store: &Store, tenant_id: Uuid) -> Result<bool, DbError> {
+    Ok(store
+        .get::<Tenant>(&keys::tenant_key(tenant_id))
+        .await?
+        .is_some_and(|tenant| !is_deleting(&tenant)))
 }
 
 pub fn is_payment_pending(tenant: &Tenant) -> bool {

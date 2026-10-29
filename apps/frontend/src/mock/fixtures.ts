@@ -1113,6 +1113,7 @@ export function buildFixtures() {
     northwind,
     operatorOnly('tenant-indie', 'indie-labs', 'Free', { kind: 'USER', login: 'indie' }, periodUsage(3, 4, 1, 0, 'TOTAL')),
     operatorOnly('tenant-tanaka', 'tanaka-sys', 'Max', { kind: 'ORGANIZATION', login: 'tanaka-sys' }, periodUsage(142, 232, 4, 0, 'MONTH'), 'SUSPENDED', 'abuse check'),
+    operatorOnly('tenant-oldco', 'oldco', 'Starter', { kind: 'ORGANIZATION', login: 'oldco' }, periodUsage(2, 1, 2, 0, 'MONTH'), 'DELETING'),
   ];
   return {
     tenants,

@@ -13,14 +13,16 @@ use sanchoris_core::items::{
     self, CONFIG_ACTIVE, Guard, InboundEvent, InvitationEmail, Membership as MembershipItem,
     Task as TaskItem, Trigger as TriggerItem, TriggerEvent as EventItem, User, uniq,
 };
+use sanchoris_core::jobs::{Deletion, Job};
 use sanchoris_core::keys;
 use sanchoris_core::model::{AuditOrigin, TaskStatus as CoreStatus};
 use sanchoris_core::receive::{Admission, SOURCE_CHAT, SOURCE_REPLY, admit_inbound};
 use sanchoris_core::skillrun::{SkillRunError, resolve_waiting_approval};
-use sanchoris_core::store::Update;
+use sanchoris_core::store::{Index, SortKey, Update};
 use sanchoris_core::tasks::{abort_task, latest_run, load_task, snoozable, snooze, stop_run};
 use sanchoris_core::tenants::{
-    NewTenant, TenantError, create_tenant, hold_free_tenant, pending_checkout, release_free_tenant,
+    NewTenant, TENANT_DELETING, TenantError, create_tenant, hold_free_tenant, is_deleting,
+    pending_checkout, release_free_tenant,
 };
 use sanchoris_worker::dispatcher::schedule_trigger;
 use serde_json::{Map, Value, json};
@@ -33,8 +35,8 @@ use crate::audit::{AuditEvent, AuditFilter};
 use crate::config::{ChangeRequest, Config, Session, ValidationError};
 use crate::context::{
     Access, AuditTarget, ClientIp, Failure, Role, Scope, audit_member, audit_operator, auth,
-    is_operator, locate_item, locate_ref, member_scope, membership_in, memberships, now,
-    scope_for_tenant, serialize_tenant, state, store, tx, user_tx, viewer_user, write,
+    being_deleted, is_operator, locate_item, locate_ref, member_scope, membership_in, memberships,
+    now, scope_for_tenant, serialize_tenant, state, store, tx, user_tx, viewer_user, write,
 };
 use crate::enums::{ApiKeyProvider, CredentialScope, EventSource, InvitationState, TriggerState};
 use crate::error::{bad_input, conflict, forbidden, not_found, parse_id, port, rate_limited};
@@ -45,6 +47,7 @@ use crate::tenant::Tenant;
 use crate::trigger::{TRIGGER_TEMPLATES, Trigger};
 
 const INVITATION_DAYS: i64 = 7;
+const DELETION_DELAY_SECONDS: i64 = 60;
 
 #[derive(SimpleObject)]
 pub(crate) struct RedirectPayload {
@@ -366,6 +369,13 @@ impl MutationRoot {
         let at = now(ctx);
         let member_id = write(|| async {
             let mut tx = tx(ctx, tenant_id);
+            let tenant = tx
+                .get::<items::Tenant>(&keys::tenant_key(tenant_id))
+                .await?
+                .ok_or_else(|| not_found(format!("tenant {tenant_id}")))?;
+            if is_deleting(&tenant) {
+                return Err(being_deleted(&tenant).into());
+            }
             if tx
                 .get::<MembershipItem>(&keys::membership_key(user.user_id, tenant_id))
                 .await?
@@ -489,6 +499,11 @@ impl MutationRoot {
         )
         .await?;
         Ok(Viewer)
+    }
+
+    async fn sign_out(&self, ctx: &Context<'_>) -> Result<bool> {
+        audit_user_tenants(ctx, "auth.sign_out", "Signed out").await?;
+        Ok(true)
     }
 
     async fn connect_slack(&self, ctx: &Context<'_>, tenant_id: ID) -> Result<RedirectPayload> {
@@ -1703,6 +1718,84 @@ impl MutationRoot {
         })
         .await?;
         Ok(RedirectPayload { url })
+    }
+
+    async fn delete_tenant(&self, ctx: &Context<'_>, tenant_id: ID, slug: String) -> Result<ID> {
+        let scope = tenant_scope(ctx, &tenant_id).await?;
+        let member_id = scope.require(Role::Owner, "deleting the tenant")?;
+        let tenant = store(ctx)
+            .get::<items::Tenant>(&keys::tenant_key(scope.tenant_id))
+            .await?
+            .ok_or_else(|| not_found(format!("tenant {}", scope.tenant_id)))?;
+        if slug.trim() != tenant.slug {
+            return Err(bad_input(format!(
+                "type the tenant's slug {} to delete it",
+                tenant.slug
+            )));
+        }
+        if tenant.plan_id != ADMIN_PLAN {
+            state(ctx)
+                .deps
+                .checkout
+                .end_billing(scope.tenant_id)
+                .await
+                .map_err(port)?;
+        }
+        let at = now(ctx);
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let key = keys::tenant_key(scope.tenant_id);
+            let current = tx.require::<items::Tenant>(&key).await?;
+            if is_deleting(&current) {
+                return Err(being_deleted(&current).into());
+            }
+            tx.update(
+                &key,
+                Update::new()
+                    .set("status", s(TENANT_DELETING))
+                    .set("updated_at", s(&format_time(at)))
+                    .require("status", s(&current.status)),
+            )?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "tenant.delete",
+                target("tenant", scope.tenant_id, current.name.clone()),
+                &format!("Deleted tenant {}", current.name),
+            )
+            .await?;
+            tx.emit_at(
+                Job::DeleteTenant {
+                    tenant_id: scope.tenant_id,
+                    phase: Deletion::Release,
+                },
+                at + Duration::seconds(DELETION_DELAY_SECONDS),
+            );
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
+        let unfinished = store(ctx)
+            .query_index::<TaskItem>(
+                Index::Gsi1,
+                &keys::tasks_index(scope.tenant_id),
+                SortKey::All,
+            )
+            .await?
+            .into_iter()
+            .filter(|task| !task.status.is_terminal());
+        for task in unfinished {
+            write(|| async {
+                let mut tx = tx(ctx, scope.tenant_id);
+                if abort_task(&mut tx, task.id, "the tenant is being deleted", at).await? {
+                    tx.commit().await?;
+                }
+                Ok(())
+            })
+            .await?;
+        }
+        Ok(ID(scope.tenant_id.to_string()))
     }
 
     async fn suspend_tenant(

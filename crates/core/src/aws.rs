@@ -13,6 +13,7 @@ pub const WORK_QUEUE_ARN_ENV: &str = "SANCHORIS_WORK_QUEUE_ARN";
 pub const SCHEDULE_GROUP_ENV: &str = "SANCHORIS_SCHEDULE_GROUP";
 pub const SCHEDULER_ROLE_ARN_ENV: &str = "SANCHORIS_SCHEDULER_ROLE_ARN";
 pub const DOCS_BUCKET_ENV: &str = "SANCHORIS_DOCS_BUCKET";
+const S3_DELETE_LIMIT: usize = 1000;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[error("missing required environment variables: {}", .0.join(", "))]
@@ -326,6 +327,57 @@ impl BlobStore for S3BlobStore {
             .await
             .map_err(|e| port_error("s3", aws_sdk_s3::error::DisplayErrorContext(e)))?;
         Ok(())
+    }
+
+    async fn delete_prefix(&self, prefix: &str, limit: usize) -> Result<usize, PortError> {
+        let listed = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(prefix)
+            .max_keys(i32::try_from(limit.min(S3_DELETE_LIMIT)).unwrap_or(1))
+            .send()
+            .await
+            .map_err(|e| port_error("s3", aws_sdk_s3::error::DisplayErrorContext(e)))?;
+        let objects = listed
+            .contents()
+            .iter()
+            .filter_map(|object| object.key())
+            .map(|key| {
+                aws_sdk_s3::types::ObjectIdentifier::builder()
+                    .key(key)
+                    .build()
+                    .map_err(|e| port_error("s3", e))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if objects.is_empty() {
+            return Ok(0);
+        }
+        let count = objects.len();
+        let delete = aws_sdk_s3::types::Delete::builder()
+            .set_objects(Some(objects))
+            .quiet(true)
+            .build()
+            .map_err(|e| port_error("s3", e))?;
+        let output = self
+            .client
+            .delete_objects()
+            .bucket(&self.bucket)
+            .delete(delete)
+            .send()
+            .await
+            .map_err(|e| port_error("s3", aws_sdk_s3::error::DisplayErrorContext(e)))?;
+        if let Some(error) = output.errors().first() {
+            return Err(port_error(
+                "s3",
+                format!(
+                    "delete {}: {}",
+                    error.key().unwrap_or_default(),
+                    error.message().unwrap_or_default()
+                ),
+            ));
+        }
+        Ok(count)
     }
 }
 

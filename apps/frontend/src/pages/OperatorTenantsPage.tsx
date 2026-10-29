@@ -1,4 +1,4 @@
-import { Ban, CircleCheck } from 'lucide-react';
+import { Ban, CircleCheck, Trash2 } from 'lucide-react';
 import { type FormEvent, Fragment, useState } from 'react';
 import { Button } from '../components/Button';
 import { Page, Pg } from '../components/Shell';
@@ -95,12 +95,16 @@ export function OperatorTenantsPage() {
                         <State tone="ok" icon={CircleCheck}>
                           {t('operator.active')}
                         </State>
+                      ) : tenant.state === 'DELETING' ? (
+                        <State tone="warn" icon={Trash2}>
+                          {t('operator.deleting')}
+                        </State>
                       ) : (
                         <State tone="err" icon={Ban} wrap>
                           {t('operator.suspended', { reason: tenant.suspendedReason ?? '' })}
                         </State>
                       )}
-                      {nav.selected === index ? (
+                      {nav.selected === index && tenant.state !== 'DELETING' ? (
                         tenant.state === 'ACTIVE' ? (
                           <Button small variant="danger" onPress={() => setSuspending(tenant.id)} isDisabled={suspending === tenant.id}>
                             {t('operator.suspend')}

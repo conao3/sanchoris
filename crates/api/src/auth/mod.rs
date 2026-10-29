@@ -1,19 +1,28 @@
 pub mod cognito;
 
+use std::net::IpAddr;
+
 use async_trait::async_trait;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, header};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use sanchoris_core::audit::{AuditEntry, record_audit_once};
 use sanchoris_core::billing::is_privileged_email;
 use sanchoris_core::db::{DbError, Store};
-use sanchoris_core::items::{Guard, User, uniq};
+use sanchoris_core::items::{Guard, Membership, Tenant, User, uniq};
 use sanchoris_core::keys;
+use sanchoris_core::model::{ActorKind, AuditOrigin};
 use sanchoris_core::store::retry;
+use sanchoris_core::tenants::is_deleting;
+use sanchoris_graphql::ClientIp;
+use serde_json::{Map, json};
 use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::error::ApiError;
+
+pub const SIGN_IN: &str = "auth.sign_in";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
@@ -21,6 +30,7 @@ pub struct Identity {
     pub email: Option<String>,
     pub email_verified: bool,
     pub display_name: String,
+    pub auth_time: Option<DateTime<Utc>>,
 }
 
 impl Identity {
@@ -87,7 +97,11 @@ enum Provisioned {
     EmailTaken,
 }
 
-pub async fn provision(store: &Store, identity: &Identity) -> Result<CurrentUser, ApiError> {
+pub async fn provision(
+    store: &Store,
+    identity: &Identity,
+    source_ip: Option<IpAddr>,
+) -> Result<CurrentUser, ApiError> {
     let email = identity
         .email
         .clone()
@@ -112,6 +126,7 @@ pub async fn provision(store: &Store, identity: &Identity) -> Result<CurrentUser
             github_user_id: None,
             github_login: None,
             is_operator: false,
+            last_sign_in_at: None,
             created_at: now,
             updated_at: now,
         };
@@ -122,12 +137,83 @@ pub async fn provision(store: &Store, identity: &Identity) -> Result<CurrentUser
         Ok(Provisioned::User(Box::new(user)))
     })
     .await?;
-    match provisioned {
-        Provisioned::User(user) => Ok(CurrentUser::new(*user, identity.privileged())),
-        Provisioned::EmailTaken => Err(ApiError::Conflict(format!(
-            "the email {email} belongs to another user"
-        ))),
+    let user = match provisioned {
+        Provisioned::User(user) => *user,
+        Provisioned::EmailTaken => {
+            return Err(ApiError::Conflict(format!(
+                "the email {email} belongs to another user"
+            )));
+        }
+    };
+    if let Some(auth_time) = identity.auth_time
+        && user.last_sign_in_at.is_none_or(|last| last < auth_time)
+    {
+        record_sign_in(store, &user, auth_time, source_ip).await?;
     }
+    Ok(CurrentUser::new(user, identity.privileged()))
+}
+
+async fn record_sign_in(
+    store: &Store,
+    user: &User,
+    auth_time: DateTime<Utc>,
+    source_ip: Option<IpAddr>,
+) -> Result<(), DbError> {
+    let id = Uuid::new_v5(
+        &user.id,
+        format!("{SIGN_IN}:{}", auth_time.timestamp()).as_bytes(),
+    );
+    let user_ref = user.id.to_string();
+    let memberships = store
+        .query::<Membership>(&keys::user_key(user.id).pk, "MEMBER#")
+        .await?;
+    for membership in &memberships {
+        let member_ref = membership.member_id.to_string();
+        retry(8, || async {
+            let mut tx = store.tx(membership.tenant_id);
+            if !tx
+                .get::<Tenant>(&keys::tenant_key(membership.tenant_id))
+                .await?
+                .is_some_and(|tenant| !is_deleting(&tenant))
+            {
+                return Ok(());
+            }
+            let mut metadata = Map::new();
+            metadata.insert("target_name".into(), json!(user.email));
+            metadata.insert("user_id".into(), json!(user.id));
+            let entry = AuditEntry {
+                at: auth_time,
+                actor_kind: ActorKind::Member,
+                actor_ref: &member_ref,
+                action: SIGN_IN,
+                target_kind: "user",
+                target_ref: &user_ref,
+                summary: "Signed in",
+                origin: AuditOrigin::Web,
+                source_ip,
+                metadata,
+            };
+            if record_audit_once(&mut tx, id, &entry).await? {
+                tx.commit().await?;
+            }
+            Ok(())
+        })
+        .await?;
+    }
+    retry(8, || async {
+        let mut tx = store.global_tx();
+        let mut current = tx.require::<User>(&keys::user_key(user.id)).await?;
+        if current
+            .last_sign_in_at
+            .is_some_and(|last| last >= auth_time)
+        {
+            return Ok(());
+        }
+        current.last_sign_in_at = Some(auth_time);
+        tx.put(&current)?;
+        tx.commit().await
+    })
+    .await
 }
 
 impl FromRequestParts<AppState> for CurrentUser {
@@ -136,6 +222,7 @@ impl FromRequestParts<AppState> for CurrentUser {
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let token = bearer(&parts.headers).ok_or(ApiError::Unauthorized)?;
         let identity = state.verifier.verify(token).await?;
-        provision(&state.store, &identity).await
+        let source_ip = parts.extensions.get::<ClientIp>().map(|ip| ip.0);
+        provision(&state.store, &identity, source_ip).await
     }
 }

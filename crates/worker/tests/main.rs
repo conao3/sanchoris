@@ -7,3 +7,4 @@ mod resilience;
 mod sessions;
 mod skills;
 mod supervisor;
+mod tenant_delete;

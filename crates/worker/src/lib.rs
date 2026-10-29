@@ -11,6 +11,7 @@ pub mod resources;
 pub mod runner;
 pub mod schedule;
 pub mod supervisor;
+pub mod tenant_delete;
 pub mod usage;
 
 pub use sanchoris_core::clock;
@@ -23,6 +24,8 @@ use sanchoris_core::db::{DbError, Store, TenantTx};
 use sanchoris_core::items::{Integration, github_repositories};
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
+use sanchoris_core::ports::BlobStore;
+use sanchoris_core::tenants::accepts_work;
 
 use crate::clock::Clock;
 use crate::error::{Result, WorkerError};
@@ -39,6 +42,7 @@ pub struct Deps {
     pub resources: Arc<dyn ResourceInvoker>,
     pub runner: Arc<dyn RunnerPort>,
     pub pusher: Arc<dyn OutboxPusher>,
+    pub records: Arc<dyn BlobStore>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +137,11 @@ impl Worker {
     }
 
     async fn handle_once(&self, envelope: &Envelope) -> Result<usize> {
+        if let Some(tenant_id) = held_by_tenant(&envelope.job)
+            && !accepts_work(&self.store, tenant_id).await?
+        {
+            return Ok(0);
+        }
         match &envelope.job {
             Job::Inbound { tenant_id } => dispatcher::process_inbound(self, *tenant_id).await,
             Job::Dispatch { tenant_id } => dispatcher::dispatch(self, *tenant_id).await,
@@ -205,12 +214,38 @@ impl Worker {
                 )
                 .await
             }
+            Job::DeleteTenant { tenant_id, phase } => {
+                tenant_delete::delete_tenant(self, *tenant_id, phase).await
+            }
             Job::SweepConfigs => config_sync::sweep(self).await,
             Job::SweepChecks => engine_worker::sweep_checks(self).await,
             Job::SweepTaskLimits => supervisor::sweep_limits(self).await,
             Job::UsageAlerts => usage::sweep_alerts(self).await,
             Job::SweepWorkspaces => supervisor::sweep_workspaces(self).await,
         }
+    }
+}
+
+fn held_by_tenant(job: &Job) -> Option<uuid::Uuid> {
+    match job {
+        Job::Inbound { tenant_id }
+        | Job::Dispatch { tenant_id }
+        | Job::Invoke { tenant_id, .. }
+        | Job::EngineTimer { tenant_id, .. }
+        | Job::TaskResume { tenant_id, .. }
+        | Job::TaskSnoozeEnd { tenant_id, .. }
+        | Job::CheckPoll { tenant_id, .. }
+        | Job::ConfigSync { tenant_id, .. }
+        | Job::TriggerSchedule { tenant_id, .. } => Some(*tenant_id),
+        Job::RunEvents { .. }
+        | Job::Reconcile { .. }
+        | Job::DeliverOutbox { .. }
+        | Job::DeleteTenant { .. }
+        | Job::SweepConfigs
+        | Job::SweepChecks
+        | Job::SweepTaskLimits
+        | Job::UsageAlerts
+        | Job::SweepWorkspaces => None,
     }
 }
 

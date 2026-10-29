@@ -16,7 +16,7 @@ use sanchoris_core::items::{
     User, uniq,
 };
 use sanchoris_core::keys;
-use sanchoris_core::local::{MemoryQueue, MemoryScheduler};
+use sanchoris_core::local::{MemoryBlobStore, MemoryQueue, MemoryScheduler};
 use sanchoris_core::ports::PortError;
 use sanchoris_core::skillrun::{
     AcceptedSkillRun, SkillRunError, accept_skill_request, continue_skill_run,
@@ -56,6 +56,7 @@ pub struct World {
     pub github: Arc<FakeGitHub>,
     pub runner: Arc<FakeRunner>,
     pub pusher: Arc<RecordingPusher>,
+    pub records: Arc<MemoryBlobStore>,
     pub worker: LocalDriver,
 }
 
@@ -65,6 +66,7 @@ pub fn worker_for(
     github: &Arc<FakeGitHub>,
     runner: &Arc<FakeRunner>,
     pusher: &Arc<RecordingPusher>,
+    records: &Arc<MemoryBlobStore>,
 ) -> Worker {
     Worker::new(
         store.clone(),
@@ -76,6 +78,7 @@ pub fn worker_for(
             resources: Arc::new(GitHubResources::new(github.clone())),
             runner: runner.clone(),
             pusher: pusher.clone(),
+            records: records.clone(),
         },
         Settings::default(),
     )
@@ -145,7 +148,15 @@ impl World {
         let github = FakeGitHub::new();
         let runner = Arc::new(FakeRunner::default());
         let pusher = Arc::new(RecordingPusher::default());
-        let worker = Arc::new(worker_for(&direct.store, &clock, &github, &runner, &pusher));
+        let records = Arc::new(MemoryBlobStore::new());
+        let worker = Arc::new(worker_for(
+            &direct.store,
+            &clock,
+            &github,
+            &runner,
+            &pusher,
+            &records,
+        ));
         let driver = LocalDriver::new(worker, direct.queue.clone(), direct.scheduler.clone());
         let world = Self {
             dynamo,
@@ -157,6 +168,7 @@ impl World {
             github,
             runner,
             pusher,
+            records,
             worker: driver,
         };
         world.worker.settle().await.unwrap();
@@ -172,6 +184,7 @@ impl World {
                 &self.github,
                 &self.runner,
                 &self.pusher,
+                &self.records,
             )),
             self.queue.clone(),
             self.scheduler.clone(),
