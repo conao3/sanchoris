@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use aws_sdk_dynamodb::types::{AttributeValue, ReturnValue};
 use aws_sdk_ecs::error::DisplayErrorContext;
 use aws_sdk_ecs::operation::run_task::RunTaskError;
+use aws_sdk_ecs::operation::stop_task::StopTaskError;
 use aws_sdk_ecs::types::{
     AssignPublicIp, AwsVpcConfiguration, CapacityProviderStrategyItem, ContainerOverride,
     DesiredStatus, KeyValuePair, NetworkConfiguration, Tag, Task, TaskField, TaskOverride,
@@ -36,6 +37,7 @@ const LOCK_WAIT_SECONDS: i64 = 90;
 const RELAY_START_SECONDS: i64 = 240;
 const HOLDER_GRACE_MINUTES: i64 = 10;
 const POLL_MILLIS: u64 = 3000;
+const TASK_NOT_FOUND: &str = "task was not found";
 
 #[derive(Debug, Clone)]
 pub struct EcsRunnerConfig {
@@ -184,6 +186,30 @@ impl EcsRunner {
             ("SANCHORIS_CREDENTIAL_SOURCE", "channel".to_string()),
             ("SANCHORIS_RELAY_URL", relay),
         ]
+    }
+
+    async fn stop_task(&self, run_id: Uuid, platform_ref: &str) -> Result<(), RunnerError> {
+        match self
+            .client
+            .stop_task()
+            .cluster(&self.config.cluster)
+            .task(platform_ref)
+            .reason(format!("Run {run_id} no longer needs its workspace"))
+            .send()
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(error)
+                if matches!(
+                    error.as_service_error(),
+                    Some(StopTaskError::InvalidParameterException(e))
+                        if e.message().is_some_and(|m| m.contains(TASK_NOT_FOUND))
+                ) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(runner_error(error)),
+        }
     }
 
     async fn run_task(
@@ -722,14 +748,7 @@ impl RunnerPort for EcsRunner {
     }
 
     async fn stop_workspace(&self, run_id: Uuid, platform_ref: &str) -> Result<(), RunnerError> {
-        self.client
-            .stop_task()
-            .cluster(&self.config.cluster)
-            .task(platform_ref)
-            .reason(format!("Run {run_id} no longer needs its workspace"))
-            .send()
-            .await
-            .map_err(runner_error)?;
+        self.stop_task(run_id, platform_ref).await?;
         self.relay.release(Some(run_id)).await
     }
 
@@ -896,23 +915,33 @@ mod tests {
     }
 
     fn fake_ecs(spot: Value) -> (EcsRunner, Arc<std::sync::Mutex<Vec<Value>>>) {
+        fake_ecs_responding(move |body| {
+            if body["capacityProviderStrategy"][0]["capacityProvider"] == "FARGATE_SPOT" {
+                (200, spot.clone())
+            } else {
+                (
+                    200,
+                    json!({
+                        "tasks": [{ "taskArn": "arn:aws:ecs:ap-northeast-1:1:task/c/on-demand" }],
+                        "failures": []
+                    }),
+                )
+            }
+        })
+    }
+
+    fn fake_ecs_responding(
+        respond: impl Fn(&Value) -> (u16, Value) + Send + Sync + 'static,
+    ) -> (EcsRunner, Arc<std::sync::Mutex<Vec<Value>>>) {
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = requests.clone();
         let http = aws_smithy_http_client::test_util::infallible_client_fn(move |request| {
             let body: Value =
                 serde_json::from_slice(request.body().bytes().expect("a JSON body")).unwrap();
-            let provider = body["capacityProviderStrategy"][0]["capacityProvider"].clone();
+            let (status, response) = respond(&body);
             seen.lock().unwrap().push(body);
-            let response = if provider == "FARGATE_SPOT" {
-                spot.clone()
-            } else {
-                json!({
-                    "tasks": [{ "taskArn": "arn:aws:ecs:ap-northeast-1:1:task/c/on-demand" }],
-                    "failures": []
-                })
-            };
             http::Response::builder()
-                .status(200)
+                .status(status)
                 .body(aws_smithy_types::body::SdkBody::from(response.to_string()))
                 .unwrap()
         });
@@ -1002,6 +1031,42 @@ mod tests {
         let error = runner.run_task(&spec(), "10.1.0.5").await.unwrap_err();
         assert!(error.0.contains("MISSING"), "{}", error.0);
         assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stopping_a_task_that_ecs_no_longer_knows_succeeds_and_other_failures_fail() {
+        let (runner, requests) = fake_ecs_responding(|_| {
+            (
+                400,
+                json!({
+                    "__type": "InvalidParameterException",
+                    "message": "The referenced task was not found."
+                }),
+            )
+        });
+        runner
+            .stop_task(Uuid::new_v4(), "arn:aws:ecs:ap-northeast-1:1:task/c/gone")
+            .await
+            .unwrap();
+        assert_eq!(
+            requests.lock().unwrap()[0]["task"],
+            "arn:aws:ecs:ap-northeast-1:1:task/c/gone"
+        );
+
+        let (runner, _) = fake_ecs_responding(|_| {
+            (
+                400,
+                json!({
+                    "__type": "InvalidParameterException",
+                    "message": "Cluster not specified."
+                }),
+            )
+        });
+        let error = runner
+            .stop_task(Uuid::new_v4(), "arn:aws:ecs:ap-northeast-1:1:task/c/gone")
+            .await
+            .unwrap_err();
+        assert!(error.0.contains("Cluster not specified"), "{}", error.0);
     }
 
     #[test]

@@ -204,6 +204,33 @@ async fn a_workspace_that_stops_on_its_own_needs_you_with_the_reason() {
     assert_eq!(tenant(&world).await.workspace_seconds_this_period, 120);
 }
 
+#[tokio::test]
+async fn the_sweep_observes_the_workspace_of_a_task_that_needs_you() {
+    let world = World::new("pro").await;
+    let task = world.started_task(35).await;
+    let run_id = task.run_id.unwrap();
+    for turn in 1..=3 {
+        world.turn_end(run_id, turn).await;
+        world.worker.settle().await.unwrap();
+    }
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "NEEDS_YOU");
+    let platform_ref = world.runner.refs.lock().unwrap()[0].clone();
+    world.runner.exits.lock().unwrap().insert(
+        platform_ref,
+        sanchoris_worker::ports::WorkspaceExit {
+            reason: "Essential container in task exited".into(),
+            interrupted_at: None,
+        },
+    );
+    world.clock.advance(Duration::seconds(120));
+    world.worker.settle().await.unwrap();
+    let recorded = workspaces(&world).await;
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].stopped_at, Some(world.clock_now()));
+    assert_eq!(tenant(&world).await.workspace_seconds_this_period, 120);
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "NEEDS_YOU");
+}
+
 async fn workspaces(world: &World) -> Vec<Workspace> {
     let mut workspaces = world
         .store

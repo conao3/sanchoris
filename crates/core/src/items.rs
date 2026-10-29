@@ -1371,7 +1371,10 @@ impl Entity for Task {
             .time("updated_at", self.updated_at)
             .s("gsi1pk", keys::tasks_index(self.tenant_id))
             .s("gsi1sk", keys::time_id(self.created_at, self.id));
-        if matches!(self.status, TaskStatus::Running | TaskStatus::Waiting) {
+        if matches!(
+            self.status,
+            TaskStatus::Running | TaskStatus::Waiting | TaskStatus::NeedsYou
+        ) {
             w.s("gsi2pk", keys::SWEEP_ACTIVE_TASKS)
                 .s("gsi2sk", format!("{}#{}", self.tenant_id, self.id));
         }

@@ -21,7 +21,7 @@ Jobs are written as message items in the same DynamoDB transaction as the state 
 | `SweepChecks` | rate schedule | Emits `CheckPoll` for check waits whose poll is due |
 | `SweepTaskLimits` | rate schedule | Applies `Start.Limits` to `RUNNING`/`WAITING` tasks; over the limit, `NEEDS_YOU` and an `interrupt` |
 | `UsageAlerts` | rate schedule | Writes `usage_alerts` at 80% of the plan |
-| `SweepWorkspaces` | rate schedule | Asks `RunnerPort::workspace_exit` about the open workspaces of `RUNNING`/`WAITING` tasks; a workspace that stopped on its own is closed, its run goes `idle` with the reason as `error`, and a `RUNNING` task goes `NEEDS_YOU` (`Workspace.Stopped`, the reason as `cause`); a workspace without `platform_ref` 15 minutes after it started is closed the same way. Then it stops every workspace in `RunnerPort::running_workspaces` that no open workspace item records with that `platform_ref`, and calls `RunnerPort::sweep` (the ECS runner scales the egress relay to 0 when no Workspace runs) |
+| `SweepWorkspaces` | rate schedule | Asks `RunnerPort::workspace_exit` about the open workspaces of `RUNNING`/`WAITING`/`NEEDS_YOU` tasks; a workspace that stopped on its own is closed, its run goes `idle` with the reason as `error`, and a `RUNNING` task goes `NEEDS_YOU` (`Workspace.Stopped`, the reason as `cause`); a workspace without `platform_ref` 15 minutes after it started is closed the same way. Then it stops every workspace in `RunnerPort::running_workspaces` that no open workspace item records with that `platform_ref`, and calls `RunnerPort::sweep` (the ECS runner scales the egress relay to 0 when no Workspace runs) |
 
 ## Trigger evaluation
 
