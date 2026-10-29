@@ -2,7 +2,6 @@ query Home($tenant: String!) {
   tenant(slug: $tenant) {
     id
     name
-    githubAppInstallUrl
     setup {
       githubLinked
       appInstalled
@@ -116,6 +115,12 @@ mutation SnoozeTask($taskId: ID!, $until: DateTime!) {
 
 mutation ConnectGitHub {
   connectGitHub {
+    url
+  }
+}
+
+mutation InstallGitHubApp($tenantId: ID!) {
+  installGitHubApp(tenantId: $tenantId) {
     url
   }
 }

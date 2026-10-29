@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Query, State};
+use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Duration, Utc};
 use sanchoris_core::audit::{AuditEntry, record_audit};
@@ -10,7 +11,7 @@ use sanchoris_core::items::{Guard, Integration, Member, Membership, User, uniq};
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
 use sanchoris_core::store::retry;
-use sanchoris_graphql::GithubConnectUrl;
+use sanchoris_graphql::{GithubConnectUrl, GithubRedirect};
 use sanchoris_worker::ports::ConfigSource as _;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -25,6 +26,7 @@ use crate::signing::HmacKey;
 const ATTEMPTS: u32 = 8;
 
 const STATE_TTL_MINUTES: i64 = 10;
+pub const BROWSER_COOKIE: &str = "__Host-sanchoris-github";
 const RESULT_PATH: &str = "/settings";
 const PER_PAGE: usize = 100;
 
@@ -76,25 +78,64 @@ impl OAuthState {
     }
 }
 
-pub fn issue_state(key: &HmacKey, state: OAuthState, now: DateTime<Utc>) -> String {
-    let expires = (now + Duration::minutes(STATE_TTL_MINUTES)).timestamp();
-    key.seal(&format!(
-        "{}.{expires}.{}",
-        state.encode(),
-        Uuid::new_v4().simple()
-    ))
+pub fn new_browser_nonce() -> String {
+    Uuid::new_v4().simple().to_string()
 }
 
-pub fn verify_state(key: &HmacKey, sealed: &str, now: DateTime<Utc>) -> Option<OAuthState> {
+pub fn browser_cookie(nonce: &str) -> String {
+    format!(
+        "{BROWSER_COOKIE}={nonce}; Path=/; Max-Age={}; Secure; HttpOnly; SameSite=Lax",
+        STATE_TTL_MINUTES * 60
+    )
+}
+
+fn browser_nonce(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find(|(name, _)| *name == BROWSER_COOKIE)
+        .map(|(_, value)| value)
+}
+
+pub fn issue_state(key: &HmacKey, state: OAuthState, nonce: &str, now: DateTime<Utc>) -> String {
+    let expires = (now + Duration::minutes(STATE_TTL_MINUTES)).timestamp();
+    key.seal(&format!("{}.{expires}.{nonce}", state.encode()))
+}
+
+pub fn verify_state(
+    key: &HmacKey,
+    sealed: &str,
+    now: DateTime<Utc>,
+) -> Option<(OAuthState, String)> {
     let message = key.open(sealed)?;
     let parts = message.split('.').collect::<Vec<_>>();
-    let [state @ .., expires, _nonce] = parts.as_slice() else {
+    let [state @ .., expires, nonce] = parts.as_slice() else {
         return None;
     };
     let expires: i64 = expires.parse().ok()?;
-    (now.timestamp() < expires)
-        .then(|| OAuthState::decode(state))
-        .flatten()
+    if now.timestamp() >= expires {
+        return None;
+    }
+    Some((OAuthState::decode(state)?, (*nonce).to_string()))
+}
+
+fn verify_browser_state(
+    state: &AppState,
+    sealed: Option<&str>,
+    headers: &HeaderMap,
+) -> Result<(OAuthState, String), ApiError> {
+    let (verified, nonce) = sealed
+        .and_then(|value| verify_state(&state.config.oauth_state_key, value, Utc::now()))
+        .ok_or_else(|| ApiError::BadRequest("the state is invalid or expired".into()))?;
+    if browser_nonce(headers) != Some(nonce.as_str()) {
+        return Err(ApiError::BadRequest(
+            "the GitHub flow was started in another browser session".into(),
+        ));
+    }
+    Ok((verified, nonce))
 }
 
 fn redirect_uri(config: &ApiConfig) -> String {
@@ -132,40 +173,56 @@ impl GitHubLinks {
 }
 
 impl GithubConnectUrl for GitHubLinks {
-    fn link_account(&self, user_id: Uuid) -> String {
+    fn link_account(&self, user_id: Uuid) -> GithubRedirect {
+        let nonce = new_browser_nonce();
         let state = issue_state(
             &self.config.oauth_state_key,
             OAuthState::Link { user_id },
+            &nonce,
             Utc::now(),
         );
-        authorize_url(&self.config, &state)
+        GithubRedirect {
+            url: authorize_url(&self.config, &state),
+            cookie: browser_cookie(&nonce),
+        }
     }
 
-    fn install_app(&self, tenant_id: Uuid, user_id: Uuid) -> String {
+    fn install_app(&self, tenant_id: Uuid, user_id: Uuid) -> GithubRedirect {
+        let nonce = new_browser_nonce();
         let state = issue_state(
             &self.config.oauth_state_key,
             OAuthState::Install { tenant_id, user_id },
+            &nonce,
             Utc::now(),
         );
-        install_url(&self.config, &state)
+        GithubRedirect {
+            url: install_url(&self.config, &state),
+            cookie: browser_cookie(&nonce),
+        }
     }
 }
 
-pub async fn start(
-    State(state): State<AppState>,
-    user: CurrentUser,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "url": GitHubLinks::new(state.config.clone()).link_account(user.user_id),
-    })))
+pub async fn start(State(state): State<AppState>, user: CurrentUser) -> Response {
+    let redirect = GitHubLinks::new(state.config.clone()).link_account(user.user_id);
+    (
+        [(header::SET_COOKIE, redirect.cookie)],
+        Json(json!({ "url": redirect.url })),
+    )
+        .into_response()
 }
 
 fn result(state: &AppState, outcome: &str) -> Response {
-    Redirect::to(&format!(
-        "{}{RESULT_PATH}?github={outcome}",
-        state.config.public_url
-    ))
-    .into_response()
+    (
+        [(
+            header::SET_COOKIE,
+            format!("{BROWSER_COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax"),
+        )],
+        Redirect::to(&format!(
+            "{}{RESULT_PATH}?github={outcome}",
+            state.config.public_url
+        )),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -177,15 +234,14 @@ pub struct Setup {
 
 pub async fn setup(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<Setup>,
 ) -> Result<Response, ApiError> {
-    let Some(OAuthState::Install { tenant_id, user_id }) = query
-        .state
-        .as_deref()
-        .and_then(|value| verify_state(&state.config.oauth_state_key, value, Utc::now()))
+    let (OAuthState::Install { tenant_id, user_id }, nonce) =
+        verify_browser_state(&state, query.state.as_deref(), &headers)?
     else {
         return Err(ApiError::BadRequest(
-            "the state is invalid or expired".into(),
+            "the state does not belong to the installation setup".into(),
         ));
     };
     let installation_id = match (query.setup_action.as_deref(), query.installation_id) {
@@ -199,6 +255,7 @@ pub async fn setup(
             user_id,
             installation_id,
         },
+        &nonce,
         Utc::now(),
     );
     Ok(Redirect::to(&authorize_url(&state.config, &next)).into_response())
@@ -269,6 +326,43 @@ async fn github_user(state: &AppState, token: &str) -> Result<GitHubUser, ApiErr
 struct UserInstallation {
     login: String,
     kind: String,
+}
+
+async fn administers(
+    state: &AppState,
+    token: &str,
+    github: &GitHubUser,
+    account: &UserInstallation,
+) -> Result<bool, ApiError> {
+    match account.kind.as_str() {
+        "User" => Ok(account.login.eq_ignore_ascii_case(&github.login)),
+        "Organization" => {
+            let response = github_get(
+                state,
+                &format!("/user/memberships/orgs/{}", account.login),
+                token,
+            )
+            .send()
+            .await
+            .map_err(|error| ApiError::Internal(format!("GitHub org membership: {error}")))?;
+            if matches!(
+                response.status(),
+                reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::FORBIDDEN
+            ) {
+                return Ok(false);
+            }
+            let membership: Value = response
+                .error_for_status()
+                .map_err(|error| ApiError::Internal(format!("GitHub org membership: {error}")))?
+                .json()
+                .await
+                .map_err(|error| ApiError::Internal(format!("GitHub org membership: {error}")))?;
+            Ok(membership["role"] == "admin" && membership["state"] == "active")
+        }
+        other => Err(ApiError::Internal(format!(
+            "the GitHub installation account has the unknown type {other}"
+        ))),
+    }
 }
 
 async fn user_installation(
@@ -458,9 +552,24 @@ async fn connect_installation(
     if member.role == "member" {
         return Ok(result(state, "not_admin"));
     }
+    let linked = state
+        .store
+        .get::<User>(&keys::user_key(user_id))
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("user {user_id}")))?
+        .github_user_id;
+    let github = github_user(state, token).await?;
+    match linked {
+        None => return Ok(result(state, "not_linked")),
+        Some(id) if id != github.id => return Ok(result(state, "not_linked_account")),
+        Some(_) => {}
+    }
     let Some(account) = user_installation(state, token, installation_id).await? else {
         return Ok(result(state, "not_accessible"));
     };
+    if !administers(state, token, &github, &account).await? {
+        return Ok(result(state, "not_admin_of_account"));
+    }
     let repositories = state
         .github_app
         .installation_repositories(installation_id)
@@ -529,13 +638,10 @@ async fn connect_installation(
 
 pub async fn callback(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<Callback>,
 ) -> Result<Response, ApiError> {
-    let verified = query
-        .state
-        .as_deref()
-        .and_then(|value| verify_state(&state.config.oauth_state_key, value, Utc::now()))
-        .ok_or_else(|| ApiError::BadRequest("the state is invalid or expired".into()))?;
+    let (verified, _) = verify_browser_state(&state, query.state.as_deref(), &headers)?;
     if matches!(verified, OAuthState::Install { .. }) {
         return Err(ApiError::BadRequest(
             "the state belongs to the installation setup".into(),
@@ -574,8 +680,12 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 10, 27, 9, 0, 0).unwrap();
         let user_id = Uuid::new_v4();
         let link = OAuthState::Link { user_id };
-        let sealed = issue_state(&key, link, now);
-        assert_eq!(verify_state(&key, &sealed, now), Some(link));
+        let nonce = new_browser_nonce();
+        let sealed = issue_state(&key, link, &nonce, now);
+        assert_eq!(
+            verify_state(&key, &sealed, now),
+            Some((link, nonce.clone()))
+        );
         assert_eq!(
             verify_state(&key, &sealed, now + Duration::minutes(STATE_TTL_MINUTES)),
             None
@@ -589,15 +699,32 @@ mod tests {
             ),
             None
         );
-        assert_ne!(issue_state(&key, link, now), sealed);
+        assert_ne!(issue_state(&key, link, &new_browser_nonce(), now), sealed);
         let installation = OAuthState::Installation {
             tenant_id: Uuid::new_v4(),
             user_id,
             installation_id: 42,
         };
         assert_eq!(
-            verify_state(&key, &issue_state(&key, installation, now), now),
-            Some(installation)
+            verify_state(&key, &issue_state(&key, installation, &nonce, now), now),
+            Some((installation, nonce))
         );
+    }
+
+    #[test]
+    fn the_browser_nonce_is_read_from_a_host_only_cookie() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(browser_nonce(&headers), None);
+        headers.insert(
+            header::COOKIE,
+            format!("other=1; {BROWSER_COOKIE}=abc; last=2")
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(browser_nonce(&headers), Some("abc"));
+        let cookie = browser_cookie("abc");
+        assert!(cookie.starts_with("__Host-sanchoris-github=abc; Path=/;"));
+        assert!(cookie.contains("; Secure; HttpOnly; SameSite=Lax"));
+        assert!(!cookie.contains("Domain"));
     }
 }

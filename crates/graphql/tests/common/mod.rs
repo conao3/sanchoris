@@ -25,12 +25,13 @@ use sanchoris_core::model::{
     NamedDefinition, SkillRunStatus, TaskDefinition, TaskStatus, TriggerEventResult, WaitReason,
 };
 use sanchoris_core::store::{Relay, relayed_from_item};
+use sanchoris_core::tenants::free_tenant_key;
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_graphql::{
     AesGcmEncryptor, AuditExportPort, AuthUser, ChatDispatcher, CheckoutPort, Clock, ConfigCheck,
     ConfigLocation, ConfigProblem, ConfigRepositoryPort, ConfigSyncTrigger, GithubConnectUrl,
-    GraphqlDeps, PlanChange, PortError, SanchorisSchema, SlackConnectUrl, TenantCheckout,
-    TriggerProposal, build_schema,
+    GithubRedirect, GraphqlDeps, PlanChange, PortError, SanchorisSchema, SlackConnectUrl,
+    TenantCheckout, TriggerProposal, build_schema,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -130,6 +131,48 @@ pub fn operations() -> String {
         .join("\n")
 }
 
+fn definitions(document: &str) -> Vec<(String, String)> {
+    let mut definitions: Vec<(String, String)> = Vec::new();
+    for line in document.lines() {
+        let name = ["query ", "mutation ", "fragment "]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix))
+            .map(|rest| rest.split(['(', ' ', '{']).next().unwrap().to_string());
+        match (name, definitions.last_mut()) {
+            (Some(name), _) => definitions.push((name, format!("{line}\n"))),
+            (None, Some((_, text))) => {
+                text.push_str(line);
+                text.push('\n');
+            }
+            (None, None) => {}
+        }
+    }
+    definitions
+}
+
+pub fn operation_document(operation: &str) -> String {
+    let definitions = definitions(&operations());
+    let mut wanted = vec![operation.to_string()];
+    let mut included = std::collections::BTreeSet::new();
+    let mut text = String::new();
+    while let Some(name) = wanted.pop() {
+        if !included.insert(name.clone()) {
+            continue;
+        }
+        let (_, body) = definitions
+            .iter()
+            .find(|(defined, _)| *defined == name)
+            .unwrap_or_else(|| panic!("no definition {name}"));
+        text.push_str(body);
+        for (fragment, _) in &definitions {
+            if body.contains(&format!("...{fragment}\n")) {
+                wanted.push(fragment.clone());
+            }
+        }
+    }
+    text
+}
+
 pub struct FixedClock(pub Mutex<DateTime<Utc>>);
 
 impl Clock for FixedClock {
@@ -146,6 +189,11 @@ pub struct Recorder {
     pub checks: Mutex<Vec<ConfigLocation>>,
     pub problems: Mutex<Vec<ConfigProblem>>,
     pub plan_change: Mutex<Option<PlanChange>>,
+    pub plan_change_calls: Mutex<Vec<(Uuid, String)>>,
+    pub plan_change_fails: Mutex<bool>,
+    pub free_tenant_race: Mutex<Option<(Uuid, Uuid)>>,
+    pub free_tenant_race_won: Mutex<Option<bool>>,
+    pub ended_first: Mutex<Option<Uuid>>,
 }
 
 pub struct Fakes {
@@ -163,7 +211,38 @@ impl CheckoutPort for Fakes {
         ))
     }
 
-    async fn change_plan(&self, _tenant_id: Uuid, plan_id: &str) -> Result<PlanChange, PortError> {
+    async fn change_plan(&self, tenant_id: Uuid, plan_id: &str) -> Result<PlanChange, PortError> {
+        self.recorder
+            .plan_change_calls
+            .lock()
+            .unwrap()
+            .push((tenant_id, plan_id.to_string()));
+        let race = *self.recorder.free_tenant_race.lock().unwrap();
+        if let Some((user_id, other_tenant)) = race {
+            let mut tx = self.store.tx(other_tenant);
+            tx.insert(&Guard::of_tenant(
+                free_tenant_key(user_id),
+                other_tenant,
+                other_tenant,
+            ))
+            .unwrap();
+            *self.recorder.free_tenant_race_won.lock().unwrap() = Some(tx.commit().await.is_ok());
+        }
+        let ended = *self.recorder.ended_first.lock().unwrap();
+        if let Some(ended) = ended {
+            let mut tx = self.store.tx(ended);
+            let mut tenant = tx
+                .require::<Tenant>(&keys::tenant_key(ended))
+                .await
+                .unwrap();
+            tenant.plan_id = "free".into();
+            tenant.tasks_this_period = 7;
+            tx.put(&tenant).unwrap();
+            tx.commit().await.unwrap();
+        }
+        if *self.recorder.plan_change_fails.lock().unwrap() {
+            return Err(PortError::Failed("Stripe is unavailable".into()));
+        }
         Ok(self
             .recorder
             .plan_change
@@ -181,12 +260,18 @@ impl CheckoutPort for Fakes {
 }
 
 impl GithubConnectUrl for Fakes {
-    fn link_account(&self, user_id: Uuid) -> String {
-        format!("https://sanchoris.test/auth/github?user={user_id}")
+    fn link_account(&self, user_id: Uuid) -> GithubRedirect {
+        GithubRedirect {
+            url: format!("https://sanchoris.test/auth/github?user={user_id}"),
+            cookie: format!("__Host-sanchoris-github={user_id}"),
+        }
     }
 
-    fn install_app(&self, tenant_id: Uuid, _user_id: Uuid) -> String {
-        format!("https://github.com/apps/sanchoris/installations/new?state={tenant_id}")
+    fn install_app(&self, tenant_id: Uuid, _user_id: Uuid) -> GithubRedirect {
+        GithubRedirect {
+            url: format!("https://github.com/apps/sanchoris/installations/new?state={tenant_id}"),
+            cookie: format!("__Host-sanchoris-github={tenant_id}"),
+        }
     }
 }
 
@@ -1591,7 +1676,7 @@ impl World {
     ) -> async_graphql::Response {
         self.schema
             .execute(
-                Request::new(operations())
+                Request::new(operation_document(operation))
                     .operation_name(operation)
                     .variables(Variables::from_json(variables))
                     .data(who.auth()),

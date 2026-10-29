@@ -7,7 +7,6 @@ query Integrations($tenant: String!) {
   }
   tenant(slug: $tenant) {
     id
-    githubAppInstallUrl
     integrations {
       id
       kind

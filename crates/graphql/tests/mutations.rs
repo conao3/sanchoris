@@ -7,14 +7,15 @@ use common::World;
 use sanchoris_core::item::Table;
 use sanchoris_core::items::{
     CONFIG_DISABLED, ChangeRequest, Config, Credential, Guard, InboundEvent, Invitation, Member,
-    Membership, OutboxItem, Pending, ReceiveRate, Run, RunEventItem, Tenant, Trigger,
+    Membership, OutboxItem, Pending, ReceiveRate, Run, RunEventItem, Tenant, Trigger, User,
 };
 use sanchoris_core::jobs::{Job, Relayed};
 use sanchoris_core::keys;
 use sanchoris_core::model::{AuditOrigin, TaskStatus};
 use sanchoris_core::receive::window_start;
 use sanchoris_core::tenants::{
-    NewTenant, PendingSession, create_tenant, free_tenant_key, pending_checkout,
+    NewTenant, PendingSession, create_tenant, free_github_tenant_key, free_tenant_key,
+    pending_checkout,
 };
 use sanchoris_graphql::{ConfigProblem, PlanChange};
 use serde_json::{Value, json};
@@ -861,14 +862,39 @@ async fn tenants_billing_and_operator_actions() {
     );
     w.audit(w.acme, "integration.slack_connect_start").await;
 
-    let github = w.ok(&w.mika, "ConnectGitHub", json!({})).await;
+    let github = w.run(&w.mika, "ConnectGitHub", json!({})).await;
+    assert!(github.errors.is_empty(), "{:?}", github.errors);
+    assert_eq!(
+        github.http_headers["set-cookie"],
+        format!("__Host-sanchoris-github={}", w.mika.user_id).as_str()
+    );
     assert!(
-        github["connectGitHub"]["url"]
+        github.data.into_json().unwrap()["connectGitHub"]["url"]
             .as_str()
             .unwrap()
             .contains(&w.mika.user_id.to_string())
     );
     w.audit(w.acme, "integration.github_link_start").await;
+    assert_eq!(
+        w.error_code(&w.ken, "InstallGitHubApp", json!({ "tenantId": w.acme }))
+            .await,
+        "FORBIDDEN"
+    );
+    let install = w
+        .run(&w.sota, "InstallGitHubApp", json!({ "tenantId": w.acme }))
+        .await;
+    assert!(install.errors.is_empty(), "{:?}", install.errors);
+    assert_eq!(
+        install.http_headers["set-cookie"],
+        format!("__Host-sanchoris-github={}", w.acme).as_str()
+    );
+    assert!(
+        install.data.into_json().unwrap()["installGitHubApp"]["url"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("state={}", w.acme))
+    );
+    w.audit(w.acme, "integration.github_install_start").await;
     let unlinked = w.ok(&w.mika, "UnlinkGitHub", json!({})).await;
     assert_eq!(unlinked["unlinkGitHub"]["user"]["githubLogin"], Value::Null);
     w.audit(w.acme, "integration.github_unlink").await;
@@ -908,9 +934,10 @@ async fn tenants_billing_and_operator_actions() {
         .iter()
         .map(|e| e["action"].as_str().unwrap().to_string())
         .collect::<Vec<_>>();
-    assert_eq!(actions.len(), 2);
+    assert_eq!(actions.len(), 3);
     assert!(actions.contains(&"audit_log.export".to_string()));
     assert!(actions.contains(&"integration.slack_connect_start".to_string()));
+    assert!(actions.contains(&"integration.github_install_start".to_string()));
 
     let suspended = w
         .ok(
@@ -982,6 +1009,122 @@ async fn pending_tenant(w: &World, name: &str, plan_id: &str, session_id: &str) 
     .await
     .unwrap()
     .tenant_id
+}
+
+#[tokio::test]
+async fn a_linked_github_account_has_one_free_tenant_until_it_leaves_free() {
+    let w = World::new().await;
+    let free_tenant = json!({ "input": { "name": "Mika Free", "planId": "free" } });
+    let created = w.ok(&w.mika, "CreateTenant", free_tenant).await;
+    let free_id: Uuid = created["createTenant"]["tenant"]["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mika: User = w.get(&keys::user_key(w.mika.user_id)).await.unwrap();
+    let github_user_id = mika.github_user_id.unwrap();
+    w.ok(&w.mika, "UnlinkGitHub", json!({})).await;
+    w.dynamo
+        .modify::<User>(&keys::user_key(w.sota.user_id), |user| {
+            user.github_user_id = Some(github_user_id);
+        })
+        .await;
+    let sota_free = json!({ "input": { "name": "Sota Free", "planId": "free" } });
+    assert_eq!(
+        w.error_code(&w.sota, "CreateTenant", sota_free.clone())
+            .await,
+        "CONFLICT"
+    );
+
+    *w.recorder.plan_change.lock().unwrap() = Some(PlanChange::Applied);
+    w.ok(
+        &w.mika,
+        "ChangePlan",
+        json!({ "tenantId": free_id, "planId": "pro" }),
+    )
+    .await;
+    assert!(
+        w.get::<Guard>(&free_github_tenant_key(github_user_id))
+            .await
+            .is_none()
+    );
+    let sota = w.ok(&w.sota, "CreateTenant", sota_free).await;
+    let sota_id: Uuid = sota["createTenant"]["tenant"]["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let guard: Guard = w
+        .get(&free_github_tenant_key(github_user_id))
+        .await
+        .unwrap();
+    assert_eq!(guard.target, sota_id);
+}
+
+#[tokio::test]
+async fn changing_to_free_holds_the_free_slot_before_the_subscription_is_cancelled() {
+    let w = World::new().await;
+    *w.recorder.plan_change.lock().unwrap() = Some(PlanChange::Applied);
+    let slot = free_tenant_key(w.mika.user_id);
+    let other = Uuid::new_v4();
+    w.dynamo
+        .put(&Guard::of_tenant(slot.clone(), other, other))
+        .await;
+    let to_free = json!({ "tenantId": w.acme, "planId": "free" });
+    assert_eq!(
+        w.error_code(&w.mika, "ChangePlan", to_free.clone()).await,
+        "CONFLICT"
+    );
+    assert!(w.recorder.plan_change_calls.lock().unwrap().is_empty());
+
+    let mut tx = w.store.tx(other);
+    tx.delete(&slot).unwrap();
+    tx.commit().await.unwrap();
+    *w.recorder.plan_change_fails.lock().unwrap() = true;
+    assert!(
+        !w.run(&w.mika, "ChangePlan", to_free.clone())
+            .await
+            .errors
+            .is_empty()
+    );
+    assert!(w.get::<Guard>(&slot).await.is_none());
+    let tenant: Tenant = w.get(&keys::tenant_key(w.acme)).await.unwrap();
+    assert_eq!(tenant.plan_id, "pro");
+
+    *w.recorder.plan_change_fails.lock().unwrap() = false;
+    *w.recorder.free_tenant_race.lock().unwrap() = Some((w.mika.user_id, other));
+    let changed = w.ok(&w.mika, "ChangePlan", to_free).await;
+    assert_eq!(changed["changePlan"]["tenant"]["plan"]["id"], "free");
+    assert_eq!(
+        *w.recorder.free_tenant_race_won.lock().unwrap(),
+        Some(false)
+    );
+    let guard: Guard = w.get(&slot).await.unwrap();
+    assert_eq!(guard.target, w.acme);
+    assert_eq!(w.recorder.plan_change_calls.lock().unwrap().len(), 2);
+    w.audit(w.acme, "tenant.plan_change").await;
+}
+
+#[tokio::test]
+async fn changing_to_free_after_the_subscription_webhook_keeps_the_free_plan() {
+    let w = World::new().await;
+    *w.recorder.plan_change.lock().unwrap() = Some(PlanChange::Applied);
+    *w.recorder.ended_first.lock().unwrap() = Some(w.acme);
+    let changed = w
+        .ok(
+            &w.mika,
+            "ChangePlan",
+            json!({ "tenantId": w.acme, "planId": "free" }),
+        )
+        .await;
+    assert_eq!(changed["changePlan"]["tenant"]["plan"]["id"], "free");
+    let tenant: Tenant = w.get(&keys::tenant_key(w.acme)).await.unwrap();
+    assert_eq!(
+        (tenant.plan_id.as_str(), tenant.tasks_this_period),
+        ("free", 7)
+    );
+    let guard: Guard = w.get(&free_tenant_key(w.mika.user_id)).await.unwrap();
+    assert_eq!(guard.target, w.acme);
 }
 
 #[tokio::test]

@@ -30,6 +30,78 @@ const SECRET_PREFIXES: [&str; 9] = [
     "-----BEGIN",
 ];
 
+const TOKEN_PREFIXES: [&str; 6] = ["github_pat_", "ghp_", "gho_", "ghs_", "ghu_", "sk-"];
+const TOKEN_MIN_BODY: usize = 20;
+const AWS_KEY_PREFIXES: [&str; 2] = ["AKIA", "ASIA"];
+const AWS_KEY_BODY: usize = 16;
+
+fn token_end(rest: &[u8]) -> Option<usize> {
+    let body = |start: usize, allowed: fn(&u8) -> bool| {
+        rest[start..]
+            .iter()
+            .take_while(|byte| allowed(byte))
+            .count()
+    };
+    for prefix in TOKEN_PREFIXES {
+        if rest.starts_with(prefix.as_bytes()) {
+            let length = body(prefix.len(), |byte| {
+                byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-'
+            });
+            if length >= TOKEN_MIN_BODY {
+                return Some(prefix.len() + length);
+            }
+        }
+    }
+    for prefix in AWS_KEY_PREFIXES {
+        if rest.starts_with(prefix.as_bytes())
+            && body(prefix.len(), |byte| {
+                byte.is_ascii_uppercase() || byte.is_ascii_digit()
+            }) == AWS_KEY_BODY
+            && rest
+                .get(prefix.len() + AWS_KEY_BODY)
+                .is_none_or(|byte| !byte.is_ascii_alphanumeric())
+        {
+            return Some(prefix.len() + AWS_KEY_BODY);
+        }
+    }
+    None
+}
+
+pub fn redact_tokens(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut redacted = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let at_boundary = index == 0 || !bytes[index - 1].is_ascii_alphanumeric();
+        match token_end(&bytes[index..]).filter(|_| at_boundary) {
+            Some(length) => {
+                redacted.push_str(&text[copied..index]);
+                redacted.push_str(REDACTED);
+                index += length;
+                copied = index;
+            }
+            None => index += 1,
+        }
+    }
+    redacted.push_str(&text[copied..]);
+    redacted
+}
+
+pub fn redact_tokens_in(value: &Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(redact_tokens(text)),
+        Value::Array(items) => Value::Array(items.iter().map(redact_tokens_in).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, item)| (key.clone(), redact_tokens_in(item)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 pub fn is_secret_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase().replace(['_', '-'], "");
     SECRET_NAMES.iter().any(|word| lower.contains(word))
@@ -167,6 +239,38 @@ pub fn restored_message() -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn known_token_formats_are_redacted_inside_text() {
+        let github = format!("ghs_{}", "a1B2".repeat(9));
+        let pat = format!("github_pat_{}", "x_Y9".repeat(20));
+        assert_eq!(
+            redact_tokens(&format!(
+                "{github} then https://x-access-token:{pat}@github.com, gho_{0} ghu_{0} ghp_{0}",
+                "Z".repeat(36)
+            )),
+            "<redacted> then https://x-access-token:<redacted>@github.com, <redacted> <redacted> <redacted>"
+        );
+        assert_eq!(
+            redact_tokens(&format!(
+                "key=sk-ant-oat01-{} openai sk-proj-{}",
+                "aB_-3".repeat(5),
+                "c".repeat(20)
+            )),
+            "key=<redacted> openai <redacted>"
+        );
+        let aws = "Y34FZKBOKMUTVV7A";
+        assert_eq!(
+            redact_tokens(&format!("AKIA{aws} ASIA{aws}, AKIA{aws}X")),
+            format!("<redacted> <redacted>, AKIA{aws}X")
+        );
+        let plain = "task-0123456789abcdefghijklmn, ghs_short, sk-learn, 東京 ghp_";
+        assert_eq!(redact_tokens(plain), plain);
+        assert_eq!(
+            redact_tokens_in(&json!({ "a": [format!("x {github}"), 3], "b": null })),
+            json!({ "a": ["x <redacted>", 3], "b": null })
+        );
+    }
 
     #[test]
     fn start_message_matches_the_documented_example() {

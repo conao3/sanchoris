@@ -23,16 +23,23 @@ pub use mutation::MutationRoot;
 pub use ports::{
     AuditExportPort, ChatDispatcher, CheckoutPort, Clock, ConfigCheck, ConfigLocation,
     ConfigProblem, ConfigRepositoryPort, ConfigSyncTrigger, Encrypted, Encryptor, GithubConnectUrl,
-    GraphqlDeps, PlanChange, PortError, SlackConnectUrl, SystemClock, TenantCheckout,
-    TriggerProposal,
+    GithubRedirect, GraphqlDeps, PlanChange, PortError, SlackConnectUrl, SystemClock,
+    TenantCheckout, TriggerProposal,
 };
 pub use query::QueryRoot;
+
+pub const MAX_DEPTH: usize = 12;
+pub const MAX_COMPLEXITY: usize = 400;
 
 pub type SanchorisSchema = Schema<QueryRoot, MutationRoot, EmptySubscription>;
 
 pub fn build_schema(store: Store, deps: GraphqlDeps) -> SanchorisSchema {
     Schema::build(QueryRoot, MutationRoot, EmptySubscription)
         .data(context::State { store, deps })
+        .limit_depth(MAX_DEPTH)
+        .limit_complexity(MAX_COMPLEXITY)
+        .disable_introspection()
+        .extension(error::HideInternalErrors)
         .finish()
 }
 

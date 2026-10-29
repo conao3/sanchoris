@@ -36,9 +36,15 @@ pub trait CheckoutPort: Send + Sync {
     async fn billing_portal(&self, tenant_id: Uuid) -> Result<String, PortError>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubRedirect {
+    pub url: String,
+    pub cookie: String,
+}
+
 pub trait GithubConnectUrl: Send + Sync {
-    fn link_account(&self, user_id: Uuid) -> String;
-    fn install_app(&self, tenant_id: Uuid, user_id: Uuid) -> String;
+    fn link_account(&self, user_id: Uuid) -> GithubRedirect;
+    fn install_app(&self, tenant_id: Uuid, user_id: Uuid) -> GithubRedirect;
 }
 
 pub trait SlackConnectUrl: Send + Sync {

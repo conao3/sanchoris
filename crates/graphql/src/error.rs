@@ -1,8 +1,51 @@
-use async_graphql::{Error, ErrorExtensions, ID};
+use std::sync::Arc;
+
+use async_graphql::extensions::{Extension, ExtensionContext, ExtensionFactory, NextExecute};
+use async_graphql::{Error, ErrorExtensions, ID, Response};
 use sanchoris_core::receive::ReceiveLimited;
 use uuid::Uuid;
 
 use crate::ports::PortError;
+
+const INTERNAL_MESSAGE: &str = "internal error";
+
+pub(crate) struct HideInternalErrors;
+
+impl ExtensionFactory for HideInternalErrors {
+    fn create(&self) -> Arc<dyn Extension> {
+        Arc::new(HideInternalErrors)
+    }
+}
+
+#[async_trait::async_trait]
+impl Extension for HideInternalErrors {
+    async fn execute(
+        &self,
+        ctx: &ExtensionContext<'_>,
+        operation_name: Option<&str>,
+        next: NextExecute<'_>,
+    ) -> Response {
+        let mut response = next.run(ctx, operation_name).await;
+        for error in &mut response.errors {
+            let extensions = error.extensions.get_or_insert_with(Default::default);
+            if extensions.get("code").is_none() {
+                eprintln!(
+                    "sanchoris graphql: {} at {:?} in {}: {}",
+                    operation_name.unwrap_or("anonymous operation"),
+                    error.path,
+                    error
+                        .locations
+                        .first()
+                        .map_or_else(String::new, |at| format!("{}:{}", at.line, at.column)),
+                    error.message
+                );
+                error.message = INTERNAL_MESSAGE.into();
+                extensions.set("code", "INTERNAL");
+            }
+        }
+        response
+    }
+}
 
 fn coded(code: &'static str, message: impl Into<String>) -> Error {
     Error::new(message.into()).extend_with(|_, e| e.set("code", code))

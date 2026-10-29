@@ -8,7 +8,7 @@ import { type EgressForwarder, type Relay, startEgressForwarder } from "./egress
 import { runCommands } from "./exec.ts";
 import type { Logger } from "./log.ts";
 import type { ExecMessage, InboundMessage, SocketRequest, SocketResponse, StartMessage } from "./protocol.ts";
-import { downloadRecord, sha256, uploadRecord } from "./session-record.ts";
+import { downloadRecord, redactTokens, sha256, uploadRecord } from "./session-record.ts";
 import { validateSkillRun } from "./skills.ts";
 import { listenSocket } from "./socket-server.ts";
 import type { RestoredRecord, Worker, WorkerFactory, WorkerTurnResult } from "./worker.ts";
@@ -283,7 +283,8 @@ export class WorkspaceAgent {
 
   private async saveRecord(turn: number): Promise<void> {
     const sessionId = this.requireSessionId();
-    const record = await this.requireWorker().readRecord();
+    const read = await this.requireWorker().readRecord();
+    const record = { ...read, bytes: redactTokens(read.bytes) };
     const digest = sha256(record.bytes);
     const reply = await this.channel.request(
       (requestId) => ({

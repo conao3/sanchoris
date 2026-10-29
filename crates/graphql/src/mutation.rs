@@ -18,7 +18,9 @@ use sanchoris_core::model::{AuditOrigin, TaskStatus as CoreStatus, WaitReason};
 use sanchoris_core::receive::{Admission, SOURCE_CHAT, SOURCE_REPLY, admit_inbound};
 use sanchoris_core::store::Update;
 use sanchoris_core::tasks::{abort_task, latest_run, load_task, stop_run};
-use sanchoris_core::tenants::{NewTenant, TenantError, create_tenant, free_tenant_key};
+use sanchoris_core::tenants::{
+    NewTenant, TenantError, create_tenant, hold_free_tenant, release_free_tenant,
+};
 use sanchoris_worker::dispatcher::schedule_trigger;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -415,9 +417,41 @@ impl MutationRoot {
             "Started linking a GitHub account",
         )
         .await?;
-        Ok(RedirectPayload {
-            url: state(ctx).deps.github.link_account(user.user_id),
+        let redirect = state(ctx).deps.github.link_account(user.user_id);
+        ctx.append_http_header("Set-Cookie", redirect.cookie);
+        Ok(RedirectPayload { url: redirect.url })
+    }
+
+    #[graphql(name = "installGitHubApp")]
+    async fn install_github_app(
+        &self,
+        ctx: &Context<'_>,
+        tenant_id: ID,
+    ) -> Result<RedirectPayload> {
+        let user = auth(ctx)?;
+        let scope = tenant_scope(ctx, &tenant_id).await?;
+        let member_id = scope.require(Role::Admin, "installing the GitHub App")?;
+        let redirect = state(ctx)
+            .deps
+            .github
+            .install_app(scope.tenant_id, user.user_id);
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "integration.github_install_start",
+                target("tenant", scope.tenant_id, "github_installation"),
+                "Started the GitHub App installation",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
         })
+        .await?;
+        ctx.append_http_header("Set-Cookie", redirect.cookie);
+        Ok(RedirectPayload { url: redirect.url })
     }
 
     #[graphql(name = "unlinkGitHub")]
@@ -1444,27 +1478,51 @@ impl MutationRoot {
                 plan.0.name
             )));
         }
-        if plan.0.id == FREE_PLAN
-            && store(ctx)
-                .get::<Guard>(&free_tenant_key(tenant.row.created_by_user_id))
-                .await?
-                .is_some_and(|guard| guard.target != scope.tenant_id)
-        {
-            return Err(conflict(TenantError::FreeTenantTaken.to_string()));
+        let to_free = plan.0.id == FREE_PLAN;
+        if to_free {
+            write(|| async {
+                let mut tx = tx(ctx, scope.tenant_id);
+                let current = db::tenant(&mut tx).await?;
+                if !hold_free_tenant(&mut tx, &current).await? {
+                    return Err(conflict(TenantError::FreeTenantTaken.to_string()).into());
+                }
+                tx.commit().await?;
+                Ok(())
+            })
+            .await?;
         }
-        let change = state(ctx)
+        let change = match state(ctx)
             .deps
             .checkout
             .change_plan(scope.tenant_id, &plan.0.id)
             .await
-            .map_err(port)?;
+        {
+            Ok(change) => change,
+            Err(error) => {
+                if to_free {
+                    write(|| async {
+                        let mut tx = tx(ctx, scope.tenant_id);
+                        let current = db::tenant(&mut tx).await?;
+                        if current.plan_id != FREE_PLAN {
+                            release_free_tenant(&mut tx, &current).await?;
+                            tx.commit().await?;
+                        }
+                        Ok(())
+                    })
+                    .await?;
+                }
+                return Err(port(error));
+            }
+        };
         let change = &change;
         let checkout_url = write(|| async {
             let mut tx = tx(ctx, scope.tenant_id);
             let checkout_url = match change {
                 PlanChange::Applied => {
                     let current = db::tenant(&mut tx).await?;
-                    if !stage_plan_change(&mut tx, &current, &plan.0.id, now(ctx), true).await? {
+                    if current.plan_id != plan.0.id
+                        && !stage_plan_change(&mut tx, &current, &plan.0.id, now(ctx), true).await?
+                    {
                         return Err(conflict(TenantError::FreeTenantTaken.to_string()).into());
                     }
                     audit_member(

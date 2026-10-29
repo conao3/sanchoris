@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use support::fake_github::FakeGitHub;
 use support::{
     Api, Driving, RUN_KEY, STRIPE_SECRET, Seeded, TASK_KEY, WEBHOOK_SECRET, Workspaces, eventually,
-    github_signature, labeled_payload, seed, start_api, task_with_run,
+    flow_cookie, github_signature, labeled_payload, seed, start_api, task_with_run,
 };
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -73,6 +73,16 @@ impl Server {
             request = request.bearer_auth(token);
         }
         request.send().await.unwrap()
+    }
+
+    async fn get_with_cookie(&self, path: &str, cookie: &str) -> reqwest::Response {
+        self.api
+            .http
+            .get(format!("{}{path}", self.api.url))
+            .header("cookie", cookie)
+            .send()
+            .await
+            .unwrap()
     }
 
     async fn post(&self, path: &str, token: Option<&str>, body: &Value) -> reqwest::Response {
@@ -163,12 +173,11 @@ async fn github_linking_stores_the_account_bound_to_the_signed_in_user() {
         server.post("/auth/github", None, &json!({})).await.status(),
         StatusCode::UNAUTHORIZED
     );
-    let started: Value = server
+    let started = server
         .post("/auth/github", Some("user:google_7"), &json!({}))
-        .await
-        .json()
-        .await
-        .unwrap();
+        .await;
+    let cookie = flow_cookie(&started);
+    let started: Value = started.json().await.unwrap();
     let authorize = reqwest::Url::parse(started["url"].as_str().unwrap()).unwrap();
     assert_eq!(authorize.path(), "/login/oauth/authorize");
     let query: BTreeMap<String, String> = authorize.query_pairs().into_owned().collect();
@@ -179,26 +188,32 @@ async fn github_linking_stores_the_account_bound_to_the_signed_in_user() {
     );
 
     let forged = server
-        .get(
+        .get_with_cookie(
             &format!(
                 "/auth/github/callback?code=code-1&state={}",
                 query["state"].replace('.', "x")
             ),
-            None,
+            &cookie,
         )
         .await;
     assert_eq!(forged.status(), StatusCode::BAD_REQUEST);
 
     let linked = server
-        .get(
+        .get_with_cookie(
             &format!("/auth/github/callback?code=code-1&state={}", query["state"]),
-            None,
+            &cookie,
         )
         .await;
     assert_eq!(linked.status(), StatusCode::SEE_OTHER);
     assert_eq!(
         linked.headers()["location"],
         format!("{}/settings?github=linked", server.api.url).as_str()
+    );
+    assert!(
+        linked.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .starts_with("__Host-sanchoris-github=; Path=/; Max-Age=0")
     );
     let me: Value = server
         .get("/api/me", Some("user:google_7"))
@@ -208,23 +223,16 @@ async fn github_linking_stores_the_account_bound_to_the_signed_in_user() {
         .unwrap();
     assert_eq!(me["githubLogin"], "sota-dev");
 
-    let other: Value = server
+    let other = server
         .post("/auth/github", Some("user:google_8"), &json!({}))
-        .await
-        .json()
-        .await
-        .unwrap();
-    let other_state = reqwest::Url::parse(other["url"].as_str().unwrap())
-        .unwrap()
-        .query_pairs()
-        .find(|(k, _)| k == "state")
-        .unwrap()
-        .1
-        .into_owned();
+        .await;
+    let other_cookie = flow_cookie(&other);
+    let other: Value = other.json().await.unwrap();
+    let other_state = query_param(other["url"].as_str().unwrap(), "state");
     let in_use = server
-        .get(
+        .get_with_cookie(
             &format!("/auth/github/callback?code=code-1&state={other_state}"),
-            None,
+            &other_cookie,
         )
         .await;
     assert_eq!(
@@ -232,15 +240,64 @@ async fn github_linking_stores_the_account_bound_to_the_signed_in_user() {
         format!("{}/settings?github=in_use", server.api.url).as_str()
     );
     let denied = server
-        .get(
+        .get_with_cookie(
             &format!("/auth/github/callback?error=access_denied&state={other_state}"),
-            None,
+            &other_cookie,
         )
         .await;
     assert_eq!(
         denied.headers()["location"],
         format!("{}/settings?github=denied", server.api.url).as_str()
     );
+}
+
+fn query_param(url: &str, name: &str) -> String {
+    reqwest::Url::parse(url)
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == name)
+        .unwrap()
+        .1
+        .into_owned()
+}
+
+#[tokio::test]
+async fn github_linking_completes_only_in_the_browser_that_started_it() {
+    let server = Server::start().await;
+    server
+        .github
+        .state
+        .lock()
+        .unwrap()
+        .oauth_users
+        .insert("victim-code".into(), (3003, "victim-dev".into()));
+    let attacker = server
+        .post("/auth/github", Some("user:google_66"), &json!({}))
+        .await;
+    let attacker_cookie = flow_cookie(&attacker);
+    let attacker: Value = attacker.json().await.unwrap();
+    let state = query_param(attacker["url"].as_str().unwrap(), "state");
+    let victim = server
+        .post("/auth/github", Some("user:google_67"), &json!({}))
+        .await;
+    let victim_cookie = flow_cookie(&victim);
+    assert_ne!(victim_cookie, attacker_cookie);
+    let path = format!("/auth/github/callback?code=victim-code&state={state}");
+    assert_eq!(
+        server.get(&path, None).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        server.get_with_cookie(&path, &victim_cookie).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    let me: Value = server
+        .get("/api/me", Some("user:google_66"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me["githubLogin"], Value::Null);
 }
 
 #[tokio::test]
@@ -286,15 +343,33 @@ async fn github_webhooks_are_verified_recorded_once_and_update_installations() {
     let integrations = server.dynamo.all::<Integration>().await;
     assert_eq!(integrations.len(), 1);
     assert_eq!(integrations[0].status, "not_connected");
-    let audit = server
+    let mut unsuspend = suspend.clone();
+    unsuspend["action"] = json!("unsuspend");
+    let unsuspended = server
+        .webhook("installation", "delivery-unsuspend", &unsuspend)
+        .await;
+    assert_eq!(
+        unsuspended.json::<Value>().await.unwrap()["status"],
+        "processed"
+    );
+    let redelivered = server
+        .webhook("installation", "delivery-suspend", &suspend)
+        .await;
+    assert_eq!(redelivered.status(), StatusCode::OK);
+    assert_eq!(
+        redelivered.json::<Value>().await.unwrap()["status"],
+        "duplicate"
+    );
+    let integrations = server.dynamo.all::<Integration>().await;
+    assert_eq!(integrations[0].status, "connected");
+    let updates = server
         .dynamo
         .all::<sanchoris_core::items::AuditEvent>()
-        .await;
-    assert!(
-        audit
-            .iter()
-            .any(|event| event.action == "integration.github_installation_update")
-    );
+        .await
+        .into_iter()
+        .filter(|event| event.action == "integration.github_installation_update")
+        .count();
+    assert_eq!(updates, 2);
 }
 
 fn push_payload(repository_id: i64, git_ref: &str) -> Value {
@@ -450,19 +525,20 @@ async fn inbound_events_over_the_receive_limit_are_answered_429_and_counted() {
         "processed"
     );
 
-    let reply = server
+    let reply: Value = server
         .post(
-            &format!("/api/tasks/{task_id}/replies"),
+            "/api/graphql",
             Some(&server.seeded.member_token()),
-            &json!({ "text": "One more thing." }),
+            &json!({
+                "query": "mutation($input: ResumeTaskInput!) { resumeTask(input: $input) { id } }",
+                "variables": { "input": { "taskId": task_id, "message": "One more thing." } },
+            }),
         )
-        .await;
-    assert_eq!(reply.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert!(reply.headers().contains_key("retry-after"));
-    assert_eq!(
-        reply.json::<Value>().await.unwrap()["error"]["code"],
-        "rate_limited"
-    );
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(reply["errors"][0]["extensions"]["code"], "RATE_LIMITED");
 
     let rates = server.dynamo.all::<ReceiveRate>().await;
     let dropped: i64 = rates.iter().map(|rate| rate.dropped).sum();
@@ -655,44 +731,25 @@ async fn stripe_webhooks_are_verified_and_update_the_tenant() {
 }
 
 #[tokio::test]
-async fn replies_and_approvals_need_a_member_of_the_tenant() {
+async fn replies_go_through_resume_task_and_approvals_need_a_member_of_the_tenant() {
     let server = Server::start().await;
     let (task_id, run_id) = server.task_with_run().await;
     let member = server.seeded.member_token();
-    let path = format!("/api/tasks/{task_id}/replies");
-    assert_eq!(
-        server
-            .post(&path, Some("user:stranger"), &json!({ "text": "hi" }))
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        server
-            .post(&path, Some(&member), &json!({ "text": "  " }))
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
     let response = server
         .post(
-            &path,
+            &format!("/api/tasks/{task_id}/replies"),
             Some(&member),
             &json!({ "text": "Use the staging database." }),
         )
         .await;
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let replies = server
-        .dynamo
-        .all::<RunEventItem>()
-        .await
-        .into_iter()
-        .filter(|event| event.run_id == run_id && event.kind == "human_reply")
-        .collect::<Vec<_>>();
-    assert_eq!(replies.len(), 1);
-    assert_eq!(
-        replies[0].payload,
-        json!({ "member": "Mika", "text": "Use the staging database." })
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(
+        server
+            .dynamo
+            .all::<RunEventItem>()
+            .await
+            .into_iter()
+            .all(|event| event.run_id != run_id || event.kind != "human_reply")
     );
 
     assert_eq!(
@@ -896,6 +953,71 @@ async fn receive(socket: &mut Socket) -> Value {
 }
 
 #[tokio::test]
+async fn record_uploads_are_bounded_and_follow_the_last_recorded_turn() {
+    let server = Server::start().await;
+    let (_, run_id) = server.task_with_run().await;
+    let tenant = server.tenant();
+    let signer = RunTokenSigner::new(Signer::new(RUN_KEY).unwrap());
+    let token = signer.sign(tenant, run_id, Utc::now() + chrono::Duration::hours(1));
+    let mut socket = connect(&server, &token).await.unwrap();
+    let run = run_id.to_string();
+    send(
+        &mut socket,
+        json!({ "type": "hello", "runId": run, "protocolVersion": 1, "instanceId": Uuid::new_v4().to_string(), "started": false, "sessionId": null }),
+    )
+    .await;
+    assert_eq!(receive(&mut socket).await["type"], "ack");
+    let sha = "0".repeat(64);
+    let mut upload = async |seq: i64, turn: i64, length: i64| {
+        send(
+            &mut socket,
+            json!({ "type": "record_upload_request", "runId": run, "seq": seq, "requestId": format!("u-{seq}"), "sessionId": "s-1", "turn": turn, "contentLength": length, "sha256": sha }),
+        )
+        .await;
+        assert_eq!(
+            receive(&mut socket).await,
+            json!({ "type": "ack", "runId": run, "seq": seq })
+        );
+        let reply = receive(&mut socket).await;
+        assert_eq!(reply["type"], "record_upload_response");
+        if reply["ok"] == true {
+            Ok(reply["key"].as_str().unwrap().to_string())
+        } else {
+            Err(reply["error"]["code"].as_str().unwrap().to_string())
+        }
+    };
+    assert_eq!(upload(1, 2, 2).await, Err("unexpected_turn".into()));
+    assert_eq!(upload(2, 0, 2).await, Err("unexpected_turn".into()));
+    assert_eq!(
+        upload(3, 1, 64 * 1024 * 1024 + 1).await,
+        Err("record_too_large".into())
+    );
+    assert_eq!(upload(4, 1, -1).await, Err("invalid_request".into()));
+    let key = upload(5, 1, 64 * 1024 * 1024).await.unwrap();
+    drop(upload);
+    send(
+        &mut socket,
+        json!({ "type": "session_record", "runId": run, "seq": 6, "sessionId": "s-1", "turn": 1, "key": key, "relativePath": "s-1.jsonl", "contentLength": 2, "sha256": sha }),
+    )
+    .await;
+    assert_eq!(
+        receive(&mut socket).await,
+        json!({ "type": "ack", "runId": run, "seq": 6 })
+    );
+    let mut upload = async |seq: i64, turn: i64| {
+        send(
+            &mut socket,
+            json!({ "type": "record_upload_request", "runId": run, "seq": seq, "requestId": format!("u-{seq}"), "sessionId": "s-1", "turn": turn, "contentLength": 2, "sha256": sha }),
+        )
+        .await;
+        receive(&mut socket).await;
+        receive(&mut socket).await["ok"].clone()
+    };
+    assert_eq!(upload(7, 1).await, json!(false));
+    assert_eq!(upload(8, 2).await, json!(true));
+}
+
+#[tokio::test]
 async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     let server = Server::start().await;
     let (task_id, run_id) = server.task_with_run().await;
@@ -1024,7 +1146,14 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     );
     send(
         &mut socket,
-        json!({ "type": "event", "runId": run, "seq": 4, "turn": 1, "kind": "text", "data": { "text": "hi" }, "at": "2026-10-27T03:15:02.000Z" }),
+        json!({ "type": "event", "runId": run, "seq": 4, "turn": 1, "kind": "text", "data": {
+            "text": format!(
+                "push with ghs_{} as AKIA{}, task-0123456789abcdefghijklmn stays",
+                "x".repeat(36),
+                "Q".repeat(16)
+            ),
+            "calls": [{ "env": format!("ANTHROPIC_API_KEY=sk-ant-{}", "y".repeat(30)), "count": 2 }],
+        }, "at": "2026-10-27T03:15:02.000Z" }),
     )
     .await;
     receive(&mut socket).await;
@@ -1051,7 +1180,15 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
         .map(|event| (event.seq, event.kind))
         .collect::<Vec<_>>();
     assert_eq!(events, vec![(Some(1), "ready".to_string())]);
-    assert_eq!(server.dynamo.all::<RunLogEntry>().await.len(), 1);
+    let logs = server.dynamo.all::<RunLogEntry>().await;
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].data,
+        json!({
+            "text": "push with <redacted> as <redacted>, task-0123456789abcdefghijklmn stays",
+            "calls": [{ "env": "ANTHROPIC_API_KEY=<redacted>", "count": 2 }],
+        })
+    );
     let undelivered = server
         .dynamo
         .all::<OutboxItem>()

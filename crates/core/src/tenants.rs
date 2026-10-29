@@ -9,10 +9,11 @@ use crate::audit::{AuditEntry, record_audit};
 use crate::billing::{FREE_PLAN, PAYMENT_PENDING};
 use crate::db::{DbError, Store, TenantTx};
 use crate::item::{Entity, ItemReader, ItemWriter, Key};
-use crate::items::{Guard, Member, Membership, Tenant, uniq};
+use crate::items::{Guard, Member, Membership, Tenant, User, uniq};
 use crate::keys;
 use crate::model::{ActorKind, AuditOrigin};
 
+const FREE_TENANT_GITHUB: &str = "free_tenant_github";
 const SLUG_LIMIT: usize = 40;
 const SLUG_ATTEMPTS: u32 = 100;
 const DISCARD_ATTEMPTS: u32 = 8;
@@ -26,7 +27,7 @@ pub const RESERVED_SLUGS: [&str; 14] = [
 pub enum TenantError {
     #[error(transparent)]
     Db(#[from] DbError),
-    #[error("a user can create one tenant on the free plan")]
+    #[error("a user and a linked GitHub account can each have one tenant on the free plan")]
     FreeTenantTaken,
     #[error("tenant {0} is still waiting for its checkout")]
     CheckoutPending(Uuid),
@@ -101,25 +102,103 @@ pub fn is_payment_pending(tenant: &Tenant) -> bool {
     tenant.status == "suspended" && tenant.suspended_reason.as_deref() == Some(PAYMENT_PENDING)
 }
 
-pub async fn hold_free_tenant(tx: &mut TenantTx, tenant: &Tenant) -> Result<bool, DbError> {
-    let key = free_tenant_key(tenant.created_by_user_id);
-    match tx.get::<Guard>(&key).await? {
-        Some(guard) => Ok(guard.target == tenant.id),
-        None => {
-            tx.insert(&Guard::of_tenant(key, tenant.id, tenant.id))?;
-            Ok(true)
-        }
+pub fn free_github_tenant_key(github_user_id: i64) -> Key {
+    keys::uniq_key(FREE_TENANT_GITHUB, &github_user_id.to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FreeGitHubHold {
+    pub tenant_id: Uuid,
+    pub github_user_id: i64,
+}
+
+impl Entity for FreeGitHubHold {
+    const KIND: &'static str = "free_github_hold";
+
+    fn key(&self) -> Key {
+        free_github_hold_key(self.tenant_id)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .n("github_user_id", self.github_user_id);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            github_user_id: r.n("github_user_id")?,
+        })
     }
 }
 
+pub fn free_github_hold_key(tenant_id: Uuid) -> Key {
+    Key::main(keys::tenant_pk(tenant_id), "#FREE_GITHUB")
+}
+
+fn taken_by_other(guard: Option<&Guard>, tenant: &Tenant) -> bool {
+    guard.is_some_and(|guard| guard.target != tenant.id)
+}
+
+pub async fn hold_free_tenant(tx: &mut TenantTx, tenant: &Tenant) -> Result<bool, DbError> {
+    let user_key = free_tenant_key(tenant.created_by_user_id);
+    let user_guard = tx.get::<Guard>(&user_key).await?;
+    if taken_by_other(user_guard.as_ref(), tenant) {
+        return Ok(false);
+    }
+    let held = tx
+        .get::<FreeGitHubHold>(&free_github_hold_key(tenant.id))
+        .await?;
+    let linked = tx
+        .get::<User>(&keys::user_key(tenant.created_by_user_id))
+        .await?
+        .and_then(|owner| owner.github_user_id);
+    let github = match (held, linked) {
+        (None, Some(github_user_id)) => {
+            let key = free_github_tenant_key(github_user_id);
+            let guard = tx.get::<Guard>(&key).await?;
+            if taken_by_other(guard.as_ref(), tenant) {
+                return Ok(false);
+            }
+            Some((key, guard.is_none(), github_user_id))
+        }
+        _ => None,
+    };
+    if user_guard.is_none() {
+        tx.insert(&Guard::of_tenant(user_key, tenant.id, tenant.id))?;
+    }
+    if let Some((key, missing, github_user_id)) = github {
+        if missing {
+            tx.insert(&Guard::of_tenant(key, tenant.id, tenant.id))?;
+        }
+        tx.insert(&FreeGitHubHold {
+            tenant_id: tenant.id,
+            github_user_id,
+        })?;
+    }
+    Ok(true)
+}
+
 pub async fn release_free_tenant(tx: &mut TenantTx, tenant: &Tenant) -> Result<(), DbError> {
-    let key = free_tenant_key(tenant.created_by_user_id);
+    let user_key = free_tenant_key(tenant.created_by_user_id);
     if tx
-        .get::<Guard>(&key)
+        .get::<Guard>(&user_key)
         .await?
         .is_some_and(|guard| guard.target == tenant.id)
     {
-        tx.delete(&key)?;
+        tx.delete(&user_key)?;
+    }
+    let hold_key = free_github_hold_key(tenant.id);
+    if let Some(hold) = tx.get::<FreeGitHubHold>(&hold_key).await? {
+        let key = free_github_tenant_key(hold.github_user_id);
+        if tx
+            .get::<Guard>(&key)
+            .await?
+            .is_some_and(|guard| guard.target == tenant.id)
+        {
+            tx.delete(&key)?;
+        }
+        tx.delete(&hold_key)?;
     }
     Ok(())
 }

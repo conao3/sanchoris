@@ -4,11 +4,12 @@ use axum::extract::State;
 use axum::http::header::RETRY_AFTER;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sanchoris_core::audit::{AuditEntry, record_audit};
 use sanchoris_core::billing::{self, BillingError, Invoice, Outcome, Payer};
 use sanchoris_core::channel::{IngestError, ingest_github_delivery, tenant_for_installation};
 use sanchoris_core::db::{DbError, Recorded};
+use sanchoris_core::item::{Entity, ItemReader, ItemWriter, Key, TTL};
 use sanchoris_core::items::{
     Config, GitHubRepository, Guard, Integration, github_repositories, uniq,
 };
@@ -27,6 +28,7 @@ use crate::signing::HmacKey;
 
 pub const STRIPE_TOLERANCE_SECONDS: i64 = 300;
 const CONFLICT_ATTEMPTS: u32 = 8;
+const DELIVERY_RETENTION_DAYS: i64 = 30;
 
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, ApiError> {
     headers
@@ -80,7 +82,7 @@ pub async fn github(
         event,
         "installation" | "installation_repositories" | "repository"
     ) {
-        return installation_event(&state, event, &payload).await;
+        return installation_event(&state, delivery, event, &payload).await;
     }
     let syncs = if event == "push" {
         sync_pushed_configs(&state, &payload).await?
@@ -221,8 +223,52 @@ async fn apply_config_effect(
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct GitHubDeliveryRecord {
+    pub tenant_id: Uuid,
+    pub delivery_id: String,
+    pub event: String,
+    pub received_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl Entity for GitHubDeliveryRecord {
+    const KIND: &'static str = "github_delivery";
+
+    fn key(&self) -> Key {
+        github_delivery_key(self.tenant_id, &self.delivery_id)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .s("delivery_id", &self.delivery_id)
+            .s("event", &self.event)
+            .time("received_at", self.received_at)
+            .ttl(self.expires_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            delivery_id: r.s("delivery_id")?,
+            event: r.s("event")?,
+            received_at: r.time("received_at")?,
+            expires_at: DateTime::from_timestamp(r.n(TTL)?, 0)
+                .ok_or_else(|| DbError::Decode("github delivery expires_at".into()))?,
+        })
+    }
+}
+
+pub fn github_delivery_key(tenant_id: Uuid, delivery_id: &str) -> Key {
+    Key::main(
+        keys::tenant_pk(tenant_id),
+        format!("GHDELIVERY#{delivery_id}"),
+    )
+}
+
 async fn installation_event(
     state: &AppState,
+    delivery: &str,
     event: &str,
     payload: &Value,
 ) -> Result<Response, ApiError> {
@@ -245,17 +291,33 @@ async fn installation_event(
         ApiError::Internal(format!("installation {installation_id} has no tenant"))
     })?;
     let integration_key = keys::integration_key(tenant_id, guard.target);
+    let delivery_key = github_delivery_key(tenant_id, delivery);
     let mut attempt = 0;
-    loop {
+    let outcome = loop {
         attempt += 1;
         let mut tx = state.store.tx(tenant_id);
         let Some(integration) = tx.get::<Integration>(&integration_key).await? else {
             return Ok(status(StatusCode::OK, "ignored"));
         };
+        if tx
+            .get::<GitHubDeliveryRecord>(&delivery_key)
+            .await?
+            .is_some()
+        {
+            break "duplicate";
+        }
         let Some(updated) = apply_installation_event(integration, event, action, payload)? else {
             return Ok(status(StatusCode::OK, "ignored"));
         };
+        let now = Utc::now();
         tx.put(&updated)?;
+        tx.insert(&GitHubDeliveryRecord {
+            tenant_id,
+            delivery_id: delivery.to_string(),
+            event: event.to_string(),
+            received_at: now,
+            expires_at: now + Duration::days(DELIVERY_RETENTION_DAYS),
+        })?;
         let mut metadata = Map::new();
         metadata.insert("event".into(), json!(event));
         metadata.insert("action".into(), json!(action));
@@ -280,13 +342,13 @@ async fn installation_event(
         match tx.commit().await {
             Err(DbError::Conflict) if attempt < CONFLICT_ATTEMPTS => {}
             Err(error) => return Err(error.into()),
-            Ok(()) => break,
+            Ok(()) => break "processed",
         }
-    }
+    };
     if let Some(effect) = config_effect(event, action, payload)? {
         apply_config_effect(state, tenant_id, effect).await?;
     }
-    Ok(status(StatusCode::OK, "processed"))
+    Ok(status(StatusCode::OK, outcome))
 }
 
 fn apply_installation_event(

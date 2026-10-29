@@ -10,18 +10,19 @@ use reqwest::StatusCode;
 use sanchoris_api::signing::HmacKey;
 use sanchoris_core::channel::{OutboxType, enqueue_outbox};
 use sanchoris_core::items::{
-    AuditEvent, ConfigRevision, Credential, Integration, Run, Task, Tenant, User,
+    AuditEvent, ConfigRevision, Credential, Guard, Integration, Run, Task, Tenant, User,
 };
 use sanchoris_core::keys;
 use sanchoris_core::model::TaskStatus;
+use sanchoris_core::tenants::free_tenant_key;
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_graphql::AesGcmEncryptor;
 use serde_json::{Value, json};
 use support::fake_github::{CONFIG_REPO, CONFIG_REPO_ID, CONFIG_SHA, FakeGitHub};
 use support::{
     Api, CONFIG_YAML, CREDENTIAL_KEY, Driving, FRONTEND_INDEX, FRONTEND_SCRIPT, INSTALLATION,
-    STRIPE_SECRET, Seeded, WEBHOOK_SECRET, Workspaces, bare_repo, eventually, github_signature,
-    seed, start_api,
+    STRIPE_SECRET, Seeded, WEBHOOK_SECRET, Workspaces, bare_repo, eventually, flow_cookie,
+    github_signature, seed, start_api,
 };
 use uuid::Uuid;
 
@@ -76,6 +77,48 @@ fn operation_names(document: &str) -> BTreeSet<String> {
         })
         .map(|rest| rest.split(['(', ' ', '{']).next().unwrap().to_string())
         .collect()
+}
+
+fn definitions(document: &str) -> Vec<(String, String)> {
+    let mut definitions: Vec<(String, String)> = Vec::new();
+    for line in document.lines() {
+        let name = ["query ", "mutation ", "fragment "]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix))
+            .map(|rest| rest.split(['(', ' ', '{']).next().unwrap().to_string());
+        match (name, definitions.last_mut()) {
+            (Some(name), _) => definitions.push((name, format!("{line}\n"))),
+            (None, Some((_, text))) => {
+                text.push_str(line);
+                text.push('\n');
+            }
+            (None, None) => {}
+        }
+    }
+    definitions
+}
+
+fn operation_document(document: &str, operation: &str) -> String {
+    let definitions = definitions(document);
+    let mut wanted = vec![operation.to_string()];
+    let mut included = BTreeSet::new();
+    let mut text = String::new();
+    while let Some(name) = wanted.pop() {
+        if !included.insert(name.clone()) {
+            continue;
+        }
+        let (_, body) = definitions
+            .iter()
+            .find(|(defined, _)| *defined == name)
+            .unwrap_or_else(|| panic!("no definition {name}"));
+        text.push_str(body);
+        for (fragment, _) in &definitions {
+            if body.contains(&format!("...{fragment}\n")) {
+                wanted.push(fragment.clone());
+            }
+        }
+    }
+    text
 }
 
 struct World {
@@ -159,7 +202,7 @@ impl World {
         let response = self
             .post(
                 Some(token),
-                &json!({ "query": self.document, "operationName": operation, "variables": variables }),
+                &json!({ "query": operation_document(&self.document, operation), "operationName": operation, "variables": variables }),
             )
             .await;
         assert_eq!(response.status(), StatusCode::OK, "{operation}");
@@ -247,6 +290,75 @@ impl World {
 
     async fn get(&self, url: &str) -> reqwest::Response {
         self.api.http.get(url).send().await.unwrap()
+    }
+
+    async fn get_with_cookie(&self, url: &str, cookie: &str) -> reqwest::Response {
+        self.api
+            .http
+            .get(url)
+            .header("cookie", cookie)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    async fn install(
+        &self,
+        install_url: &str,
+        cookie: &str,
+        installation_id: i64,
+        code: &str,
+    ) -> String {
+        let setup = self
+            .get_with_cookie(
+                &format!(
+                    "{}/auth/github/setup?installation_id={installation_id}&setup_action=install&state={}",
+                    self.api.url,
+                    query_param(install_url, "state")
+                ),
+                cookie,
+            )
+            .await;
+        assert_eq!(setup.status(), StatusCode::SEE_OTHER);
+        let authorize = setup.headers()["location"].to_str().unwrap().to_string();
+        let callback = self
+            .get_with_cookie(
+                &format!(
+                    "{}/auth/github/callback?code={code}&state={}",
+                    self.api.url,
+                    query_param(&authorize, "state")
+                ),
+                cookie,
+            )
+            .await;
+        let location = callback.headers()["location"].to_str().unwrap();
+        location
+            .strip_prefix(&format!("{}/settings?github=", self.api.url))
+            .unwrap_or_else(|| panic!("unexpected redirect {location}"))
+            .to_string()
+    }
+
+    async fn redirect(
+        &self,
+        token: &str,
+        operation: &str,
+        field: &str,
+        variables: Value,
+    ) -> (String, String) {
+        self.executed.lock().unwrap().insert(operation.to_string());
+        let response = self
+            .post(
+                Some(token),
+                &json!({ "query": operation_document(&self.document, operation), "operationName": operation, "variables": variables }),
+            )
+            .await;
+        let cookie = flow_cookie(&response);
+        let body: Value = response.json().await.unwrap();
+        assert!(body["errors"].is_null(), "{operation} failed: {body}");
+        (
+            body["data"][field]["url"].as_str().unwrap().to_string(),
+            cookie,
+        )
     }
 }
 
@@ -596,10 +708,11 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     let members = w.ok(owner, "Members", json!({ "tenant": slug })).await;
     assert_eq!(members["tenant"]["members"].as_array().unwrap().len(), 2);
 
-    let link = w.ok(owner, "ConnectGitHub", json!({})).await;
-    let link_url = link["connectGitHub"]["url"].as_str().unwrap();
+    let (link_url, _) = w
+        .redirect(owner, "ConnectGitHub", "connectGitHub", json!({}))
+        .await;
     assert!(link_url.contains("/login/oauth/authorize"));
-    assert_eq!(query_param(link_url, "client_id"), "Iv1.http");
+    assert_eq!(query_param(&link_url, "client_id"), "Iv1.http");
     let unlinked = w.ok(owner, "UnlinkGitHub", json!({})).await;
     assert_eq!(unlinked["unlinkGitHub"]["user"]["githubLogin"], Value::Null);
 
@@ -724,6 +837,24 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     );
     assert_eq!(w.api.stripe.requests("/v1/subscriptions/sub_acme").len(), 1);
 
+    let slot = free_tenant_key(w.seeded.tenant.user_id);
+    let elsewhere = Uuid::new_v4();
+    w.dynamo
+        .put(&Guard::of_tenant(slot.clone(), elsewhere, elsewhere))
+        .await;
+    let (code, _) = w
+        .error(
+            owner,
+            "ChangePlan",
+            json!({ "tenantId": tenant, "planId": "free" }),
+        )
+        .await;
+    assert_eq!(code, "CONFLICT");
+    assert_eq!(w.api.stripe.requests("/v1/subscriptions/sub_acme").len(), 1);
+    let mut release = w.api.store.tx(elsewhere);
+    release.delete(&slot).unwrap();
+    release.commit().await.unwrap();
+
     let free = w
         .ok(
             newbie,
@@ -837,62 +968,100 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     w.ok(operator, "UnsuspendTenant", json!({ "tenantId": pending }))
         .await;
 
-    let integrations = w.ok(owner, "Integrations", json!({ "tenant": slug })).await;
-    let install_url = integrations["tenant"]["githubAppInstallUrl"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let (install_url, cookie) = w
+        .redirect(
+            owner,
+            "InstallGitHubApp",
+            "installGitHubApp",
+            json!({ "tenantId": tenant }),
+        )
+        .await;
     assert!(install_url.contains("/apps/sanchoris-test/installations/new"));
     {
         let mut github = w.github.state.lock().unwrap();
         github
             .oauth_users
             .insert("code-install".into(), (1001, "mika-dev".into()));
-        github.user_installations.insert(
-            "gho_code-install".into(),
-            vec![json!({ "id": 77, "account": { "login": "acme-labs", "type": "Organization" } })],
-        );
+        github
+            .oauth_users
+            .insert("code-intruder".into(), (1009, "intruder".into()));
+        let labs = json!({ "id": 77, "account": { "login": "acme-labs", "type": "Organization" } });
+        github
+            .user_installations
+            .insert("gho_code-install".into(), vec![labs.clone()]);
+        github
+            .user_installations
+            .insert("gho_code-intruder".into(), vec![labs]);
         github
             .installation_repositories
             .insert(77, vec![(8801, "acme-labs/api".into())]);
     }
-    let setup = w
+    let setup_without_cookie = w
         .get(&format!(
             "{}/auth/github/setup?installation_id=77&setup_action=install&state={}",
             w.api.url,
             query_param(&install_url, "state")
         ))
         .await;
-    assert_eq!(setup.status(), StatusCode::SEE_OTHER);
-    let authorize = setup.headers()["location"].to_str().unwrap().to_string();
-    let installed = w
-        .get(&format!(
-            "{}/auth/github/callback?code=code-install&state={}",
-            w.api.url,
-            query_param(&authorize, "state")
-        ))
-        .await;
+    assert_eq!(setup_without_cookie.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
-        installed.headers()["location"],
-        format!("{}/settings?github=installed", w.api.url).as_str()
+        w.install(&install_url, &cookie, 77, "code-install").await,
+        "not_linked"
     );
-    let foreign = w
-        .get(&format!(
-            "{}/auth/github/setup?installation_id=78&setup_action=install&state={}",
-            w.api.url,
-            query_param(&install_url, "state")
-        ))
+    let (link_url, link_cookie) = w
+        .redirect(owner, "ConnectGitHub", "connectGitHub", json!({}))
         .await;
-    let foreign_state = query_param(foreign.headers()["location"].to_str().unwrap(), "state");
-    let refused = w
-        .get(&format!(
-            "{}/auth/github/callback?code=code-install&state={foreign_state}",
-            w.api.url
-        ))
+    let linked = w
+        .get_with_cookie(
+            &format!(
+                "{}/auth/github/callback?code=code-install&state={}",
+                w.api.url,
+                query_param(&link_url, "state")
+            ),
+            &link_cookie,
+        )
         .await;
     assert_eq!(
-        refused.headers()["location"],
-        format!("{}/settings?github=not_accessible", w.api.url).as_str()
+        linked.headers()["location"],
+        format!("{}/settings?github=linked", w.api.url).as_str()
+    );
+    assert_eq!(
+        w.install(&install_url, &cookie, 77, "code-intruder").await,
+        "not_linked_account"
+    );
+    {
+        let mut github = w.github.state.lock().unwrap();
+        github.user_installations.insert(
+            "gho_code-install".into(),
+            vec![
+                json!({ "id": 77, "account": { "login": "acme-labs", "type": "Organization" } }),
+                json!({ "id": 79, "account": { "login": "sota-dev", "type": "User" } }),
+            ],
+        );
+        github.org_roles.insert(
+            ("gho_code-install".into(), "acme-labs".into()),
+            "member".into(),
+        );
+    }
+    assert_eq!(
+        w.install(&install_url, &cookie, 79, "code-install").await,
+        "not_admin_of_account"
+    );
+    assert_eq!(
+        w.install(&install_url, &cookie, 77, "code-install").await,
+        "not_admin_of_account"
+    );
+    w.github.state.lock().unwrap().org_roles.insert(
+        ("gho_code-install".into(), "acme-labs".into()),
+        "admin".into(),
+    );
+    assert_eq!(
+        w.install(&install_url, &cookie, 77, "code-install").await,
+        "installed"
+    );
+    assert_eq!(
+        w.install(&install_url, &cookie, 78, "code-install").await,
+        "not_accessible"
     );
     let processed = w
         .github_webhook(

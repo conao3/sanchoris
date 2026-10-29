@@ -22,7 +22,7 @@ use crate::config::{ConfigError, RecordsConfig};
 use crate::signing::HmacKey;
 
 const URL_TTL_SECONDS: i64 = 900;
-const MAX_LOCAL_RECORD_BYTES: usize = 512 * 1024 * 1024;
+pub const MAX_RECORD_BYTES: i64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum RecordError {
@@ -119,7 +119,7 @@ impl RecordStore for S3RecordStore {
         &self,
         tenant_id: Uuid,
         key: &str,
-        _content_length: i64,
+        content_length: i64,
         sha256: &str,
     ) -> Result<PresignedPut, RecordError> {
         check_key(tenant_id, key)?;
@@ -130,6 +130,7 @@ impl RecordStore for S3RecordStore {
             .put_object()
             .bucket(&self.bucket)
             .key(key)
+            .content_length(content_length)
             .checksum_sha256(base64::engine::general_purpose::STANDARD.encode(digest))
             .presigned(Self::presigning()?)
             .await
@@ -217,7 +218,7 @@ impl LocalRecordStore {
     pub fn router(self: Arc<Self>) -> Router {
         Router::new()
             .route("/{*key}", get(get_record).put(put_record))
-            .layer(DefaultBodyLimit::max(MAX_LOCAL_RECORD_BYTES))
+            .layer(DefaultBodyLimit::max(MAX_RECORD_BYTES as usize))
             .with_state(self)
     }
 }
@@ -375,5 +376,39 @@ mod tests {
         assert!(check_key(Uuid::new_v4(), &key).is_err());
         assert!(record_key(tenant, run, "../escape", 1).is_err());
         assert!(check_key(tenant, &format!("t/{tenant}/../x")).is_err());
+    }
+
+    #[tokio::test]
+    async fn presigned_puts_sign_the_content_length() {
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
+            .region(aws_sdk_s3::config::Region::new("ap-northeast-1"))
+            .credentials_provider(aws_sdk_s3::config::Credentials::new(
+                "test-id",
+                "test-secret",
+                None,
+                None,
+                "test",
+            ))
+            .build();
+        let store = S3RecordStore {
+            client: aws_sdk_s3::Client::from_conf(config),
+            bucket: "records".into(),
+        };
+        let tenant = Uuid::new_v4();
+        let key = record_key(tenant, Uuid::new_v4(), "s-1", 1).unwrap();
+        let presigned = store
+            .presign_put(tenant, &key, 1234, &"0".repeat(64))
+            .await
+            .unwrap();
+        let url = reqwest::Url::parse(&presigned.url).unwrap();
+        let signed = url
+            .query_pairs()
+            .find(|(name, _)| name == "X-Amz-SignedHeaders")
+            .unwrap()
+            .1
+            .into_owned();
+        assert!(signed.split(';').any(|name| name == "content-length"));
+        assert!(!presigned.headers.contains_key("content-length"));
     }
 }

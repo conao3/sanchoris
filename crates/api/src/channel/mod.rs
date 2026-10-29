@@ -16,6 +16,7 @@ use sanchoris_core::items::{
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
+use sanchoris_core::messages::redact_tokens_in;
 use sanchoris_core::ports::PortError;
 use sanchoris_core::skillrun::{
     SkillRunError, accept_skill_request, continue_skill_run, skill_run_status,
@@ -26,7 +27,7 @@ use sanchoris_worker::ports::OutboxPusher;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::records::{RecordError, RecordStore, record_key};
+use crate::records::{MAX_RECORD_BYTES, RecordError, RecordStore, record_key};
 use credentials::{CredentialError, RunCredentials};
 
 pub use sanchoris_core::channel::SEQ_STRIDE;
@@ -124,6 +125,17 @@ fn strip(mut message: Value) -> Value {
         object.remove("seq");
     }
     message
+}
+
+async fn last_recorded_turn(tx: &mut TenantTx, run_id: Uuid) -> Result<i64, ChannelError> {
+    Ok(tx
+        .query::<RunEventItem>(&keys::run_pk(tx.tenant_id(), run_id), "EVT#")
+        .await?
+        .into_iter()
+        .filter(|event| event.kind == RunEventType::SessionRecord.as_str())
+        .filter_map(|event| event.payload["turn"].as_i64())
+        .max()
+        .unwrap_or(0))
 }
 
 async fn channel_item(tx: &mut TenantTx, run_id: Uuid) -> Result<RunChannel, ChannelError> {
@@ -503,7 +515,7 @@ impl Channel {
             seq,
             turn,
             kind: kind.to_string(),
-            data: payload["data"].clone(),
+            data: redact_tokens_in(&payload["data"]),
             at,
             expires_at: Utc::now() + Duration::days(plan.retention_days),
         })?;
@@ -615,6 +627,36 @@ impl Channel {
         let sha256 = payload["sha256"]
             .as_str()
             .ok_or_else(|| protocol("record_upload_request needs sha256"))?;
+        let expected_turn = last_recorded_turn(tx, claims.run_id).await? + 1;
+        let refused = if length < 0 {
+            Some((
+                "invalid_request",
+                format!("contentLength {length} is negative"),
+            ))
+        } else if length > MAX_RECORD_BYTES {
+            Some((
+                "record_too_large",
+                format!("the record has {length} bytes, more than the {MAX_RECORD_BYTES} allowed"),
+            ))
+        } else if turn != expected_turn {
+            Some((
+                "unexpected_turn",
+                format!(
+                    "the next record of run {} is turn {expected_turn}, not {turn}",
+                    claims.run_id
+                ),
+            ))
+        } else {
+            None
+        };
+        if let Some((code, message)) = refused {
+            return Ok(Self::reply(
+                claims,
+                "record_upload_response",
+                request_id,
+                Err((code.into(), message)),
+            ));
+        }
         let presigned = match record_key(claims.tenant_id, claims.run_id, session_id, turn) {
             Ok(key) => self
                 .records

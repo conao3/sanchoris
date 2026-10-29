@@ -2,7 +2,7 @@ use crate::common;
 
 use common::{Person, World};
 use sanchoris_core::db::DbError;
-use sanchoris_core::item::Key;
+use sanchoris_core::item::{Key, Table};
 use sanchoris_core::items::{Member, Task, User};
 use sanchoris_core::keys;
 use sanchoris_core::model::TaskStatus;
@@ -643,6 +643,95 @@ async fn requests_without_a_user_are_rejected() {
                 .unwrap()
                 .to_string(),
             "\"UNAUTHENTICATED\"",
+            "{query}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn storage_and_port_failures_reach_the_client_as_internal_errors() {
+    let w = World::new().await;
+    *w.recorder.plan_change_fails.lock().unwrap() = true;
+    let failed = w
+        .run(
+            &w.mika,
+            "ChangePlan",
+            json!({ "tenantId": w.acme, "planId": "max" }),
+        )
+        .await;
+    assert_eq!(failed.errors.len(), 1);
+    assert_eq!(failed.errors[0].message, "internal error");
+    assert_eq!(
+        failed.errors[0].extensions.as_ref().unwrap().get("code"),
+        Some(&async_graphql::Value::from("INTERNAL"))
+    );
+
+    let key = keys::tenant_key(w.acme);
+    w.dynamo
+        .client()
+        .update_item()
+        .table_name(w.dynamo.tables().name(Table::Main))
+        .set_key(Some(key.attributes()))
+        .update_expression("REMOVE #name")
+        .expression_attribute_names("#name", "name")
+        .send()
+        .await
+        .unwrap();
+    let broken = w
+        .inline(&w.mika, "{ tenant(slug: \"acme\") { name } }", json!({}))
+        .await;
+    assert_eq!(
+        broken
+            .errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        vec!["internal error"]
+    );
+    let refused = w
+        .inline(
+            &w.mika,
+            "mutation { changePlan(tenantId: \"nowhere\", planId: \"max\") { checkoutUrl } }",
+            json!({}),
+        )
+        .await;
+    assert_eq!(refused.errors[0].message, "nowhere is not a valid id");
+}
+
+#[tokio::test]
+async fn deep_complex_and_introspection_queries_are_refused() {
+    let w = World::new().await;
+    let deep = format!(
+        "{{ viewer {{ memberships {}id{} }} }}",
+        "{ tenant { members ".repeat(6),
+        " } }".repeat(6)
+    );
+    let complex = format!(
+        "{{ {} }}",
+        (0..sanchoris_graphql::MAX_COMPLEXITY)
+            .map(|n| format!("p{n}: plans {{ id }}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let introspection = w
+        .inline(&w.mika, "{ __schema { queryType { name } } }", json!({}))
+        .await;
+    assert_eq!(
+        introspection.data.into_json().unwrap(),
+        json!({ "__schema": null })
+    );
+    for (query, message) in [
+        (deep.as_str(), "Query is nested too deep."),
+        (complex.as_str(), "Query is too complex."),
+    ] {
+        let response = w.inline(&w.mika, query, json!({})).await;
+        assert_eq!(
+            response
+                .errors
+                .iter()
+                .map(|error| error.message.as_str())
+                .collect::<Vec<_>>(),
+            vec![message],
             "{query}"
         );
     }
