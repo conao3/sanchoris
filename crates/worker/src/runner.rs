@@ -304,6 +304,7 @@ impl RunnerPort for LocalProcessRunner {
             return Ok(Some(WorkspaceExit {
                 reason: format!("the workspace process {platform_ref} is gone"),
                 interrupted_at: None,
+                stopped_at: None,
             }));
         };
         let status = workspace
@@ -322,6 +323,7 @@ impl RunnerPort for LocalProcessRunner {
         Ok(Some(WorkspaceExit {
             reason: format!("the workspace process exited with {status}"),
             interrupted_at: None,
+            stopped_at: None,
         }))
     }
 

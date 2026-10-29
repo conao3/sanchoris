@@ -191,6 +191,7 @@ async fn a_workspace_that_stops_on_its_own_needs_you_with_the_reason() {
         sanchoris_worker::ports::WorkspaceExit {
             reason: reason.into(),
             interrupted_at: None,
+            stopped_at: None,
         },
     );
     world.clock.advance(Duration::seconds(120));
@@ -202,6 +203,47 @@ async fn a_workspace_that_stops_on_its_own_needs_you_with_the_reason() {
     assert!(*world.runner.sweeps.lock().unwrap() > sweeps);
     assert!(world.runner.stopped.lock().unwrap().is_empty());
     assert_eq!(tenant(&world).await.workspace_seconds_this_period, 120);
+}
+
+#[tokio::test]
+async fn a_stopped_workspace_counts_until_the_platform_stopped_it() {
+    let world = World::new("pro").await;
+    world.started_task(35).await;
+    let platform_ref = world.runner.refs.lock().unwrap()[0].clone();
+    world.clock.advance(Duration::seconds(60));
+    let stopped_at = world.clock_now();
+    world.runner.exits.lock().unwrap().insert(
+        platform_ref,
+        sanchoris_worker::ports::WorkspaceExit {
+            reason: "Essential container in task exited".into(),
+            interrupted_at: None,
+            stopped_at: Some(stopped_at),
+        },
+    );
+    world.clock.advance(Duration::seconds(120));
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "NEEDS_YOU");
+    assert_eq!(workspaces(&world).await[0].stopped_at, Some(stopped_at));
+    assert_eq!(tenant(&world).await.workspace_seconds_this_period, 60);
+}
+
+#[tokio::test]
+async fn a_workspace_that_never_launched_counts_no_seconds() {
+    let world = World::new("pro").await;
+    world.started_task(35).await;
+    let workspace = workspaces(&world).await.remove(0);
+    world
+        .dynamo
+        .modify::<Workspace>(
+            &keys::workspace_key(world.tenant(), workspace.task_id, workspace.id),
+            |w| w.platform_ref = None,
+        )
+        .await;
+    world.runner.running.lock().unwrap().clear();
+    world.clock.advance(Duration::minutes(15));
+    world.worker.settle().await.unwrap();
+    assert!(workspaces(&world).await[0].stopped_at.is_some());
+    assert_eq!(tenant(&world).await.workspace_seconds_this_period, 0);
 }
 
 #[tokio::test]
@@ -220,6 +262,7 @@ async fn the_sweep_observes_the_workspace_of_a_task_that_needs_you() {
         sanchoris_worker::ports::WorkspaceExit {
             reason: "Essential container in task exited".into(),
             interrupted_at: None,
+            stopped_at: None,
         },
     );
     world.clock.advance(Duration::seconds(120));
@@ -293,6 +336,7 @@ async fn a_spot_interruption_restores_the_session_in_a_new_workspace() {
         sanchoris_worker::ports::WorkspaceExit {
             reason: "Your Spot Task was interrupted. (SpotInterruption)".into(),
             interrupted_at: Some(interrupted_at),
+            stopped_at: None,
         },
     );
     world.clock.advance(Duration::seconds(150));
@@ -362,6 +406,7 @@ async fn a_workspace_whose_agent_reported_sigterm_restores_and_counts_until_the_
         sanchoris_worker::ports::WorkspaceExit {
             reason: "Task stopped by user (UserInitiated); container exit code 0".into(),
             interrupted_at: None,
+            stopped_at: None,
         },
     );
     world.clock.advance(Duration::seconds(90));
@@ -398,6 +443,7 @@ async fn a_workspace_that_stops_before_the_session_starts_gets_the_instruction_a
         sanchoris_worker::ports::WorkspaceExit {
             reason: "CannotPullContainerError".into(),
             interrupted_at: None,
+            stopped_at: None,
         },
     );
     world.clock.advance(Duration::seconds(120));

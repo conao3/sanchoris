@@ -453,9 +453,10 @@ async fn observe_workspaces(worker: &Worker, tenant_id: Uuid, task_id: Uuid) -> 
         .collect::<Vec<_>>();
     let mut stopped = Vec::new();
     for mut workspace in open {
-        let (reason, interrupted_at) = match workspace.platform_ref.clone() {
+        let (reason, interrupted_at, stopped_at) = match workspace.platform_ref.clone() {
             None if workspace.started_at + Duration::minutes(LAUNCH_TIMEOUT_MINUTES) <= now => (
                 format!("the workspace did not launch within {LAUNCH_TIMEOUT_MINUTES} minutes"),
+                None,
                 None,
             ),
             None => continue,
@@ -463,14 +464,18 @@ async fn observe_workspaces(worker: &Worker, tenant_id: Uuid, task_id: Uuid) -> 
                 let Some(exit) = worker.deps.runner.workspace_exit(&platform_ref).await? else {
                     continue;
                 };
-                (exit.reason, exit.interrupted_at)
+                (exit.reason, exit.interrupted_at, exit.stopped_at)
             }
         };
         let interrupted_at = match (interrupted_at, workspace.signaled_at) {
             (Some(platform), Some(agent)) => Some(platform.min(agent)),
             (platform, agent) => platform.or(agent),
         };
-        close_workspace(&mut tx, &mut workspace, interrupted_at.unwrap_or(now))?;
+        close_workspace(
+            &mut tx,
+            &mut workspace,
+            interrupted_at.or(stopped_at).unwrap_or(now),
+        )?;
         stopped.push(Stopped {
             workspace_id: workspace.id,
             run_id: workspace.run_id,
@@ -906,7 +911,10 @@ fn close_workspace(
         "docker" => 3,
         _ => 1,
     };
-    let seconds = (counted_until - workspace.started_at).num_seconds().max(0) * weight;
+    let seconds = match workspace.platform_ref {
+        Some(_) => (counted_until - workspace.started_at).num_seconds().max(0) * weight,
+        None => 0,
+    };
     workspace.stopped_at = Some(counted_until.max(workspace.started_at));
     tx.put(workspace)?;
     tx.update(

@@ -309,6 +309,7 @@ pub struct RunningWorkspace {
 pub struct WorkspaceExit {
     pub reason: String,
     pub interrupted_at: Option<DateTime<Utc>>,
+    pub stopped_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]

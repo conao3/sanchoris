@@ -388,6 +388,11 @@ pub fn interrupted_at(task: &Task) -> Option<DateTime<Utc>> {
         .and_then(|at| DateTime::from_timestamp(at.secs(), at.subsec_nanos()))
 }
 
+pub fn stopped_at(task: &Task) -> Option<DateTime<Utc>> {
+    task.stopped_at()
+        .and_then(|at| DateTime::from_timestamp(at.secs(), at.subsec_nanos()))
+}
+
 pub fn running_workspace(task: &Task) -> Option<RunningWorkspace> {
     let tag = |key: &str| {
         task.tags()
@@ -771,11 +776,13 @@ impl RunnerPort for EcsRunner {
             return Ok(Some(WorkspaceExit {
                 reason: exit_reason(task, &self.config.container),
                 interrupted_at: interrupted_at(task),
+                stopped_at: stopped_at(task),
             }));
         }
         Ok(Some(WorkspaceExit {
             reason: format!("the ECS task {platform_ref} is gone"),
             interrupted_at: None,
+            stopped_at: None,
         }))
     }
 
@@ -878,6 +885,11 @@ mod tests {
             .stop_code(TaskStopCode::EssentialContainerExited)
             .build();
         assert_eq!(interrupted_at(&exited), None);
+        assert_eq!(stopped_at(&exited), None);
+        assert_eq!(
+            stopped_at(&spot),
+            DateTime::from_timestamp(1_800_000_060, 0)
+        );
     }
 
     fn runner_config() -> EcsRunnerConfig {
