@@ -343,15 +343,33 @@ async fn github_webhooks_are_verified_recorded_once_and_update_installations() {
     let integrations = server.dynamo.all::<Integration>().await;
     assert_eq!(integrations.len(), 1);
     assert_eq!(integrations[0].status, "not_connected");
-    let audit = server
+    let mut unsuspend = suspend.clone();
+    unsuspend["action"] = json!("unsuspend");
+    let unsuspended = server
+        .webhook("installation", "delivery-unsuspend", &unsuspend)
+        .await;
+    assert_eq!(
+        unsuspended.json::<Value>().await.unwrap()["status"],
+        "processed"
+    );
+    let redelivered = server
+        .webhook("installation", "delivery-suspend", &suspend)
+        .await;
+    assert_eq!(redelivered.status(), StatusCode::OK);
+    assert_eq!(
+        redelivered.json::<Value>().await.unwrap()["status"],
+        "duplicate"
+    );
+    let integrations = server.dynamo.all::<Integration>().await;
+    assert_eq!(integrations[0].status, "connected");
+    let updates = server
         .dynamo
         .all::<sanchoris_core::items::AuditEvent>()
-        .await;
-    assert!(
-        audit
-            .iter()
-            .any(|event| event.action == "integration.github_installation_update")
-    );
+        .await
+        .into_iter()
+        .filter(|event| event.action == "integration.github_installation_update")
+        .count();
+    assert_eq!(updates, 2);
 }
 
 fn push_payload(repository_id: i64, git_ref: &str) -> Value {

@@ -247,6 +247,7 @@ Every item in `main` has `kind` (the entity), `v` (a version incremented by ever
 | `RELAY` | `#` | `relay_lease` | The egress relay lease of the ECS runner: `holders` (map of run id to the time it asked for the relay), `lock_owner`, `lock_until`. Written with the DynamoDB client directly, outside `TenantTx` |
 | `T#<t>` | `#TENANT` | `tenant` | `slug`, `name`, `plan_id`, `period_start`, `status`, `suspended_reason`, `stripe_customer_id`, counters `tasks_this_period`, `workspace_seconds_this_period`, `running_tasks`; `gsi2` = (`TENANTS`, `<t>`). Changed only with update expressions |
 | `T#<t>` | `#FREE_GITHUB` | `free_github_hold` | `github_user_id` of the `UNIQ#free_tenant_github` guard that the tenant holds while on Free |
+| `T#<t>` | `GHDELIVERY#<delivery id>` | `github_delivery` | An `installation`, `installation_repositories`, or `repository` delivery that changed the integration; a redelivery answers `duplicate` and only reapplies the idempotent config effects. TTL 30 days |
 | `T#<t>` | `MEMBER#<member>` | `member` | `user_id`, `role`, `joined_at`, `last_active_at` |
 | `T#<t>` | `INVITE#<invitation>` / `INVITEPENDING#<email>` | `invitation` / `guard` | `email`, `role`, `status`, `invited_by_member_id`, `expires_at`, `accepted_at`; the guard points at the pending invitation of an email and keeps one per email |
 | `T#<t>` | `CRED#<credential>` / `CREDNAME#<name>` | `credential` / `guard` | Encrypted value (base64), KMS key id, status; the guard keeps names unique and finds a credential by name |
