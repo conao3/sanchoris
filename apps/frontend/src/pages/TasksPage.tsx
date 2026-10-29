@@ -71,7 +71,7 @@ export function TasksPage() {
     '/': () => setFilterOpen(true),
     Escape: () => setFilterOpen(false),
   });
-  const cols = '150px minmax(220px,1fr) 110px 250px 64px 60px';
+  const cols = '170px minmax(220px,1fr) 110px 250px 64px 60px';
   const triggerName = tenant?.triggers.find((trigger) => trigger.id === triggerId)?.name;
 
   return (

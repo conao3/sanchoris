@@ -13,7 +13,7 @@ import { useTenant } from '../../lib/tenant';
 
 type ValidationError = { path: string; line?: number | null; column?: number | null; message: string };
 
-const fieldClass = 'h-[30px] rounded-ui border border-line2 bg-bg px-2.5 font-mono text-sm outline-none focus:border-ink';
+const fieldClass = 'h-8 rounded-ui border border-line2 bg-bg px-2.5 font-mono text-sm outline-none focus:border-ink';
 
 function Errors({ errors }: { errors: ValidationError[] }) {
   return (

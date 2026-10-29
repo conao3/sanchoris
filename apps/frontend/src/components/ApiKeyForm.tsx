@@ -37,7 +37,7 @@ export function ApiKeyForm({ tenantId }: { tenantId: string }) {
 
   return (
     <form onSubmit={submit}>
-      <label className="mb-1 mt-3 block text-sm text-muted" htmlFor="provider">
+      <label className="mb-1 mt-3 block text-xs text-muted" htmlFor="provider">
         {t('setup.provider')}
       </label>
       <select id="provider" className={fieldClass} value={provider} onChange={(event) => setProvider(event.target.value as ApiKeyProvider)}>
@@ -45,7 +45,7 @@ export function ApiKeyForm({ tenantId }: { tenantId: string }) {
         <option value="OPENAI">{t('setup.openaiKey')}</option>
         <option value="BEDROCK">{t('setup.bedrock')}</option>
       </select>
-      <label className="mb-1 mt-3 block text-sm text-muted" htmlFor="credential-name">
+      <label className="mb-1 mt-3 block text-xs text-muted" htmlFor="credential-name">
         {t('setup.name')}
       </label>
       <input
@@ -56,7 +56,7 @@ export function ApiKeyForm({ tenantId }: { tenantId: string }) {
         onChange={(event) => setName(event.target.value)}
         required
       />
-      <label className="mb-1 mt-3 block text-sm text-muted" htmlFor="credential-key">
+      <label className="mb-1 mt-3 block text-xs text-muted" htmlFor="credential-key">
         {t('setup.key')}
       </label>
       <input

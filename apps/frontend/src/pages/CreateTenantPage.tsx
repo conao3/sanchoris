@@ -16,8 +16,8 @@ const roleLabels: Record<string, MessageKey> = { OWNER: 'role.owner', ADMIN: 'ro
 export function AuthLayout({ children }: { children: ReactNode }) {
   return (
     <div className="relative flex min-h-screen justify-center">
-      <div className="absolute left-8 top-6 text-lg font-semibold">sanchoris</div>
-      <div className="w-[460px] pb-16 pt-[150px]">{children}</div>
+      <div className="absolute left-8 top-6 text-base font-semibold">sanchoris</div>
+      <div className="w-[540px] pb-16 pt-[150px]">{children}</div>
     </div>
   );
 }
@@ -89,7 +89,7 @@ export function CreateTenantPage() {
       {data ? (
         <form onSubmit={submit}>
           {data.viewer.invitations.length > 0 ? <Dim className="mb-1">{t('tenantNew.orCreate')}</Dim> : null}
-          <label htmlFor="tenant-name" className="mb-1 mt-3 block text-sm text-muted">
+          <label htmlFor="tenant-name" className="mb-1 mt-3 block text-xs text-muted">
             {t('col.name')}
           </label>
           <input
@@ -100,7 +100,7 @@ export function CreateTenantPage() {
             placeholder="acme"
             className="h-[30px] w-full rounded-ui border border-line2 bg-bg px-2.5 outline-none focus:border-ink"
           />
-          <div className="mb-1 mt-3 text-sm text-muted">{t('billing.plan')}</div>
+          <div className="mb-1 mt-3 text-xs text-muted">{t('billing.plan')}</div>
           <div role="radiogroup" aria-label={t('billing.plan')}>
             {plans.map((plan) => {
               const isSelected = plan.id === selected?.id;

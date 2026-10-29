@@ -245,7 +245,7 @@ export function FlowDiagram({
               {last ? null : (
                 <span className="absolute -right-1 top-[34px] size-[7px] rounded-full border-[1.5px] border-faint bg-bg" />
               )}
-              <div className="flex items-center gap-1.5 font-mono text-2xs font-medium text-muted">
+              <div className="flex items-center gap-1.5 font-mono text-xs font-medium text-muted">
                 <Icon icon={kind.icon} className="size-[13px]" />
                 {kind.label}
               </div>

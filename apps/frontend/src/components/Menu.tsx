@@ -56,7 +56,7 @@ export function Menu<T extends string>({
             align === 'right' ? 'right-0' : 'left-0',
           )}
         >
-          {title ? <div className="px-3.5 pb-1 pt-1.5 text-2xs font-semibold uppercase tracking-[.06em] text-faint">{title}</div> : null}
+          {title ? <div className="px-3.5 pb-1 pt-1.5 text-xs font-semibold uppercase tracking-[.06em] text-faint">{title}</div> : null}
           {options.map((option) => (
             <button
               key={option.value}

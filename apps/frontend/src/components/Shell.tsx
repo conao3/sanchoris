@@ -71,7 +71,7 @@ function TenantSwitcher() {
       </button>
       {open ? (
         <div className="absolute left-0 right-0 top-9 z-10 rounded-[8px] border border-line2 bg-bg py-1.5">
-          <div className="px-3.5 pb-1 pt-1.5 text-2xs font-semibold uppercase tracking-[.06em] text-faint">
+          <div className="px-3.5 pb-1 pt-1.5 text-xs font-semibold uppercase tracking-[.06em] text-faint">
             {t('shell.switchTenant')}
           </div>
           {viewer.memberships.map((item) => (
@@ -105,7 +105,7 @@ function UserMenu() {
     <div className="relative">
       {open ? (
         <div className="absolute bottom-9 left-0 right-0 z-10 rounded-[8px] border border-line2 bg-bg py-1.5">
-          <div className="truncate px-3.5 pb-1 pt-1.5 text-sm text-muted">{viewer.user.email}</div>
+          <div className="truncate px-3.5 pb-1 pt-1.5 text-xs text-muted">{viewer.user.email}</div>
           <button
             type="button"
             onClick={signOut}
@@ -201,7 +201,7 @@ export function Page({
         <div className="flex items-center gap-2">{actions}</div>
       </header>
       <div className="flex min-h-0 flex-1 flex-col">{children}</div>
-      <footer className="flex h-[30px] flex-none items-center gap-[18px] border-t border-line bg-sub px-6 text-sm text-muted">
+      <footer className="flex h-[30px] flex-none items-center gap-[18px] border-t border-line bg-sub px-6 text-xs text-muted">
         {keys.map(([key, label]) => (
           <span key={key} className="inline-flex items-center gap-1.5">
             <Kbd>{key}</Kbd>

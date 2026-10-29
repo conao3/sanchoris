@@ -297,7 +297,7 @@ export function ChatPage() {
                 className={clsx('block rounded-ui px-2 py-[7px] hover:bg-hover', chat.id === taskId && 'bg-hover')}
               >
                 <span className="font-medium">{chat.title}</span>
-                <small className="block text-sm text-muted">
+                <small className="block text-xs text-muted">
                   {[
                     chat.channel ? scopeShort(chat.channel.scope) : null,
                     chat.channel?.kind === 'SLACK' ? t('chat.slack') : t('chat.web'),

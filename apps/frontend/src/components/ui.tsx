@@ -20,7 +20,7 @@ export function Kbd({ children, tone = 'plain' }: { children: ReactNode; tone?: 
   return (
     <span
       className={clsx(
-        'inline-block rounded-kbd border px-[5px] font-mono text-2xs leading-5',
+        'inline-block rounded-kbd border px-[5px] font-mono text-xs leading-4',
         tone === 'plain' && 'border-line2 bg-bg text-muted',
         tone === 'button' && 'ml-0.5 border-line bg-bg text-muted',
         tone === 'inverse' && 'ml-0.5 border-[#52525b] bg-transparent text-line2',
@@ -186,7 +186,7 @@ export function ExternalLk({ href, children, className }: { href: string; childr
 }
 
 export function Id({ children }: { children: ReactNode }) {
-  return <span className="font-mono text-sm text-muted">{children}</span>;
+  return <span className="font-mono text-xs text-muted">{children}</span>;
 }
 
 export function Dim({ children, className, style }: { children: ReactNode; className?: string; style?: CSSProperties }) {

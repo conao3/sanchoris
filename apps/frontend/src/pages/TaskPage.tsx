@@ -54,7 +54,7 @@ function Step({ kind, icon, tone, stateIcon, children, current, todo }: {
         todo ? 'border-dashed bg-sub' : 'bg-bg',
       )}
     >
-      <div className="flex items-center gap-1.5 font-mono text-2xs font-medium text-muted">
+      <div className="flex items-center gap-1.5 font-mono text-xs font-medium text-muted">
         <Icon icon={icon} className="size-[13px]" />
         {kind}
       </div>
@@ -257,7 +257,7 @@ export function TaskPage() {
             <Dim>
               {task.cause ?? task.error} {t('task.messageGoes')}
             </Dim>
-            <label htmlFor="resume-message" className="mb-1 mt-3 block text-sm text-muted">
+            <label htmlFor="resume-message" className="mb-1 mt-3 block text-xs text-muted">
               {t('task.messageToAgent')}
             </label>
             <textarea

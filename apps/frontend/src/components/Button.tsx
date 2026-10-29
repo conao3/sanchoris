@@ -39,7 +39,7 @@ export function Button({
 }: ButtonProps) {
   const classes = clsx(
     'inline-flex items-center gap-1.5 whitespace-nowrap rounded-ui border font-medium outline-none focus-visible:ring-2 focus-visible:ring-line2 disabled:cursor-not-allowed disabled:opacity-50',
-    small ? 'h-7 px-2.5 text-sm' : 'h-8 px-3 text-ctl',
+    small ? 'h-7 px-2.5 text-sm' : 'h-8 px-3 text-sm',
     variantClass[variant],
     className,
   );

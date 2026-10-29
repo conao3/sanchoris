@@ -113,8 +113,8 @@ function TemplatePanel({ tenant, templates, onClose }: { tenant: Tenant; templat
 
   return (
     <form onSubmit={submit} className="absolute right-6 top-[46px] z-10 w-[380px] rounded-[8px] border border-line2 bg-bg p-3.5">
-      <div className="mb-1 text-2xs font-semibold uppercase tracking-[.06em] text-faint">{t('triggers.newFromTemplate')}</div>
-      <label className="mb-1 mt-2 block text-sm text-muted" htmlFor="template">
+      <div className="mb-1 text-xs font-semibold uppercase tracking-[.06em] text-faint">{t('triggers.newFromTemplate')}</div>
+      <label className="mb-1 mt-2 block text-xs text-muted" htmlFor="template">
         {t('triggers.template')}
       </label>
       <select id="template" className={selectClass} value={templateId} onChange={(event) => setTemplateId(event.target.value)}>
@@ -124,7 +124,7 @@ function TemplatePanel({ tenant, templates, onClose }: { tenant: Tenant; templat
           </option>
         ))}
       </select>
-      <label className="mb-1 mt-2 block text-sm text-muted" htmlFor="repository">
+      <label className="mb-1 mt-2 block text-xs text-muted" htmlFor="repository">
         {t('triggers.repository')}
       </label>
       <select id="repository" className={selectClass} value={repository} onChange={(event) => setRepository(event.target.value)}>
@@ -132,7 +132,7 @@ function TemplatePanel({ tenant, templates, onClose }: { tenant: Tenant; templat
           <option key={item}>{item}</option>
         ))}
       </select>
-      <label className="mb-1 mt-2 block text-sm text-muted" htmlFor="config">
+      <label className="mb-1 mt-2 block text-xs text-muted" htmlFor="config">
         {t('triggers.config')}
       </label>
       <select id="config" className={selectClass} value={configId} onChange={(event) => setConfigId(event.target.value)}>
@@ -184,7 +184,7 @@ export function TriggersPage() {
   });
 
   const openChanges = new Set(triggers.flatMap((trigger) => (trigger.openChangeRequest ? [trigger.openChangeRequest.id] : []))).size;
-  const cols = '140px minmax(240px,1fr) 190px 140px 60px 130px 60px';
+  const cols = '180px minmax(240px,1fr) 190px 140px 60px 130px 60px';
 
   return (
     <Page
