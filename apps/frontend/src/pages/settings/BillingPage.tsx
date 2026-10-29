@@ -80,7 +80,7 @@ export function BillingPage() {
                 [t('billing.plan'), <><b>{plan.name}</b> · {planPrice(plan)}</>],
                 [t('settings.members'), countOf(usage.seatsUsed, plan.memberLimit)],
                 [t('billing.nextBilling'), usage.periodEnd ? day(usage.periodEnd) : '—'],
-                [t('billing.concurrentRuns'), plan.concurrencyLimit],
+                [t('billing.concurrency'), t('billing.workspaces', { n: plan.concurrencyLimit })],
                 [t('billing.inboundEvents'), t('billing.perMinute', { n: plan.inboundEventsPerMinute })],
               ]}
             />
