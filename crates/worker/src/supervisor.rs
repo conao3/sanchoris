@@ -288,8 +288,7 @@ async fn turn_end(
     if error["code"] == ERROR_USAGE_LIMIT {
         let reset_at = error["resetAt"]
             .as_i64()
-            .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
-            .ok_or_else(|| invalid("a usage limit turn_end needs error.resetAt"))?;
+            .and_then(|seconds| DateTime::from_timestamp(seconds, 0));
         let resume = match session_of(&task)?.usage_limit.resume {
             sanchoris_config::ResumeMode::Auto => UsageLimitResume::Auto,
             sanchoris_config::ResumeMode::Manual => UsageLimitResume::Manual,

@@ -144,6 +144,32 @@ async fn a_usage_limit_resume_delivered_early_is_scheduled_again() {
 }
 
 #[tokio::test]
+async fn a_usage_limit_without_a_reset_time_needs_you() {
+    let world = World::new("pro").await;
+    let task = world.started_task(35).await;
+    let run_id = task.run_id.unwrap();
+    world
+        .sequenced_event(
+            run_id,
+            1,
+            RunEventType::TurnEnd,
+            turn_end_payload(
+                1,
+                json!({ "code": "Worker.UsageLimit", "message": "limit" }),
+            ),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    let task = world.task(&format!("{REPO}#35")).await;
+    assert_eq!(task.status, "NEEDS_YOU");
+    assert_eq!(task.error.as_deref(), Some("Worker.UsageLimit"));
+    assert_eq!(
+        task.cause.as_deref(),
+        Some("The worker reached its usage limit and did not say when it resets")
+    );
+}
+
+#[tokio::test]
 async fn manual_usage_limits_need_you() {
     let world = World::new("pro").await;
     let yaml = common::CONFIG_YAML.replacen(

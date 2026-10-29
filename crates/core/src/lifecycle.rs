@@ -118,7 +118,16 @@ pub fn decide_skill_run_finished(
     })
 }
 
-pub fn decide_usage_limit(resume: UsageLimitResume, reset_at: DateTime<Utc>) -> TaskDecision {
+pub fn decide_usage_limit(
+    resume: UsageLimitResume,
+    reset_at: Option<DateTime<Utc>>,
+) -> TaskDecision {
+    let Some(reset_at) = reset_at else {
+        return TaskDecision::NeedsYou {
+            error: ERROR_USAGE_LIMIT.to_string(),
+            cause: "The worker reached its usage limit and did not say when it resets".into(),
+        };
+    };
     match resume {
         UsageLimitResume::Auto => TaskDecision::Wait {
             reason: WaitReason::UsageLimit,
@@ -369,14 +378,21 @@ mod tests {
     fn usage_limit_waits_or_needs_you() {
         let reset_at = Utc.with_ymd_and_hms(2026, 10, 27, 12, 0, 0).unwrap();
         assert_eq!(
-            decide_usage_limit(UsageLimitResume::Auto, reset_at),
+            decide_usage_limit(UsageLimitResume::Auto, Some(reset_at)),
             TaskDecision::Wait {
                 reason: WaitReason::UsageLimit,
                 resume_at: Some(reset_at)
             }
         );
         assert_eq!(
-            decide_usage_limit(UsageLimitResume::Manual, reset_at),
+            decide_usage_limit(UsageLimitResume::Auto, None),
+            TaskDecision::NeedsYou {
+                error: "Worker.UsageLimit".into(),
+                cause: "The worker reached its usage limit and did not say when it resets".into()
+            }
+        );
+        assert_eq!(
+            decide_usage_limit(UsageLimitResume::Manual, Some(reset_at)),
             TaskDecision::NeedsYou {
                 error: "Worker.UsageLimit".into(),
                 cause:
