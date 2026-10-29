@@ -49,4 +49,5 @@ COPY --from=build --chown=node:node /home-dirs/ /workspace/
 COPY --from=build --chown=node:node /home-dirs/ /home/node/.claude/
 USER node
 WORKDIR /workspace
+VOLUME ["/workspace", "/home/node", "/tmp"]
 ENTRYPOINT ["/usr/local/bin/workspace-entrypoint"]
