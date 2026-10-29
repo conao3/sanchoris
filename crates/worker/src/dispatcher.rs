@@ -16,11 +16,12 @@ use sanchoris_core::items::{
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
+use sanchoris_core::lifecycle::TaskDecision;
 use sanchoris_core::messages::{self, OfferedInput, OfferedSkill, StartMessage};
 use sanchoris_core::model::{ActorKind, AuditOrigin, NamedDefinition, TaskDefinition, TaskStatus};
 use sanchoris_core::pattern::EventPattern;
 use sanchoris_core::store::{Index, SortKey, Update};
-use sanchoris_core::tasks::{latest_run, load_task, send_to_task, store_task};
+use sanchoris_core::tasks::{apply_decision, latest_run, load_task, send_to_task};
 use sanchoris_core::transform::{InputTransformer, render_instruction};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -988,23 +989,15 @@ async fn place_chat(
                     task.name
                 ))));
             };
-            send_to_task(
-                tx,
-                task.id,
-                run_id,
-                &message,
-                &format!("chat:{}", inbound.key),
-                now,
-            )
-            .await?;
-            let mut task = load_task(tx, task.id).await?;
+            let dedupe = format!("chat:{}", inbound.key);
             if task.status == TaskStatus::NeedsYou {
-                task.status = TaskStatus::Running;
-                task.error = None;
-                task.cause = None;
-                task.nudges = 0;
-                task.updated_at = now;
-                store_task(tx, &task, now).await?;
+                let decision = TaskDecision::Resume {
+                    message,
+                    reset_nudges: true,
+                };
+                apply_decision(tx, task.id, run_id, &decision, &dedupe, now).await?;
+            } else {
+                send_to_task(tx, task.id, run_id, &message, &dedupe, now).await?;
             }
             return Ok(Plan::Done(discarded(format!(
                 "delivered to the active task {} as a message",

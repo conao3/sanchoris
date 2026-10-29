@@ -2,8 +2,8 @@ use crate::common;
 
 use common::{REPO, World};
 use sanchoris_core::items::{
-    ConfigRevision, InboundEvent, Pending, SessionDef, SkillDef, Task, Tenant, Trigger,
-    TriggerEvent, TriggerRate,
+    ConfigRevision, HeldMessage, InboundEvent, Pending, SessionDef, SkillDef, Task, Tenant,
+    Trigger, TriggerEvent, TriggerRate,
 };
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
@@ -321,6 +321,53 @@ async fn chat_messages_go_to_the_active_task_of_their_thread() {
     world.worker.settle().await.unwrap();
     let second = world.task("thread-1/2").await;
     assert_eq!(second.status, "RUNNING");
+}
+
+#[tokio::test]
+async fn a_chat_message_resumes_a_task_that_needs_you_with_its_held_messages() {
+    let world = World::new("pro").await;
+    record_message(
+        &world,
+        "web",
+        "h1",
+        web_message("thread-h", "Plan the next release"),
+    )
+    .await;
+    world.worker.settle().await.unwrap();
+    let task = world.task("thread-h/1").await;
+    world
+        .dynamo
+        .modify::<Task>(&keys::task_key(world.tenant(), task.id), |task| {
+            task.status = TaskStatus::NeedsYou;
+            task.error = Some("Task.NudgesExhausted".into());
+            task.cause = Some("stuck".into());
+            task.nudges = 2;
+        })
+        .await;
+    world
+        .dynamo
+        .put(&HeldMessage {
+            tenant_id: world.tenant(),
+            task_id: task.id,
+            created_at: world.clock_now(),
+            dedupe_key: "skill:1:2:succeeded".into(),
+            text: "[sanchoris] The skill succeeded.".into(),
+        })
+        .await;
+    record_message(&world, "web", "h2", web_message("thread-h", "Go on")).await;
+    world.worker.settle().await.unwrap();
+    let resumed = world.task("thread-h/1").await;
+    assert_eq!(resumed.status, "RUNNING");
+    assert_eq!(resumed.nudges, 0);
+    assert_eq!(resumed.error, None);
+    assert_eq!(
+        world.messages(task.run_id.unwrap()).await,
+        vec![
+            "[sanchoris] The skill succeeded.".to_string(),
+            "[sanchoris] Message from Mika:\nGo on".to_string(),
+        ]
+    );
+    assert!(world.dynamo.all::<HeldMessage>().await.is_empty());
 }
 
 #[tokio::test]
