@@ -37,15 +37,15 @@
   --font-sans: "IBM Plex Sans", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
-  --text-2xs: 11px;
-  --text-xs: 11.5px;
-  --text-sm: 12px;
-  --text-ctl: 12.5px;
-  --text-base: 13px;
-  --text-lg: 15px;
-  --text-h1: 20px;
+  --text-2xs: 12px;
+  --text-xs: 13px;
+  --text-sm: 14px;
+  --text-ctl: 14px;
+  --text-base: 15px;
+  --text-lg: 17px;
+  --text-h1: 23px;
   --text-h1--line-height: 1.25;
-  --text-auth: 24px;
+  --text-auth: 27px;
   --text-auth--line-height: 1.25;
 }
 
@@ -55,7 +55,7 @@
     margin: 0;
     background: var(--color-bg);
     color: var(--color-ink);
-    font: 13px/1.5 var(--font-sans);
+    font: 15px/1.5 var(--font-sans);
     font-variant-numeric: tabular-nums;
   }
 

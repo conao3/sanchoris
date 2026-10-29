@@ -156,7 +156,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
     'g s': () => void navigate({ to: '/settings' }),
   });
   return (
-    <div className="grid h-screen grid-cols-[208px_1fr] overflow-hidden">
+    <div className="grid h-screen grid-cols-[232px_1fr] overflow-hidden">
       <Sidebar />
       {children}
     </div>
@@ -219,7 +219,7 @@ export function Pg({ children, className }: { children: ReactNode; className?: s
 
 export function Cols({ main, aside }: { main: ReactNode; aside: ReactNode }) {
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[1fr_300px]">
+    <div className="grid min-h-0 flex-1 grid-cols-[1fr_340px]">
       <div className="min-h-0 min-w-0 overflow-auto px-6 py-5">{main}</div>
       <aside className="min-h-0 overflow-auto border-l border-line px-[22px] py-5">{aside}</aside>
     </div>

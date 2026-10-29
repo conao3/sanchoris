@@ -20,7 +20,7 @@ export function Kbd({ children, tone = 'plain' }: { children: ReactNode; tone?: 
   return (
     <span
       className={clsx(
-        'inline-block rounded-kbd border px-[5px] font-mono text-2xs leading-4',
+        'inline-block rounded-kbd border px-[5px] font-mono text-2xs leading-5',
         tone === 'plain' && 'border-line2 bg-bg text-muted',
         tone === 'button' && 'ml-0.5 border-line bg-bg text-muted',
         tone === 'inverse' && 'ml-0.5 border-[#52525b] bg-transparent text-line2',
@@ -79,7 +79,7 @@ function fixedColumns(cols: string): string {
 export function Th({ cols, children }: { cols: string; children: ReactNode }) {
   return (
     <div
-      className="grid h-7 items-center gap-3.5 border-b border-line2 px-1 text-xs text-muted"
+      className="grid h-8 items-center gap-3.5 border-b border-line2 px-1 text-xs text-muted"
       style={{ gridTemplateColumns: fixedColumns(cols) }}
     >
       {children}
@@ -108,7 +108,7 @@ export function Row({
       onClick={onClick}
       className={clsx(
         'grid items-center gap-3.5 border-b border-line px-1 last:border-b-0 hover:bg-sub',
-        tall ? 'min-h-12 py-1.5' : 'min-h-9',
+        tall ? 'min-h-14 py-1.5' : 'min-h-10',
         selected && 'bg-sub shadow-[inset_2px_0_0_var(--color-ink)]',
         onClick && 'cursor-pointer',
       )}
@@ -199,7 +199,7 @@ export function Dim({ children, className, style }: { children: ReactNode; class
 
 export function Kv({ items }: { items: [ReactNode, ReactNode][] }) {
   return (
-    <div className="grid grid-cols-[92px_1fr] gap-x-2.5 gap-y-[7px]">
+    <div className="grid grid-cols-[112px_1fr] gap-x-2.5 gap-y-[7px]">
       {items.map(([key, value], index) => (
         <div key={index} className="contents">
           <span className="text-muted">{key}</span>
@@ -223,7 +223,7 @@ export function Skeleton({ rows = 4 }: { rows?: number }) {
   return (
     <div aria-busy="true" aria-label={t('common.loading')}>
       {Array.from({ length: rows }, (_, index) => (
-        <div key={index} className="grid h-9 grid-cols-[90px_1fr_60px] items-center gap-3.5 border-b border-line">
+        <div key={index} className="grid h-10 grid-cols-[100px_1fr_70px] items-center gap-3.5 border-b border-line">
           <i className="block h-2.5 rounded-[3px] bg-hover" />
           <i className="block h-2.5 rounded-[3px] bg-hover" />
           <i className="block h-2.5 rounded-[3px] bg-hover" />

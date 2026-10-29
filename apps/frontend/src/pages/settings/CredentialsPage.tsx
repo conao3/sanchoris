@@ -42,7 +42,7 @@ export function CredentialsPage() {
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
       {!data && !error ? <Skeleton rows={4} /> : null}
       {tenant && connect ? (
-        <div className="mb-4 grid grid-cols-[1fr_300px] gap-10 border-b border-line pb-4">
+        <div className="mb-4 grid grid-cols-[1fr_340px] gap-10 border-b border-line pb-4">
           <div>
             <Section first>{t('setup.connectSubscription')}</Section>
             <Dim className="mb-2">{t('setup.connectSubscriptionDetail')}</Dim>

@@ -218,7 +218,7 @@ export function FlowDiagram({
           ))}
           {edges.map((edge) =>
             edge.label ? (
-              <text key={`${edge.key}-label`} x={edge.path.labelX} y={edge.path.labelY} fontSize="11" fill={edge.danger ? danger : muted}>
+              <text key={`${edge.key}-label`} x={edge.path.labelX} y={edge.path.labelY} fontSize="12" fill={edge.danger ? danger : muted}>
                 {edge.label}
               </text>
             ) : null,

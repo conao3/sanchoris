@@ -136,7 +136,7 @@ export function MembersPage() {
               {canManage && member.role !== 'OWNER' && (viewerRole === 'OWNER' || member.role !== 'ADMIN') ? (
                 <select
                   aria-label={t('col.role')}
-                  className="h-6 rounded-ui border border-line2 bg-bg px-1 text-sm"
+                  className="h-7 rounded-ui border border-line2 bg-bg px-1 text-sm"
                   value={member.role}
                   onClick={(event) => event.stopPropagation()}
                   onChange={(event) => void changeRole({ variables: { memberId: member.id, role: event.target.value as Role } })}
