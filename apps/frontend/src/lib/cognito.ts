@@ -132,3 +132,8 @@ export async function authorizedFetch(input: RequestInfo | URL, init?: RequestIn
   }
   return refreshed;
 }
+
+export function signOut(): void {
+  clearTokens();
+  window.location.assign(getLogoutUrl());
+}

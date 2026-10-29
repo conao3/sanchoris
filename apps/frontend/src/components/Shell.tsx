@@ -1,9 +1,10 @@
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router';
 import clsx from 'clsx';
 import type { LucideIcon } from 'lucide-react';
-import { Check, ChevronsUpDown, House, ListChecks, MessageSquare, Plus, Puzzle, Settings, ShieldCheck, Zap } from 'lucide-react';
+import { Check, ChevronsUpDown, House, ListChecks, LogOut, MessageSquare, Plus, Puzzle, Settings, ShieldCheck, Zap } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { type MessageKey, t } from '../i18n';
+import { signOut } from '../lib/cognito';
 import { useKeys } from '../lib/keys';
 import { useTenant } from '../lib/tenant';
 import { Icon, Kbd } from './ui';
@@ -97,8 +98,39 @@ function TenantSwitcher() {
   );
 }
 
-function Sidebar() {
+function UserMenu() {
   const { viewer, membership } = useTenant();
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      {open ? (
+        <div className="absolute bottom-9 left-0 right-0 z-10 rounded-[8px] border border-line2 bg-bg py-1.5">
+          <div className="truncate px-3.5 pb-1 pt-1.5 text-sm text-muted">{viewer.user.email}</div>
+          <button
+            type="button"
+            onClick={signOut}
+            className="flex w-full items-center gap-2 border-t border-line px-3.5 py-[7px] text-left hover:bg-hover"
+          >
+            <Icon icon={LogOut} />
+            {t('shell.signOut')}
+          </button>
+        </div>
+      ) : null}
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center rounded-ui px-2 py-1.5 text-left text-sm text-muted hover:bg-hover"
+        aria-expanded={open}
+      >
+        {viewer.user.name} · {t(roleLabels[membership.role])}
+        <Icon icon={ChevronsUpDown} className="ml-auto text-faint" />
+      </button>
+    </div>
+  );
+}
+
+function Sidebar() {
+  const { viewer } = useTenant();
   const path = useRouterState({ select: (state) => state.location.pathname });
   return (
     <nav className="flex flex-col gap-0.5 border-r border-line bg-sub px-2.5 py-3">
@@ -110,9 +142,7 @@ function Sidebar() {
       <div className="flex-1" />
       {viewer.isOperator ? <MenuLink item={operatorItem} path={path} /> : null}
       <MenuLink item={settingsItem} path={path} />
-      <div className="px-2 py-1.5 text-sm text-muted">
-        {viewer.user.name} · {t(roleLabels[membership.role])}
-      </div>
+      <UserMenu />
     </nav>
   );
 }

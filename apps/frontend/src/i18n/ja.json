@@ -8,6 +8,7 @@
   "nav.settings": "設定",
   "nav.createTenant": "テナントを作成",
   "shell.switchTenant": "テナントを切り替え",
+  "shell.signOut": "ログアウト",
 
   "role.owner": "オーナー",
   "role.admin": "管理者",

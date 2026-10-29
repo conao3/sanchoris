@@ -8,6 +8,7 @@
   "nav.settings": "Settings",
   "nav.createTenant": "Create tenant",
   "shell.switchTenant": "Switch tenant",
+  "shell.signOut": "Sign out",
 
   "role.owner": "owner",
   "role.admin": "admin",
