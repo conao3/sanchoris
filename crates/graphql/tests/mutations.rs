@@ -7,11 +7,12 @@ use common::World;
 use sanchoris_core::item::Table;
 use sanchoris_core::items::{
     CONFIG_DISABLED, ChangeRequest, Config, Credential, Guard, InboundEvent, Invitation, Member,
-    Membership, OutboxItem, Pending, ReceiveRate, Run, RunEventItem, Tenant, Trigger, User,
+    Membership, OutboxItem, Pending, ReceiveRate, Run, RunEventItem, SkillRunItem, Tenant, Trigger,
+    User,
 };
 use sanchoris_core::jobs::{Job, Relayed};
 use sanchoris_core::keys;
-use sanchoris_core::model::{AuditOrigin, TaskStatus};
+use sanchoris_core::model::{AuditOrigin, SkillRunStatus, TaskStatus};
 use sanchoris_core::receive::window_start;
 use sanchoris_core::tenants::{
     NewTenant, PendingSession, create_tenant, free_github_tenant_key, free_tenant_key,
@@ -1529,4 +1530,94 @@ async fn chat_messages_and_resumes_over_the_receive_limit_are_rate_limited() {
         w.audit(w.acme, "tenant.receive_limit").await.metadata["source"],
         "web"
     );
+}
+
+#[tokio::test]
+async fn a_snoozed_task_leaves_the_needs_you_lists_until_the_snooze_ends() {
+    let w = World::new().await;
+    w.dynamo
+        .modify::<SkillRunItem>(&keys::skill_run_key(w.acme, w.issue_task, 1), |run| {
+            run.status = SkillRunStatus::Waiting;
+            run.finished_at = None;
+        })
+        .await;
+    let needs_you = || async {
+        w.ok(
+            &w.mika,
+            "Tasks",
+            json!({ "tenant": "acme", "filter": { "statuses": ["NEEDS_YOU"], "snoozed": false } }),
+        )
+        .await["tenant"]["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| task["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    let skill_needs_you = || async {
+        w.ok(
+            &w.mika,
+            "Skill",
+            json!({ "tenant": "acme", "name": "open-pr-green-ci" }),
+        )
+        .await["tenant"]["skill"]["states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|state| state["activity"]["needsYou"].as_i64().unwrap())
+            .sum::<i64>()
+    };
+    let issue_task = w.issue_task.to_string();
+    assert!(needs_you().await.contains(&issue_task));
+    let counted = skill_needs_you().await;
+    assert_eq!(counted, 1);
+
+    let until = w.now + Duration::hours(3);
+    w.ok(
+        &w.mika,
+        "SnoozeTask",
+        json!({ "taskId": w.issue_task, "until": iso(until) }),
+    )
+    .await;
+    assert!(!needs_you().await.contains(&issue_task));
+    assert_eq!(skill_needs_you().await, 0);
+    let snoozed = w
+        .ok(
+            &w.mika,
+            "Tasks",
+            json!({ "tenant": "acme", "filter": { "snoozed": true } }),
+        )
+        .await;
+    let snoozed = snoozed["tenant"]["tasks"].as_array().unwrap();
+    assert_eq!(snoozed.len(), 1);
+    assert_eq!(snoozed[0]["id"], issue_task);
+    assert_eq!(snoozed[0]["snoozedUntil"], iso(until));
+    let ends = w
+        .messages()
+        .await
+        .into_iter()
+        .filter_map(|message| match message {
+            Relayed::Send {
+                envelope,
+                deliver_at,
+            } => match envelope.job {
+                Job::TaskSnoozeEnd { task_id, until, .. } => Some((task_id, until, deliver_at)),
+                _ => None,
+            },
+            Relayed::Cancel { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ends, vec![(w.issue_task, until, Some(until))]);
+
+    *w.clock.0.lock().unwrap() = until;
+    assert!(needs_you().await.contains(&issue_task));
+    assert_eq!(skill_needs_you().await, counted);
+    let task = w
+        .ok(
+            &w.mika,
+            "Task",
+            json!({ "tenant": "acme", "id": w.issue_task }),
+        )
+        .await;
+    assert_eq!(task["tenant"]["task"]["snoozedUntil"], Value::Null);
 }

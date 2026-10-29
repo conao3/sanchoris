@@ -165,6 +165,11 @@ impl Worker {
                 task_id,
                 resume_at,
             } => supervisor::resume(self, *tenant_id, *task_id, *resume_at).await,
+            Job::TaskSnoozeEnd {
+                tenant_id,
+                task_id,
+                until,
+            } => supervisor::end_snooze(self, *tenant_id, *task_id, *until).await,
             Job::CheckPoll {
                 tenant_id, wait_id, ..
             } => engine_worker::poll_check(self, *tenant_id, *wait_id).await,

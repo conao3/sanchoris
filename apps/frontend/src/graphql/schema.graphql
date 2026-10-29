@@ -37,7 +37,7 @@ type Mutation {
 
   "Sends the message to the task's agent session and resumes a NEEDS_YOU task."
   resumeTask(input: ResumeTaskInput!): Task!
-  "Postpones a NEEDS_YOU or usage-limited task until the given time."
+  "Takes a NEEDS_YOU or usage-limited task out of the needs-you lists until the given time. A usage-limited task resumes no earlier than that time. Resuming or stopping the task, or a change of its status, ends the snooze."
   snoozeTask(taskId: ID!, until: DateTime!): Task!
   "Stops the task. Its status becomes ABORTED."
   stopTask(taskId: ID!): Task!
@@ -842,6 +842,8 @@ input TaskFilter {
   skillName: String
   "Only tasks that are not finished."
   active: Boolean
+  "Only tasks that are snoozed (true) or that are not (false)."
+  snoozed: Boolean
 }
 
 type Task {
@@ -858,6 +860,7 @@ type Task {
   "When a usage-limited task resumes."
   resumeAt: DateTime
   autoResume: Boolean!
+  "Until when the task is out of the needs-you lists; null when it is not snoozed."
   snoozedUntil: DateTime
   nudges: Int!
   maxNudges: Int!

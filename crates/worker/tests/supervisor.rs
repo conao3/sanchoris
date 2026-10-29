@@ -3,9 +3,10 @@ use crate::common;
 use chrono::Duration;
 use common::{REPO, World, turn_end_payload};
 use sanchoris_core::channel::RunEventType;
-use sanchoris_core::items::{Tenant, UsageAlert, UsageSnapshot, Workspace};
+use sanchoris_core::items::{Task, Tenant, UsageAlert, UsageSnapshot, Workspace};
 use sanchoris_core::keys;
-use sanchoris_core::store::{Index, SortKey};
+use sanchoris_core::store::{Index, SortKey, retry};
+use sanchoris_core::tasks::{load_task, snoozable, snooze};
 use serde_json::json;
 
 async fn tenant(world: &World) -> Tenant {
@@ -771,4 +772,145 @@ async fn a_skill_notification_waits_in_the_outbox_while_the_usage_limit_holds() 
     world.worker.settle().await.unwrap();
     assert_eq!(world.task(&format!("{REPO}#35")).await.status, "RUNNING");
     assert_eq!(world.runner.started.lock().unwrap().len(), 2);
+}
+
+async fn snooze_task(world: &World, task_id: uuid::Uuid, until: chrono::DateTime<chrono::Utc>) {
+    retry(20, || async {
+        let mut tx = world.store.tx(world.tenant());
+        let mut task = load_task(&mut tx, task_id).await?;
+        assert!(snoozable(&task));
+        snooze(&mut tx, &mut task, until)?;
+        tx.commit().await
+    })
+    .await
+    .unwrap();
+}
+
+async fn snoozed_until(
+    world: &World,
+    task_id: uuid::Uuid,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    world
+        .store
+        .get::<Task>(&keys::task_key(world.tenant(), task_id))
+        .await
+        .unwrap()
+        .unwrap()
+        .snoozed_until
+}
+
+async fn usage_limited(
+    world: &World,
+    number: i64,
+    reset_at: chrono::DateTime<chrono::Utc>,
+) -> uuid::Uuid {
+    let task = world.started_task(number).await;
+    world
+        .sequenced_event(
+            task.run_id.unwrap(),
+            1,
+            RunEventType::TurnEnd,
+            turn_end_payload(
+                1,
+                json!({ "code": "Worker.UsageLimit", "message": "limit", "resetAt": reset_at.timestamp() }),
+            ),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    task.id
+}
+
+#[tokio::test]
+async fn a_snoozed_task_that_needs_you_comes_back_when_the_snooze_ends_and_a_reply_ends_it() {
+    let world = World::new("pro").await;
+    let yaml = common::CONFIG_YAML.replacen(
+        "UsageLimit: { Resume: auto }",
+        "UsageLimit: { Resume: manual }",
+        1,
+    );
+    {
+        let mut state = world.github.state.lock().unwrap();
+        state.head_sha = "config-2".into();
+        state.files.insert("sanchoris.yaml".into(), yaml);
+    }
+    world.resync_config().await;
+    world.worker.settle().await.unwrap();
+    let task_id = usage_limited(&world, 35, world.clock_now() + Duration::hours(1)).await;
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "NEEDS_YOU");
+
+    let until = world.clock_now() + Duration::hours(2);
+    snooze_task(&world, task_id, until).await;
+    world
+        .clock
+        .advance(Duration::hours(2) - Duration::seconds(1));
+    world.worker.settle().await.unwrap();
+    assert_eq!(snoozed_until(&world, task_id).await, Some(until));
+    world.clock.advance(Duration::seconds(1));
+    world.worker.settle().await.unwrap();
+    assert_eq!(snoozed_until(&world, task_id).await, None);
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "NEEDS_YOU");
+
+    let replaced = world.clock_now() + Duration::hours(1);
+    snooze_task(&world, task_id, world.clock_now() + Duration::hours(5)).await;
+    snooze_task(&world, task_id, replaced).await;
+    world.clock.advance(Duration::hours(1));
+    world.worker.settle().await.unwrap();
+    assert_eq!(snoozed_until(&world, task_id).await, None);
+
+    snooze_task(&world, task_id, world.clock_now() + Duration::hours(1)).await;
+    let run_id = world.task(&format!("{REPO}#35")).await.run_id.unwrap();
+    world
+        .run_event(
+            run_id,
+            RunEventType::HumanReply,
+            json!({ "member": "Mika", "text": "Go on." }),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "RUNNING");
+    assert_eq!(snoozed_until(&world, task_id).await, None);
+}
+
+#[tokio::test]
+async fn a_snooze_holds_the_usage_limit_resume_until_it_ends() {
+    let world = World::new("pro").await;
+    let reset_at = world.clock_now() + Duration::hours(2);
+    let task_id = usage_limited(&world, 35, reset_at).await;
+    let waiting = world.task(&format!("{REPO}#35")).await;
+    assert_eq!(waiting.wait_reason.as_deref(), Some("usage_limit"));
+
+    let until = world.clock_now() + Duration::hours(3);
+    snooze_task(&world, task_id, until).await;
+    world.clock.advance(Duration::hours(2));
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "WAITING");
+    world
+        .clock
+        .advance(Duration::hours(1) - Duration::seconds(1));
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "WAITING");
+    world.clock.advance(Duration::seconds(1));
+    world.worker.settle().await.unwrap();
+    let resumed = world.task(&format!("{REPO}#35")).await;
+    assert_eq!(resumed.status, "RUNNING");
+    assert_eq!(snoozed_until(&world, task_id).await, None);
+    assert_eq!(
+        world.messages(resumed.run_id.unwrap()).await,
+        vec!["[sanchoris] Continue where you left off.".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn a_snooze_shortened_after_the_reset_resumes_at_its_new_end() {
+    let world = World::new("pro").await;
+    let reset_at = world.clock_now() + Duration::hours(1);
+    let task_id = usage_limited(&world, 35, reset_at).await;
+    snooze_task(&world, task_id, world.clock_now() + Duration::hours(4)).await;
+    world.clock.advance(Duration::hours(1));
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "WAITING");
+    snooze_task(&world, task_id, world.clock_now() + Duration::minutes(30)).await;
+    world.clock.advance(Duration::minutes(30));
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "RUNNING");
 }

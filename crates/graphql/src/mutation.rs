@@ -14,11 +14,11 @@ use sanchoris_core::items::{
     Task as TaskItem, Trigger as TriggerItem, TriggerEvent as EventItem, User, uniq,
 };
 use sanchoris_core::keys;
-use sanchoris_core::model::{AuditOrigin, TaskStatus as CoreStatus, WaitReason};
+use sanchoris_core::model::{AuditOrigin, TaskStatus as CoreStatus};
 use sanchoris_core::receive::{Admission, SOURCE_CHAT, SOURCE_REPLY, admit_inbound};
 use sanchoris_core::skillrun::{SkillRunError, resolve_waiting_approval};
 use sanchoris_core::store::Update;
-use sanchoris_core::tasks::{abort_task, latest_run, load_task, stop_run};
+use sanchoris_core::tasks::{abort_task, latest_run, load_task, snoozable, snooze, stop_run};
 use sanchoris_core::tenants::{
     NewTenant, TenantError, create_tenant, hold_free_tenant, pending_checkout, release_free_tenant,
 };
@@ -799,18 +799,13 @@ impl MutationRoot {
         write(|| async {
             let mut tx = tx(ctx, scope.tenant_id);
             let mut task = load_task(&mut tx, task_id).await?;
-            let snoozable = task.status == CoreStatus::NeedsYou
-                || (task.status == CoreStatus::Waiting
-                    && task.wait_reason == Some(WaitReason::UsageLimit));
-            if !snoozable {
+            if !snoozable(&task) {
                 return Err(conflict(
                     "only a task that needs you or waits for usage can be snoozed",
                 )
                 .into());
             }
-            task.snoozed_until = Some(until.0);
-            task.updated_at = now(ctx);
-            tx.put(&task)?;
+            snooze(&mut tx, &mut task, until.0)?;
             audit_member(
                 ctx,
                 &mut tx,

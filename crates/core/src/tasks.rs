@@ -32,9 +32,34 @@ pub fn idle_seconds(task: &Task) -> Option<Duration> {
         .map(|seconds| Duration::milliseconds((seconds * 1000.0).round() as i64))
 }
 
+pub fn snoozable(task: &Task) -> bool {
+    task.status == TaskStatus::NeedsYou
+        || (task.status == TaskStatus::Waiting && task.wait_reason == Some(WaitReason::UsageLimit))
+}
+
+pub fn snooze(tx: &mut TenantTx, task: &mut Task, until: DateTime<Utc>) -> Result<(), DbError> {
+    task.snoozed_until = Some(until);
+    tx.put(task)?;
+    tx.emit_at(
+        Job::TaskSnoozeEnd {
+            tenant_id: tx.tenant_id(),
+            task_id: task.id,
+            until,
+        },
+        until,
+    );
+    Ok(())
+}
+
 pub async fn store_task(tx: &mut TenantTx, task: &Task, now: DateTime<Utc>) -> Result<(), DbError> {
     let tenant_id = tx.tenant_id();
     let previous = tx.get::<Task>(&task.key()).await?;
+    let mut task = task.clone();
+    if previous.as_ref().is_some_and(|p| {
+        (p.status, p.wait_reason, &p.error) != (task.status, task.wait_reason, &task.error)
+    }) {
+        task.snoozed_until = None;
+    }
     let before = previous.as_ref().map(|t| t.status);
     let running = |status: Option<TaskStatus>| i64::from(status == Some(TaskStatus::Running));
     let delta = running(Some(task.status)) - running(before);
@@ -53,7 +78,7 @@ pub async fn store_task(tx: &mut TenantTx, task: &Task, now: DateTime<Utc>) -> R
         .is_none_or(|p| p.status != task.status || p.updated_at != task.updated_at);
     if matches!(task.status, TaskStatus::Waiting | TaskStatus::NeedsYou)
         && idle_changed
-        && let Some(idle) = idle_seconds(task)
+        && let Some(idle) = idle_seconds(&task)
         && let Some(run_id) = latest_run(tx, task.id).await?
     {
         tx.emit_at(
@@ -65,7 +90,7 @@ pub async fn store_task(tx: &mut TenantTx, task: &Task, now: DateTime<Utc>) -> R
             task.updated_at.max(now) + idle,
         );
     }
-    tx.put(task)
+    tx.put(&task)
 }
 
 pub async fn runs_of(tx: &mut TenantTx, task_id: Uuid) -> Result<Vec<Run>, DbError> {

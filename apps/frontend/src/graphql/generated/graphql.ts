@@ -230,6 +230,8 @@ export type TaskFilter = {
   /** Only tasks that are not finished. */
   active?: boolean | null | undefined;
   skillName?: string | null | undefined;
+  /** Only tasks that are snoozed (true) or that are not (false). */
+  snoozed?: boolean | null | undefined;
   statuses?: Array<TaskStatus> | null | undefined;
   triggerId?: string | number | null | undefined;
 };

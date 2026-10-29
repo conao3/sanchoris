@@ -143,11 +143,19 @@ pub fn decide_usage_limit(
     }
 }
 
+pub fn usage_limit_resume_at(
+    resume_at: DateTime<Utc>,
+    snoozed_until: Option<DateTime<Utc>>,
+) -> DateTime<Utc> {
+    snoozed_until.map_or(resume_at, |until| until.max(resume_at))
+}
+
 pub fn decide_usage_limit_resume(
     resume_at: DateTime<Utc>,
+    snoozed_until: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
 ) -> Option<TaskDecision> {
-    (now >= resume_at).then(|| TaskDecision::Resume {
+    (now >= usage_limit_resume_at(resume_at, snoozed_until)).then(|| TaskDecision::Resume {
         message: messages::usage_limit_resume_message(),
         reset_nudges: false,
     })
@@ -406,11 +414,24 @@ mod tests {
     fn usage_limit_resumes_after_reset() {
         let reset_at = Utc.with_ymd_and_hms(2026, 10, 27, 12, 0, 0).unwrap();
         assert_eq!(
-            decide_usage_limit_resume(reset_at, reset_at - Duration::seconds(1)),
+            decide_usage_limit_resume(reset_at, None, reset_at - Duration::seconds(1)),
             None
         );
         assert_eq!(
-            decide_usage_limit_resume(reset_at, reset_at),
+            decide_usage_limit_resume(reset_at, Some(reset_at - Duration::hours(1)), reset_at),
+            decide_usage_limit_resume(reset_at, None, reset_at)
+        );
+        let snoozed_until = reset_at + Duration::hours(1);
+        assert_eq!(
+            decide_usage_limit_resume(reset_at, Some(snoozed_until), reset_at),
+            None
+        );
+        assert_eq!(
+            usage_limit_resume_at(reset_at, Some(snoozed_until)),
+            snoozed_until
+        );
+        assert_eq!(
+            decide_usage_limit_resume(reset_at, Some(snoozed_until), snoozed_until),
             Some(TaskDecision::Resume {
                 message: "[sanchoris] Continue where you left off.".into(),
                 reset_nudges: false

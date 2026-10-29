@@ -142,6 +142,7 @@ function createResolvers() {
         }
         task.status = 'RUNNING';
         task.needsYouReason = null;
+        task.snoozedUntil = null;
         task.error = null;
         task.cause = null;
         touch(task);

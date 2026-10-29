@@ -100,7 +100,7 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
   const tasks = tenant.tasks;
   const viewerMemberId = tenant.viewerMember.id;
   const attention: Attention[] = [
-    ...tasks.filter((task) => task.status === 'NEEDS_YOU').map((task) => ({ kind: 'task' as const, task })),
+    ...tasks.filter((task) => task.status === 'NEEDS_YOU' && !task.snoozedUntil).map((task) => ({ kind: 'task' as const, task })),
     ...tenant.credentials
       .filter((credential) => credential.status === 'RECONNECT')
       .map((credential) => ({ kind: 'credential' as const, credential })),

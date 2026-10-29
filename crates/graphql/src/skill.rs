@@ -548,7 +548,8 @@ async fn state_activity(
     scope: Scope,
     skill_name: &str,
 ) -> Result<BTreeMap<String, StateActivity>> {
-    let today = midnight(now(ctx));
+    let at = now(ctx);
+    let today = midnight(at);
     let mut tx = tx(ctx, scope.tenant_id);
     let runs = tx
         .list::<SkillRunItem>(
@@ -568,7 +569,7 @@ async fn state_activity(
                 .require::<TaskItem>(&keys::task_key(scope.tenant_id, run.task_id))
                 .await?;
             let entry = activity.entry(state.clone()).or_default();
-            if task.status == CoreTaskStatus::NeedsYou {
+            if task.status == CoreTaskStatus::NeedsYou && !task.is_snoozed(at) {
                 entry.needs_you += 1;
             } else if run.status == CoreRunStatus::WaitingAgent {
                 entry.with_agent += 1;

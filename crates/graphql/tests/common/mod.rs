@@ -533,6 +533,7 @@ pub struct World {
     pub schema: SanchorisSchema,
     pub recorder: Arc<Recorder>,
     pub encryptor: Arc<AesGcmEncryptor>,
+    pub clock: Arc<FixedClock>,
     pub now: DateTime<Utc>,
     pub acme: Uuid,
     pub globex: Uuid,
@@ -1637,7 +1638,7 @@ impl World {
                 chat: fakes.clone(),
                 audit_export: fakes.clone(),
                 encryptor: encryptor.clone(),
-                clock,
+                clock: clock.clone(),
             },
         );
         let person = |user_id, member_id, email: &str| Person {
@@ -1662,6 +1663,7 @@ impl World {
             schema,
             recorder,
             encryptor,
+            clock,
             now,
             acme,
             globex,

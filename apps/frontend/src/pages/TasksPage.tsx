@@ -7,7 +7,7 @@ import { Menu } from '../components/Menu';
 import { Page, Pg } from '../components/Shell';
 import { TaskState } from '../components/status';
 import { Dim, Empty, ErrorNote, Id, Row, Skeleton, Sub, Th, Title } from '../components/ui';
-import { type TaskFilter, type TaskRowFragment, type TaskStatus, TasksDocument } from '../graphql/generated/graphql';
+import { type TaskFilter, type TaskRowFragment, TasksDocument } from '../graphql/generated/graphql';
 import { t } from '../i18n';
 import { age, issueLabel, usd } from '../lib/format';
 import { useListNav } from '../lib/keys';
@@ -22,7 +22,7 @@ type StateFilter = 'all' | 'active' | 'needsYou' | 'finished';
 const stateFilters: Record<StateFilter, TaskFilter> = {
   all: {},
   active: { active: true },
-  needsYou: { statuses: ['NEEDS_YOU'] },
+  needsYou: { statuses: ['NEEDS_YOU'], snoozed: false },
   finished: { statuses: ['SUCCEEDED', 'FAILED', 'ABORTED'] },
 };
 
@@ -33,15 +33,15 @@ const stateLabels = {
   finished: 'tasks.stateFinished',
 } as const;
 
-function rank(status: TaskStatus): number {
-  return status === 'NEEDS_YOU' ? 0 : 1;
+function rank(task: TaskRowFragment): number {
+  return task.status === 'NEEDS_YOU' && !task.snoozedUntil ? 0 : 1;
 }
 
 function asTree(tasks: TaskRowFragment[]): { task: TaskRowFragment; child: boolean }[] {
   const ids = new Set(tasks.map((task) => task.id));
   const roots = tasks
     .filter((task) => !task.parent || !ids.has(task.parent.id))
-    .sort((a, b) => rank(a.status) - rank(b.status) || b.updatedAt.localeCompare(a.updatedAt));
+    .sort((a, b) => rank(a) - rank(b) || b.updatedAt.localeCompare(a.updatedAt));
   return roots.flatMap((root) => [
     { task: root, child: false },
     ...tasks.filter((task) => task.parent?.id === root.id).map((task) => ({ task, child: true })),

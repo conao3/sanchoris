@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::account::Member;
 use crate::config::Session;
-use crate::context::{Scope, tx};
+use crate::context::{Scope, now, tx};
 use crate::enums::{
     ChannelKind, ChatAuthorKind, LogLineKind, NeedsYouReason, OutputKind, OutputState,
     PendingReason, Provider, RequesterKind, RequiredSkillState, RunStatus, TaskStatus, WaitReason,
@@ -36,6 +36,7 @@ pub(crate) struct TaskFilter {
     pub trigger_id: Option<ID>,
     pub skill_name: Option<String>,
     pub active: Option<bool>,
+    pub snoozed: Option<bool>,
 }
 
 pub(crate) struct Task {
@@ -107,6 +108,7 @@ impl Task {
                 .collect::<Vec<_>>()
         });
         let trigger_id = filter.trigger_id.as_ref().map(parse_id).transpose()?;
+        let at = now(ctx);
         let mut tasks = Self::listed(ctx, scope, |task| {
             statuses
                 .as_ref()
@@ -119,10 +121,14 @@ impl Task {
                 && filter
                     .active
                     .is_none_or(|active| task.status.is_terminal() != active)
+                && filter
+                    .snoozed
+                    .is_none_or(|snoozed| task.is_snoozed(at) == snoozed)
         })
         .await?;
         tasks.sort_by(|a, b| {
-            let needs_you = |task: &Task| task.row.status == CoreStatus::NeedsYou;
+            let needs_you =
+                |task: &Task| task.row.status == CoreStatus::NeedsYou && !task.row.is_snoozed(at);
             (needs_you(b), b.row.updated_at, a.row.id).cmp(&(
                 needs_you(a),
                 a.row.updated_at,
@@ -346,8 +352,12 @@ impl Task {
         Ok(self.definition()?.session.definition["UsageLimit"]["Resume"] == "auto")
     }
 
-    async fn snoozed_until(&self) -> Option<Timestamp> {
-        ts_opt(self.row.snoozed_until)
+    async fn snoozed_until(&self, ctx: &Context<'_>) -> Option<Timestamp> {
+        ts_opt(
+            self.row
+                .snoozed_until
+                .filter(|_| self.row.is_snoozed(now(ctx))),
+        )
     }
 
     async fn nudges(&self) -> Result<i32> {

@@ -1313,6 +1313,10 @@ pub fn split_github_task_name(name: &str) -> Option<(i64, &str)> {
 }
 
 impl Task {
+    pub fn is_snoozed(&self, now: DateTime<Utc>) -> bool {
+        self.snoozed_until.is_some_and(|until| until > now)
+    }
+
     pub fn repository_id(&self) -> Option<i64> {
         split_github_task_name(&self.name).map(|(id, _)| id)
     }

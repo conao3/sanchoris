@@ -9,7 +9,7 @@ use sanchoris_core::jobs::Job;
 use sanchoris_core::lifecycle::{
     ERROR_WORKSPACE_STOPPED, RequiredSkill, TaskDecision, TaskLimits, TaskProgress, TurnEnd,
     check_limits, decide_human_reply, decide_turn_end, decide_usage_limit,
-    decide_usage_limit_resume,
+    decide_usage_limit_resume, usage_limit_resume_at,
 };
 use sanchoris_core::model::{
     SkillRunStatus, TaskDefinition, TaskStatus, UsageLimitResume, WaitReason,
@@ -381,14 +381,14 @@ pub async fn resume(
     if !waiting {
         return Ok(0);
     }
-    let Some(decision) = decide_usage_limit_resume(resume_at, now) else {
+    let Some(decision) = decide_usage_limit_resume(resume_at, task.snoozed_until, now) else {
         tx.emit_at(
             Job::TaskResume {
                 tenant_id,
                 task_id,
                 resume_at,
             },
-            resume_at,
+            usage_limit_resume_at(resume_at, task.snoozed_until),
         );
         tx.commit().await?;
         return Ok(0);
@@ -405,6 +405,48 @@ pub async fn resume(
         now,
     )
     .await?;
+    tx.commit().await?;
+    Ok(1)
+}
+
+pub async fn end_snooze(
+    worker: &Worker,
+    tenant_id: Uuid,
+    task_id: Uuid,
+    until: DateTime<Utc>,
+) -> Result<usize> {
+    let mut tx = worker.tx(tenant_id);
+    let mut task = load_task(&mut tx, task_id).await?;
+    if task.snoozed_until != Some(until) {
+        return Ok(0);
+    }
+    if task.is_snoozed(worker.now()) {
+        tx.emit_at(
+            Job::TaskSnoozeEnd {
+                tenant_id,
+                task_id,
+                until,
+            },
+            until,
+        );
+        tx.commit().await?;
+        return Ok(0);
+    }
+    task.snoozed_until = None;
+    tx.put(&task)?;
+    if task.status == TaskStatus::Waiting
+        && task.wait_reason == Some(WaitReason::UsageLimit)
+        && let Some(resume_at) = task.resume_at
+    {
+        tx.emit_at(
+            Job::TaskResume {
+                tenant_id,
+                task_id,
+                resume_at,
+            },
+            resume_at,
+        );
+    }
     tx.commit().await?;
     Ok(1)
 }
