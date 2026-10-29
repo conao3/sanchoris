@@ -134,7 +134,7 @@ Secrets (the rows marked *secret*) come from the environment in `sanchoris all` 
 
 ### GraphQL API
 
-`POST /api/graphql` runs the `crates/graphql` schema behind the Cognito JWT check. Queries and mutations run in a `TenantTx` of a tenant the signed-in user is a member of, which rejects every key outside that tenant's partitions (`docs/architecture.md`, "Tenant isolation"). The schema refuses queries deeper than `MAX_DEPTH` (12) or more complex than `MAX_COMPLEXITY` (400 fields) and answers introspection with `null`; the frontend codegen reads `apps/frontend/src/graphql/schema.graphql` instead.
+`POST /api/graphql` runs the `crates/graphql` schema behind the Cognito JWT check. Queries and mutations run in a `TenantTx` of a tenant the signed-in user is a member of, which rejects every key outside that tenant's partitions (`docs/architecture.md`, "Tenant isolation"). The schema refuses queries deeper than `MAX_DEPTH` (12) or more complex than `MAX_COMPLEXITY` (400 fields) and answers introspection with `null`; the frontend codegen reads `apps/frontend/src/graphql/schema.graphql` instead. A resolver error without a `code` extension (storage, port, and decoding failures) reaches the client as `internal error` with the code `INTERNAL`, and its detail goes to stderr.
 
 The schema's ports are wired as follows:
 

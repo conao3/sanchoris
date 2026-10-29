@@ -39,6 +39,7 @@ pub fn build_schema(store: Store, deps: GraphqlDeps) -> SanchorisSchema {
         .limit_depth(MAX_DEPTH)
         .limit_complexity(MAX_COMPLEXITY)
         .disable_introspection()
+        .extension(error::HideInternalErrors)
         .finish()
 }
 
