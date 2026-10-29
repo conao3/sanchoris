@@ -269,8 +269,8 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
   const aside = (
     <>
       <Section first>{t('home.concurrency')}</Section>
-      <Segments filled={usage.runningRuns} total={plan.concurrencyLimit} />
-      <Dim className="mt-1.5">{t('home.runsOf', { n: usage.runningRuns, total: plan.concurrencyLimit })}</Dim>
+      <Segments filled={usage.liveWorkspaces} total={plan.concurrencyLimit} />
+      <Dim className="mt-1.5">{t('home.workspacesOf', { n: usage.liveWorkspaces, total: plan.concurrencyLimit })}</Dim>
 
       <UsageMeter
         title={t(plan.limitPeriod === 'MONTH' ? 'home.tasksThisMonth' : 'home.tasksInTotal')}

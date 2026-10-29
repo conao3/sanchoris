@@ -1,6 +1,6 @@
 query OperatorTenants {
   operator {
-    runningRuns
+    liveWorkspaces
     runHoursThisMonth
     revenueThisMonthUsd
     tenants {

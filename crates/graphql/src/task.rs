@@ -297,9 +297,10 @@ impl Task {
         }
         let (tenant, plan) = db::tenant_plan(&mut tx).await?;
         let limited = tenant.status != "active"
-            || plan
-                .task_limit
-                .is_some_and(|limit| tenant.tasks_this_period >= limit)
+            || (self.row.started_at.is_none()
+                && plan
+                    .task_limit
+                    .is_some_and(|limit| tenant.tasks_this_period >= limit))
             || plan
                 .workspace_seconds_limit
                 .is_some_and(|limit| tenant.workspace_seconds_this_period >= limit);

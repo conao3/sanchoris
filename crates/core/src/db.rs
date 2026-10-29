@@ -9,9 +9,8 @@ use crate::items::{
 };
 use crate::jobs::Job;
 use crate::keys;
-use crate::model::{TaskDefinition, TaskStatus, TriggerEventResult};
-use crate::store::Update;
-use crate::tasks::store_task;
+use crate::model::{TaskDefinition, TaskStatus, TriggerEventResult, WaitReason};
+use crate::tasks::{free_slots, open_run, slot_update, store_task};
 
 pub use crate::store::{DbError, MAX_TRANSACTION_ITEMS, Store, TenantTx};
 
@@ -271,24 +270,18 @@ pub async fn dispatch_pending_tasks(
 ) -> Result<Vec<DispatchedTask>, DbError> {
     let tenant_id = tx.tenant_id();
     let (tenant, plan) = tenant_plan(tx).await?;
-    if tenant.status != "active"
-        || plan
-            .workspace_seconds_limit
-            .is_some_and(|limit| tenant.workspace_seconds_this_period >= limit)
-    {
-        return Ok(Vec::new());
-    }
-    let slots = plan
-        .task_limit
-        .map_or(i64::MAX, |limit| limit - tenant.tasks_this_period)
-        .min(plan.max_concurrency - tenant.running_tasks);
+    let slots = free_slots(&tenant, &plan);
     if slots <= 0 {
         return Ok(Vec::new());
     }
+    let new_slots = plan
+        .task_limit
+        .map_or(i64::MAX, |limit| limit - tenant.tasks_this_period);
     let markers = tx
         .query::<PendingTask>(&keys::tenant_pk(tenant_id), "PENDINGTASK#")
         .await?;
-    let mut picked = Vec::new();
+    let mut picked: Vec<(PendingTask, Task, Option<Run>)> = Vec::new();
+    let mut new_tasks = 0;
     let mut stale = Vec::new();
     for marker in markers {
         if i64::try_from(picked.len()).expect("small") >= slots {
@@ -296,68 +289,62 @@ pub async fn dispatch_pending_tasks(
         }
         let task = tx
             .get::<Task>(&keys::task_key(tenant_id, marker.task_id))
-            .await?;
-        let Some(task) = task.filter(|t| t.status == TaskStatus::Pending) else {
+            .await?
+            .filter(|t| t.status == TaskStatus::Pending)
+            .filter(|t| picked.iter().all(|(_, other, _)| other.id != t.id));
+        let Some(task) = task else {
             stale.push(marker.key());
             continue;
         };
         if is_blocked(tx, task.id).await? {
             continue;
         }
-        picked.push((marker, task));
+        if task.started_at.is_none() {
+            if new_tasks >= new_slots {
+                continue;
+            }
+            new_tasks += 1;
+        }
+        let run = open_run(tx, task.id).await?;
+        picked.push((marker, task, run));
     }
     let mut dispatched = Vec::new();
-    for (marker, mut task) in picked {
+    for (marker, mut task, open) in picked {
         tx.delete(&marker.key())?;
-        let run_id = Uuid::new_v4();
-        task.status = TaskStatus::Running;
         task.started_at = Some(task.started_at.unwrap_or(now));
         task.updated_at = now;
-        task.runs += 1;
-        let definition = &task.definition;
-        let session = &definition["Session"];
-        let run = Run {
-            id: run_id,
-            tenant_id,
-            task_id: task.id,
-            number: task.runs,
-            session_name: session["Name"].as_str().unwrap_or_default().to_string(),
-            worker: session["Definition"]["Worker"]["Agent"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            model: session["Definition"]["Worker"]["Model"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            agent_session_id: None,
-            status: "creating".into(),
-            turns: 0,
-            cost_usd: 0.0,
-            instance_costs: Default::default(),
-            summary: None,
-            error: None,
-            resume_branch: None,
-            record_s3_key: None,
-            log_s3_key: None,
-            last_heartbeat_at: None,
-            started_at: now,
-            finished_at: None,
-            updated_at: now,
+        let run_id = match open {
+            Some(mut run) => {
+                task.status = match task.wait_reason {
+                    Some(WaitReason::Skill | WaitReason::Chat) => TaskStatus::Waiting,
+                    _ => TaskStatus::Running,
+                };
+                store_task(tx, &task, now).await?;
+                run.holds_slot = true;
+                run.updated_at = now;
+                tx.put(&run)?;
+                run.id
+            }
+            None => {
+                task.status = TaskStatus::Running;
+                task.runs += 1;
+                let run = new_run(&task, now);
+                store_task(tx, &task, now).await?;
+                tx.insert(&run)?;
+                tx.insert(&RunChannel {
+                    tenant_id,
+                    run_id: run.id,
+                    task_id: task.id,
+                    next_outbox_seq: 1,
+                    instances: 0,
+                    connection_id: None,
+                    connection_instance: None,
+                    connection_started: false,
+                })?;
+                insert_ref(tx, run.id, REF_RUN, run.key(), Some(task.id))?;
+                run.id
+            }
         };
-        store_task(tx, &task, now).await?;
-        tx.insert(&run)?;
-        tx.insert(&RunChannel {
-            tenant_id,
-            run_id,
-            task_id: task.id,
-            next_outbox_seq: 1,
-            instances: 0,
-            connection_id: None,
-            connection_instance: None,
-            connection_started: false,
-        })?;
-        insert_ref(tx, run_id, REF_RUN, run.key(), Some(task.id))?;
         tx.emit(Job::Reconcile {
             tenant_id,
             task_id: task.id,
@@ -369,25 +356,49 @@ pub async fn dispatch_pending_tasks(
         });
     }
     if !dispatched.is_empty() {
-        reserve_dispatched(tx, &plan, dispatched.len())?;
+        let count = i64::try_from(dispatched.len()).expect("small");
+        let mut update = slot_update(&plan, count).add("tasks_this_period", new_tasks);
+        if let Some(limit) = plan.task_limit {
+            update = update.cap_after("tasks_this_period", limit);
+        }
+        tx.update(&keys::tenant_key(tenant_id), update)?;
     }
     delete_stale_markers(tx, stale)?;
     Ok(dispatched)
 }
 
-fn reserve_dispatched(tx: &mut TenantTx, plan: &Plan, dispatched: usize) -> Result<(), DbError> {
-    let count = i64::try_from(dispatched).expect("small");
-    let mut update = Update::new()
-        .add("tasks_this_period", count)
-        .cap_after("running_tasks", plan.max_concurrency)
-        .require(
-            "status",
-            aws_sdk_dynamodb::types::AttributeValue::S("active".into()),
-        );
-    if let Some(limit) = plan.task_limit {
-        update = update.cap_after("tasks_this_period", limit);
+fn new_run(task: &Task, now: DateTime<Utc>) -> Run {
+    let session = &task.definition["Session"];
+    Run {
+        id: Uuid::new_v4(),
+        tenant_id: task.tenant_id,
+        task_id: task.id,
+        number: task.runs,
+        session_name: session["Name"].as_str().unwrap_or_default().to_string(),
+        worker: session["Definition"]["Worker"]["Agent"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        model: session["Definition"]["Worker"]["Model"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        agent_session_id: None,
+        status: "creating".into(),
+        holds_slot: true,
+        turns: 0,
+        cost_usd: 0.0,
+        instance_costs: Default::default(),
+        summary: None,
+        error: None,
+        resume_branch: None,
+        record_s3_key: None,
+        log_s3_key: None,
+        last_heartbeat_at: None,
+        started_at: now,
+        finished_at: None,
+        updated_at: now,
     }
-    tx.update(&keys::tenant_key(tx.tenant_id()), update)
 }
 
 fn delete_stale_markers(tx: &mut TenantTx, stale: Vec<Key>) -> Result<(), DbError> {

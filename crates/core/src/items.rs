@@ -261,7 +261,7 @@ pub struct Tenant {
     pub period_start: DateTime<Utc>,
     pub tasks_this_period: i64,
     pub workspace_seconds_this_period: i64,
-    pub running_tasks: i64,
+    pub live_workspaces: i64,
     pub status: String,
     pub suspended_reason: Option<String>,
     pub stripe_customer_id: Option<String>,
@@ -288,7 +288,7 @@ impl Entity for Tenant {
                 "workspace_seconds_this_period",
                 self.workspace_seconds_this_period,
             )
-            .n("running_tasks", self.running_tasks)
+            .n("live_workspaces", self.live_workspaces)
             .s("status", &self.status)
             .opt_s("suspended_reason", self.suspended_reason.as_ref())
             .opt_s("stripe_customer_id", self.stripe_customer_id.as_ref())
@@ -308,7 +308,7 @@ impl Entity for Tenant {
             period_start: r.time("period_start")?,
             tasks_this_period: r.n("tasks_this_period")?,
             workspace_seconds_this_period: r.n("workspace_seconds_this_period")?,
-            running_tasks: r.n("running_tasks")?,
+            live_workspaces: r.n("live_workspaces")?,
             status: r.s("status")?,
             suspended_reason: r.opt_s("suspended_reason")?,
             stripe_customer_id: r.opt_s("stripe_customer_id")?,
@@ -1527,6 +1527,7 @@ pub struct Run {
     pub model: String,
     pub agent_session_id: Option<String>,
     pub status: String,
+    pub holds_slot: bool,
     pub turns: i64,
     pub cost_usd: f64,
     pub instance_costs: BTreeMap<String, f64>,
@@ -1564,6 +1565,7 @@ impl Entity for Run {
             .s("model", &self.model)
             .opt_s("agent_session_id", self.agent_session_id.as_ref())
             .s("status", &self.status)
+            .b("holds_slot", self.holds_slot)
             .n("turns", self.turns)
             .f("cost_usd", self.cost_usd)
             .json(
@@ -1581,10 +1583,6 @@ impl Entity for Run {
             .time("updated_at", self.updated_at)
             .s("gsi1pk", keys::runs_index(self.tenant_id))
             .s("gsi1sk", keys::time_id(self.started_at, self.id));
-        if !self.is_finished() {
-            w.s("gsi2pk", keys::open_runs_index(self.tenant_id))
-                .s("gsi2sk", keys::time_id(self.started_at, self.id));
-        }
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -1598,6 +1596,7 @@ impl Entity for Run {
             model: r.s("model")?,
             agent_session_id: r.opt_s("agent_session_id")?,
             status: r.s("status")?,
+            holds_slot: r.b("holds_slot")?,
             turns: r.n("turns")?,
             cost_usd: r.f("cost_usd")?,
             instance_costs: serde_json::from_value(r.json("instance_costs")?)

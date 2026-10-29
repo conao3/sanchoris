@@ -7,6 +7,7 @@ use sanchoris_core::items::{
     Workspace as WorkspaceItem, github_repositories,
 };
 use sanchoris_core::keys;
+use sanchoris_core::model::TaskStatus as CoreTaskStatus;
 use sanchoris_core::store::{Index, Listing, SortKey};
 use serde_json::Value;
 use uuid::Uuid;
@@ -22,7 +23,7 @@ use crate::enums::{
 use crate::error::{not_found, parse_id};
 use crate::scalars::{Timestamp, ts, ts_opt};
 use crate::skill::Skill;
-use crate::task::{Task, TaskFilter};
+use crate::task::{Task, TaskFilter, latest_tasks};
 use crate::trigger::{Trigger, TriggerEvent};
 
 pub(crate) struct Tenant {
@@ -173,7 +174,6 @@ impl Tenant {
         self.scope.operator_or_member()?;
         let plan = Plan::load(ctx, &self.row.plan_id).await?;
         let seats = seats_used(ctx, self.scope.tenant_id, now(ctx)).await?;
-        let running = running_runs(ctx, self.scope.tenant_id).await?;
         let period_end = match plan.period()? {
             LimitPeriod::Month => Some(
                 self.row
@@ -189,7 +189,7 @@ impl Tenant {
             tasks_this_period: i32::try_from(self.row.tasks_this_period)?,
             workspace_seconds_this_period: i32::try_from(self.row.workspace_seconds_this_period)?,
             seats_used: i32::try_from(seats)?,
-            running_runs: running,
+            live_workspaces: i32::try_from(self.row.live_workspaces)?,
         })
     }
 
@@ -240,8 +240,14 @@ impl Tenant {
                     .expect("runs in the window are after its start");
             buckets[index.min(23)] += 1;
         }
+        let running_tasks = tx
+            .list::<TaskItem>(&latest_tasks(tenant_id), |task| {
+                task.status == CoreTaskStatus::Running
+            })
+            .await?
+            .len();
         Ok(Activity {
-            running_tasks: i32::try_from(self.row.running_tasks)?,
+            running_tasks: i32::try_from(running_tasks)?,
             runs_today: i32::try_from(runs_today)?,
             cost_today_usd: cost_today,
             pull_requests_opened_today: i32::try_from(pull_requests_today)?,
@@ -400,16 +406,6 @@ pub(crate) async fn seats_used(
     Ok(members + pending)
 }
 
-pub(crate) async fn running_runs(ctx: &Context<'_>, tenant_id: Uuid) -> Result<i32> {
-    let runs = tx(ctx, tenant_id)
-        .list::<RunItem>(
-            &Listing::index(Index::Gsi2, keys::open_runs_index(tenant_id)),
-            |run| !run.is_finished(),
-        )
-        .await?;
-    Ok(i32::try_from(runs.len())?)
-}
-
 fn detail_str<'a>(row: &'a IntegrationItem, key: &str) -> Option<&'a str> {
     row.details.get(key).and_then(Value::as_str)
 }
@@ -436,7 +432,7 @@ pub(crate) struct TenantUsage {
     tasks_this_period: i32,
     workspace_seconds_this_period: i32,
     seats_used: i32,
-    running_runs: i32,
+    live_workspaces: i32,
 }
 
 #[Object]
@@ -461,8 +457,8 @@ impl TenantUsage {
         self.seats_used
     }
 
-    async fn running_runs(&self) -> i32 {
-        self.running_runs
+    async fn live_workspaces(&self) -> i32 {
+        self.live_workspaces
     }
 }
 
@@ -655,10 +651,18 @@ impl Operator {
         Ok(tenants)
     }
 
-    async fn running_runs(&self, ctx: &Context<'_>) -> Result<i32> {
+    async fn live_workspaces(&self, ctx: &Context<'_>) -> Result<i32> {
         let mut total = 0;
         for tenant_id in &self.tenant_ids {
-            total += running_runs(ctx, *tenant_id).await?;
+            let tenant = Tenant::load(
+                ctx,
+                Scope {
+                    tenant_id: *tenant_id,
+                    access: Access::Operator,
+                },
+            )
+            .await?;
+            total += i32::try_from(tenant.row.live_workspaces)?;
         }
         Ok(total)
     }

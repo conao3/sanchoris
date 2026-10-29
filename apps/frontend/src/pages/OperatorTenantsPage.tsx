@@ -50,7 +50,7 @@ export function OperatorTenantsPage() {
           {operator
             ? t('operator.intro', {
                 n: tenants.length,
-                runs: operator.runningRuns,
+                workspaces: operator.liveWorkspaces,
                 hours: Math.round(operator.runHoursThisMonth),
                 revenue: `$${operator.revenueThisMonthUsd}`,
               })

@@ -172,7 +172,7 @@
   "home.snooze4h": "4時間",
   "home.snooze1d": "明日まで",
   "home.concurrency": "並列数",
-  "home.runsOf": "{total} 件中 {n} 件が実行中",
+  "home.workspacesOf": "{total} 件中 {n} 件の Workspace が稼働中",
   "home.tasksThisMonth": "今月のタスク",
   "home.tasksInTotal": "通算のタスク",
   "home.countOf": "{total} 件中 {n} 件",
@@ -566,7 +566,7 @@
 
   "operator.operator": "運営",
   "operator.only": "運営者のみ",
-  "operator.intro": "テナント {n} 件 · 実行中 {runs} 件 · 今月の稼働 {hours} 時間、売上 {revenue}。顧客の作成、停止、請求を行います。運営者だけが見られます。",
+  "operator.intro": "テナント {n} 件 · 稼働中の Workspace {workspaces} 件 · 今月の稼働 {hours} 時間、売上 {revenue}。顧客の作成、停止、請求を行います。運営者だけが見られます。",
   "operator.notOperator": "このページは sanchoris の運営者向けです。",
   "operator.org": "組織",
   "operator.user": "ユーザー",

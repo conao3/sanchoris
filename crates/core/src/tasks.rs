@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::channel::{OutboxType, enqueue_outbox, enqueue_user_message};
 use crate::db::{DbError, REF_RUN, TenantTx, locate};
 use crate::item::Entity;
-use crate::items::{HeldMessage, Run, Task};
+use crate::items::{HeldMessage, PendingTask, Plan, Run, Task, Tenant};
 use crate::jobs::Job;
 use crate::keys;
 use crate::lifecycle::TaskDecision;
@@ -14,6 +14,7 @@ use crate::skillrun::abort_skill_runs;
 use crate::store::Update;
 
 pub const ERROR_APPROVAL_REQUESTED: &str = "Approval.Requested";
+pub const LIVE_WORKSPACES: &str = "live_workspaces";
 
 pub fn task_branch(task_id: Uuid) -> String {
     format!("sanchoris/{task_id}")
@@ -60,17 +61,10 @@ pub async fn store_task(tx: &mut TenantTx, task: &Task, now: DateTime<Utc>) -> R
     }) {
         task.snoozed_until = None;
     }
-    let before = previous.as_ref().map(|t| t.status);
-    let running = |status: Option<TaskStatus>| i64::from(status == Some(TaskStatus::Running));
-    let delta = running(Some(task.status)) - running(before);
-    if delta != 0 {
-        tx.update(
-            &keys::tenant_key(tenant_id),
-            Update::new().add("running_tasks", delta),
-        )?;
-    }
-    let finished = before.is_some_and(|status| !status.is_terminal()) && task.status.is_terminal();
-    if (before == Some(TaskStatus::Running) && task.status != TaskStatus::Running) || finished {
+    let finished = previous
+        .as_ref()
+        .is_some_and(|p| !p.status.is_terminal() && task.status.is_terminal());
+    if finished {
         tx.emit(Job::Dispatch { tenant_id });
     }
     let idle_changed = previous
@@ -91,6 +85,73 @@ pub async fn store_task(tx: &mut TenantTx, task: &Task, now: DateTime<Utc>) -> R
         );
     }
     tx.put(&task)
+}
+
+pub fn free_slots(tenant: &Tenant, plan: &Plan) -> i64 {
+    let open = tenant.status == "active"
+        && plan
+            .workspace_seconds_limit
+            .is_none_or(|limit| tenant.workspace_seconds_this_period < limit);
+    if open {
+        plan.max_concurrency - tenant.live_workspaces
+    } else {
+        0
+    }
+}
+
+pub fn slot_update(plan: &Plan, count: i64) -> Update {
+    Update::new()
+        .add(LIVE_WORKSPACES, count)
+        .cap_after(LIVE_WORKSPACES, plan.max_concurrency)
+        .require(
+            "status",
+            aws_sdk_dynamodb::types::AttributeValue::S("active".into()),
+        )
+}
+
+pub fn take_slot(tx: &mut TenantTx, run: &mut Run, plan: &Plan) -> Result<(), DbError> {
+    run.holds_slot = true;
+    tx.update(&keys::tenant_key(tx.tenant_id()), slot_update(plan, 1))
+}
+
+pub fn release_slot(tx: &mut TenantTx, run: &mut Run) -> Result<bool, DbError> {
+    if !run.holds_slot {
+        return Ok(false);
+    }
+    run.holds_slot = false;
+    let tenant_id = tx.tenant_id();
+    tx.update(
+        &keys::tenant_key(tenant_id),
+        Update::new().add(LIVE_WORKSPACES, -1),
+    )?;
+    tx.emit(Job::Dispatch { tenant_id });
+    Ok(true)
+}
+
+pub async fn wait_for_slot(
+    tx: &mut TenantTx,
+    task: &mut Task,
+    now: DateTime<Utc>,
+) -> Result<(), DbError> {
+    let tenant_id = tx.tenant_id();
+    task.status = TaskStatus::Pending;
+    task.updated_at = now;
+    store_task(tx, task, now).await?;
+    tx.insert(&PendingTask {
+        tenant_id,
+        task_id: task.id,
+        created_at: now,
+    })?;
+    tx.emit(Job::Dispatch { tenant_id });
+    Ok(())
+}
+
+pub async fn open_run(tx: &mut TenantTx, task_id: Uuid) -> Result<Option<Run>, DbError> {
+    Ok(runs_of(tx, task_id)
+        .await?
+        .into_iter()
+        .rev()
+        .find(|run| !run.is_finished()))
 }
 
 pub async fn runs_of(tx: &mut TenantTx, task_id: Uuid) -> Result<Vec<Run>, DbError> {
@@ -118,6 +179,14 @@ pub async fn wake_task(
     now: DateTime<Utc>,
 ) -> Result<(), DbError> {
     let mut task = load_task(tx, task_id).await?;
+    if task.status == TaskStatus::Pending {
+        if task.wait_reason.is_some() {
+            task.wait_reason = None;
+            task.updated_at = now;
+            store_task(tx, &task, now).await?;
+        }
+        return Ok(());
+    }
     let wakes = task.status == TaskStatus::Running
         || (task.status == TaskStatus::Waiting
             && matches!(

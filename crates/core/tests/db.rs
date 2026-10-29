@@ -91,6 +91,14 @@ async fn finish_task(dynamo: &TestDynamo, tenant_id: Uuid, task_id: Uuid) {
     sanchoris_core::tasks::store_task(&mut tx, &task, Utc::now())
         .await
         .unwrap();
+    for mut run in sanchoris_core::tasks::runs_of(&mut tx, task_id)
+        .await
+        .unwrap()
+    {
+        run.status = "completed".into();
+        sanchoris_core::tasks::release_slot(&mut tx, &mut run).unwrap();
+        tx.put(&run).unwrap();
+    }
     tx.commit().await.unwrap();
 }
 
@@ -260,7 +268,7 @@ async fn dispatch_respects_the_plan_concurrency() {
         vec![tasks[2]]
     );
     let tenant = tenant(&store, seeded.tenant_id).await;
-    assert_eq!((tenant.tasks_this_period, tenant.running_tasks), (3, 2));
+    assert_eq!((tenant.tasks_this_period, tenant.live_workspaces), (3, 2));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -292,7 +300,7 @@ async fn concurrent_dispatchers_never_exceed_the_cap() {
         .count();
     assert_eq!(running, 5);
     assert_eq!(dynamo.all::<Run>().await.len(), 5);
-    assert_eq!(tenant(&store, seeded.tenant_id).await.running_tasks, 5);
+    assert_eq!(tenant(&store, seeded.tenant_id).await.live_workspaces, 5);
 }
 
 #[tokio::test]
@@ -561,14 +569,14 @@ async fn reads_inside_a_transaction_see_its_own_writes() {
     tx.put(&task).unwrap();
     tx.update(
         &keys::tenant_key(seeded.tenant_id),
-        Update::new().add("running_tasks", 2),
+        Update::new().add("live_workspaces", 2),
     )
     .unwrap();
     assert_eq!(
         tx.get::<Task>(&key).await.unwrap().unwrap().title,
         "renamed"
     );
-    assert_eq!(db::tenant(&mut tx).await.unwrap().running_tasks, 2);
+    assert_eq!(db::tenant(&mut tx).await.unwrap().live_workspaces, 2);
     let names = tx
         .query::<Task>(&keys::task_pk(seeded.tenant_id, id), "#")
         .await
@@ -581,7 +589,7 @@ async fn reads_inside_a_transaction_see_its_own_writes() {
     racing.put(&other).unwrap();
     racing.commit().await.unwrap();
     assert!(matches!(tx.commit().await, Err(DbError::Conflict)));
-    assert_eq!(tenant(&store, seeded.tenant_id).await.running_tasks, 0);
+    assert_eq!(tenant(&store, seeded.tenant_id).await.live_workspaces, 0);
 }
 
 #[tokio::test]
@@ -655,7 +663,7 @@ async fn an_admin_tenant_dispatches_past_any_task_or_workspace_count() {
 
     assert_eq!(dispatch(&store, seeded.tenant_id).await.len(), 3);
     let t = tenant(&store, seeded.tenant_id).await;
-    assert_eq!((t.tasks_this_period, t.running_tasks), (1_000_003, 3));
+    assert_eq!((t.tasks_this_period, t.live_workspaces), (1_000_003, 3));
 
     let plan = db::plan(&store, "admin").await.unwrap();
     assert_eq!(
@@ -691,7 +699,7 @@ async fn a_tenant_on_an_unknown_plan_dispatches_nothing() {
         db::dispatch_pending_tasks(&mut tx, Utc::now()).await,
         Err(DbError::Missing(name)) if name == "plan enterprise"
     ));
-    assert_eq!(tenant(&store, seeded.tenant_id).await.running_tasks, 0);
+    assert_eq!(tenant(&store, seeded.tenant_id).await.live_workspaces, 0);
 }
 
 #[tokio::test]

@@ -77,7 +77,7 @@ function periodUsage(tasks: number, workspaceHours: number, seats: number, runni
     tasksThisPeriod: tasks,
     workspaceSecondsThisPeriod: workspaceHours * 3600,
     seatsUsed: seats,
-    runningRuns: running,
+    liveWorkspaces: running,
   };
 }
 
@@ -1118,7 +1118,7 @@ export function buildFixtures() {
     tenants,
     memberships,
     viewerInvitations,
-    operator: { tenants: operatorTenants, runningRuns: 11, runHoursThisMonth: 642, revenueThisMonthUsd: 320 },
+    operator: { tenants: operatorTenants, liveWorkspaces: 11, runHoursThisMonth: 642, revenueThisMonthUsd: 320 },
   };
 }
 

@@ -458,10 +458,6 @@ pub fn runs_index(tenant_id: Uuid) -> String {
     format!("T#{tenant_id}#RUNS")
 }
 
-pub fn open_runs_index(tenant_id: Uuid) -> String {
-    format!("T#{tenant_id}#OPENRUNS")
-}
-
 pub fn workspaces_index(tenant_id: Uuid) -> String {
     format!("T#{tenant_id}#WORKSPACES")
 }

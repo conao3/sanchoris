@@ -235,7 +235,8 @@ type TenantUsage {
   workspaceSecondsThisPeriod: Int!
   "Members plus pending invitations, compared with Plan.memberLimit."
   seatsUsed: Int!
-  runningRuns: Int!
+  "Concurrency slots in use, compared with Plan.concurrencyLimit. A run holds one from its dispatch until its workspace stops, also while its task waits or needs you."
+  liveWorkspaces: Int!
 }
 
 type Activity {
@@ -262,7 +263,8 @@ type Setup {
 
 type Operator {
   tenants: [Tenant!]!
-  runningRuns: Int!
+  "Concurrency slots in use across all tenants."
+  liveWorkspaces: Int!
   runHoursThisMonth: Float!
   revenueThisMonthUsd: Int!
 }

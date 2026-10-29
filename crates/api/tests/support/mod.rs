@@ -581,6 +581,7 @@ pub async fn task_with_run(dynamo: &TestDynamo, seeded: &Seeded) -> (Uuid, Uuid)
         model: "claude-sonnet-5-5".into(),
         agent_session_id: None,
         status: "creating".into(),
+        holds_slot: false,
         turns: 0,
         cost_usd: 0.0,
         instance_costs: Default::default(),

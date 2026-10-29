@@ -629,7 +629,7 @@ async fn requests_without_a_user_are_rejected() {
         "query { viewer { isOperator } }",
         "query { plans { id } }",
         "query { tenant(slug: \"acme\") { id } }",
-        "query { operator { runningRuns } }",
+        "query { operator { liveWorkspaces } }",
         "query { triggerTemplates { id } }",
         "mutation { connectGitHub { url } }",
     ] {

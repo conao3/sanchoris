@@ -17,8 +17,8 @@ use sanchoris_core::model::{
 use sanchoris_core::skillrun::{heartbeat_agent_skill_runs, required_skills};
 use sanchoris_core::store::{Index, SortKey, Update};
 use sanchoris_core::tasks::{
-    apply_decision, idle_seconds, latest_run, load_run, load_task, runs_of, send_to_task,
-    task_branch,
+    apply_decision, free_slots, idle_seconds, latest_run, load_run, load_task, release_slot,
+    runs_of, send_to_task, take_slot, task_branch, wait_for_slot,
 };
 use sanchoris_core::{keys, messages};
 use sanchoris_engine::ResourceOutcome;
@@ -542,10 +542,13 @@ async fn observe_workspaces(worker: &Worker, tenant_id: Uuid, task_id: Uuid) -> 
         else {
             continue;
         };
+        let released = release_slot(&mut tx, &mut run)?;
         if !run.is_finished() {
             run.status = "idle".into();
             run.error = stop.interrupted_at.is_none().then(|| stop.reason.clone());
             run.updated_at = now;
+        }
+        if released || !run.is_finished() {
             tx.put(&run)?;
         }
     }
@@ -764,11 +767,27 @@ pub async fn reconcile(
     let pending = outbox(&mut tx, run_id).await?.iter().any(wakes_the_session);
     match open.into_iter().next() {
         None => {
+            let mut run = run;
             let startable = matches!(run.status.as_str(), "creating" | "idle")
                 && wants_workspace(&task)
                 && (run.status == "creating" || pending);
             if !startable {
-                return Ok(0);
+                if !release_slot(&mut tx, &mut run)? {
+                    return Ok(0);
+                }
+                tx.put(&run)?;
+                tx.commit().await?;
+                return Ok(1);
+            }
+            if !run.holds_slot {
+                let (tenant, plan) = db::tenant_plan(&mut tx).await?;
+                if free_slots(&tenant, &plan) <= 0 {
+                    let mut task = task;
+                    wait_for_slot(&mut tx, &mut task, now).await?;
+                    tx.commit().await?;
+                    return Ok(1);
+                }
+                take_slot(&mut tx, &mut run, &plan)?;
             }
             start_workspace(worker, tx, task, run).await
         }
@@ -945,7 +964,12 @@ async fn stop_workspace(
             .await?;
     }
     close_workspace(&mut tx, &mut workspace, now)?;
-    if !run.is_finished() {
+    let released = release_slot(&mut tx, &mut run)?;
+    if run.is_finished() {
+        if released {
+            tx.put(&run)?;
+        }
+    } else {
         run.status = "idle".into();
         run.updated_at = now;
         tx.put(&run)?;

@@ -28,7 +28,7 @@ query Home($tenant: String!) {
       periodEnd
       tasksThisPeriod
       workspaceSecondsThisPeriod
-      runningRuns
+      liveWorkspaces
     }
     activity {
       runningTasks

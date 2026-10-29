@@ -321,7 +321,7 @@ impl TestDynamo {
             period_start: now,
             tasks_this_period: 0,
             workspace_seconds_this_period: 0,
-            running_tasks: 0,
+            live_workspaces: 0,
             status: "active".into(),
             suspended_reason: None,
             stripe_customer_id: None,

@@ -755,7 +755,7 @@ async fn chat_messages_to_a_pending_task_join_its_start_instruction() {
     let tenant_key = keys::tenant_key(world.tenant());
     world
         .dynamo
-        .modify::<Tenant>(&tenant_key, |tenant| tenant.running_tasks = 1000)
+        .modify::<Tenant>(&tenant_key, |tenant| tenant.live_workspaces = 1000)
         .await;
     for (key, text) in [
         ("p1", "Plan the next release"),
@@ -774,7 +774,7 @@ async fn chat_messages_to_a_pending_task_join_its_start_instruction() {
     );
     world
         .dynamo
-        .modify::<Tenant>(&tenant_key, |tenant| tenant.running_tasks = 0)
+        .modify::<Tenant>(&tenant_key, |tenant| tenant.live_workspaces = 0)
         .await;
     retry(20, || async {
         let mut tx = world.store.tx(world.tenant());

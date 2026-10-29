@@ -914,3 +914,101 @@ async fn a_snooze_shortened_after_the_reset_resumes_at_its_new_end() {
     world.worker.settle().await.unwrap();
     assert_eq!(world.task(&format!("{REPO}#35")).await.status, "RUNNING");
 }
+
+async fn wait_for_checks(world: &World, number: i64) -> uuid::Uuid {
+    let task = world.started_task(number).await;
+    let run_id = task.run_id.unwrap();
+    world
+        .run_event(
+            run_id,
+            RunEventType::SessionRecord,
+            json!({ "sessionId": "session-1", "turn": 1, "key": format!("records/{number}/1.jsonl") }),
+        )
+        .await;
+    world
+        .request_skill(run_id, common::skill_input(number))
+        .await;
+    world.turn_end(run_id, 1).await;
+    world.drive().await;
+    let waiting = world.task(&format!("{REPO}#{number}")).await;
+    assert_eq!(waiting.status, "WAITING");
+    assert_eq!(waiting.wait_reason.as_deref(), Some("skill"));
+    run_id
+}
+
+#[tokio::test]
+async fn a_waiting_task_holds_its_slot_until_its_idle_workspace_stops() {
+    let world = World::new("free").await;
+    let first = wait_for_checks(&world, 1).await;
+    assert_eq!(tenant(&world).await.live_workspaces, 1);
+
+    world.label_issue("d-2", 2, "Two", "mika-dev").await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#2")).await.status, "PENDING");
+    assert_eq!(world.runner.started.lock().unwrap().len(), 1);
+
+    world.clock.advance(Duration::seconds(900));
+    world.worker.settle().await.unwrap();
+    assert_eq!(*world.runner.stopped.lock().unwrap(), vec![first]);
+    let second = world.task(&format!("{REPO}#2")).await;
+    assert_eq!(second.status, "RUNNING");
+    assert_eq!(world.runner.started.lock().unwrap().len(), 2);
+    assert_eq!(tenant(&world).await.live_workspaces, 1);
+}
+
+#[tokio::test]
+async fn a_task_whose_workspace_stopped_waits_pending_for_a_slot_to_resume() {
+    let world = World::new("free").await;
+    let first = wait_for_checks(&world, 1).await;
+    world.label_issue("d-2", 2, "Two", "mika-dev").await;
+    world.clock.advance(Duration::seconds(900));
+    world.worker.settle().await.unwrap();
+    let second = world.task(&format!("{REPO}#2")).await.run_id.unwrap();
+    assert_eq!(world.runner.started.lock().unwrap().len(), 2);
+
+    world.github.state.lock().unwrap().check_results.clear();
+    world.github.script_checks(&["success"]);
+    world.clock.advance(Duration::minutes(5));
+    world.drive().await;
+    let resumed = world.task(&format!("{REPO}#1")).await;
+    assert_eq!(resumed.status, "PENDING");
+    assert_eq!(resumed.run_id, Some(first));
+    assert_eq!(world.runner.started.lock().unwrap().len(), 2);
+    assert_eq!(tenant(&world).await.live_workspaces, 1);
+
+    world.request_skill(second, common::skill_input(2)).await;
+    world.github.script_checks(&["success"]);
+    world.drive().await;
+    world.turn_end(second, 1).await;
+    world.drive().await;
+    assert_eq!(world.task(&format!("{REPO}#2")).await.status, "SUCCEEDED");
+    let restarted = world.task(&format!("{REPO}#1")).await;
+    assert_eq!(restarted.status, "RUNNING");
+    assert_eq!(restarted.run_id, Some(first));
+    assert_eq!(world.runner.started.lock().unwrap().len(), 3);
+    let starts = world.outbox(first, "start").await;
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[1]["instruction"], serde_json::Value::Null);
+    assert_eq!(
+        starts[1]["resume"],
+        json!({ "sessionId": "session-1", "recordKey": "records/1/1.jsonl", "lastTurn": 1 })
+    );
+    assert_eq!(tenant(&world).await.live_workspaces, 1);
+    assert_eq!(world.tasks().await.iter().filter(|t| t.runs > 1).count(), 0);
+}
+
+#[tokio::test]
+async fn a_finished_task_releases_its_slot_with_its_workspace() {
+    let world = World::new("pro").await;
+    let task = world.started_task(35).await;
+    let run_id = task.run_id.unwrap();
+    assert_eq!(tenant(&world).await.live_workspaces, 1);
+    world.request_skill(run_id, common::skill_input(35)).await;
+    world.github.script_checks(&["success"]);
+    world.drive().await;
+    world.turn_end(run_id, 1).await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "SUCCEEDED");
+    assert_eq!(*world.runner.stopped.lock().unwrap(), vec![run_id]);
+    assert_eq!(tenant(&world).await.live_workspaces, 0);
+}

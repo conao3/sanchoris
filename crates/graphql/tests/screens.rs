@@ -30,7 +30,7 @@ async fn every_screen_query_validates_and_executes() {
     assert_eq!(home["plan"]["limitPeriod"], "MONTH");
     assert_eq!(home["usage"]["tasksThisPeriod"], 7);
     assert!(home["usage"]["periodEnd"].is_string());
-    assert_eq!(home["usage"]["runningRuns"], 2);
+    assert_eq!(home["usage"]["liveWorkspaces"], 0);
     assert_eq!(
         home["activity"]["runsLast24h"].as_array().unwrap().len(),
         24
@@ -388,7 +388,7 @@ async fn every_screen_query_validates_and_executes() {
     assert_eq!(tenants[0]["name"], "Acme");
     assert_eq!(tenants[0]["githubOwner"]["kind"], "ORGANIZATION");
     assert_eq!(tenants[0]["usage"]["seatsUsed"], 4);
-    assert_eq!(operator["operator"]["runningRuns"], 3);
+    assert_eq!(operator["operator"]["liveWorkspaces"], 0);
     assert_eq!(operator["operator"]["revenueThisMonthUsd"], 100);
 }
 
@@ -433,4 +433,26 @@ async fn a_task_reads_its_required_skill_from_its_own_definition_when_the_active
         "open-pr-green-ci"
     );
     assert_eq!(task["requiredSkills"][0]["state"], "FAILED");
+}
+
+#[tokio::test]
+async fn home_counts_live_workspaces_from_the_tenant_and_running_tasks_from_their_status() {
+    let w = World::new().await;
+    for (tenant_id, live) in [(w.acme, 2), (w.globex, 1)] {
+        w.dynamo
+            .modify::<sanchoris_core::items::Tenant>(&keys::tenant_key(tenant_id), |tenant| {
+                tenant.live_workspaces = live
+            })
+            .await;
+    }
+    w.dynamo
+        .modify::<sanchoris_core::items::Task>(&keys::task_key(w.acme, w.chat_task), |task| {
+            task.status = sanchoris_core::model::TaskStatus::Running
+        })
+        .await;
+    let home = w.ok(&w.mika, "Home", json!({ "tenant": "acme" })).await;
+    assert_eq!(home["tenant"]["usage"]["liveWorkspaces"], 2);
+    assert_eq!(home["tenant"]["activity"]["runningTasks"], 1);
+    let operator = w.ok(&w.operator, "OperatorTenants", json!({})).await;
+    assert_eq!(operator["operator"]["liveWorkspaces"], 3);
 }
