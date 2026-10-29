@@ -1,9 +1,8 @@
-import { useMutation } from '@apollo/client/react';
 import { Ban, Plus, Send, ShieldCheck, TriangleAlert } from 'lucide-react';
 import { type FormEvent, type RefObject, useRef, useState } from 'react';
 import { Button } from '../../components/Button';
 import { SettingsPage } from '../../components/SettingsTabs';
-import { Dim, ErrorNote, Icon, Id, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
+import { ActionError, Dim, ErrorNote, Icon, Id, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
 import {
   ChangeMemberRoleDocument,
   InviteMemberDocument,
@@ -15,6 +14,7 @@ import {
 import { type MessageKey, t } from '../../i18n';
 import { ago, until } from '../../lib/format';
 import { useListNav } from '../../lib/keys';
+import { useAction } from '../../lib/mutation';
 import { useData } from '../../lib/query';
 import { useTenant } from '../../lib/tenant';
 
@@ -47,11 +47,14 @@ function CredentialCell({ member, provider }: { member: Member; provider: 'CLAUD
 function InviteForm({ tenantId, emailRef, onDone }: { tenantId: string; emailRef: RefObject<HTMLInputElement | null>; onDone: () => void }) {
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<Role>('MEMBER');
-  const [invite, { loading, error }] = useMutation(InviteMemberDocument, { refetchQueries: [MembersDocument] });
+  const [invite, { loading, error }] = useAction(InviteMemberDocument, { refetchQueries: [MembersDocument] });
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    void invite({ variables: { input: { tenantId, email, role } } }).then(() => {
+    void invite({ input: { tenantId, email, role } }).then((done) => {
+      if (!done) {
+        return;
+      }
       setEmail('');
       onDone();
     });
@@ -77,7 +80,7 @@ function InviteForm({ tenantId, emailRef, onDone }: { tenantId: string; emailRef
       <Button type="submit" variant="primary" icon={Send} isDisabled={loading}>
         {t('members.sendInvitation')}
       </Button>
-      {error ? <span className="text-err">{error.message}</span> : null}
+      <ActionError error={error} />
     </form>
   );
 }
@@ -85,8 +88,8 @@ function InviteForm({ tenantId, emailRef, onDone }: { tenantId: string; emailRef
 export function MembersPage() {
   const { slug } = useTenant();
   const { data, error, refetch } = useData(MembersDocument, { tenant: slug });
-  const [changeRole] = useMutation(ChangeMemberRoleDocument);
-  const [revoke] = useMutation(RevokeInvitationDocument, { refetchQueries: [MembersDocument] });
+  const [changeRole, roleState] = useAction(ChangeMemberRoleDocument);
+  const [revoke, revokeState] = useAction(RevokeInvitationDocument, { refetchQueries: [MembersDocument] });
   const [inviting, setInviting] = useState(false);
   const emailRef = useRef<HTMLInputElement>(null);
   const tenant = data?.tenant;
@@ -105,6 +108,18 @@ export function MembersPage() {
   return (
     <SettingsPage
       tab="members"
+      keys={
+        canManage
+          ? [
+              ['g s', 'nav.settings'],
+              ['j k', 'keys.move'],
+              ['i', 'members.invite'],
+            ]
+          : [
+              ['g s', 'nav.settings'],
+              ['j k', 'keys.move'],
+            ]
+      }
       actions={
         canManage ? (
           <Button variant="primary" icon={Plus} kbd="i" onPress={() => setInviting(!inviting)}>
@@ -139,7 +154,8 @@ export function MembersPage() {
                   className="h-7 rounded-ui border border-line2 bg-bg px-1 text-sm"
                   value={member.role}
                   onClick={(event) => event.stopPropagation()}
-                  onChange={(event) => void changeRole({ variables: { memberId: member.id, role: event.target.value as Role } })}
+                  disabled={roleState.loading}
+                  onChange={(event) => void changeRole({ memberId: member.id, role: event.target.value as Role })}
                 >
                   {viewerRole === 'OWNER' ? <option value="ADMIN">{t('role.admin')}</option> : null}
                   <option value="MEMBER">{t('role.member')}</option>
@@ -155,6 +171,7 @@ export function MembersPage() {
               <span className="text-right text-muted">{member.lastActiveAt ? ago(member.lastActiveAt) : t('credentials.never')}</span>
             </Row>
           ))}
+          <ActionError error={roleState.error} className="mt-1.5" />
           <Section count={tenant.invitations.length}>{t('members.pending')}</Section>
           {tenant.invitations.length === 0 ? <Dim>{t('members.noPending')}</Dim> : null}
           {tenant.invitations.length > 0 ? (
@@ -174,7 +191,7 @@ export function MembersPage() {
                   <span className="text-muted">{until(invitation.expiresAt)}</span>
                   <span className="justify-self-end">
                     {canManage ? (
-                      <Button small icon={Ban} onPress={() => void revoke({ variables: { invitationId: invitation.id } })}>
+                      <Button small icon={Ban} onPress={() => void revoke({ invitationId: invitation.id })} isDisabled={revokeState.loading}>
                         {t('members.revoke')}
                       </Button>
                     ) : null}
@@ -183,6 +200,7 @@ export function MembersPage() {
               ))}
             </>
           ) : null}
+          <ActionError error={revokeState.error} className="mt-1.5" />
           <Dim className="mt-3.5">{t('members.footer')}</Dim>
         </>
       ) : null}

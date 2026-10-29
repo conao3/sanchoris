@@ -16,10 +16,11 @@ use sanchoris_core::items::{
 use sanchoris_core::keys;
 use sanchoris_core::model::{AuditOrigin, TaskStatus as CoreStatus, WaitReason};
 use sanchoris_core::receive::{Admission, SOURCE_CHAT, SOURCE_REPLY, admit_inbound};
+use sanchoris_core::skillrun::{SkillRunError, resolve_waiting_approval};
 use sanchoris_core::store::Update;
 use sanchoris_core::tasks::{abort_task, latest_run, load_task, stop_run};
 use sanchoris_core::tenants::{
-    NewTenant, TenantError, create_tenant, hold_free_tenant, release_free_tenant,
+    NewTenant, TenantError, create_tenant, hold_free_tenant, pending_checkout, release_free_tenant,
 };
 use sanchoris_worker::dispatcher::schedule_trigger;
 use serde_json::{Map, Value, json};
@@ -31,15 +32,15 @@ use crate::account::{
 use crate::audit::{AuditEvent, AuditFilter};
 use crate::config::{ChangeRequest, Config, Session, ValidationError};
 use crate::context::{
-    Access, AuditTarget, ClientIp, Role, Scope, audit_member, audit_operator, auth, is_operator,
-    locate_item, locate_ref, member_scope, membership_in, memberships, now, scope_for_tenant,
-    serialize_tenant, state, store, tx, user_tx, viewer_user, write,
+    Access, AuditTarget, ClientIp, Failure, Role, Scope, audit_member, audit_operator, auth,
+    is_operator, locate_item, locate_ref, member_scope, membership_in, memberships, now,
+    scope_for_tenant, serialize_tenant, state, store, tx, user_tx, viewer_user, write,
 };
 use crate::enums::{ApiKeyProvider, CredentialScope, EventSource, InvitationState, TriggerState};
 use crate::error::{bad_input, conflict, forbidden, not_found, parse_id, port, rate_limited};
 use crate::ports::{ConfigCheck, ConfigLocation, PlanChange, TenantCheckout, TriggerProposal};
 use crate::scalars::Timestamp;
-use crate::task::{ChatMessage, Run, Task};
+use crate::task::{ChatMessage, Run, Task, waiting_approval};
 use crate::tenant::Tenant;
 use crate::trigger::{TRIGGER_TEMPLATES, Trigger};
 
@@ -302,8 +303,12 @@ impl MutationRoot {
                 })
                 .await
                 .map_err(port)?;
+            let pending = pending_checkout(store(ctx), user.user_id)
+                .await?
+                .ok_or_else(|| Error::new("the checkout left no pending tenant"))?;
+            let tenant = Tenant::load(ctx, member_scope(ctx, pending.tenant_id).await?).await?;
             return Ok(CreateTenantPayload {
-                tenant: None,
+                tenant: Some(tenant),
                 checkout_url: Some(url),
             });
         }
@@ -846,6 +851,56 @@ impl MutationRoot {
                 "task.stop",
                 target("task", task_id, task.title.clone()),
                 "Stopped the task",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
+        Task::load(ctx, scope, task_id).await
+    }
+
+    async fn resolve_approval(
+        &self,
+        ctx: &Context<'_>,
+        task_id: ID,
+        approved: bool,
+    ) -> Result<Task> {
+        let task_id = parse_id(&task_id)?;
+        let (scope, task) = locate_task(ctx, task_id).await?;
+        let (member_id, role) = scope.member()?;
+        if !role.at_least(Role::Admin) && task.requested_by_member_id != Some(member_id) {
+            return Err(forbidden(
+                "only an owner, an admin, or the member who requested the task can resolve its approvals",
+            ));
+        }
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let wait = waiting_approval(&mut tx, task_id)
+                .await?
+                .ok_or_else(|| conflict("the task has no approval waiting"))?;
+            let name = member_name(ctx, &mut tx, member_id).await?;
+            resolve_waiting_approval(
+                &mut tx,
+                wait.skill_run_id,
+                &wait.task_token,
+                approved,
+                &name,
+                now(ctx),
+            )
+            .await
+            .map_err(approval_failure)?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "approval.resolve",
+                target("task", task_id, task.title.clone()),
+                if approved {
+                    "Approved the request"
+                } else {
+                    "Rejected the request"
+                },
             )
             .await?;
             tx.commit().await?;
@@ -1697,6 +1752,14 @@ impl MutationRoot {
 
 fn member_key_of(member: &items::Member) -> sanchoris_core::item::Key {
     keys::member_key(member.tenant_id, member.id)
+}
+
+fn approval_failure(error: SkillRunError) -> Failure {
+    match error {
+        SkillRunError::Db(error) => Failure::Db(error),
+        SkillRunError::ApprovalNotWaiting => conflict(error.to_string()).into(),
+        other => Error::new(other.to_string()).into(),
+    }
 }
 
 async fn locate_task(ctx: &Context<'_>, task_id: Uuid) -> Result<(Scope, TaskItem)> {

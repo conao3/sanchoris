@@ -1,10 +1,10 @@
-import { useMutation } from '@apollo/client/react';
 import { Check } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
 import { type ApiKeyProvider, AddCredentialDocument } from '../graphql/generated/graphql';
 import { t } from '../i18n';
+import { useAction } from '../lib/mutation';
 import { Button } from './Button';
-import { Code, Dim } from './ui';
+import { ActionError, Code } from './ui';
 
 export function SubscriptionCommands({ tenantName }: { tenantName: string }) {
   return (
@@ -25,11 +25,14 @@ export function ApiKeyForm({ tenantId }: { tenantId: string }) {
   const [provider, setProvider] = useState<ApiKeyProvider>('ANTHROPIC');
   const [name, setName] = useState('');
   const [key, setKey] = useState('');
-  const [addCredential, { loading, error }] = useMutation(AddCredentialDocument, { refetchQueries: 'active' });
+  const [addCredential, { loading, error }] = useAction(AddCredentialDocument, { refetchQueries: 'active' });
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    void addCredential({ variables: { input: { tenantId, name, provider, key, scope: 'ORGANIZATION' } } }).then(() => {
+    void addCredential({ input: { tenantId, name, provider, key, scope: 'ORGANIZATION' } }).then((done) => {
+      if (!done) {
+        return;
+      }
       setName('');
       setKey('');
     });
@@ -68,7 +71,7 @@ export function ApiKeyForm({ tenantId }: { tenantId: string }) {
         onChange={(event) => setKey(event.target.value)}
         required
       />
-      {error ? <Dim className="mt-2 text-err">{error.message}</Dim> : null}
+      <ActionError error={error} className="mt-2" />
       <div className="mt-3.5">
         <Button type="submit" variant="primary" icon={Check} isDisabled={loading}>
           {t('setup.saveKey')}

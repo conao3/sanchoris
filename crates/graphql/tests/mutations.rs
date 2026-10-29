@@ -760,13 +760,13 @@ async fn tenants_billing_and_operator_actions() {
         .ok(
             &w.ren,
             "CreateTenant",
-            json!({ "input": { "name": "Ren Labs", "planId": "starter" } }),
+            json!({ "input": { "name": "Ren Paid", "planId": "starter" } }),
         )
         .await;
-    assert_eq!(paid["createTenant"]["tenant"], Value::Null);
+    assert_eq!(paid["createTenant"]["tenant"]["slug"], "ren-paid");
     assert_eq!(
         paid["createTenant"]["checkoutUrl"],
-        "https://checkout.stripe.test/starter/Ren Labs"
+        "https://checkout.stripe.test/starter/Ren Paid"
     );
     let created = w
         .ok(

@@ -242,6 +242,7 @@ pub enum NeedsYouReason {
     SkillFailed,
     NudgesExhausted,
     AgentAsked,
+    ApprovalRequested,
     UsageLimit,
     LimitExceeded,
     WorkspaceStopped,

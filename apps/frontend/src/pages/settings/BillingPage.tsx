@@ -1,11 +1,13 @@
-import { useMutation } from '@apollo/client/react';
+import { useSearch } from '@tanstack/react-router';
 import { ExternalLink, ShieldCheck } from 'lucide-react';
 import { Button } from '../../components/Button';
 import { SettingsPage } from '../../components/SettingsTabs';
-import { Dim, ErrorNote, Kv, Meter, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
+import { CheckoutNote, TenantStateNote, useCheckoutOutcome } from '../../components/billing';
+import { ActionError, Dim, ErrorNote, Kv, Meter, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
 import { BillingDocument, ChangePlanDocument, OpenBillingPortalDocument } from '../../graphql/generated/graphql';
 import { t } from '../../i18n';
 import { day, elapsedRatio, hours, percent } from '../../lib/format';
+import { useAction } from '../../lib/mutation';
 import { countOf, hoursOf, planLimit, planPrice, usedShare } from '../../lib/plan';
 import { useData } from '../../lib/query';
 import { useTenant } from '../../lib/tenant';
@@ -13,18 +15,19 @@ import { useTenant } from '../../lib/tenant';
 export function BillingPage() {
   const { slug } = useTenant();
   const { data, error, refetch } = useData(BillingDocument, { tenant: slug });
-  const [changePlan, changeState] = useMutation(ChangePlanDocument);
-  const [openPortal, portalState] = useMutation(OpenBillingPortalDocument);
+  const [changePlan, changeState] = useAction(ChangePlanDocument);
+  const [openPortal, portalState] = useAction(OpenBillingPortalDocument);
   const tenant = data?.tenant;
   const admin = tenant?.plan.isAdmin ?? false;
+  const checkout = useCheckoutOutcome(useSearch({ from: '/app/settings/billing' }).checkout);
   const cols = '100px 140px 160px 160px 110px 100px 1fr';
 
   function portal() {
     if (tenant) {
-      void openPortal({ variables: { tenantId: tenant.id } }).then((result) => {
-        const url = result.data?.openBillingPortal.url;
+      void openPortal({ tenantId: tenant.id }).then((result) => {
+        const url = result?.openBillingPortal.url;
         if (url) {
-          window.open(url, '_blank', 'noreferrer');
+          window.location.assign(url);
         }
       });
     }
@@ -32,8 +35,8 @@ export function BillingPage() {
 
   function change(planId: string) {
     if (tenant) {
-      void changePlan({ variables: { tenantId: tenant.id, planId } }).then((result) => {
-        const url = result.data?.changePlan.checkoutUrl;
+      void changePlan({ tenantId: tenant.id, planId }).then((result) => {
+        const url = result?.changePlan.checkoutUrl;
         if (url) {
           window.location.assign(url);
         }
@@ -145,9 +148,11 @@ export function BillingPage() {
     >
       <Title>{t('settings.billing')}</Title>
       <Sub>{t(admin ? 'billing.adminIntro' : 'billing.intro', { tenant: tenant?.name ?? '' })}</Sub>
+      <CheckoutNote outcome={checkout} success="checkout.planPaid" canceled="checkout.planCanceled" />
+      {tenant ? <TenantStateNote tenant={tenant} /> : null}
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
-      {portalState.error ? <Dim className="my-3 text-err">{portalState.error.message}</Dim> : null}
-      {changeState.error ? <Dim className="my-3 text-err">{changeState.error.message}</Dim> : null}
+      <ActionError error={portalState.error} className="my-3" />
+      <ActionError error={changeState.error} className="my-3" />
       {!data && !error ? <Skeleton rows={6} /> : null}
       {content}
     </SettingsPage>

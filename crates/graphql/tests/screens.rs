@@ -145,7 +145,15 @@ async fn every_screen_query_validates_and_executes() {
     assert_eq!(run["workspace"]["vcpu"], 2);
     assert_eq!(run["workspace"]["architecture"], "ARM64");
     assert_eq!(run["workspace"]["capacityProvider"], "FARGATE_SPOT");
-    let kinds = run["log"]
+    let log = w
+        .ok(
+            &w.mika,
+            "RunLog",
+            json!({ "tenant": "acme", "task": w.issue_task, "number": 1, "after": null }),
+        )
+        .await["tenant"]["task"]["run"]["log"]
+        .clone();
+    let kinds = log
         .as_array()
         .unwrap()
         .iter()
@@ -163,7 +171,18 @@ async fn every_screen_query_validates_and_executes() {
             "SYSTEM"
         ]
     );
-    let rate_limits = run["log"]
+    let tail = w
+        .ok(
+            &w.mika,
+            "RunLog",
+            json!({ "tenant": "acme", "task": w.issue_task, "number": 1, "after": 4 }),
+        )
+        .await;
+    assert_eq!(
+        tail["tenant"]["task"]["run"]["log"],
+        json!(log.as_array().unwrap()[4..])
+    );
+    let rate_limits = log
         .as_array()
         .unwrap()
         .iter()

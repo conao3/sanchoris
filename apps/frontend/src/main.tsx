@@ -1,10 +1,11 @@
 import { ApolloClient, ApolloLink, HttpLink, InMemoryCache } from '@apollo/client';
 import { ApolloProvider } from '@apollo/client/react';
-import { createRootRoute, createRoute, createRouter, Outlet, redirect, RouterProvider } from '@tanstack/react-router';
+import { createRootRoute, createRoute, createRouter, Outlet, type ParsedLocation, redirect, RouterProvider } from '@tanstack/react-router';
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { AppFrame } from './components/Shell';
-import { authorizedFetch, isLoggedIn } from './lib/cognito';
+import { checkoutSearch } from './components/billing';
+import { authorizedFetch, isLoggedIn, samePath } from './lib/cognito';
 import { mockApi } from './lib/env';
 import { TenantProvider } from './lib/tenant';
 import { AuthCallbackPage } from './pages/AuthCallbackPage';
@@ -12,6 +13,7 @@ import { ChatPage } from './pages/ChatPage';
 import { CreateTenantPage } from './pages/CreateTenantPage';
 import { HomePage } from './pages/HomePage';
 import { LoginPage } from './pages/LoginPage';
+import { NotFoundPage } from './pages/NotFoundPage';
 import { OperatorTenantsPage } from './pages/OperatorTenantsPage';
 import { RunPage } from './pages/RunPage';
 import { SkillPage } from './pages/SkillPage';
@@ -40,20 +42,28 @@ const apolloClient = new ApolloClient({
   cache: new InMemoryCache(),
 });
 
-function authGuard() {
+function authGuard({ location }: { location: ParsedLocation }) {
   if (!mockApi && !isLoggedIn()) {
-    throw redirect({ to: '/login' });
+    throw redirect({ to: '/login', search: { next: samePath(location.href) } });
   }
 }
 
 const rootRoute = createRootRoute({ component: Outlet });
 
-const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login', component: LoginPage });
+const loginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/login',
+  validateSearch: (search: Record<string, unknown>): { next?: string } => {
+    const next = samePath(search.next);
+    return next ? { next } : {};
+  },
+  component: LoginPage,
+});
 const authCallbackRoute = createRoute({ getParentRoute: () => rootRoute, path: '/auth/callback', component: AuthCallbackPage });
 
 const signedInRoute = createRoute({ getParentRoute: () => rootRoute, id: 'signed-in', beforeLoad: authGuard, component: Outlet });
 
-const createTenantRoute = createRoute({ getParentRoute: () => signedInRoute, path: '/tenants/new', component: CreateTenantPage });
+const createTenantRoute = createRoute({ getParentRoute: () => signedInRoute, path: '/tenants/new', validateSearch: checkoutSearch, component: CreateTenantPage });
 
 const appRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -68,7 +78,7 @@ const appRoute = createRoute({
   ),
 });
 
-const homeRoute = createRoute({ getParentRoute: () => appRoute, path: '/', component: HomePage });
+const homeRoute = createRoute({ getParentRoute: () => appRoute, path: '/', validateSearch: checkoutSearch, component: HomePage });
 const triggersRoute = createRoute({ getParentRoute: () => appRoute, path: '/triggers', component: TriggersPage });
 const skillsRoute = createRoute({ getParentRoute: () => appRoute, path: '/skills', component: SkillsPage });
 const skillRoute = createRoute({ getParentRoute: () => appRoute, path: '/skills/$skill', component: SkillPage });
@@ -78,12 +88,18 @@ const tasksRoute = createRoute({ getParentRoute: () => appRoute, path: '/tasks',
 const taskRoute = createRoute({ getParentRoute: () => appRoute, path: '/tasks/$task', component: TaskPage });
 const runRoute = createRoute({ getParentRoute: () => appRoute, path: '/tasks/$task/runs/$n', component: RunPage });
 const operatorTenantsRoute = createRoute({ getParentRoute: () => appRoute, path: '/operator/tenants', component: OperatorTenantsPage });
-const integrationsRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings', component: IntegrationsPage });
+const integrationsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/settings',
+  validateSearch: (search: Record<string, unknown>): { github?: string } => (typeof search.github === 'string' ? { github: search.github } : {}),
+  component: IntegrationsPage,
+});
 const configRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/config', component: ConfigPage });
 const credentialsRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/credentials', component: CredentialsPage });
 const membersRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/members', component: MembersPage });
 const auditRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/audit', component: AuditPage });
-const billingRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/billing', component: BillingPage });
+const billingRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/billing', validateSearch: checkoutSearch, component: BillingPage });
+const notFoundRoute = createRoute({ getParentRoute: () => appRoute, path: '$', component: NotFoundPage });
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
@@ -106,6 +122,7 @@ const routeTree = rootRoute.addChildren([
     membersRoute,
     auditRoute,
     billingRoute,
+    notFoundRoute,
   ]),
 ]);
 

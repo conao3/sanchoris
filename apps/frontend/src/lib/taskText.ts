@@ -5,6 +5,12 @@ import { usd, weekdayTime } from './format';
 type SkillRunSummary = { status: SkillRunStatus; currentState?: string | null; handoffs: number };
 type RequiredSkill = { skill?: { name: string }; latestRun?: SkillRunSummary | null };
 
+const finishedStatuses: TaskStatus[] = ['SUCCEEDED', 'FAILED', 'ABORTED'];
+
+export function isActive(status: TaskStatus): boolean {
+  return !finishedStatuses.includes(status);
+}
+
 export function skillStep(run: SkillRunSummary): string {
   switch (run.status) {
     case 'FAILED':
@@ -48,6 +54,8 @@ export function needsYouText(task: {
       return `${t('task.nudgesExhausted', { skill })} · ${spent}`;
     case 'AGENT_ASKED':
       return `${t('task.agentAsked')} · ${spent}`;
+    case 'APPROVAL_REQUESTED':
+      return `${t('task.approvalRequested')} · ${spent}`;
     case 'USAGE_LIMIT':
       return `${t('task.usageLimitManual')} · ${spent}`;
     case 'LIMIT_EXCEEDED':

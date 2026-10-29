@@ -1,14 +1,14 @@
-import { useMutation } from '@apollo/client/react';
 import { Ban, Bot, LogOut, Plus, RefreshCw, ShieldCheck, Terminal, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import { ApiKeyForm, SubscriptionCommands } from '../../components/ApiKeyForm';
 import { Button } from '../../components/Button';
 import { SettingsPage } from '../../components/SettingsTabs';
-import { Dim, Empty, ErrorNote, Icon, Meter, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
+import { ActionError, Dim, Empty, ErrorNote, Icon, Meter, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
 import { CredentialsDocument, RemoveCredentialDocument } from '../../graphql/generated/graphql';
 import { type MessageKey, t, tx } from '../../i18n';
 import { ago } from '../../lib/format';
 import { useListNav } from '../../lib/keys';
+import { useAction } from '../../lib/mutation';
 import { useData } from '../../lib/query';
 import { useTenant } from '../../lib/tenant';
 
@@ -21,7 +21,7 @@ const kindLabels: Record<string, MessageKey> = {
 export function CredentialsPage() {
   const { slug } = useTenant();
   const { data, error, refetch } = useData(CredentialsDocument, { tenant: slug });
-  const [remove] = useMutation(RemoveCredentialDocument, { refetchQueries: [CredentialsDocument] });
+  const [remove, removeState] = useAction(RemoveCredentialDocument, { refetchQueries: [CredentialsDocument] });
   const [connect, setConnect] = useState(false);
   const tenant = data?.tenant;
   const credentials = tenant?.credentials ?? [];
@@ -31,6 +31,10 @@ export function CredentialsPage() {
   return (
     <SettingsPage
       tab="credentials"
+      keys={[
+        ['g s', 'nav.settings'],
+        ['j k', 'keys.move'],
+      ]}
       actions={
         <Button variant="primary" icon={Plus} onPress={() => setConnect(!connect)}>
           {t('credentials.connect')}
@@ -115,13 +119,14 @@ export function CredentialsPage() {
                     {t('credentials.reconnect')}
                   </Button>
                 ) : (
-                  <Button small icon={credential.kind === 'SUBSCRIPTION' ? LogOut : Ban} onPress={() => void remove({ variables: { credentialId: credential.id } })}>
+                  <Button small icon={credential.kind === 'SUBSCRIPTION' ? LogOut : Ban} onPress={() => void remove({ credentialId: credential.id })} isDisabled={removeState.loading}>
                     {credential.kind === 'SUBSCRIPTION' ? t('credentials.disconnect') : t('credentials.remove')}
                   </Button>
                 )}
               </Row>
             );
           })}
+          <ActionError error={removeState.error} className="mt-1.5" />
         </>
       ) : null}
       <Section>{t('credentials.howPicked')}</Section>

@@ -1,11 +1,11 @@
-import { useMutation } from '@apollo/client/react';
-import { useNavigate } from '@tanstack/react-router';
+import { useNavigate, useSearch } from '@tanstack/react-router';
 import { ExternalLink, GitPullRequest, Plus, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '../components/Button';
 import { Cols, Page } from '../components/Shell';
+import { CheckoutNote, TenantStateNote, useCheckoutOutcome } from '../components/billing';
 import { TaskState } from '../components/status';
-import { Dim, ErrorNote, Id, Lk, Meter, Row, Section, Segments, Skeleton, State, Sub, Th, Title, Toggle } from '../components/ui';
+import { ActionError, Dim, ErrorNote, Id, Lk, Meter, Row, Section, Segments, Skeleton, State, Sub, Th, Title, Toggle } from '../components/ui';
 import {
   type HomeQuery,
   HomeDocument,
@@ -16,7 +16,8 @@ import { type MessageKey, t } from '../i18n';
 import { ago, day, elapsedRatio, hours, issueLabel, percent, usd } from '../lib/format';
 import { useListNav } from '../lib/keys';
 import { countOf, hoursOf, usedShare } from '../lib/plan';
-import { useData } from '../lib/query';
+import { useAction } from '../lib/mutation';
+import { IDLE_POLL, LIVE_POLL, useData } from '../lib/query';
 import { limitedText, needsYouText, skillStep } from '../lib/taskText';
 import { useTenant } from '../lib/tenant';
 import { HomeSetup } from './HomeSetup';
@@ -48,7 +49,7 @@ function Sparkline({ values }: { values: number[] }) {
 
 function SnoozeMenu({ taskId }: { taskId: string }) {
   const [open, setOpen] = useState(false);
-  const [snooze] = useMutation(SnoozeTaskDocument);
+  const [snooze, snoozeState] = useAction(SnoozeTaskDocument);
   const options: [MessageKey, number][] = [
     ['home.snooze1h', 1],
     ['home.snooze4h', 4],
@@ -68,9 +69,7 @@ function SnoozeMenu({ taskId }: { taskId: string }) {
               className="px-3.5 py-[7px] text-left hover:bg-hover"
               onClick={() => {
                 setOpen(false);
-                void snooze({
-                  variables: { taskId, until: new Date(Date.now() + hoursAhead * 3_600_000).toISOString() },
-                });
+                void snooze({ taskId, until: new Date(Date.now() + hoursAhead * 3_600_000).toISOString() });
               }}
             >
               {t(label)}
@@ -78,6 +77,7 @@ function SnoozeMenu({ taskId }: { taskId: string }) {
           ))}
         </span>
       ) : null}
+      <ActionError error={snoozeState.error} />
     </span>
   );
 }
@@ -96,7 +96,7 @@ function UsageMeter({ title, value, pace, caption }: { title: string; value: num
 
 function Dashboard({ tenant }: { tenant: Tenant }) {
   const navigate = useNavigate();
-  const [setTriggerState] = useMutation(SetTriggerStateDocument);
+  const [setTriggerState, triggerState] = useAction(SetTriggerStateDocument);
   const tasks = tenant.tasks;
   const viewerMemberId = tenant.viewerMember.id;
   const attention: Attention[] = [
@@ -345,13 +345,13 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
           <Toggle
             on={trigger.state === 'ENABLED'}
             onToggle={() =>
-              void setTriggerState({
-                variables: { triggerId: trigger.id, state: trigger.state === 'ENABLED' ? 'DISABLED' : 'ENABLED' },
-              })
+              void setTriggerState({ triggerId: trigger.id, state: trigger.state === 'ENABLED' ? 'DISABLED' : 'ENABLED' })
             }
+            isDisabled={triggerState.loading}
           />
         </Row>
       ))}
+      <ActionError error={triggerState.error} className="mt-1.5" />
     </>
   );
 
@@ -361,9 +361,10 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
 export function HomePage() {
   const { slug } = useTenant();
   const navigate = useNavigate();
-  const { data, error, refetch } = useData(HomeDocument, { tenant: slug });
+  const { data, error, refetch } = useData(HomeDocument, { tenant: slug }, { poll: (result) => (result.tenant?.tasks.length ? LIVE_POLL : IDLE_POLL) });
   const tenant = data?.tenant;
   const setup = tenant && !tenant.setup.complete;
+  const checkout = useCheckoutOutcome(useSearch({ from: '/app/' }).checkout);
   return (
     <Page
       crumbs={[{ label: t('nav.home') }]}
@@ -393,10 +394,16 @@ export function HomePage() {
         <div className="p-6">
           <Skeleton rows={6} />
         </div>
-      ) : setup ? (
-        <HomeSetup tenant={tenant} />
       ) : (
-        <Dashboard tenant={tenant} />
+        <>
+          {checkout || tenant.state === 'SUSPENDED' ? (
+            <div className="px-6 pt-5">
+              <CheckoutNote outcome={checkout} success="checkout.tenantPaid" canceled="checkout.tenantCanceled" />
+              <TenantStateNote tenant={tenant} />
+            </div>
+          ) : null}
+          {setup ? <HomeSetup tenant={tenant} /> : <Dashboard tenant={tenant} />}
+        </>
       )}
     </Page>
   );

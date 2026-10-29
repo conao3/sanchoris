@@ -1,19 +1,19 @@
-import { useMutation } from '@apollo/client/react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import clsx from 'clsx';
 import type { LucideIcon } from 'lucide-react';
-import { Bot, ChevronRight, Circle, CircleCheck, CircleDashed, CircleX, Play, Puzzle, Square, Zap } from 'lucide-react';
+import { Bot, Check, ChevronRight, Circle, CircleCheck, CircleDashed, CircleX, Play, Puzzle, Square, X, Zap } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Button } from '../components/Button';
 import { Cols, Page } from '../components/Shell';
 import { SkillRunState, StateEntryState, TaskState } from '../components/status';
-import { Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Kv, Lk, Meter, Row, Section, Skeleton, State, Sub, Th, Title, type Tone } from '../components/ui';
-import { ResumeTaskDocument, StopTaskDocument, type TaskQuery, TaskDocument } from '../graphql/generated/graphql';
+import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Kv, Lk, Meter, Row, Section, Skeleton, State, Sub, Th, Title, type Tone } from '../components/ui';
+import { ResolveApprovalDocument, ResumeTaskDocument, StopTaskDocument, type TaskQuery, TaskDocument } from '../graphql/generated/graphql';
 import { type MessageKey, t } from '../i18n';
 import { between, clock, duration, issueLabel, usd, usdWhole } from '../lib/format';
 import { useKeys } from '../lib/keys';
-import { useData } from '../lib/query';
-import { needsYouText, skillProgress } from '../lib/taskText';
+import { useAction } from '../lib/mutation';
+import { LIVE_POLL, useData } from '../lib/query';
+import { isActive, needsYouText, skillProgress } from '../lib/taskText';
 import { useTenant } from '../lib/tenant';
 
 type Task = NonNullable<NonNullable<TaskQuery['tenant']>['task']>;
@@ -34,8 +34,6 @@ const runStatusLabels: Record<string, MessageKey> = {
   COMPLETED: 'status.completed',
   FAILED: 'status.failed',
 };
-
-const finished = ['SUCCEEDED', 'FAILED', 'ABORTED'];
 
 function Step({ kind, icon, tone, stateIcon, children, current, todo }: {
   kind: string;
@@ -131,17 +129,33 @@ export function TaskPage() {
   const { task: taskId } = useParams({ from: '/app/tasks/$task' });
   const { slug } = useTenant();
   const navigate = useNavigate();
-  const { data, error, refetch } = useData(TaskDocument, { tenant: slug, id: taskId });
+  const { data, error, refetch } = useData(
+    TaskDocument,
+    { tenant: slug, id: taskId },
+    { poll: (result) => (result.tenant?.task && isActive(result.tenant.task.status) ? LIVE_POLL : 0) },
+  );
   const [message, setMessage] = useState('');
-  const [resume, resumeState] = useMutation(ResumeTaskDocument);
-  const [stop, stopState] = useMutation(StopTaskDocument);
+  const [resume, resumeState] = useAction(ResumeTaskDocument);
+  const [stop, stopState] = useAction(StopTaskDocument);
+  const [resolveApproval, approvalState] = useAction(ResolveApprovalDocument);
   const task = data?.tenant?.task;
   const needsYou = task?.status === 'NEEDS_YOU';
-  const active = task ? !finished.includes(task.status) : false;
+  const approval = task?.approval;
+  const resumable = needsYou && !approval;
+  const active = task ? isActive(task.status) : false;
+
+  function doResolve(approved: boolean) {
+    if (task && approval) {
+      void resolveApproval({ taskId: task.id, approved });
+    }
+  }
 
   function doResume() {
-    if (task && needsYou && message.trim()) {
-      void resume({ variables: { input: { taskId: task.id, message: message.trim() } } }).then(() => {
+    if (task && resumable && message.trim()) {
+      void resume({ input: { taskId: task.id, message: message.trim() } }).then((done) => {
+        if (!done) {
+          return;
+        }
         setMessage('');
         refetch();
       });
@@ -150,7 +164,7 @@ export function TaskPage() {
 
   function doStop() {
     if (task && active) {
-      void stop({ variables: { taskId: task.id } });
+      void stop({ taskId: task.id });
     }
   }
 
@@ -246,12 +260,33 @@ export function TaskPage() {
           {task.issue ? <span className="ml-2"><Id>{task.issue.repository}#{task.issue.number}</Id></span> : null} ·{' '}
           {needsYou ? needsYouText(task) : `${skillProgress(task)} · ${t('task.spent', { cost: usd(task.costUsd) })}`}
         </Sub>
+        <ActionError error={stopState.error} className="-mt-3 mb-3.5" />
         <Section count={t('task.fromTrigger', { name: task.trigger.name })} first>
           {task.requiredSkills.length > 0 ? t('task.requiredSkill') : t('task.progress')}
         </Section>
         <StepStrip task={task} />
 
-        {needsYou ? (
+        {needsYou && approval ? (
+          <>
+            <Section>{t('status.needsYou')}</Section>
+            <div className="font-medium">{approval.message}</div>
+            <Dim className="mt-1">{t('task.approvalNote')}</Dim>
+            <ActionError error={approvalState.error} className="mt-2" />
+            <div className="mt-2.5 flex gap-2">
+              <Button variant="primary" icon={Check} onPress={() => doResolve(true)} isDisabled={approvalState.loading}>
+                {t('task.approve')}
+              </Button>
+              <Button icon={X} onPress={() => doResolve(false)} isDisabled={approvalState.loading}>
+                {t('task.reject')}
+              </Button>
+              <Button variant="danger" icon={Square} kbd="s" onPress={doStop} isDisabled={stopState.loading}>
+                {t('task.stop')}
+              </Button>
+            </div>
+          </>
+        ) : null}
+
+        {resumable ? (
           <>
             <Section>{t('status.needsYou')}</Section>
             <Dim>
@@ -267,7 +302,7 @@ export function TaskPage() {
               placeholder={t('task.messagePlaceholder')}
               className="block h-16 w-full resize-y rounded-ui border border-line2 bg-bg px-2.5 py-[7px] outline-none focus:border-ink"
             />
-            {resumeState.error ? <Dim className="mt-2 text-err">{resumeState.error.message}</Dim> : null}
+            <ActionError error={resumeState.error} className="mt-2" />
             <div className="mt-2.5 flex gap-2">
               <Button variant="primary" icon={Play} kbd="⌘↵" onPress={doResume} isDisabled={!message.trim() || resumeState.loading}>
                 {t('task.resume')}
@@ -376,6 +411,18 @@ export function TaskPage() {
     body = <Cols main={main} aside={aside} />;
   }
 
+  const keys: [string, MessageKey][] = [];
+  if (resumable) {
+    keys.push(['⌘↵', 'task.resume']);
+  }
+  if (active) {
+    keys.push(['s', 'task.stop']);
+  }
+  if (task && task.runs.length > 0) {
+    keys.push(['o', 'keys.openRun']);
+  }
+  keys.push(['Esc', 'keys.back']);
+
   return (
     <Page
       crumbs={[{ label: t('nav.tasks'), to: '/tasks' }, { label: task?.title ?? '…' }]}
@@ -387,7 +434,7 @@ export function TaskPage() {
                 {t('task.stop')}
               </Button>
             ) : null}
-            {needsYou ? (
+            {resumable ? (
               <Button variant="primary" icon={Play} kbd="⌘↵" onPress={doResume} isDisabled={!message.trim()}>
                 {t('task.resume')}
               </Button>
@@ -395,12 +442,7 @@ export function TaskPage() {
           </>
         ) : null
       }
-      keys={[
-        ['⌘↵', 'task.resume'],
-        ['s', 'task.stop'],
-        ['o', 'keys.openRun'],
-        ['Esc', 'keys.back'],
-      ]}
+      keys={keys}
     >
       {body}
     </Page>

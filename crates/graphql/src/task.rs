@@ -4,9 +4,9 @@ use sanchoris_config::Start;
 use sanchoris_core::db::{self, REF_CONFIG_REVISION, REF_RUN, REF_TRIGGER};
 use sanchoris_core::item::format_time;
 use sanchoris_core::items::{
-    ChatMessage as ChatMessageItem, Child, ConfigRevision as RevisionItem, Dependency,
-    InboundEvent, OutboxItem, Output as OutputItem, Run as RunItem, RunEventItem, SkillRunItem,
-    Task as TaskItem, TaskName, Workspace as WorkspaceItem,
+    ApprovalWait, ChatMessage as ChatMessageItem, Child, ConfigRevision as RevisionItem,
+    Dependency, InboundEvent, OutboxItem, Output as OutputItem, Run as RunItem, RunEventItem,
+    SkillRunItem, Task as TaskItem, TaskName, Workspace as WorkspaceItem,
 };
 use sanchoris_core::keys;
 use sanchoris_core::model::{TaskDefinition, TaskStatus as CoreStatus};
@@ -309,8 +309,9 @@ impl Task {
             return None;
         }
         Some(match self.row.error.as_deref() {
-            None | Some(sanchoris_core::tasks::ERROR_APPROVAL_REQUESTED) => {
-                NeedsYouReason::AgentAsked
+            None => NeedsYouReason::AgentAsked,
+            Some(sanchoris_core::tasks::ERROR_APPROVAL_REQUESTED) => {
+                NeedsYouReason::ApprovalRequested
             }
             Some(sanchoris_core::lifecycle::ERROR_NUDGES_EXHAUSTED) => {
                 NeedsYouReason::NudgesExhausted
@@ -327,6 +328,14 @@ impl Task {
             }
             Some(_) => NeedsYouReason::SkillFailed,
         })
+    }
+
+    async fn approval(&self, ctx: &Context<'_>) -> Result<Option<Approval>> {
+        if self.row.status.is_terminal() {
+            return Ok(None);
+        }
+        let mut tx = tx(ctx, self.scope.tenant_id);
+        Ok(waiting_approval(&mut tx, self.row.id).await?.map(Approval))
     }
 
     async fn resume_at(&self) -> Option<Timestamp> {
@@ -587,6 +596,31 @@ impl Task {
             .iter()
             .map(|run| run.row.cost_usd)
             .sum())
+    }
+}
+
+pub(crate) async fn waiting_approval(
+    tx: &mut db::TenantTx,
+    task_id: Uuid,
+) -> Result<Option<ApprovalWait>> {
+    Ok(tx
+        .query::<ApprovalWait>(&keys::task_pk(tx.tenant_id(), task_id), "SR#")
+        .await?
+        .into_iter()
+        .filter(|wait| wait.status == "waiting")
+        .max_by_key(|wait| wait.created_at))
+}
+
+pub(crate) struct Approval(ApprovalWait);
+
+#[Object]
+impl Approval {
+    async fn message(&self) -> &str {
+        &self.0.message
+    }
+
+    async fn requested_at(&self) -> Timestamp {
+        ts(self.0.created_at)
     }
 }
 

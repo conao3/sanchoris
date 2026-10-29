@@ -2,6 +2,8 @@ query Home($tenant: String!) {
   tenant(slug: $tenant) {
     id
     name
+    state
+    suspendedReason
     setup {
       githubLinked
       appInstalled

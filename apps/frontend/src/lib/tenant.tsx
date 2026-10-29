@@ -1,5 +1,5 @@
 import { useApolloClient } from '@apollo/client/react';
-import { Navigate } from '@tanstack/react-router';
+import { Navigate, useNavigate } from '@tanstack/react-router';
 import { type ReactNode, createContext, useContext, useState } from 'react';
 import { ErrorNote, Skeleton } from '../components/ui';
 import { type ShellQuery, ShellDocument } from '../graphql/generated/graphql';
@@ -24,6 +24,7 @@ export function rememberTenant(slug: string) {
 
 export function TenantProvider({ children }: { children: ReactNode }) {
   const client = useApolloClient();
+  const navigate = useNavigate();
   const { data, error, refetch } = useData(ShellDocument, {});
   const [stored, setStored] = useState(() => localStorage.getItem(TENANT_KEY));
 
@@ -50,6 +51,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   function switchTenant(slug: string) {
     rememberTenant(slug);
     setStored(slug);
+    void navigate({ to: '/' });
     void client.resetStore();
   }
 

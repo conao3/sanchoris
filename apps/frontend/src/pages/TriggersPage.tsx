@@ -1,10 +1,9 @@
-import { useMutation } from '@apollo/client/react';
 import type { LucideIcon } from 'lucide-react';
 import { CircleDot, GitPullRequest, MessageSquare, Plus, Timer } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
 import { Button } from '../components/Button';
 import { Page, Pg } from '../components/Shell';
-import { Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Lk, Row, Section, Skeleton, State, Sub, Th, Title, Toggle } from '../components/ui';
+import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Lk, Row, Section, Skeleton, State, Sub, Th, Title, Toggle } from '../components/ui';
 import {
   ProposeTriggerDocument,
   SetTriggerStateDocument,
@@ -14,6 +13,7 @@ import {
 import { locale, t, tx } from '../i18n';
 import { weekdayTime, when } from '../lib/format';
 import { useListNav } from '../lib/keys';
+import { useAction } from '../lib/mutation';
 import { useData } from '../lib/query';
 import { useTenant } from '../lib/tenant';
 
@@ -103,12 +103,12 @@ function TemplatePanel({ tenant, templates, onClose }: { tenant: Tenant; templat
   const [templateId, setTemplateId] = useState(templates[0]?.id ?? '');
   const [configId, setConfigId] = useState(tenant.configs[0]?.id ?? '');
   const [repository, setRepository] = useState(repositories[0] ?? '');
-  const [propose, { data, loading, error }] = useMutation(ProposeTriggerDocument);
+  const [propose, { data, loading, error }] = useAction(ProposeTriggerDocument, { refetchQueries: [TriggersDocument] });
   const selectClass = 'h-[30px] w-full rounded-ui border border-line2 bg-bg px-2.5';
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    void propose({ variables: { input: { tenantId: tenant.id, templateId, configId, repository } } });
+    void propose({ input: { tenantId: tenant.id, templateId, configId, repository } });
   }
 
   return (
@@ -142,7 +142,7 @@ function TemplatePanel({ tenant, templates, onClose }: { tenant: Tenant; templat
           </option>
         ))}
       </select>
-      {error ? <Dim className="mt-2 text-err">{error.message}</Dim> : null}
+      <ActionError error={error} className="mt-2" />
       {data ? (
         <Dim className="mt-2">
           {tx('triggers.proposed', {
@@ -163,13 +163,13 @@ function TemplatePanel({ tenant, templates, onClose }: { tenant: Tenant; templat
 export function TriggersPage() {
   const { slug } = useTenant();
   const { data, error, refetch } = useData(TriggersDocument, { tenant: slug });
-  const [setTriggerState] = useMutation(SetTriggerStateDocument);
+  const [setTriggerState, triggerState] = useAction(SetTriggerStateDocument);
   const [panel, setPanel] = useState(false);
   const tenant = data?.tenant;
   const triggers = tenant?.triggers ?? [];
 
   function toggle(trigger: Trigger) {
-    void setTriggerState({ variables: { triggerId: trigger.id, state: trigger.state === 'ENABLED' ? 'DISABLED' : 'ENABLED' } });
+    void setTriggerState({ triggerId: trigger.id, state: trigger.state === 'ENABLED' ? 'DISABLED' : 'ENABLED' });
   }
 
   const nav = useListNav(triggers.length, (index) => window.open(triggers[index].editUrl, '_blank', 'noreferrer'), {
@@ -207,6 +207,7 @@ export function TriggersPage() {
           <Title>{t('nav.triggers')}</Title>
           <Sub>{t('triggers.intro', { n: triggers.length, changes: openChanges })}</Sub>
           {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
+          <ActionError error={triggerState.error} className="mb-2" />
           {!tenant && !error ? <Skeleton rows={5} /> : null}
           {tenant && triggers.length === 0 ? <Empty>{t('triggers.empty')}</Empty> : null}
           {triggers.length > 0 ? (
@@ -251,7 +252,7 @@ export function TriggersPage() {
                     <span className="text-right font-mono text-sm">{trigger.tasksLast7d}</span>
                     <span className="font-mono text-sm text-muted">{shortRepo(trigger.config.repository)}</span>
                     <span className="text-right">
-                      <Toggle on={trigger.state === 'ENABLED'} onToggle={() => toggle(trigger)} />
+                      <Toggle on={trigger.state === 'ENABLED'} onToggle={() => toggle(trigger)} isDisabled={triggerState.loading} />
                     </span>
                   </Row>
                 );

@@ -21,10 +21,7 @@ const tabs: { id: SettingsTab; to: string; label: MessageKey; icon: LucideIcon }
 export function SettingsPage({
   tab,
   actions,
-  keys = [
-    ['g s', 'nav.settings'],
-    ['j k', 'keys.move'],
-  ],
+  keys = [['g s', 'nav.settings']],
   children,
 }: {
   tab: SettingsTab;

@@ -1,17 +1,19 @@
-import { useMutation } from '@apollo/client/react';
 import type { LucideIcon } from 'lucide-react';
-import { Bot, ExternalLink, ShieldCheck, UserCheck, Users, Zap } from 'lucide-react';
+import { Bot, Download, ExternalLink, ShieldCheck, UserCheck, Users, Zap } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Button } from '../../components/Button';
 import { Menu } from '../../components/Menu';
 import { SettingsPage } from '../../components/SettingsTabs';
-import { Dim, Empty, ErrorNote, Icon, Lk, Row, Skeleton, Sub, Th, Title } from '../../components/ui';
+import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Lk, Row, Skeleton, State, Sub, Th, Title } from '../../components/ui';
 import { type ActorKind, type AuditFilter, AuditLogDocument, type AuditOrigin, ExportAuditLogDocument } from '../../graphql/generated/graphql';
 import { type MessageKey, t } from '../../i18n';
 import { dayTime } from '../../lib/format';
 import { useListNav } from '../../lib/keys';
+import { useAction } from '../../lib/mutation';
 import { useData } from '../../lib/query';
 import { useTenant } from '../../lib/tenant';
+
+const AUDIT_LIST_LIMIT = 100;
 
 const actorIcons: Record<ActorKind, LucideIcon> = {
   MEMBER: UserCheck,
@@ -47,19 +49,14 @@ export function AuditPage() {
     ...(action ? { action } : {}),
   };
   const { data, error, refetch } = useData(AuditLogDocument, { tenant: slug, filter });
-  const [exportLog, exportState] = useMutation(ExportAuditLogDocument);
+  const [exportLog, exportState] = useAction(ExportAuditLogDocument);
   const tenant = data?.tenant;
   const events = tenant?.auditEvents ?? [];
   const actions = [...new Set(events.map((event) => event.action))].sort();
 
   function doExport() {
     if (tenant) {
-      void exportLog({ variables: { tenantId: tenant.id, filter } }).then((result) => {
-        const url = result.data?.exportAuditLog.url;
-        if (url) {
-          window.open(url, '_blank', 'noreferrer');
-        }
-      });
+      void exportLog({ tenantId: tenant.id, filter });
     }
   }
 
@@ -109,6 +106,14 @@ export function AuditPage() {
           options={periods.map((item) => ({ value: item.value, label: t(item.label) }))}
         />
       </div>
+      <ActionError error={exportState.error} className="mb-3" />
+      {exportState.data && !exportState.loading ? (
+        <div className="mb-3">
+          <State tone="ok" icon={Download}>
+            <ExternalLk href={exportState.data.exportAuditLog.url}>{t('audit.download')}</ExternalLk>
+          </State>
+        </div>
+      ) : null}
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
       {!data && !error ? <Skeleton rows={8} /> : null}
       {tenant && events.length === 0 ? <Empty>{t('audit.empty')}</Empty> : null}
@@ -142,6 +147,7 @@ export function AuditPage() {
               </Row>
             );
           })}
+          {events.length >= AUDIT_LIST_LIMIT ? <Dim className="mt-2 text-xs">{t('common.latest', { n: AUDIT_LIST_LIMIT })}</Dim> : null}
         </>
       ) : null}
     </SettingsPage>

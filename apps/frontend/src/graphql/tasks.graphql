@@ -27,6 +27,10 @@ query Task($tenant: String!, $id: ID!) {
       configRevision
       startedAt
       endedAt
+      approval {
+        message
+        requestedAt
+      }
       triggerEvent {
         id
         receivedAt
@@ -107,6 +111,21 @@ mutation ResumeTask($input: ResumeTaskInput!) {
     error
     cause
     updatedAt
+  }
+}
+
+mutation ResolveApproval($taskId: ID!, $approved: Boolean!) {
+  resolveApproval(taskId: $taskId, approved: $approved) {
+    id
+    status
+    needsYouReason
+    error
+    cause
+    updatedAt
+    approval {
+      message
+      requestedAt
+    }
   }
 }
 

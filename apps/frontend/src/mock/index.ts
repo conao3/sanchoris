@@ -30,7 +30,7 @@ function createResolvers() {
     task.updatedAt = new Date().toISOString();
   };
   const appendLog = (run: Obj, kind: string, text: string) => {
-    run.lines.push({ sequence: run.lines.length + 1, at: new Date().toISOString(), kind, text });
+    run.lines.push({ sequence: run.lines.length + 1, at: new Date().toISOString(), kind, text, rateLimit: null });
   };
   const viewerMemberOf = (tenant: Obj): Obj => tenant.viewerMember;
 
@@ -48,13 +48,15 @@ function createResolvers() {
         if (!plan) {
           throw new Error('Unknown plan');
         }
-        if (plan.requiresPayment) {
-          return { tenant: null, checkoutUrl: `https://checkout.stripe.com/c/pay/cs_test_${encodeURIComponent(input.name)}` };
-        }
         const slug = String(input.name).toLowerCase().replace(/[^a-z0-9-]+/g, '-');
         const tenant = buildSetupTenant({ slug, name: input.name, planName: plan.name, role: 'OWNER', installed: false });
         tenants.push(tenant);
         memberships.push(tenant.viewerMember);
+        if (plan.requiresPayment) {
+          tenant.state = 'SUSPENDED';
+          tenant.suspendedReason = 'payment_pending';
+          return { tenant, checkoutUrl: `https://checkout.stripe.com/c/pay/cs_test_${encodeURIComponent(input.name)}` };
+        }
         return { tenant, checkoutUrl: null };
       },
       acceptInvitation: (_: unknown, { invitationId }: Obj) => {
@@ -74,7 +76,9 @@ function createResolvers() {
         viewerUser.githubLogin = null;
         return viewer;
       },
-      connectSlack: () => ({ url: 'https://slack.com/oauth/v2/authorize?client_id=mock' }),
+      connectSlack: () => {
+        throw new Error('Slack is not available yet');
+      },
       inviteMember: (_: unknown, { input }: Obj) => {
         const tenant = tenantById(input.tenantId);
         if (tenant.usage.seatsUsed >= tenant.plan.memberLimit) {
@@ -107,6 +111,11 @@ function createResolvers() {
         const member = tenants.flatMap((tenant) => tenant.memberList as Obj[]).find((item) => item.id === memberId);
         if (!member) {
           throw new Error('The member was not found');
+        }
+        const tenant = tenants.find((item) => item.memberList.includes(member)) as Obj;
+        const owners = tenant.memberList.filter((item: Obj) => item.role === 'OWNER');
+        if (member.role === 'OWNER' && role !== 'OWNER' && owners.length === 1) {
+          throw new Error('the tenant needs at least one owner');
         }
         member.role = role;
         return member;
@@ -144,8 +153,25 @@ function createResolvers() {
         touch(task);
         return task;
       },
+      resolveApproval: (_: unknown, { taskId, approved }: Obj) => {
+        const task = taskById(taskId);
+        if (!task.approval) {
+          throw new Error('the task has no approval waiting');
+        }
+        task.approval = null;
+        task.status = 'WAITING';
+        task.waitReason = 'SKILL';
+        task.needsYouReason = null;
+        task.error = null;
+        task.cause = approved ? null : 'Mika rejected the request';
+        touch(task);
+        return task;
+      },
       stopTask: (_: unknown, { taskId }: Obj) => {
         const task = taskById(taskId);
+        if (['SUCCEEDED', 'FAILED', 'ABORTED'].includes(task.status)) {
+          throw new Error('the task has already finished');
+        }
         task.status = 'ABORTED';
         task.endedAt = new Date().toISOString();
         for (const run of task.runs) {
@@ -162,6 +188,9 @@ function createResolvers() {
           .find((item) => item.id === runId);
         if (!run) {
           throw new Error('The run was not found');
+        }
+        if (run.status === 'COMPLETED' || run.status === 'FAILED') {
+          throw new Error('the session has already ended');
         }
         run.status = 'COMPLETED';
         appendLog(run, 'EVENT', 'session stopped by a member');
@@ -197,6 +226,7 @@ function createResolvers() {
           waitReason: null,
           pendingReason: null,
           needsYouReason: null,
+          approval: null,
           resumeAt: null,
           autoResume: true,
           snoozedUntil: null,

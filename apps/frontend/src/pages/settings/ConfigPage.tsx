@@ -1,13 +1,13 @@
-import { useMutation } from '@apollo/client/react';
 import { CircleCheck, CircleSlash, CircleX, ExternalLink, FolderGit2, MessageSquare, Plus, TriangleAlert, UserCheck, Zap } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
 import { Button } from '../../components/Button';
 import { SettingsPage } from '../../components/SettingsTabs';
-import { Chip, Dim, ErrorNote, ExternalLk, Icon, Id, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
+import { ActionError, Chip, Dim, ErrorNote, ExternalLk, Icon, Id, Row, Section, Skeleton, State, Sub, Th, Title } from '../../components/ui';
 import { AddConfigDocument, ConfigsDocument, SyncConfigDocument } from '../../graphql/generated/graphql';
 import { t } from '../../i18n';
 import { ago } from '../../lib/format';
 import { useListNav } from '../../lib/keys';
+import { useAction } from '../../lib/mutation';
 import { useData } from '../../lib/query';
 import { useTenant } from '../../lib/tenant';
 
@@ -36,11 +36,11 @@ function AddConfigForm({ tenantId, repositories }: { tenantId: string; repositor
   const [repository, setRepository] = useState(repositories[0] ?? '');
   const [root, setRoot] = useState('/');
   const [branch, setBranch] = useState('main');
-  const [addConfig, { data, loading, error }] = useMutation(AddConfigDocument, { refetchQueries: [ConfigsDocument] });
+  const [addConfig, { data, loading, error }] = useAction(AddConfigDocument, { refetchQueries: [ConfigsDocument] });
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    void addConfig({ variables: { input: { tenantId, repository, root, branch } } });
+    void addConfig({ input: { tenantId, repository, root, branch } });
   }
 
   return (
@@ -60,7 +60,7 @@ function AddConfigForm({ tenantId, repositories }: { tenantId: string; repositor
         <span className="text-muted">{t('config.checksFirst')}</span>
       </form>
       <Dim className="mt-1.5">{t('config.removeHint')}</Dim>
-      {error ? <Dim className="mt-2 text-err">{error.message}</Dim> : null}
+      <ActionError error={error} className="mt-2" />
       {data && data.addConfig.errors.length > 0 ? <Errors errors={data.addConfig.errors} /> : null}
     </>
   );
@@ -69,7 +69,7 @@ function AddConfigForm({ tenantId, repositories }: { tenantId: string; repositor
 export function ConfigPage() {
   const { slug } = useTenant();
   const { data, error, refetch } = useData(ConfigsDocument, { tenant: slug });
-  const [syncConfig, syncState] = useMutation(SyncConfigDocument);
+  const [syncConfig, syncState] = useAction(SyncConfigDocument);
   const tenant = data?.tenant;
   const configs = tenant?.configs ?? [];
   const nav = useListNav(configs.length, (index) => window.open(configs[index].url, '_blank', 'noreferrer'));
@@ -79,7 +79,14 @@ export function ConfigPage() {
   const repositories = tenant?.integrations.flatMap((integration) => (integration.kind === 'GITHUB_INSTALLATION' ? integration.repositories : [])) ?? [];
 
   return (
-    <SettingsPage tab="config">
+    <SettingsPage
+      tab="config"
+      keys={[
+        ['g s', 'nav.settings'],
+        ['j k', 'keys.move'],
+        ['↵', 'keys.openOnGitHub'],
+      ]}
+    >
       <Title>{t('settings.config')}</Title>
       <Sub>{t('config.intro')}</Sub>
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
@@ -138,9 +145,10 @@ export function ConfigPage() {
                     ) : (
                       <>
                         <span className="text-muted">{config.syncedAt ? t('config.lastSynced', { at: ago(config.syncedAt) }) : null}</span>
-                        <Button small isDisabled={syncState.loading} onPress={() => void syncConfig({ variables: { configId: config.id } })}>
+                        <Button small isDisabled={syncState.loading} onPress={() => void syncConfig({ configId: config.id })}>
                           {t('common.retry')}
                         </Button>
+                        <ActionError error={syncState.error} />
                       </>
                     )}
                   </div>
