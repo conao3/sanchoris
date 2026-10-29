@@ -6,7 +6,7 @@ import { Button } from '../components/Button';
 import { Menu } from '../components/Menu';
 import { Page, Pg } from '../components/Shell';
 import { TaskState } from '../components/status';
-import { Empty, ErrorNote, Id, Row, Skeleton, Sub, Th, Title } from '../components/ui';
+import { Dim, Empty, ErrorNote, Id, Row, Skeleton, Sub, Th, Title } from '../components/ui';
 import { type TaskFilter, type TaskRowFragment, type TaskStatus, TasksDocument } from '../graphql/generated/graphql';
 import { t } from '../i18n';
 import { age, issueLabel, usd } from '../lib/format';
@@ -14,6 +14,8 @@ import { useListNav } from '../lib/keys';
 import { IDLE_POLL, LIVE_POLL, useData } from '../lib/query';
 import { isActive, skillProgress } from '../lib/taskText';
 import { useTenant } from '../lib/tenant';
+
+const TASK_LIST_LIMIT = 200;
 
 type StateFilter = 'all' | 'active' | 'needsYou' | 'finished';
 
@@ -154,6 +156,7 @@ export function TasksPage() {
                 <span className="text-right text-muted">{age(task.updatedAt)}</span>
               </Row>
             ))}
+            {(tenant?.tasks.length ?? 0) >= TASK_LIST_LIMIT ? <Dim className="mt-2 text-xs">{t('common.latest', { n: TASK_LIST_LIMIT })}</Dim> : null}
           </>
         ) : null}
       </Pg>

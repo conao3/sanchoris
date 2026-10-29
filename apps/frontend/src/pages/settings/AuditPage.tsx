@@ -13,6 +13,8 @@ import { useAction } from '../../lib/mutation';
 import { useData } from '../../lib/query';
 import { useTenant } from '../../lib/tenant';
 
+const AUDIT_LIST_LIMIT = 100;
+
 const actorIcons: Record<ActorKind, LucideIcon> = {
   MEMBER: UserCheck,
   AGENT: Bot,
@@ -145,6 +147,7 @@ export function AuditPage() {
               </Row>
             );
           })}
+          {events.length >= AUDIT_LIST_LIMIT ? <Dim className="mt-2 text-xs">{t('common.latest', { n: AUDIT_LIST_LIMIT })}</Dim> : null}
         </>
       ) : null}
     </SettingsPage>

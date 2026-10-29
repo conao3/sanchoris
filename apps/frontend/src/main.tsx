@@ -13,6 +13,7 @@ import { ChatPage } from './pages/ChatPage';
 import { CreateTenantPage } from './pages/CreateTenantPage';
 import { HomePage } from './pages/HomePage';
 import { LoginPage } from './pages/LoginPage';
+import { NotFoundPage } from './pages/NotFoundPage';
 import { OperatorTenantsPage } from './pages/OperatorTenantsPage';
 import { RunPage } from './pages/RunPage';
 import { SkillPage } from './pages/SkillPage';
@@ -98,6 +99,7 @@ const credentialsRoute = createRoute({ getParentRoute: () => appRoute, path: '/s
 const membersRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/members', component: MembersPage });
 const auditRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/audit', component: AuditPage });
 const billingRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/billing', validateSearch: checkoutSearch, component: BillingPage });
+const notFoundRoute = createRoute({ getParentRoute: () => appRoute, path: '$', component: NotFoundPage });
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
@@ -120,6 +122,7 @@ const routeTree = rootRoute.addChildren([
     membersRoute,
     auditRoute,
     billingRoute,
+    notFoundRoute,
   ]),
 ]);
 
