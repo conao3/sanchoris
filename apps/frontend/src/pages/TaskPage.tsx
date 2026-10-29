@@ -363,7 +363,7 @@ export function TaskPage() {
                 <StateEntryState status={entry.status} />
                 <span className="font-mono text-sm">{clock(entry.enteredAt)}</span>
                 <span className="text-right font-mono text-sm">{entry.attempts}</span>
-                <span className="text-muted">{entry.result ?? '—'}</span>
+                <span className="text-muted wrap-anywhere">{entry.result ?? '—'}</span>
               </Row>
             ))}
           </>

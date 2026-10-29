@@ -64,7 +64,7 @@ export function AuditPage() {
     '/': () => setFilterOpen(true),
     e: doExport,
   });
-  const cols = '130px 160px 190px 1fr 120px';
+  const cols = '130px 160px 300px 1fr 150px';
   const actorName = tenant?.members.find((member) => member.id === actor)?.user.name;
 
   return (
@@ -134,13 +134,13 @@ export function AuditPage() {
                 <span>
                   <Icon icon={actorIcons[event.actorKind]} /> {event.actorName}
                 </span>
-                <span className="font-mono text-sm">{event.action}</span>
+                <span className="font-mono text-sm wrap-anywhere">{event.action}</span>
                 <span>
                   {event.targetTask ? <Lk to="/tasks/$task" params={{ task: event.targetTask.id }}>{event.target}</Lk> : event.target}
                   {event.summary ? <span className="text-muted"> · {event.summary}</span> : null}
                 </span>
                 {event.ip ? (
-                  <span className="font-mono text-sm text-muted">{event.ip}</span>
+                  <span className="font-mono text-sm text-muted wrap-anywhere">{event.ip}</span>
                 ) : (
                   <Dim>{origin ? t(origin) : '—'}</Dim>
                 )}
