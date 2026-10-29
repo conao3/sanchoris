@@ -44,7 +44,8 @@ pub async fn store_task(tx: &mut TenantTx, task: &Task, now: DateTime<Utc>) -> R
             Update::new().add("running_tasks", delta),
         )?;
     }
-    if before == Some(TaskStatus::Running) && task.status != TaskStatus::Running {
+    let finished = before.is_some_and(|status| !status.is_terminal()) && task.status.is_terminal();
+    if (before == Some(TaskStatus::Running) && task.status != TaskStatus::Running) || finished {
         tx.emit(Job::Dispatch { tenant_id });
     }
     let idle_changed = previous

@@ -198,6 +198,39 @@ async fn abort(world: &World, task_id: Uuid) {
 }
 
 #[tokio::test]
+async fn stopping_a_task_that_needs_you_dispatches_the_tasks_it_blocks() {
+    let world = World::new("pro").await;
+    let blocker = world.started_task(34).await;
+    let run_id = blocker.run_id.unwrap();
+    for turn in 1..=3 {
+        world.turn_end(run_id, turn).await;
+        world.worker.settle().await.unwrap();
+    }
+    assert_eq!(world.task(&format!("{REPO}#34")).await.status, "NEEDS_YOU");
+    world.github.state.lock().unwrap().relations.insert(
+        (REPO.to_string(), 35),
+        sanchoris_worker::ports::IssueRelations {
+            parent: None,
+            blocked_by: vec![sanchoris_worker::ports::IssueRef {
+                repository: REPO.into(),
+                repository_id: common::SHOP_WEB_ID,
+                number: 34,
+            }],
+        },
+    );
+    world
+        .label_issue("delivery-35", 35, "Fix flaky checkout test", "mika-dev")
+        .await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "PENDING");
+
+    abort(&world, blocker.id).await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(world.task(&format!("{REPO}#34")).await.status, "ABORTED");
+    assert_eq!(world.task(&format!("{REPO}#35")).await.status, "RUNNING");
+}
+
+#[tokio::test]
 async fn stopping_a_task_aborts_its_skill_runs_and_their_timers() {
     let world = World::new("pro").await;
     world.github.script_checks(&["success"]);
