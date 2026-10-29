@@ -1,10 +1,10 @@
 import type { LucideIcon } from 'lucide-react';
-import { Bot, ExternalLink, ShieldCheck, UserCheck, Users, Zap } from 'lucide-react';
+import { Bot, Download, ExternalLink, ShieldCheck, UserCheck, Users, Zap } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Button } from '../../components/Button';
 import { Menu } from '../../components/Menu';
 import { SettingsPage } from '../../components/SettingsTabs';
-import { ActionError, Dim, Empty, ErrorNote, Icon, Lk, Row, Skeleton, Sub, Th, Title } from '../../components/ui';
+import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Lk, Row, Skeleton, State, Sub, Th, Title } from '../../components/ui';
 import { type ActorKind, type AuditFilter, AuditLogDocument, type AuditOrigin, ExportAuditLogDocument } from '../../graphql/generated/graphql';
 import { type MessageKey, t } from '../../i18n';
 import { dayTime } from '../../lib/format';
@@ -54,12 +54,7 @@ export function AuditPage() {
 
   function doExport() {
     if (tenant) {
-      void exportLog({ tenantId: tenant.id, filter }).then((result) => {
-        const url = result?.exportAuditLog.url;
-        if (url) {
-          window.open(url, '_blank', 'noreferrer');
-        }
-      });
+      void exportLog({ tenantId: tenant.id, filter });
     }
   }
 
@@ -110,6 +105,13 @@ export function AuditPage() {
         />
       </div>
       <ActionError error={exportState.error} className="mb-3" />
+      {exportState.data && !exportState.loading ? (
+        <div className="mb-3">
+          <State tone="ok" icon={Download}>
+            <ExternalLk href={exportState.data.exportAuditLog.url}>{t('audit.download')}</ExternalLk>
+          </State>
+        </div>
+      ) : null}
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
       {!data && !error ? <Skeleton rows={8} /> : null}
       {tenant && events.length === 0 ? <Empty>{t('audit.empty')}</Empty> : null}

@@ -517,6 +517,7 @@
   "audit.intro": "Who did what in {tenant}. Entries are append-only. Owners and admins can read and export them.",
   "audit.export": "Export JSON Lines",
   "audit.exportKey": "Export",
+  "audit.download": "Download the export",
   "audit.allActors": "All actors",
   "audit.allActions": "All actions",
   "audit.last7": "Last 7 days",

@@ -27,7 +27,7 @@ export function BillingPage() {
       void openPortal({ tenantId: tenant.id }).then((result) => {
         const url = result?.openBillingPortal.url;
         if (url) {
-          window.open(url, '_blank', 'noreferrer');
+          window.location.assign(url);
         }
       });
     }

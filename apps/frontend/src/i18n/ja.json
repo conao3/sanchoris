@@ -517,6 +517,7 @@
   "audit.intro": "{tenant} で誰が何をしたかの記録です。追記だけで書き換えません。オーナーと管理者が読み、エクスポートできます。",
   "audit.export": "JSON Lines でエクスポート",
   "audit.exportKey": "エクスポート",
+  "audit.download": "エクスポートをダウンロード",
   "audit.allActors": "全実行者",
   "audit.allActions": "全操作",
   "audit.last7": "直近 7 日",
