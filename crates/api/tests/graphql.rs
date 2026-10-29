@@ -415,6 +415,29 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         )
         .await;
     assert_eq!(run["tenant"]["task"]["run"]["id"], run_id.to_string());
+    let log = w
+        .ok(
+            owner,
+            "RunLog",
+            json!({ "tenant": slug, "task": task_id, "number": 1, "after": null }),
+        )
+        .await["tenant"]["task"]["run"]["log"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(!log.is_empty());
+    let last = log.last().unwrap()["sequence"].as_i64().unwrap();
+    let rest = w
+        .ok(
+            owner,
+            "RunLog",
+            json!({ "tenant": slug, "task": task_id, "number": 1, "after": last - 1 }),
+        )
+        .await;
+    assert_eq!(
+        rest["tenant"]["task"]["run"]["log"],
+        json!([log.last().unwrap()])
+    );
     w.dynamo
         .modify::<Task>(&keys::task_key(tenant, task_uuid), |task| {
             task.status = TaskStatus::NeedsYou;

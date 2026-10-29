@@ -30,7 +30,7 @@ function createResolvers() {
     task.updatedAt = new Date().toISOString();
   };
   const appendLog = (run: Obj, kind: string, text: string) => {
-    run.lines.push({ sequence: run.lines.length + 1, at: new Date().toISOString(), kind, text });
+    run.lines.push({ sequence: run.lines.length + 1, at: new Date().toISOString(), kind, text, rateLimit: null });
   };
   const viewerMemberOf = (tenant: Obj): Obj => tenant.viewerMember;
 

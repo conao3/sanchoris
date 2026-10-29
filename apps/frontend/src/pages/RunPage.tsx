@@ -6,7 +6,7 @@ import { Button } from '../components/Button';
 import { Cols, Page } from '../components/Shell';
 import { RunState, SkillRunState } from '../components/status';
 import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Kv, Lk, Row, Section, Skeleton, Sub, Title } from '../components/ui';
-import { type LogLineKind, RunDocument, SendChatMessageDocument, StopRunDocument, type WorkspaceArchitecture } from '../graphql/generated/graphql';
+import { type LogLineKind, RunDocument, RunLogDocument, type RunLogQuery, type RunStatus, SendChatMessageDocument, StopRunDocument, type WorkspaceArchitecture } from '../graphql/generated/graphql';
 import { type MessageKey, t } from '../i18n';
 import { clock, dayTime } from '../lib/format';
 import { useKeys } from '../lib/keys';
@@ -52,12 +52,52 @@ function lineText(line: { text: string; rateLimit: { status: string; resetsAt: s
   return resetsAt ? t('run.rateLimitResets', { text, at: dayTime(resetsAt) }) : text;
 }
 
+type LogLine = NonNullable<NonNullable<NonNullable<RunLogQuery['tenant']>['task']>['run']>['log'][number];
+
+function isLive(status: RunStatus | undefined): boolean {
+  return status === 'RUNNING' || status === 'IDLE' || status === 'CREATING';
+}
+
+function useRunLog(variables: { tenant: string; task: string; number: number }, live: boolean): LogLine[] {
+  const [log, setLog] = useState<LogLine[]>([]);
+  const after = log.length > 0 ? log[log.length - 1].sequence : null;
+  const { data } = useData(RunLogDocument, { ...variables, after }, { poll: () => (live ? LIVE_POLL : 0) });
+  const fresh = data?.tenant?.task?.run?.log;
+  const wasLive = useRef(live);
+
+  useEffect(() => {
+    if (fresh && fresh.length > 0) {
+      setLog((current) => {
+        if (after === null) {
+          return fresh;
+        }
+        const last = current.length > 0 ? current[current.length - 1].sequence : 0;
+        return [...current, ...fresh.filter((line) => line.sequence > last)];
+      });
+    }
+  }, [fresh, after]);
+
+  useEffect(() => {
+    if (wasLive.current && !live) {
+      setLog([]);
+    }
+    wasLive.current = live;
+  }, [live]);
+
+  return log;
+}
+
 export function RunPage() {
-  const { task: taskId, n } = useParams({ from: '/app/tasks/$task/runs/$n' });
+  const { task, n } = useParams({ from: '/app/tasks/$task/runs/$n' });
+  return <RunView key={`${task}/${n}`} taskId={task} n={n} />;
+}
+
+function RunView({ taskId, n }: { taskId: string; n: string }) {
   const { slug } = useTenant();
   const navigate = useNavigate();
   const [follow, setFollow] = useState(true);
-  const { data, error, refetch } = useData(RunDocument, { tenant: slug, task: taskId, number: Number(n) }, { poll: () => (follow ? LIVE_POLL : 0) });
+  const variables = { tenant: slug, task: taskId, number: Number(n) };
+  const { data, error, refetch } = useData(RunDocument, variables, { poll: (result) => (isLive(result.tenant?.task?.run?.status) ? LIVE_POLL : 0) });
   const [stopRun, stopState] = useAction(StopRunDocument);
   const [send, sendState] = useAction(SendChatMessageDocument);
   const [text, setText] = useState('');
@@ -65,15 +105,14 @@ export function RunPage() {
   const logEnd = useRef<HTMLDivElement>(null);
   const task = data?.tenant?.task;
   const run = task?.run;
-  const lines = run?.log.length ?? 0;
+  const live = isLive(run?.status);
+  const log = useRunLog(variables, live);
 
   useEffect(() => {
     if (follow) {
       logEnd.current?.scrollIntoView({ block: 'nearest' });
     }
-  }, [follow, lines]);
-
-  const live = run && (run.status === 'RUNNING' || run.status === 'IDLE' || run.status === 'CREATING');
+  }, [follow, log.length]);
 
   function submit(event?: FormEvent) {
     event?.preventDefault();
@@ -138,10 +177,10 @@ export function RunPage() {
         <ActionError error={stopState.error} className="-mt-3 mb-3.5" />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-ui bg-term-bg py-3 font-mono text-sm leading-[1.75] text-term-fg">
           <div className="min-h-0 flex-1 overflow-auto">
-            {run.log.map((line, index) => {
+            {log.map((line, index) => {
               const [first, ...rest] = lineText(line).split('\n');
               const prefix = linePrefix[line.kind];
-              const current = index === run.log.length - 1;
+              const current = index === log.length - 1;
               return (
                 <div key={line.sequence} className={clsx(lineClass[line.kind], current && 'bg-term-line')}>
                   <div className="whitespace-pre-wrap px-4">

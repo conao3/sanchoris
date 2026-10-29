@@ -27,16 +27,6 @@ query Run($tenant: String!, $task: ID!, $number: Int!) {
           repositories
           branch
         }
-        log {
-          sequence
-          at
-          kind
-          text
-          rateLimit {
-            status
-            resetsAt
-          }
-        }
         skillRuns {
           id
           status
@@ -53,6 +43,28 @@ query Run($tenant: String!, $task: ID!, $number: Int!) {
           number
           url
           state
+        }
+      }
+    }
+  }
+}
+
+query RunLog($tenant: String!, $task: ID!, $number: Int!, $after: Int) {
+  tenant(slug: $tenant) {
+    id
+    task(id: $task) {
+      id
+      run(number: $number) {
+        id
+        log(after: $after) {
+          sequence
+          at
+          kind
+          text
+          rateLimit {
+            status
+            resetsAt
+          }
         }
       }
     }
