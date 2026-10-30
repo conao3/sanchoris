@@ -1,8 +1,7 @@
-import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { once } from "node:events";
 import { connect, createServer, type AddressInfo, type Server, type Socket } from "node:net";
-import { test } from "node:test";
+import { expect, onTestFinished, test } from "vite-plus/test";
 
 import { createRelay, decide, hostMatches, isPrivateAddress, proxyToken, verifyToken, type RelayOptions } from "../src/relay.ts";
 
@@ -16,50 +15,50 @@ function sign(claims: object): string {
 }
 
 test("verifies the token the control plane signs", () => {
-  assert.deepEqual(verifyToken(RUST_VECTOR, KEY, 1_793_060_000), {
+  expect(verifyToken(RUST_VECTOR, KEY, 1_793_060_000)).toEqual({
     run: "00000000-0000-4000-8000-000000000001",
     exp: 1_793_061_000,
     allow: ["github.com", "registry.npmjs.org"],
   });
-  assert.equal(verifyToken(RUST_VECTOR, KEY, 1_793_061_000), null);
-  assert.equal(verifyToken(RUST_VECTOR, Buffer.alloc(32, 8), 1_793_060_000), null);
-  assert.equal(verifyToken(RUST_VECTOR.replace("7b22", "7b23"), KEY, 1_793_060_000), null);
+  expect(verifyToken(RUST_VECTOR, KEY, 1_793_061_000)).toBe(null);
+  expect(verifyToken(RUST_VECTOR, Buffer.alloc(32, 8), 1_793_060_000)).toBe(null);
+  expect(verifyToken(RUST_VECTOR.replace("7b22", "7b23"), KEY, 1_793_060_000)).toBe(null);
 });
 
 test("matches exact hosts and subdomain wildcards", () => {
-  assert.equal(hostMatches("github.com", "github.com"), true);
-  assert.equal(hostMatches("API.GitHub.com.", "api.github.com"), true);
-  assert.equal(hostMatches("raw.githubusercontent.com", "*.githubusercontent.com"), true);
-  assert.equal(hostMatches("githubusercontent.com", "*.githubusercontent.com"), false);
-  assert.equal(hostMatches("evilgithub.com", "github.com"), false);
+  expect(hostMatches("github.com", "github.com")).toBe(true);
+  expect(hostMatches("API.GitHub.com.", "api.github.com")).toBe(true);
+  expect(hostMatches("raw.githubusercontent.com", "*.githubusercontent.com")).toBe(true);
+  expect(hostMatches("githubusercontent.com", "*.githubusercontent.com")).toBe(false);
+  expect(hostMatches("evilgithub.com", "github.com")).toBe(false);
 });
 
 test("applies the deny list before the platform hosts and the session allow list", () => {
   const options = { platformHosts: ["api.anthropic.com"], denyHosts: ["*.pool.example"] };
   const claims = { run: "r", exp: 0, allow: ["github.com", "mine.pool.example"] };
-  assert.deepEqual(decide("api.anthropic.com", 443, claims, options), { allowed: true, rule: "platform" });
-  assert.deepEqual(decide("github.com", 443, claims, options), { allowed: true, rule: "session" });
-  assert.deepEqual(decide("mine.pool.example", 443, claims, options), { allowed: false, reason: "operator deny list" });
-  assert.deepEqual(decide("example.com", 443, claims, options), { allowed: false, reason: "not in Network.Allow" });
-  assert.deepEqual(decide("github.com", 22, claims, options), { allowed: false, reason: "port 22 is not 443" });
+  expect(decide("api.anthropic.com", 443, claims, options)).toEqual({ allowed: true, rule: "platform" });
+  expect(decide("github.com", 443, claims, options)).toEqual({ allowed: true, rule: "session" });
+  expect(decide("mine.pool.example", 443, claims, options)).toEqual({ allowed: false, reason: "operator deny list" });
+  expect(decide("example.com", 443, claims, options)).toEqual({ allowed: false, reason: "not in Network.Allow" });
+  expect(decide("github.com", 22, claims, options)).toEqual({ allowed: false, reason: "port 22 is not 443" });
 });
 
 test("reads the token from Basic proxy credentials", () => {
-  assert.equal(proxyToken(`Basic ${Buffer.from("run:abc.def").toString("base64")}`), "abc.def");
-  assert.equal(proxyToken("Bearer abc"), null);
-  assert.equal(proxyToken(undefined), null);
+  expect(proxyToken(`Basic ${Buffer.from("run:abc.def").toString("base64")}`)).toBe("abc.def");
+  expect(proxyToken("Bearer abc")).toBe(null);
+  expect(proxyToken(undefined)).toBe(null);
 });
 
 test("treats private and link-local addresses as private", () => {
-  assert.equal(isPrivateAddress("169.254.170.2"), true);
-  assert.equal(isPrivateAddress("10.1.0.5"), true);
-  assert.equal(isPrivateAddress("::1"), true);
-  assert.equal(isPrivateAddress("64:ff9b::a9fe:a902"), true);
-  assert.equal(isPrivateAddress("224.0.0.251"), true);
-  assert.equal(isPrivateAddress("240.0.0.1"), true);
-  assert.equal(isPrivateAddress("192.0.0.170"), true);
-  assert.equal(isPrivateAddress("198.19.0.1"), true);
-  assert.equal(isPrivateAddress("140.82.112.3"), false);
+  expect(isPrivateAddress("169.254.170.2")).toBe(true);
+  expect(isPrivateAddress("10.1.0.5")).toBe(true);
+  expect(isPrivateAddress("::1")).toBe(true);
+  expect(isPrivateAddress("64:ff9b::a9fe:a902")).toBe(true);
+  expect(isPrivateAddress("224.0.0.251")).toBe(true);
+  expect(isPrivateAddress("240.0.0.1")).toBe(true);
+  expect(isPrivateAddress("192.0.0.170")).toBe(true);
+  expect(isPrivateAddress("198.19.0.1")).toBe(true);
+  expect(isPrivateAddress("140.82.112.3")).toBe(false);
 });
 
 async function listen(server: Server): Promise<number> {
@@ -88,7 +87,7 @@ async function exchange(port: number, request: string, payload: string | null): 
   return received;
 }
 
-test("tunnels allowed hosts and refuses the rest", async (t) => {
+test("tunnels allowed hosts and refuses the rest", async () => {
   const echo = createServer((socket) => socket.pipe(socket));
   const echoPort = await listen(echo);
   const logs: Record<string, unknown>[] = [];
@@ -106,7 +105,7 @@ test("tunnels allowed hosts and refuses the rest", async (t) => {
   };
   const relay = createRelay(options);
   const port = await listen(relay.server);
-  t.after(async () => {
+  onTestFinished(async () => {
     await relay.shutdown();
     echo.close();
   });
@@ -114,35 +113,32 @@ test("tunnels allowed hosts and refuses the rest", async (t) => {
   const auth = `Proxy-Authorization: Basic ${Buffer.from(`run:${token}`).toString("base64")}\r\n`;
 
   const allowed = await exchange(port, `CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n${auth}\r\n`, "ping");
-  assert.match(allowed, /^HTTP\/1\.1 200 Connection Established\r\n\r\nping$/);
+  expect(allowed).toMatch(/^HTTP\/1\.1 200 Connection Established\r\n\r\nping$/);
 
   const anonymous = await exchange(port, "CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n\r\n", null);
-  assert.match(anonymous, /^HTTP\/1\.1 407 /);
+  expect(anonymous).toMatch(/^HTTP\/1\.1 407 /);
 
   const outside = await exchange(port, `CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n${auth}\r\n`, null);
-  assert.match(outside, /^HTTP\/1\.1 403 /);
+  expect(outside).toMatch(/^HTTP\/1\.1 403 /);
 
   const metadata = await exchange(port, `CONNECT metadata.example:443 HTTP/1.1\r\nHost: metadata.example:443\r\n${auth}\r\n`, null);
-  assert.match(metadata, /^HTTP\/1\.1 403 /);
+  expect(metadata).toMatch(/^HTTP\/1\.1 403 /);
 
   const expired = sign({ run: "run-1", exp: 999, allow: ["github.com"] });
   const stale = `Proxy-Authorization: Basic ${Buffer.from(`run:${expired}`).toString("base64")}\r\n`;
   const late = await exchange(port, `CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n${stale}\r\n`, null);
-  assert.match(late, /^HTTP\/1\.1 407 /);
+  expect(late).toMatch(/^HTTP\/1\.1 407 /);
 
   const plain = await exchange(port, "GET http://github.com/ HTTP/1.1\r\nHost: github.com\r\n\r\n", null);
-  assert.match(plain, /^HTTP\/1\.1 405 /);
+  expect(plain).toMatch(/^HTTP\/1\.1 405 /);
 
-  assert.deepEqual(
-    logs.map((entry) => [entry.host, entry.allowed, entry.reason ?? entry.rule]),
-    [
+  expect(logs.map((entry) => [entry.host, entry.allowed, entry.reason ?? entry.rule])).toEqual([
       ["github.com", true, "session"],
       ["github.com", false, "proxy authentication"],
       ["example.com", false, "not in Network.Allow"],
       ["metadata.example", false, "private address"],
       ["github.com", false, "proxy authentication"],
-    ],
-  );
+    ]);
 });
 
 function relayOptions(echoPort: number, logs: Record<string, unknown>[], overrides: Partial<RelayOptions> = {}): RelayOptions {
@@ -186,65 +182,67 @@ async function open(port: number, run: string): Promise<{ socket: Socket; status
   return { socket, status: received.split("\r\n")[0] ?? "" };
 }
 
-test("caps the open tunnels of one run without affecting other runs", async (t) => {
+test("caps the open tunnels of one run without affecting other runs", async () => {
   const echo = createServer((socket) => socket.pipe(socket));
   const echoPort = await listen(echo);
   const logs: Record<string, unknown>[] = [];
   const relay = createRelay(relayOptions(echoPort, logs, { maxTunnelsPerRun: 2 }));
   const port = await listen(relay.server);
-  t.after(async () => {
+  onTestFinished(async () => {
     await relay.shutdown();
     echo.close();
   });
 
   const first = await open(port, "run-1");
   const second = await open(port, "run-1");
-  assert.equal(first.status, "HTTP/1.1 200 Connection Established");
-  assert.equal(second.status, "HTTP/1.1 200 Connection Established");
-  assert.equal(relay.tunnels("run-1"), 2);
+  expect(first.status).toBe("HTTP/1.1 200 Connection Established");
+  expect(second.status).toBe("HTTP/1.1 200 Connection Established");
+  expect(relay.tunnels("run-1")).toBe(2);
 
   const third = await open(port, "run-1");
-  assert.equal(third.status, "HTTP/1.1 429 Too Many Requests");
+  expect(third.status).toBe("HTTP/1.1 429 Too Many Requests");
   const other = await open(port, "run-2");
-  assert.equal(other.status, "HTTP/1.1 200 Connection Established");
+  expect(other.status).toBe("HTTP/1.1 200 Connection Established");
 
   const firstClosed = once(first.socket, "close");
   first.socket.destroy();
   await firstClosed;
   await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(relay.tunnels("run-1"), 1);
+  expect(relay.tunnels("run-1")).toBe(1);
   const again = await open(port, "run-1");
-  assert.equal(again.status, "HTTP/1.1 200 Connection Established");
-  assert.ok(logs.some((entry) => entry.run === "run-1" && entry.reason === "the run has 2 open tunnels"));
+  expect(again.status).toBe("HTTP/1.1 200 Connection Established");
+  expect(logs.some((entry) => entry.run === "run-1" && entry.reason === "the run has 2 open tunnels")).toBe(true);
   for (const tunnel of [second, third, other, again]) tunnel.socket.destroy();
 });
 
-test("closes tunnels that stay idle", async (t) => {
+test("closes tunnels that stay idle", async () => {
   const echo = createServer((socket) => socket.pipe(socket));
   const echoPort = await listen(echo);
   const relay = createRelay(relayOptions(echoPort, [], { idleTimeoutMs: 100 }));
   const port = await listen(relay.server);
-  t.after(async () => {
+  onTestFinished(async () => {
     await relay.shutdown();
     echo.close();
   });
   const tunnel = await open(port, "run-1");
-  assert.equal(tunnel.status, "HTTP/1.1 200 Connection Established");
+  expect(tunnel.status).toBe("HTTP/1.1 200 Connection Established");
   await once(tunnel.socket, "close");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(relay.tunnels("run-1"), 0);
+  expect(relay.tunnels("run-1")).toBe(0);
 });
 
-test("shutdown closes open tunnels and the listener", async (t) => {
+test("shutdown closes open tunnels and the listener", async () => {
   const echo = createServer((socket) => socket.pipe(socket));
   const echoPort = await listen(echo);
   const relay = createRelay(relayOptions(echoPort, []));
   const port = await listen(relay.server);
-  t.after(() => echo.close());
+  onTestFinished(() => {
+    echo.close();
+  });
   const tunnel = await open(port, "run-1");
-  assert.equal(tunnel.status, "HTTP/1.1 200 Connection Established");
+  expect(tunnel.status).toBe("HTTP/1.1 200 Connection Established");
   const closed = once(tunnel.socket, "close");
   await relay.shutdown();
   await closed;
-  assert.equal(relay.server.listening, false);
+  expect(relay.server.listening).toBe(false);
 });

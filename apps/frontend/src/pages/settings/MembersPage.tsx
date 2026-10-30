@@ -1,8 +1,8 @@
 import { Ban, Plus, Send, ShieldCheck, TriangleAlert } from 'lucide-react';
 import { type FormEvent, type RefObject, useRef, useState } from 'react';
-import { Button } from '../../components/Button';
-import { SettingsPage } from '../../components/SettingsTabs';
-import { ActionError, Dim, ErrorNote, Icon, Id, Row, Section, Skeleton, State, Sub, Table, Th, Title } from '../../components/ui';
+import { Button } from '../../components/Button.tsx';
+import { SettingsPage } from '../../components/SettingsTabs.tsx';
+import { ActionError, Dim, ErrorNote, Icon, Id, Row, Section, Skeleton, State, Sub, Table, Th, Title } from '../../components/ui.tsx';
 import {
   ChangeMemberRoleDocument,
   InviteMemberDocument,
@@ -10,13 +10,13 @@ import {
   type MembersQuery,
   RevokeInvitationDocument,
   type Role,
-} from '../../graphql/generated/graphql';
-import { type MessageKey, t } from '../../i18n';
-import { ago, until } from '../../lib/format';
-import { useListNav } from '../../lib/keys';
-import { useAction } from '../../lib/mutation';
-import { useData } from '../../lib/query';
-import { useTenant } from '../../lib/tenant';
+} from '../../graphql/generated/graphql.ts';
+import { type MessageKey, t } from '../../i18n/index.ts';
+import { ago, until } from '../../lib/format.ts';
+import { useListNav } from '../../lib/keys.ts';
+import { useAction } from '../../lib/mutation.ts';
+import { useData } from '../../lib/query.ts';
+import { useTenant } from '../../lib/tenant.tsx';
 
 type Member = NonNullable<MembersQuery['tenant']>['members'][number];
 

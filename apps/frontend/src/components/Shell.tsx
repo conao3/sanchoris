@@ -4,13 +4,13 @@ import type { LucideIcon } from 'lucide-react';
 import { Check, ChevronsUpDown, House, ListChecks, LogOut, Menu, MessageSquare, Plus, Puzzle, Settings, ShieldCheck, Zap } from 'lucide-react';
 import { createContext, type ReactNode, useContext, useState } from 'react';
 import { Dialog, Modal, ModalOverlay, Button as RACButton } from 'react-aria-components';
-import { SignOutDocument } from '../graphql/generated/graphql';
-import { type MessageKey, t } from '../i18n';
-import { signOut } from '../lib/cognito';
-import { useKeys } from '../lib/keys';
-import { useAction } from '../lib/mutation';
-import { useTenant } from '../lib/tenant';
-import { Icon, Kbd } from './ui';
+import { type Role, SignOutDocument } from '../graphql/generated/graphql.ts';
+import { type MessageKey, t } from '../i18n/index.ts';
+import { signOut } from '../lib/cognito.ts';
+import { useKeys } from '../lib/keys.ts';
+import { useAction } from '../lib/mutation.ts';
+import { useTenant } from '../lib/tenant.tsx';
+import { Icon, Kbd } from './ui.tsx';
 
 type MenuItem = { to: string; label: MessageKey; icon: LucideIcon; match: (path: string) => boolean };
 
@@ -36,7 +36,7 @@ const settingsItem: MenuItem = {
   match: (path) => path.startsWith('/settings'),
 };
 
-const roleLabels: Record<string, MessageKey> = {
+const roleLabels: Record<Role, MessageKey> = {
   OWNER: 'role.owner',
   ADMIN: 'role.admin',
   MEMBER: 'role.member',

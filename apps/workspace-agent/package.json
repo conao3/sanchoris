@@ -4,20 +4,14 @@
   "version": "0.1.0",
   "type": "module",
   "engines": {
-    "node": ">=26"
+    "node": ">=26.12.0"
   },
   "bin": {
-    "workspace-agent": "./dist/bin/workspace-agent.js",
-    "sanchoris": "./dist/bin/sanchoris.js"
+    "workspace-agent": "./src/bin/workspace-agent.ts",
+    "sanchoris": "./src/bin/sanchoris.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json",
-    "lint": "knip",
-    "test": "vitest run",
-    "test:smoke": "vitest run --config vitest.smoke.config.ts",
-    "dev:fake": "node src/dev/fake-run.ts",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run test"
+    "dev:fake": "node src/dev/fake-run.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.311",
@@ -25,10 +19,6 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/node": "^26.6.5",
-    "@types/ws": "^8.18.2",
-    "knip": "^6.43.0",
-    "typescript": "^7.0.2",
-    "vitest": "^5.0.5"
+    "@types/ws": "^8.18.2"
   }
 }

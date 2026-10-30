@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { parseArgs, UsageError } from "../src/cli.ts";
 import { validateSkillRun } from "../src/skills.ts";

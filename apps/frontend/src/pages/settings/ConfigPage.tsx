@@ -1,15 +1,15 @@
 import { CircleCheck, CircleSlash, CircleX, ExternalLink, FolderGit2, MessageSquare, Plus, TriangleAlert, UserCheck, Zap } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
-import { Button } from '../../components/Button';
-import { SettingsPage } from '../../components/SettingsTabs';
-import { ActionError, Chip, Dim, ErrorNote, ExternalLk, Icon, Id, Row, Section, Skeleton, State, Sub, Table, Th, Title } from '../../components/ui';
-import { AddConfigDocument, ConfigsDocument, SyncConfigDocument } from '../../graphql/generated/graphql';
-import { t } from '../../i18n';
-import { ago } from '../../lib/format';
-import { useListNav } from '../../lib/keys';
-import { useAction } from '../../lib/mutation';
-import { useData } from '../../lib/query';
-import { useTenant } from '../../lib/tenant';
+import { Button } from '../../components/Button.tsx';
+import { SettingsPage } from '../../components/SettingsTabs.tsx';
+import { ActionError, Chip, Dim, ErrorNote, ExternalLk, Icon, Id, Row, Section, Skeleton, State, Sub, Table, Th, Title } from '../../components/ui.tsx';
+import { AddConfigDocument, ConfigsDocument, SyncConfigDocument } from '../../graphql/generated/graphql.ts';
+import { t } from '../../i18n/index.ts';
+import { ago } from '../../lib/format.ts';
+import { useListNav } from '../../lib/keys.ts';
+import { useAction } from '../../lib/mutation.ts';
+import { useData } from '../../lib/query.ts';
+import { useTenant } from '../../lib/tenant.tsx';
 
 type ValidationError = { path: string; line?: number | null; column?: number | null; message: string };
 
@@ -72,7 +72,12 @@ export function ConfigPage() {
   const [syncConfig, syncState] = useAction(SyncConfigDocument);
   const tenant = data?.tenant;
   const configs = tenant?.configs ?? [];
-  const nav = useListNav(configs.length, (index) => window.open(configs[index].url, '_blank', 'noreferrer'));
+  const nav = useListNav(configs.length, (index) => {
+    const config = configs[index];
+    if (config) {
+      window.open(config.url, '_blank', 'noreferrer');
+    }
+  });
   const configCols = '1fr 150px 80px 90px 90px 80px 120px 110px';
   const projectCols = '120px 1fr 120px 280px';
   const changeCols = '44px 1fr 150px 110px 110px 150px';

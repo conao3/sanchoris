@@ -29,7 +29,7 @@ function step(command, args) {
   }
 }
 
-step('pnpm', ['--filter', '@sanchoris/frontend', 'build']);
+step('vp', ['run', 'build-frontend']);
 if (!existsSync('apps/frontend/dist/index.html')) {
   console.error('build:lambda: apps/frontend/dist/index.html was not built');
   process.exit(1);

@@ -55,7 +55,7 @@ export const triggerTemplates: Obj[] = [
   { id: 'tpl-weekly-deps', name: 'weekly-deps', description: 'Weekly dependency updates with green checks' },
 ];
 
-const users: Record<string, Obj> = {
+const users: Record<'mika' | 'sota' | 'ken' | 'aya' | 'rin' | 'yu' | 'hana', Obj> = {
   mika: { id: 'user-mika', email: 'mika@acme.dev', name: 'Mika', githubLogin: 'mika-dev' },
   sota: { id: 'user-sota', email: 'sota@acme.dev', name: 'Sota', githubLogin: 'sota-dev' },
   ken: { id: 'user-ken', email: 'ken@acme.dev', name: 'Ken', githubLogin: 'ken-dev' },

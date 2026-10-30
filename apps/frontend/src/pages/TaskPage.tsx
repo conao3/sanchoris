@@ -3,23 +3,23 @@ import clsx from 'clsx';
 import type { LucideIcon } from 'lucide-react';
 import { Bot, Check, ChevronRight, Circle, CircleCheck, CircleDashed, CircleX, Play, Puzzle, Square, X, Zap } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
-import { Button } from '../components/Button';
-import { ConfirmDialog } from '../components/ConfirmDialog';
-import { Cols, Page } from '../components/Shell';
-import { SkillRunState, StateEntryState, TaskState } from '../components/status';
-import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Kv, Lk, Meter, Row, Section, Skeleton, State, Sub, Table, Th, Title, type Tone } from '../components/ui';
-import { ResolveApprovalDocument, ResumeTaskDocument, StopTaskDocument, type TaskQuery, TaskDocument } from '../graphql/generated/graphql';
-import { type MessageKey, t } from '../i18n';
-import { between, clock, duration, issueLabel, usd, usdWhole } from '../lib/format';
-import { useKeys } from '../lib/keys';
-import { useAction } from '../lib/mutation';
-import { LIVE_POLL, useData } from '../lib/query';
-import { isActive, needsYouText, skillProgress } from '../lib/taskText';
-import { useTenant } from '../lib/tenant';
+import { Button } from '../components/Button.tsx';
+import { ConfirmDialog } from '../components/ConfirmDialog.tsx';
+import { Cols, Page } from '../components/Shell.tsx';
+import { SkillRunState, StateEntryState, TaskState } from '../components/status.tsx';
+import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Kv, Lk, Meter, Row, Section, Skeleton, State, Sub, Table, Th, Title, type Tone } from '../components/ui.tsx';
+import { ResolveApprovalDocument, ResumeTaskDocument, type RunStatus, type StateType, StopTaskDocument, type TaskQuery, TaskDocument } from '../graphql/generated/graphql.ts';
+import { type MessageKey, t } from '../i18n/index.ts';
+import { between, clock, duration, usd, usdWhole } from '../lib/format.ts';
+import { useKeys } from '../lib/keys.ts';
+import { useAction } from '../lib/mutation.ts';
+import { LIVE_POLL, useData } from '../lib/query.ts';
+import { isActive, needsYouText, skillProgress } from '../lib/taskText.ts';
+import { useTenant } from '../lib/tenant.tsx';
 
 type Task = NonNullable<NonNullable<TaskQuery['tenant']>['task']>;
 
-const stateTypeLabels: Record<string, MessageKey> = {
+const stateTypeLabels: Record<StateType, MessageKey> = {
   TASK: 'stateType.action',
   PASS: 'stateType.pass',
   CHOICE: 'stateType.choice',
@@ -28,7 +28,7 @@ const stateTypeLabels: Record<string, MessageKey> = {
   FAIL: 'stateType.fail',
 };
 
-const runStatusLabels: Record<string, MessageKey> = {
+const runStatusLabels: Record<RunStatus, MessageKey> = {
   CREATING: 'status.starting',
   RUNNING: 'status.running',
   IDLE: 'status.idle',

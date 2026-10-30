@@ -17,9 +17,9 @@ import {
   Terminal,
   UserCheck,
 } from 'lucide-react';
-import type { SkillQuery } from '../graphql/generated/graphql';
-import { t } from '../i18n';
-import { Icon, State } from './ui';
+import type { SkillQuery } from '../graphql/generated/graphql.ts';
+import { t } from '../i18n/index.ts';
+import { Icon, State } from './ui.tsx';
 
 type SkillState = NonNullable<NonNullable<SkillQuery['tenant']>['skill']>['states'][number];
 
@@ -40,7 +40,7 @@ const danger = 'var(--color-err)';
 
 function nodeKind(state: SkillState): { label: string; icon: LucideIcon } {
   if (state.type !== 'TASK' || !state.resource) {
-    const icons: Record<string, LucideIcon> = {
+    const icons: Record<SkillState['type'], LucideIcon> = {
       PASS: ArrowRight,
       CHOICE: Split,
       WAIT: Clock,
@@ -62,7 +62,7 @@ function nodeKind(state: SkillState): { label: string; icon: LucideIcon } {
     if (action.startsWith('mergePullRequest')) return GitMerge;
     return MessageSquare;
   })();
-  return { label: service.toUpperCase(), icon };
+  return { label: (service ?? '').toUpperCase(), icon };
 }
 
 function activityLines(state: SkillState) {
@@ -153,13 +153,13 @@ export function FlowDiagram({
     if (!element) {
       return;
     }
-    const observer = new ResizeObserver(([entry]) => setAvailable(entry.contentRect.width));
+    const observer = new ResizeObserver(([entry]) => setAvailable(entry?.contentRect.width ?? 0));
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
   const scale = spanX === 0 || available === 0 ? MAX_SCALE : Math.max(MIN_SCALE, Math.min(MAX_SCALE, (available - 2 * MARGIN_X - NODE_WIDTH) / spanX));
   const xs = [...new Set(states.map((state) => state.x))].sort((a, b) => a - b);
-  const step = Math.min(...xs.slice(1).map((x, index) => x - xs[index]), Infinity);
+  const step = Math.min(...xs.slice(1).map((x, index) => x - (xs[index] ?? x)), Infinity);
   const nodeWidth = Number.isFinite(step) ? Math.min(NODE_WIDTH, Math.round(step * scale) - NODE_GAP) : NODE_WIDTH;
   const placed = new Map<string, Placed>(
     states.map((state) => {

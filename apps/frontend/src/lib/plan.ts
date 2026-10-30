@@ -1,5 +1,5 @@
-import type { LimitPeriod } from '../graphql/generated/graphql';
-import { t } from '../i18n';
+import type { LimitPeriod } from '../graphql/generated/graphql.ts';
+import { t } from '../i18n/index.ts';
 
 export function planPrice(plan: { priceUsd: number }): string {
   return plan.priceUsd === 0 ? '$0' : t('plan.perMonth', { price: `$${plan.priceUsd}` });

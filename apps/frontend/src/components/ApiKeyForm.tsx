@@ -1,10 +1,10 @@
 import { Check } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
-import { type ApiKeyProvider, AddCredentialDocument } from '../graphql/generated/graphql';
-import { t } from '../i18n';
-import { useAction } from '../lib/mutation';
-import { Button } from './Button';
-import { ActionError, Code } from './ui';
+import { type ApiKeyProvider, AddCredentialDocument } from '../graphql/generated/graphql.ts';
+import { t } from '../i18n/index.ts';
+import { useAction } from '../lib/mutation.ts';
+import { Button } from './Button.tsx';
+import { ActionError, Code } from './ui.tsx';
 
 export function SubscriptionCommands({ tenantName }: { tenantName: string }) {
   return (

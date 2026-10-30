@@ -1,7 +1,7 @@
 import clsx from 'clsx';
 import type { LucideIcon } from 'lucide-react';
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Button } from './Button';
+import { Button } from './Button.tsx';
 
 export type MenuOption<T extends string> = { value: T; label: ReactNode; detail?: ReactNode };
 

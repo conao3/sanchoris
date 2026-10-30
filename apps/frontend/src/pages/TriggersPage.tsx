@@ -1,21 +1,21 @@
 import type { LucideIcon } from 'lucide-react';
 import { CircleDot, GitPullRequest, MessageSquare, Plus, Timer } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
-import { Button } from '../components/Button';
-import { Page, Pg } from '../components/Shell';
-import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Lk, Row, Section, Skeleton, State, Sub, Table, Th, Title, Toggle } from '../components/ui';
+import { Button } from '../components/Button.tsx';
+import { Page, Pg } from '../components/Shell.tsx';
+import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Id, Lk, Row, Section, Skeleton, State, Sub, Table, Th, Title, Toggle } from '../components/ui.tsx';
 import {
   ProposeTriggerDocument,
   SetTriggerStateDocument,
   type TriggersQuery,
   TriggersDocument,
-} from '../graphql/generated/graphql';
-import { locale, t, tx } from '../i18n';
-import { weekdayTime, when } from '../lib/format';
-import { useListNav } from '../lib/keys';
-import { useAction } from '../lib/mutation';
-import { useData } from '../lib/query';
-import { useTenant } from '../lib/tenant';
+} from '../graphql/generated/graphql.ts';
+import { locale, t, tx } from '../i18n/index.ts';
+import { weekdayTime, when } from '../lib/format.ts';
+import { useListNav } from '../lib/keys.ts';
+import { useAction } from '../lib/mutation.ts';
+import { useData } from '../lib/query.ts';
+import { useTenant } from '../lib/tenant.tsx';
 
 type Tenant = NonNullable<TriggersQuery['tenant']>;
 type Trigger = Tenant['triggers'][number];
@@ -172,7 +172,12 @@ export function TriggersPage() {
     void setTriggerState({ triggerId: trigger.id, state: trigger.state === 'ENABLED' ? 'DISABLED' : 'ENABLED' });
   }
 
-  const nav = useListNav(triggers.length, (index) => window.open(triggers[index].editUrl, '_blank', 'noreferrer'), {
+  const nav = useListNav(triggers.length, (index) => {
+    const trigger = triggers[index];
+    if (trigger) {
+      window.open(trigger.editUrl, '_blank', 'noreferrer');
+    }
+  }, {
     n: () => setPanel(true),
     t: () => {
       const trigger = triggers[nav.selected];

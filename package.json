@@ -1,18 +1,24 @@
 {
   "name": "sanchoris",
   "private": true,
+  "type": "module",
   "packageManager": "pnpm@12.9.0",
+  "engines": {
+    "node": ">=26.12.0"
+  },
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dynamo:local": "mkdir -p .sanchoris/dynamodb && dynamodb-local -sharedDb -disableTelemetry -dbPath .sanchoris/dynamodb -port ${SANCHORIS_DYNAMO_PORT:?set SANCHORIS_DYNAMO_PORT}",
     "dynamo:create": "cargo run -q -p sanchoris-core --bin sanchoris-dynamo-create",
-    "build": "pnpm --filter @sanchoris/frontend build",
-    "lint": "pnpm --filter @sanchoris/frontend lint",
-    "check": "pnpm --filter @sanchoris/frontend check && pnpm --filter @sanchoris/workspace-agent check && pnpm --filter @sanchoris/egress-relay check",
-    "e2e": "cargo test -p sanchoris-api --test tests e2e::",
     "build:lambda": "node scripts/build-lambda.mjs"
   },
   "devDependencies": {
-    "portless": "^0.15.12"
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.6.5",
+    "@vitejs/plugin-react": "^6.1.2",
+    "msw": "^3.0.3",
+    "portless": "^0.15.12",
+    "tailwindcss": "^4.3.3",
+    "vite-plus": "1.4.0"
   }
 }

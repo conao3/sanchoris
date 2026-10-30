@@ -1,9 +1,9 @@
 import type { LucideIcon } from 'lucide-react';
 import type { FormEvent, ReactNode } from 'react';
 import { Dialog, Heading, Modal, ModalOverlay } from 'react-aria-components';
-import { t } from '../i18n';
-import { Button } from './Button';
-import { ActionError } from './ui';
+import { t } from '../i18n/index.ts';
+import { Button } from './Button.tsx';
+import { ActionError } from './ui.tsx';
 
 type ConfirmDialogProps = {
   isOpen: boolean;

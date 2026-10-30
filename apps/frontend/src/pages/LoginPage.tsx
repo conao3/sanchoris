@@ -1,10 +1,10 @@
 import { useSearch } from '@tanstack/react-router';
 import { LogIn } from 'lucide-react';
-import { Button } from '../components/Button';
-import { Dim, Sub, Title } from '../components/ui';
-import { t } from '../i18n';
-import { getLoginUrl } from '../lib/cognito';
-import { AuthLayout } from './CreateTenantPage';
+import { Button } from '../components/Button.tsx';
+import { Dim, Sub, Title } from '../components/ui.tsx';
+import { t } from '../i18n/index.ts';
+import { getLoginUrl } from '../lib/cognito.ts';
+import { AuthLayout } from './CreateTenantPage.tsx';
 
 export function LoginPage() {
   const { next } = useSearch({ from: '/login' });

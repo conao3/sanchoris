@@ -2,7 +2,7 @@ import { once } from "node:events";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { connect, createServer as createTcpServer, type AddressInfo, type Socket } from "node:net";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { loopbackProxyPort, parseRelayUrl, startEgressForwarder } from "../src/egress-forwarder.ts";
 

@@ -8,6 +8,8 @@ const config: CodegenConfig = {
       preset: 'client',
       config: {
         scalars: { DateTime: 'string' },
+        useTypeImports: true,
+        importExtension: '.ts',
       },
       presetConfig: {
         gqlTagName: 'graphql',

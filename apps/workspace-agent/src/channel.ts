@@ -99,7 +99,7 @@ export class RunChannel {
       this.helloAcked = false;
     });
     socket.on("message", (data) => {
-      this.receive(data.toString());
+      this.receive((data as Buffer).toString("utf8"));
     });
     socket.on("unexpected-response", (_request, response) => {
       const status = response.statusCode ?? 0;

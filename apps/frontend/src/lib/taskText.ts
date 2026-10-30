@@ -1,6 +1,6 @@
-import type { NeedsYouReason, SkillRunStatus, TaskStatus } from '../graphql/generated/graphql';
-import { t } from '../i18n';
-import { usd, weekdayTime } from './format';
+import type { NeedsYouReason, SkillRunStatus, TaskStatus } from '../graphql/generated/graphql.ts';
+import { t } from '../i18n/index.ts';
+import { usd, weekdayTime } from './format.ts';
 
 type SkillRunSummary = { status: SkillRunStatus; currentState?: string | null; handoffs: number };
 type RequiredSkill = { skill?: { name: string }; latestRun?: SkillRunSummary | null };

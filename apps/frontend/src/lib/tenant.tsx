@@ -1,9 +1,9 @@
 import { useApolloClient } from '@apollo/client/react';
 import { Navigate, useNavigate } from '@tanstack/react-router';
 import { type ReactNode, createContext, useContext, useState } from 'react';
-import { ErrorNote, Skeleton } from '../components/ui';
-import { type ShellQuery, ShellDocument } from '../graphql/generated/graphql';
-import { useData } from './query';
+import { ErrorNote, Skeleton } from '../components/ui.tsx';
+import { type ShellQuery, ShellDocument } from '../graphql/generated/graphql.ts';
+import { useData } from './query.ts';
 
 const TENANT_KEY = 'sanchoris_tenant';
 
@@ -43,10 +43,10 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     );
   }
   const memberships = data.viewer.memberships;
-  if (memberships.length === 0) {
+  const membership = memberships.find((item) => item.tenant.slug === stored) ?? memberships[0];
+  if (!membership) {
     return <Navigate to="/tenants/new" />;
   }
-  const membership = memberships.find((item) => item.tenant.slug === stored) ?? memberships[0];
 
   function switchTenant(slug: string) {
     rememberTenant(slug);

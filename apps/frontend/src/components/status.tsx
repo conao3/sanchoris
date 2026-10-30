@@ -18,9 +18,9 @@ import type {
   StateEntryStatus,
   TaskStatus,
   WaitReason,
-} from '../graphql/generated/graphql';
-import { type MessageKey, t } from '../i18n';
-import { State, type Tone } from './ui';
+} from '../graphql/generated/graphql.ts';
+import { type MessageKey, t } from '../i18n/index.ts';
+import { State, type Tone } from './ui.tsx';
 
 type Look = { tone: Tone; icon: LucideIcon; label: MessageKey };
 

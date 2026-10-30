@@ -2,18 +2,18 @@ import { useApolloClient } from '@apollo/client/react';
 import { useNavigate, useSearch } from '@tanstack/react-router';
 import { Check, ExternalLink, ShieldCheck, Users } from 'lucide-react';
 import { type FormEvent, type ReactNode, useState } from 'react';
-import { Button } from '../components/Button';
-import { CheckoutNote, useCheckoutOutcome } from '../components/billing';
-import { ActionError, Dim, ErrorNote, Note, Row, Skeleton, State, Sub, Title } from '../components/ui';
-import { AcceptInvitationDocument, CreateTenantDocument, CreateTenantPageDocument } from '../graphql/generated/graphql';
-import { type MessageKey, t } from '../i18n';
-import { until } from '../lib/format';
-import { useAction } from '../lib/mutation';
-import { planPrice } from '../lib/plan';
-import { useData } from '../lib/query';
-import { rememberTenant } from '../lib/tenant';
+import { Button } from '../components/Button.tsx';
+import { CheckoutNote, useCheckoutOutcome } from '../components/billing.tsx';
+import { ActionError, Dim, ErrorNote, Note, Row, Skeleton, State, Sub, Title } from '../components/ui.tsx';
+import { AcceptInvitationDocument, CreateTenantDocument, CreateTenantPageDocument, type Role } from '../graphql/generated/graphql.ts';
+import { type MessageKey, t } from '../i18n/index.ts';
+import { until } from '../lib/format.ts';
+import { useAction } from '../lib/mutation.ts';
+import { planPrice } from '../lib/plan.ts';
+import { useData } from '../lib/query.ts';
+import { rememberTenant } from '../lib/tenant.tsx';
 
-const roleLabels: Record<string, MessageKey> = { OWNER: 'role.owner', ADMIN: 'role.admin', MEMBER: 'role.member' };
+const roleLabels: Record<Role, MessageKey> = { OWNER: 'role.owner', ADMIN: 'role.admin', MEMBER: 'role.member' };
 
 export function AuthLayout({ children }: { children: ReactNode }) {
   return (

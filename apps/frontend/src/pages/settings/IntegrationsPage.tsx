@@ -2,20 +2,20 @@ import { useNavigate, useSearch } from '@tanstack/react-router';
 import clsx from 'clsx';
 import { useEffect, useState } from 'react';
 import { Ban, CircleDashed, ExternalLink, GitBranch, Link2, MessageSquare, Plus, ShieldCheck, TriangleAlert, UserCheck } from 'lucide-react';
-import { Button } from '../../components/Button';
-import { SettingsPage } from '../../components/SettingsTabs';
-import { ActionError, Chip, Dim, ErrorNote, Icon, Row, Skeleton, State, Sub, Table, Th, Title, type Tone, toneClass } from '../../components/ui';
+import { Button } from '../../components/Button.tsx';
+import { SettingsPage } from '../../components/SettingsTabs.tsx';
+import { ActionError, Chip, Dim, ErrorNote, Icon, Row, Skeleton, State, Sub, Table, Th, Title, type Tone, toneClass } from '../../components/ui.tsx';
 import {
   ConnectGitHubDocument,
   InstallGitHubAppDocument,
   IntegrationsDocument,
   UnlinkGitHubDocument,
-} from '../../graphql/generated/graphql';
-import { type MessageKey, t, tx } from '../../i18n';
-import { ago } from '../../lib/format';
-import { useAction } from '../../lib/mutation';
-import { useData } from '../../lib/query';
-import { useTenant } from '../../lib/tenant';
+} from '../../graphql/generated/graphql.ts';
+import { type MessageKey, t, tx } from '../../i18n/index.ts';
+import { ago } from '../../lib/format.ts';
+import { useAction } from '../../lib/mutation.ts';
+import { useData } from '../../lib/query.ts';
+import { useTenant } from '../../lib/tenant.tsx';
 
 type Outcome = { row: 'account' | 'installation' | 'either'; tone: Tone; text: MessageKey };
 

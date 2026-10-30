@@ -2,7 +2,7 @@ import clsx from 'clsx';
 import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Button as RACButton } from 'react-aria-components';
-import { Kbd } from './ui';
+import { Kbd } from './ui.tsx';
 
 type ButtonVariant = 'default' | 'primary' | 'danger';
 

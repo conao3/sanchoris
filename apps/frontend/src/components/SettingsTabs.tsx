@@ -3,20 +3,20 @@ import clsx from 'clsx';
 import type { LucideIcon } from 'lucide-react';
 import { CreditCard, FolderGit2, GitBranch, KeyRound, ListChecks, Users } from 'lucide-react';
 import { type ReactNode, useLayoutEffect, useRef } from 'react';
-import { type MessageKey, t } from '../i18n';
-import { Page, Pg } from './Shell';
-import { Icon } from './ui';
+import { type MessageKey, t } from '../i18n/index.ts';
+import { Page, Pg } from './Shell.tsx';
+import { Icon } from './ui.tsx';
 
 export type SettingsTab = 'integrations' | 'config' | 'credentials' | 'members' | 'audit' | 'billing';
 
-const tabs: { id: SettingsTab; to: string; label: MessageKey; icon: LucideIcon }[] = [
+const tabs = [
   { id: 'integrations', to: '/settings', label: 'settings.integrations', icon: GitBranch },
   { id: 'config', to: '/settings/config', label: 'settings.config', icon: FolderGit2 },
   { id: 'credentials', to: '/settings/credentials', label: 'settings.credentials', icon: KeyRound },
   { id: 'members', to: '/settings/members', label: 'settings.members', icon: Users },
   { id: 'audit', to: '/settings/audit', label: 'settings.audit', icon: ListChecks },
   { id: 'billing', to: '/settings/billing', label: 'settings.billing', icon: CreditCard },
-];
+] as const satisfies readonly { id: SettingsTab; to: string; label: MessageKey; icon: LucideIcon }[];
 
 export function SettingsPage({
   tab,

@@ -1,14 +1,14 @@
 import { Ban, CircleCheck, Trash2 } from 'lucide-react';
 import { type FormEvent, Fragment, useState } from 'react';
-import { Button } from '../components/Button';
-import { Page, Pg } from '../components/Shell';
-import { ActionError, Empty, ErrorNote, Row, Skeleton, State, Sub, Table, Th, Title } from '../components/ui';
-import { OperatorTenantsDocument, SuspendTenantDocument, UnsuspendTenantDocument } from '../graphql/generated/graphql';
-import { t } from '../i18n';
-import { hours } from '../lib/format';
-import { useListNav } from '../lib/keys';
-import { useAction } from '../lib/mutation';
-import { useData } from '../lib/query';
+import { Button } from '../components/Button.tsx';
+import { Page, Pg } from '../components/Shell.tsx';
+import { ActionError, Empty, ErrorNote, Row, Skeleton, State, Sub, Table, Th, Title } from '../components/ui.tsx';
+import { OperatorTenantsDocument, SuspendTenantDocument, UnsuspendTenantDocument } from '../graphql/generated/graphql.ts';
+import { t } from '../i18n/index.ts';
+import { hours } from '../lib/format.ts';
+import { useListNav } from '../lib/keys.ts';
+import { useAction } from '../lib/mutation.ts';
+import { useData } from '../lib/query.ts';
 
 function ratio(value: number, limit: number | null | undefined, total: boolean): string {
   if (limit == null) {

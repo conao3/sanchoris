@@ -1,13 +1,13 @@
 import { useNavigate } from '@tanstack/react-router';
 import { CircleCheck, CircleDot, Clock } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { ApiKeyForm, SubscriptionCommands } from '../components/ApiKeyForm';
-import { Cols } from '../components/Shell';
-import { Chip, Dim, Lk, Row, Section, State, Sub, Table, Th, Title } from '../components/ui';
-import type { HomeQuery } from '../graphql/generated/graphql';
-import { type MessageKey, t, tx } from '../i18n';
-import { useKeys } from '../lib/keys';
-import { useTenant } from '../lib/tenant';
+import { ApiKeyForm, SubscriptionCommands } from '../components/ApiKeyForm.tsx';
+import { Cols } from '../components/Shell.tsx';
+import { Chip, Dim, Lk, Row, Section, State, Sub, Table, Th, Title } from '../components/ui.tsx';
+import type { HomeQuery } from '../graphql/generated/graphql.ts';
+import { type MessageKey, t, tx } from '../i18n/index.ts';
+import { useKeys } from '../lib/keys.ts';
+import { useTenant } from '../lib/tenant.tsx';
 
 type Tenant = NonNullable<HomeQuery['tenant']>;
 

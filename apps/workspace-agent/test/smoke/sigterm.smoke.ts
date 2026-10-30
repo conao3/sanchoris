@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 
 import { FakeControl } from "../../src/testing/fake-control.ts";
 import { spawnAgent } from "../../src/testing/spawn-agent.ts";

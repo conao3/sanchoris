@@ -6,7 +6,7 @@ import { connect, type AddressInfo, type Socket } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { parseRelayUrl } from "../src/egress-forwarder.ts";
 import { sha256 } from "../src/session-record.ts";

@@ -1,4 +1,4 @@
-import { env } from './env';
+import { env } from './env.ts';
 
 const COGNITO_DOMAIN = env.cognitoDomain;
 const CLIENT_ID = env.cognitoClientId;

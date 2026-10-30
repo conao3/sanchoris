@@ -1,17 +1,17 @@
 import type { LucideIcon } from 'lucide-react';
 import { Bot, Download, ExternalLink, ShieldCheck, UserCheck, Users, Zap } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { Button } from '../../components/Button';
-import { Menu } from '../../components/Menu';
-import { SettingsPage } from '../../components/SettingsTabs';
-import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Lk, Row, Skeleton, State, Sub, Table, Th, Title } from '../../components/ui';
-import { type ActorKind, type AuditFilter, AuditLogDocument, type AuditOrigin, ExportAuditLogDocument } from '../../graphql/generated/graphql';
-import { type MessageKey, t } from '../../i18n';
-import { dayTime } from '../../lib/format';
-import { useListNav } from '../../lib/keys';
-import { useAction } from '../../lib/mutation';
-import { useData } from '../../lib/query';
-import { useTenant } from '../../lib/tenant';
+import { Button } from '../../components/Button.tsx';
+import { Menu } from '../../components/Menu.tsx';
+import { SettingsPage } from '../../components/SettingsTabs.tsx';
+import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Icon, Lk, Row, Skeleton, State, Sub, Table, Th, Title } from '../../components/ui.tsx';
+import { type ActorKind, type AuditFilter, AuditLogDocument, type AuditOrigin, ExportAuditLogDocument } from '../../graphql/generated/graphql.ts';
+import { type MessageKey, t } from '../../i18n/index.ts';
+import { dayTime } from '../../lib/format.ts';
+import { useListNav } from '../../lib/keys.ts';
+import { useAction } from '../../lib/mutation.ts';
+import { useData } from '../../lib/query.ts';
+import { useTenant } from '../../lib/tenant.tsx';
 
 const AUDIT_LIST_LIMIT = 100;
 

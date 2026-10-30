@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ZodType } from "zod";
 
 import {
@@ -75,8 +75,9 @@ const examples = [...readFileSync(resolve(import.meta.dirname, "../PROTOCOL.md")
 
 describe("PROTOCOL.md examples", () => {
   it("covers every message type", () => {
-    const types = new Set(examples.map((example) => example.type).filter((type) => type !== undefined));
-    expect([...types].sort()).toEqual([...Object.keys(inbound), ...Object.keys(outbound)].sort());
+    const types = new Set(examples.map((example) => example.type).filter((type) => typeof type === "string"));
+    const byName = (a: string, b: string) => a.localeCompare(b);
+    expect([...types].sort(byName)).toEqual([...Object.keys(inbound), ...Object.keys(outbound)].sort(byName));
   });
 
   it.each(examples.map((example, index) => [index, example] as const))("example %i matches the schema", (_index, example) => {

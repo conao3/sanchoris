@@ -149,7 +149,7 @@ export class FakeControl {
     this.connections += 1;
     for (const waiter of this.connectionWaiters) waiter();
     ws.on("message", (data) => {
-      const message = OutboundMessage.parse(JSON.parse(data.toString()));
+      const message = OutboundMessage.parse(JSON.parse((data as Buffer).toString("utf8")));
       if (message.runId !== this.options.runId) throw new Error(`Unexpected run ${message.runId}`);
       if (message.type === "hello") {
         if (message.instanceId !== this.instanceId) {

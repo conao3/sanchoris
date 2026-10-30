@@ -82,6 +82,8 @@ const lambdaInputs = [
   'package.json',
   'pnpm-lock.yaml',
   'pnpm-workspace.yaml',
+  'vite.config.ts',
+  'tsconfig.base.json',
   'scripts/build-lambda.mjs',
   'crates',
   'apps/frontend',
@@ -125,7 +127,8 @@ async function buildLambda(cognito) {
 function images(exports) {
   const workspaceRepo = exports.get('SanchorisWorkspaceRepositoryUri');
   const relayRepo = exports.get('SanchorisRelayRepositoryUri');
-  const workspaceInputs = ['infra/workspace', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'apps/workspace-agent'];
+  const nodeInputs = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'vite.config.ts', 'tsconfig.base.json', 'tsconfig.json'];
+  const workspaceInputs = ['infra/workspace', ...nodeInputs, 'apps/workspace-agent'];
   return [
     {
       name: 'workspace-arm64',
@@ -151,8 +154,8 @@ function images(exports) {
       tag: 'latest',
       platform: 'linux/arm64',
       dockerfile: 'infra/relay/Dockerfile',
-      context: 'apps/egress-relay',
-      inputs: ['infra/relay', 'apps/egress-relay/package.json', 'apps/egress-relay/src'],
+      context: '.',
+      inputs: ['infra/relay', ...nodeInputs, 'apps/egress-relay'],
     },
   ];
 }

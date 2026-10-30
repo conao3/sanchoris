@@ -2,7 +2,7 @@ import { SchemaLink } from '@apollo/client/link/schema';
 import { addMocksToSchema } from '@graphql-tools/mock';
 import { makeExecutableSchema } from '@graphql-tools/schema';
 import typeDefs from '../graphql/schema.graphql?raw';
-import { buildFixtures, buildSetupTenant, nextId, plans, triggerTemplates, viewerUser } from './fixtures';
+import { buildFixtures, buildSetupTenant, nextId, plans, triggerTemplates, viewerUser } from './fixtures.ts';
 
 type Obj = Record<string, any>;
 
@@ -61,10 +61,11 @@ function createResolvers() {
       },
       acceptInvitation: (_: unknown, { invitationId }: Obj) => {
         const index = viewerInvitations.findIndex((invitation) => invitation.id === invitationId);
-        if (index < 0) {
+        const invitation = viewerInvitations[index];
+        if (!invitation) {
           throw new Error('The invitation was not found');
         }
-        const [invitation] = viewerInvitations.splice(index, 1);
+        viewerInvitations.splice(index, 1);
         const tenant = buildSetupTenant({ slug: invitation.tenantName, name: invitation.tenantName, planName: 'Pro', role: invitation.role, installed: true });
         tenants.push(tenant);
         memberships.push(tenant.viewerMember);

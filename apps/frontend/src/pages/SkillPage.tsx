@@ -1,17 +1,17 @@
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { ExternalLink, GitPullRequest } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from '../components/Button';
-import { FlowDiagram } from '../components/FlowDiagram';
-import { Cols, Page } from '../components/Shell';
-import { SkillRunState } from '../components/status';
-import { Code, Dim, Empty, ErrorNote, Id, Kv, Lk, Row, Section, Skeleton, State, Sub, Table, Th, Title } from '../components/ui';
-import { SkillDocument } from '../graphql/generated/graphql';
-import { t } from '../i18n';
-import { between, duration, durationLong, issueLabel, percent, when } from '../lib/format';
-import { useKeys } from '../lib/keys';
-import { useData } from '../lib/query';
-import { useTenant } from '../lib/tenant';
+import { Button } from '../components/Button.tsx';
+import { FlowDiagram } from '../components/FlowDiagram.tsx';
+import { Cols, Page } from '../components/Shell.tsx';
+import { SkillRunState } from '../components/status.tsx';
+import { Code, Dim, Empty, ErrorNote, Id, Kv, Lk, Row, Section, Skeleton, State, Sub, Table, Th, Title } from '../components/ui.tsx';
+import { SkillDocument } from '../graphql/generated/graphql.ts';
+import { t } from '../i18n/index.ts';
+import { between, duration, durationLong, issueLabel, percent, when } from '../lib/format.ts';
+import { useKeys } from '../lib/keys.ts';
+import { useData } from '../lib/query.ts';
+import { useTenant } from '../lib/tenant.tsx';
 
 export function SkillPage() {
   const { skill: name } = useParams({ from: '/app/skills/$skill' });

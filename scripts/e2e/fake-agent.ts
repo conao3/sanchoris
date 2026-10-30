@@ -122,6 +122,7 @@ const agent = new WorkspaceAgent({
   maxBackoffMs: 2_000,
   requestTimeoutMs: 30_000,
   drainTimeoutMs: 10_000,
+  stopTurnTimeoutMs: 5_000,
 });
 
 process.exitCode = await agent.run();

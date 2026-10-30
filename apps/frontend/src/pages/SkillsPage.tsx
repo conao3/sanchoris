@@ -1,14 +1,14 @@
 import { useNavigate } from '@tanstack/react-router';
 import { FileCode, Plus, ShieldCheck } from 'lucide-react';
-import { Button } from '../components/Button';
-import { Page, Pg } from '../components/Shell';
-import { Dim, Empty, ErrorNote, Lk, Row, Skeleton, State, Sub, Table, Th, Title } from '../components/ui';
-import { SkillsDocument } from '../graphql/generated/graphql';
-import { t, tx } from '../i18n';
-import { duration, percent } from '../lib/format';
-import { useListNav } from '../lib/keys';
-import { useData } from '../lib/query';
-import { useTenant } from '../lib/tenant';
+import { Button } from '../components/Button.tsx';
+import { Page, Pg } from '../components/Shell.tsx';
+import { Dim, Empty, ErrorNote, Lk, Row, Skeleton, State, Sub, Table, Th, Title } from '../components/ui.tsx';
+import { SkillsDocument } from '../graphql/generated/graphql.ts';
+import { t, tx } from '../i18n/index.ts';
+import { duration, percent } from '../lib/format.ts';
+import { useListNav } from '../lib/keys.ts';
+import { useData } from '../lib/query.ts';
+import { useTenant } from '../lib/tenant.tsx';
 
 export function SkillsPage() {
   const { slug } = useTenant();
@@ -18,7 +18,10 @@ export function SkillsPage() {
   const newSkillUrl = data?.tenant?.configs[0]?.newSkillUrl;
 
   function open(index: number) {
-    void navigate({ to: '/skills/$skill', params: { skill: skills[index].name } });
+    const skill = skills[index];
+    if (skill) {
+      void navigate({ to: '/skills/$skill', params: { skill: skill.name } });
+    }
   }
 
   const nav = useListNav(skills.length, open, {

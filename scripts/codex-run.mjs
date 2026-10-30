@@ -21,7 +21,7 @@ Options:
   -h, --help            Show this help.
 
 Example:
-  node scripts/codex-run.mjs --prompt tasks/example.md --verify "pnpm check" -- \\
+  node scripts/codex-run.mjs --prompt tasks/example.md --verify "make check" -- \\
     codex exec --ask-for-approval never < tasks/example.md
 `);
 }

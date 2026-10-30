@@ -2,18 +2,18 @@ import { useNavigate, useParams } from '@tanstack/react-router';
 import clsx from 'clsx';
 import { MessageSquare, Square } from 'lucide-react';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
-import { Button } from '../components/Button';
-import { ConfirmDialog } from '../components/ConfirmDialog';
-import { Cols, Page } from '../components/Shell';
-import { RunState, SkillRunState } from '../components/status';
-import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Kv, Lk, Row, Section, Skeleton, Sub, Title } from '../components/ui';
-import { type LogLineKind, RunDocument, RunLogDocument, type RunLogQuery, type RunStatus, SendChatMessageDocument, StopRunDocument, type WorkspaceArchitecture } from '../graphql/generated/graphql';
-import { type MessageKey, t } from '../i18n';
-import { clock, dayTime } from '../lib/format';
-import { useKeys } from '../lib/keys';
-import { useAction } from '../lib/mutation';
-import { LIVE_POLL, useData } from '../lib/query';
-import { useTenant } from '../lib/tenant';
+import { Button } from '../components/Button.tsx';
+import { ConfirmDialog } from '../components/ConfirmDialog.tsx';
+import { Cols, Page } from '../components/Shell.tsx';
+import { RunState, SkillRunState } from '../components/status.tsx';
+import { ActionError, Dim, Empty, ErrorNote, ExternalLk, Kv, Lk, Row, Section, Skeleton, Sub, Title } from '../components/ui.tsx';
+import { type LogLineKind, RunDocument, RunLogDocument, type RunLogQuery, type RunStatus, SendChatMessageDocument, StopRunDocument, type WorkspaceArchitecture } from '../graphql/generated/graphql.ts';
+import { type MessageKey, t } from '../i18n/index.ts';
+import { clock, dayTime } from '../lib/format.ts';
+import { useKeys } from '../lib/keys.ts';
+import { useAction } from '../lib/mutation.ts';
+import { LIVE_POLL, useData } from '../lib/query.ts';
+import { useTenant } from '../lib/tenant.tsx';
 
 const lineClass: Record<LogLineKind, string> = {
   SYSTEM: '',
@@ -61,7 +61,7 @@ function isLive(status: RunStatus | undefined): boolean {
 
 function useRunLog(variables: { tenant: string; task: string; number: number }, live: boolean): LogLine[] {
   const [log, setLog] = useState<LogLine[]>([]);
-  const after = log.length > 0 ? log[log.length - 1].sequence : null;
+  const after = log.at(-1)?.sequence ?? null;
   const { data } = useData(RunLogDocument, { ...variables, after }, { poll: () => (live ? LIVE_POLL : 0) });
   const fresh = data?.tenant?.task?.run?.log;
   const wasLive = useRef(live);
@@ -72,7 +72,7 @@ function useRunLog(variables: { tenant: string; task: string; number: number }, 
         if (after === null) {
           return fresh;
         }
-        const last = current.length > 0 ? current[current.length - 1].sequence : 0;
+        const last = current.at(-1)?.sequence ?? 0;
         return [...current, ...fresh.filter((line) => line.sequence > last)];
       });
     }

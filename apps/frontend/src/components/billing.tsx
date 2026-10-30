@@ -1,9 +1,9 @@
 import { useNavigate } from '@tanstack/react-router';
 import { Ban, CircleCheck, CircleX, Clock } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { TenantState } from '../graphql/generated/graphql';
-import { type MessageKey, t } from '../i18n';
-import { State } from './ui';
+import type { TenantState } from '../graphql/generated/graphql.ts';
+import { type MessageKey, t } from '../i18n/index.ts';
+import { State } from './ui.tsx';
 
 export type CheckoutOutcome = 'success' | 'canceled';
 

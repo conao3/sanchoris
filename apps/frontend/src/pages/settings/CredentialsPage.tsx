@@ -1,18 +1,18 @@
 import { Ban, Bot, LogOut, Plus, RefreshCw, ShieldCheck, Terminal, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
-import { ApiKeyForm, SubscriptionCommands } from '../../components/ApiKeyForm';
-import { Button } from '../../components/Button';
-import { SettingsPage } from '../../components/SettingsTabs';
-import { ActionError, Dim, Empty, ErrorNote, Icon, Meter, Row, Section, Skeleton, State, Sub, Table, Th, Title } from '../../components/ui';
-import { CredentialsDocument, RemoveCredentialDocument } from '../../graphql/generated/graphql';
-import { type MessageKey, t, tx } from '../../i18n';
-import { ago } from '../../lib/format';
-import { useListNav } from '../../lib/keys';
-import { useAction } from '../../lib/mutation';
-import { useData } from '../../lib/query';
-import { useTenant } from '../../lib/tenant';
+import { ApiKeyForm, SubscriptionCommands } from '../../components/ApiKeyForm.tsx';
+import { Button } from '../../components/Button.tsx';
+import { SettingsPage } from '../../components/SettingsTabs.tsx';
+import { ActionError, Dim, Empty, ErrorNote, Icon, Meter, Row, Section, Skeleton, State, Sub, Table, Th, Title } from '../../components/ui.tsx';
+import { type CredentialKind, CredentialsDocument, RemoveCredentialDocument } from '../../graphql/generated/graphql.ts';
+import { type MessageKey, t, tx } from '../../i18n/index.ts';
+import { ago } from '../../lib/format.ts';
+import { useListNav } from '../../lib/keys.ts';
+import { useAction } from '../../lib/mutation.ts';
+import { useData } from '../../lib/query.ts';
+import { useTenant } from '../../lib/tenant.tsx';
 
-const kindLabels: Record<string, MessageKey> = {
+const kindLabels: Record<CredentialKind, MessageKey> = {
   SUBSCRIPTION: 'credentials.subscription',
   API_KEY: 'credentials.apiKey',
   BEDROCK: 'credentials.bedrock',

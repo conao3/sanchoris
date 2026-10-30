@@ -2,18 +2,18 @@ import { useNavigate } from '@tanstack/react-router';
 import clsx from 'clsx';
 import { Plus, Puzzle, Zap } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from '../components/Button';
-import { Menu } from '../components/Menu';
-import { Page, Pg } from '../components/Shell';
-import { TaskState } from '../components/status';
-import { Dim, Empty, ErrorNote, Id, Row, Skeleton, Sub, Table, Th, Title } from '../components/ui';
-import { type TaskFilter, type TaskRowFragment, TasksDocument } from '../graphql/generated/graphql';
-import { t } from '../i18n';
-import { age, issueLabel, usd } from '../lib/format';
-import { useListNav } from '../lib/keys';
-import { IDLE_POLL, LIVE_POLL, useData } from '../lib/query';
-import { isActive, skillProgress } from '../lib/taskText';
-import { useTenant } from '../lib/tenant';
+import { Button } from '../components/Button.tsx';
+import { Menu } from '../components/Menu.tsx';
+import { Page, Pg } from '../components/Shell.tsx';
+import { TaskState } from '../components/status.tsx';
+import { Dim, Empty, ErrorNote, Id, Row, Skeleton, Sub, Table, Th, Title } from '../components/ui.tsx';
+import { type TaskFilter, type TaskRowFragment, TasksDocument } from '../graphql/generated/graphql.ts';
+import { t } from '../i18n/index.ts';
+import { age, issueLabel, usd } from '../lib/format.ts';
+import { useListNav } from '../lib/keys.ts';
+import { IDLE_POLL, LIVE_POLL, useData } from '../lib/query.ts';
+import { isActive, skillProgress } from '../lib/taskText.ts';
+import { useTenant } from '../lib/tenant.tsx';
 
 const TASK_LIST_LIMIT = 200;
 
@@ -69,7 +69,10 @@ export function TasksPage() {
   const rows = asTree(tenant?.tasks ?? []);
 
   function open(index: number) {
-    void navigate({ to: '/tasks/$task', params: { task: rows[index].task.id } });
+    const row = rows[index];
+    if (row) {
+      void navigate({ to: '/tasks/$task', params: { task: row.task.id } });
+    }
   }
 
   const nav = useListNav(rows.length, open, {

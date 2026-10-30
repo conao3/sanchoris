@@ -5,7 +5,7 @@ import ja from './ja.json';
 export type MessageKey = keyof typeof en;
 type Params = Record<string, string | number>;
 
-const catalogs: Record<string, Record<MessageKey, string>> = { en, ja };
+const catalogs: Record<'en' | 'ja', Record<MessageKey, string>> = { en, ja };
 
 export const locale = navigator.language.toLowerCase().startsWith('ja') ? 'ja' : 'en';
 

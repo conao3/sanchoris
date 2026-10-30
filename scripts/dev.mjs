@@ -33,8 +33,8 @@ function loadDotenvIfExists(path = '.env') {
   }
 }
 
-function runStep(name, args) {
-  const result = spawnSync('pnpm', args, {
+function runStep(name, command, args) {
+  const result = spawnSync(command, args, {
     env: process.env,
     stdio: 'inherit',
     shell: false,
@@ -52,12 +52,12 @@ function runStep(name, args) {
 
 function createTables() {
   console.log('sanchoris dev database: creating the DynamoDB tables');
-  runStep('dynamo:create', ['dynamo:create']);
+  runStep('dynamo:create', 'pnpm', ['dynamo:create']);
 }
 
 function buildFrontend() {
   console.log('sanchoris dev frontend: building apps/frontend/dist for the api fallback');
-  runStep('frontend build', ['--filter', '@sanchoris/frontend', 'build']);
+  runStep('frontend build', 'vp', ['run', 'build-frontend']);
 }
 
 async function findAvailablePort() {

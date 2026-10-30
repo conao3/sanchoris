@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { type CredentialProxy, providerCredential, startCredentialProxy } from "../src/credential-proxy.ts";
 import { parseSecrets } from "../src/secrets.ts";

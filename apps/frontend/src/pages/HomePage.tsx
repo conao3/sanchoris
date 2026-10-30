@@ -1,26 +1,27 @@
 import { useNavigate, useSearch } from '@tanstack/react-router';
 import { ExternalLink, GitPullRequest, Plus, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from '../components/Button';
-import { Cols, Page } from '../components/Shell';
-import { CheckoutNote, TenantStateNote, useCheckoutOutcome } from '../components/billing';
-import { TaskState } from '../components/status';
-import { ActionError, Dim, ErrorNote, Id, Lk, Meter, Row, Section, Segments, Skeleton, State, Sub, Table, Th, Title, Toggle } from '../components/ui';
+import { Button } from '../components/Button.tsx';
+import { Cols, Page } from '../components/Shell.tsx';
+import { CheckoutNote, TenantStateNote, useCheckoutOutcome } from '../components/billing.tsx';
+import { TaskState } from '../components/status.tsx';
+import { ActionError, Dim, ErrorNote, Id, Lk, Meter, Row, Section, Segments, Skeleton, State, Sub, Table, Th, Title, Toggle } from '../components/ui.tsx';
 import {
   type HomeQuery,
+  type Provider,
   HomeDocument,
   SetTriggerStateDocument,
   SnoozeTaskDocument,
-} from '../graphql/generated/graphql';
-import { type MessageKey, t } from '../i18n';
-import { ago, day, elapsedRatio, hours, issueLabel, percent, usd } from '../lib/format';
-import { useListNav } from '../lib/keys';
-import { countOf, hoursOf, usedShare } from '../lib/plan';
-import { useAction } from '../lib/mutation';
-import { IDLE_POLL, LIVE_POLL, useData } from '../lib/query';
-import { limitedText, needsYouText, skillStep } from '../lib/taskText';
-import { useTenant } from '../lib/tenant';
-import { HomeSetup } from './HomeSetup';
+} from '../graphql/generated/graphql.ts';
+import { type MessageKey, t } from '../i18n/index.ts';
+import { ago, day, elapsedRatio, hours, issueLabel, percent, usd } from '../lib/format.ts';
+import { useListNav } from '../lib/keys.ts';
+import { countOf, hoursOf, usedShare } from '../lib/plan.ts';
+import { useAction } from '../lib/mutation.ts';
+import { IDLE_POLL, LIVE_POLL, useData } from '../lib/query.ts';
+import { limitedText, needsYouText, skillStep } from '../lib/taskText.ts';
+import { useTenant } from '../lib/tenant.tsx';
+import { HomeSetup } from './HomeSetup.tsx';
 
 type Tenant = NonNullable<HomeQuery['tenant']>;
 type TaskItem = Tenant['tasks'][number];
@@ -32,7 +33,7 @@ type Attention =
   | { kind: 'credential'; credential: CredentialItem }
   | { kind: 'change'; change: ChangeRequestItem };
 
-const providerKey: Record<string, MessageKey> = { CLAUDE: 'provider.claude', CODEX: 'provider.codex' };
+const providerKey: Record<Provider, MessageKey> = { CLAUDE: 'provider.claude', CODEX: 'provider.codex' };
 
 function Sparkline({ values }: { values: number[] }) {
   const max = Math.max(1, ...values);
@@ -123,7 +124,12 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
     }
   }
 
-  const nav = useListNav(attention.length, (index) => openAttention(attention[index]), {
+  const nav = useListNav(attention.length, (index) => {
+    const item = attention[index];
+    if (item) {
+      openAttention(item);
+    }
+  }, {
     c: () => void navigate({ to: '/chat' }),
   });
 

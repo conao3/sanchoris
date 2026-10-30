@@ -2,7 +2,7 @@ FROM --platform=$BUILDPLATFORM node:26-bookworm@sha256:52dd743dc3b494cba5bc8c135
 ARG TARGETARCH
 RUN npm install --global pnpm@12.9.0
 WORKDIR /src
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml vite.config.ts tsconfig.base.json tsconfig.json ./
 COPY apps ./apps
 COPY infra/workspace/entrypoint.sh /rootfs/usr/local/bin/workspace-entrypoint
 RUN case "$TARGETARCH" in \
@@ -10,10 +10,11 @@ RUN case "$TARGETARCH" in \
       arm64) cpu=arm64 machine=183 ;; \
       *) echo "unsupported TARGETARCH $TARGETARCH" >&2; exit 1 ;; \
     esac \
- && printf 'supportedArchitectures:\n  os: [linux]\n  cpu: [%s]\n  libc: [glibc]\n' "$cpu" >> pnpm-workspace.yaml \
- && pnpm install --frozen-lockfile --filter @sanchoris/workspace-agent \
- && pnpm --filter @sanchoris/workspace-agent deploy --legacy --prod /out \
- && node -e "const sdk = require.resolve('@anthropic-ai/claude-agent-sdk', { paths: ['/out'] }); const bin = require.resolve('@anthropic-ai/claude-agent-sdk-linux-$cpu/claude', { paths: [sdk] }); require('fs').symlinkSync(require('path').relative('/out', bin), '/out/claude');" \
+ && printf 'supportedArchitectures:\n  os: [linux]\n  cpu: [current, %s]\n  libc: [glibc]\n' "$cpu" >> pnpm-workspace.yaml \
+ && pnpm install --frozen-lockfile --ignore-scripts --filter sanchoris --filter @sanchoris/workspace-agent \
+ && node node_modules/vite-plus/bin/vp pack --filter workspace-agent \
+ && cp -r apps/workspace-agent/dist /out \
+ && node -e "const sdk = require.resolve('@anthropic-ai/claude-agent-sdk', { paths: ['apps/workspace-agent'] }); const bin = require.resolve('@anthropic-ai/claude-agent-sdk-linux-$cpu/claude', { paths: [sdk] }); require('fs').copyFileSync(bin, '/out/claude'); require('fs').chmodSync('/out/claude', 0o755);" \
  && node -e "const elf = require('fs').readFileSync('/out/claude').subarray(0, 20); if (elf.toString('latin1', 1, 4) !== 'ELF' || elf.readUInt16LE(18) !== $machine) { console.error('the bundled Claude Code is not a linux-$cpu binary'); process.exit(1); }" \
  && if [ "$(dpkg --print-architecture)" = "$TARGETARCH" ]; then /out/claude --version; fi
 RUN dpkg --add-architecture "$TARGETARCH" \
@@ -23,7 +24,7 @@ RUN dpkg --add-architecture "$TARGETARCH" \
  && dpkg-deb -x tini_*.deb /tmp/tini \
  && install -D -m 755 /tmp/tini/usr/bin/tini /rootfs/usr/bin/tini \
  && rm -rf /var/lib/apt/lists/* /tmp/tini tini_*.deb
-RUN printf '#!/bin/sh\nexec node --disable-warning=UNDICI-EHPA /opt/workspace-agent/src/bin/sanchoris.ts "$@"\n' > /rootfs/usr/local/bin/sanchoris \
+RUN printf '#!/bin/sh\nexec node --disable-warning=UNDICI-EHPA /opt/workspace-agent/sanchoris.mjs "$@"\n' > /rootfs/usr/local/bin/sanchoris \
  && chmod 755 /rootfs/usr/local/bin/sanchoris /rootfs/usr/local/bin/workspace-entrypoint \
  && mkdir -p /rootfs/etc /home-dirs \
  && git config --file /rootfs/etc/gitconfig credential.helper '!sanchoris git-credential' \

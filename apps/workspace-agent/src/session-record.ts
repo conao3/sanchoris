@@ -23,6 +23,6 @@ export async function downloadRecord(url: string, expectedSha256: string): Promi
 }
 
 export async function uploadRecord(url: string, headers: Record<string, string>, bytes: Buffer): Promise<void> {
-  const response = await fetch(url, { method: "PUT", headers, body: bytes });
+  const response = await fetch(url, { method: "PUT", headers, body: new Uint8Array(bytes) });
   if (!response.ok) throw new Error(`Session record upload failed with HTTP ${response.status}`);
 }

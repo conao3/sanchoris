@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { redactTokens } from "../src/session-record.ts";
 
 const redact = (text: string) => redactTokens(Buffer.from(text, "utf8")).toString("utf8");

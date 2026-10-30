@@ -3,15 +3,15 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=26.12.0"
+  },
   "scripts": {
     "dev": "portless run --name sanchoris -- pnpm run dev:app",
-    "dev:app": "vite --host 127.0.0.1 --port ${PORT:-5173}",
+    "dev:app": "vp dev --host 127.0.0.1 --port ${PORT:-5173}",
     "dev:mock": "VITE_MOCK_API=1 pnpm run dev:app",
     "codegen": "graphql-codegen --config codegen.ts",
-    "lint": "pnpm run codegen && knip",
-    "build": "pnpm run codegen && tsc -b && vite build",
-    "preview": "vite preview --host 127.0.0.1",
-    "check": "pnpm run codegen && tsc -b --pretty false && pnpm run lint"
+    "codegen:check": "graphql-codegen --config codegen.ts --check"
   },
   "dependencies": {
     "@apollo/client": "^4.3.5",
@@ -31,13 +31,7 @@
   "devDependencies": {
     "@graphql-codegen/cli": "^7.4.6",
     "@graphql-codegen/client-preset": "^6.2.3",
-    "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.1.2",
-    "knip": "^6.43.0",
-    "tailwindcss": "^4.3.3",
-    "typescript": "^7.0.2",
-    "vite": "^8.3.5"
+    "@types/react-dom": "^19.3.0"
   }
 }
