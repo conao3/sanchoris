@@ -1,19 +1,56 @@
-import { CircleCheck, CircleSlash, CircleX, ExternalLink, FolderGit2, MessageSquare, Plus, TriangleAlert, UserCheck, Zap } from 'lucide-react';
-import { type FormEvent, useState } from 'react';
-import { Button } from '../../components/Button.tsx';
-import { SettingsPage } from '../../components/SettingsTabs.tsx';
-import { ActionError, Chip, Dim, ErrorNote, ExternalLk, Icon, Id, Row, Section, Skeleton, State, Sub, Table, Th, Title } from '../../components/ui.tsx';
-import { AddConfigDocument, ConfigsDocument, SyncConfigDocument } from '../../graphql/generated/graphql.ts';
-import { t } from '../../i18n/index.ts';
-import { ago } from '../../lib/format.ts';
-import { useListNav } from '../../lib/keys.ts';
-import { useAction } from '../../lib/mutation.ts';
-import { useData } from '../../lib/query.ts';
-import { useTenant } from '../../lib/tenant.tsx';
+import {
+  CircleCheck,
+  CircleSlash,
+  CircleX,
+  ExternalLink,
+  FolderGit2,
+  MessageSquare,
+  Plus,
+  TriangleAlert,
+  UserCheck,
+  Zap,
+} from "lucide-react"
+import { type FormEvent, useState } from "react"
+import { Button } from "../../components/Button.tsx"
+import { SettingsPage } from "../../components/SettingsTabs.tsx"
+import {
+  ActionError,
+  Chip,
+  Dim,
+  ErrorNote,
+  ExternalLk,
+  Icon,
+  Id,
+  Row,
+  Section,
+  Skeleton,
+  State,
+  Sub,
+  Table,
+  Th,
+  Title,
+} from "../../components/ui.tsx"
+import {
+  AddConfigDocument,
+  ConfigsDocument,
+  SyncConfigDocument,
+} from "../../graphql/generated/graphql.ts"
+import { t } from "../../i18n/index.ts"
+import { ago } from "../../lib/format.ts"
+import { useListNav } from "../../lib/keys.ts"
+import { useAction } from "../../lib/mutation.ts"
+import { useData } from "../../lib/query.ts"
+import { useTenant } from "../../lib/tenant.tsx"
 
-type ValidationError = { path: string; line?: number | null; column?: number | null; message: string };
+type ValidationError = {
+  path: string
+  line?: number | null
+  column?: number | null
+  message: string
+}
 
-const fieldClass = 'h-8 rounded-ui border border-line2 bg-bg px-2.5 font-mono text-sm outline-none focus:border-ink';
+const fieldClass =
+  "h-8 rounded-ui border border-line2 bg-bg px-2.5 font-mono text-sm outline-none focus:border-ink"
 
 function Errors({ errors }: { errors: ValidationError[] }) {
   return (
@@ -22,123 +59,155 @@ function Errors({ errors }: { errors: ValidationError[] }) {
         <div key={index} className="text-sm">
           <span className="font-mono text-err">
             {error.path}
-            {error.line != null ? `:${error.line}` : ''}
-            {error.column != null ? `:${error.column}` : ''}
-          </span>{' '}
+            {error.line != null ? `:${error.line}` : ""}
+            {error.column != null ? `:${error.column}` : ""}
+          </span>{" "}
           {error.message}
         </div>
       ))}
     </div>
-  );
+  )
 }
 
 function AddConfigForm({ tenantId, repositories }: { tenantId: string; repositories: string[] }) {
-  const [repository, setRepository] = useState(repositories[0] ?? '');
-  const [root, setRoot] = useState('/');
-  const [branch, setBranch] = useState('main');
-  const [addConfig, { data, loading, error }] = useAction(AddConfigDocument, { refetchQueries: [ConfigsDocument] });
+  const [repository, setRepository] = useState(repositories[0] ?? "")
+  const [root, setRoot] = useState("/")
+  const [branch, setBranch] = useState("main")
+  const [addConfig, { data, loading, error }] = useAction(AddConfigDocument, {
+    refetchQueries: [ConfigsDocument],
+  })
 
   function submit(event: FormEvent) {
-    event.preventDefault();
-    void addConfig({ input: { tenantId, repository, root, branch } });
+    event.preventDefault()
+    void addConfig({ input: { tenantId, repository, root, branch } })
   }
 
   return (
     <>
       <form onSubmit={submit} className="mt-3 flex flex-wrap items-center gap-2">
-        <span className="text-muted">{t('config.addConfig')}</span>
-        <select aria-label={t('col.repository')} className={`${fieldClass} w-60`} value={repository} onChange={(event) => setRepository(event.target.value)}>
+        <span className="text-muted">{t("config.addConfig")}</span>
+        <select
+          aria-label={t("col.repository")}
+          className={`${fieldClass} w-60`}
+          value={repository}
+          onChange={(event) => setRepository(event.target.value)}
+        >
           {repositories.map((item) => (
             <option key={item}>{item}</option>
           ))}
         </select>
-        <input aria-label={t('col.root')} className={`${fieldClass} w-[150px]`} value={root} onChange={(event) => setRoot(event.target.value)} />
-        <input aria-label={t('config.branch')} className={`${fieldClass} w-[90px]`} value={branch} onChange={(event) => setBranch(event.target.value)} />
+        <input
+          aria-label={t("col.root")}
+          className={`${fieldClass} w-[150px]`}
+          value={root}
+          onChange={(event) => setRoot(event.target.value)}
+        />
+        <input
+          aria-label={t("config.branch")}
+          className={`${fieldClass} w-[90px]`}
+          value={branch}
+          onChange={(event) => setBranch(event.target.value)}
+        />
         <Button type="submit" icon={Plus} isDisabled={loading || !repository}>
-          {t('config.addConfigButton')}
+          {t("config.addConfigButton")}
         </Button>
-        <span className="text-muted">{t('config.checksFirst')}</span>
+        <span className="text-muted">{t("config.checksFirst")}</span>
       </form>
-      <Dim className="mt-1.5">{t('config.removeHint')}</Dim>
+      <Dim className="mt-1.5">{t("config.removeHint")}</Dim>
       <ActionError error={error} className="mt-2" />
       {data && data.addConfig.errors.length > 0 ? <Errors errors={data.addConfig.errors} /> : null}
     </>
-  );
+  )
 }
 
 export function ConfigPage() {
-  const { slug } = useTenant();
-  const { data, error, refetch } = useData(ConfigsDocument, { tenant: slug });
-  const [syncConfig, syncState] = useAction(SyncConfigDocument);
-  const tenant = data?.tenant;
-  const configs = tenant?.configs ?? [];
+  const { slug } = useTenant()
+  const { data, error, refetch } = useData(ConfigsDocument, { tenant: slug })
+  const [syncConfig, syncState] = useAction(SyncConfigDocument)
+  const tenant = data?.tenant
+  const configs = tenant?.configs ?? []
   const nav = useListNav(configs.length, (index) => {
-    const config = configs[index];
+    const config = configs[index]
     if (config) {
-      window.open(config.url, '_blank', 'noreferrer');
+      window.open(config.url, "_blank", "noreferrer")
     }
-  });
-  const configCols = '1fr 150px 80px 90px 90px 80px 120px 110px';
-  const projectCols = '120px 1fr 120px 280px';
-  const changeCols = '44px 1fr 150px 110px 110px 150px';
-  const repositories = tenant?.integrations.flatMap((integration) => (integration.kind === 'GITHUB_INSTALLATION' ? integration.repositories : [])) ?? [];
+  })
+  const configCols = "1fr 150px 80px 90px 90px 80px 120px 110px"
+  const projectCols = "120px 1fr 120px 280px"
+  const changeCols = "44px 1fr 150px 110px 110px 150px"
+  const repositories =
+    tenant?.integrations.flatMap((integration) =>
+      integration.kind === "GITHUB_INSTALLATION" ? integration.repositories : [],
+    ) ?? []
 
   return (
     <SettingsPage
       tab="config"
       keys={[
-        ['g s', 'nav.settings'],
-        ['j k', 'keys.move'],
-        ['↵', 'keys.openOnGitHub'],
+        ["g s", "nav.settings"],
+        ["j k", "keys.move"],
+        ["↵", "keys.openOnGitHub"],
       ]}
     >
-      <Title>{t('settings.config')}</Title>
-      <Sub>{t('config.intro')}</Sub>
+      <Title>{t("settings.config")}</Title>
+      <Sub>{t("config.intro")}</Sub>
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
       {!data && !error ? <Skeleton rows={2} /> : null}
       {tenant ? (
         <>
           <Table>
             <Th cols={configCols}>
-              <span>{t('col.repository')}</span>
-              <span>{t('col.root')}</span>
-              <span>{t('col.revision')}</span>
-              <span>{t('col.synced')}</span>
-              <span className="text-right">{t('nav.triggers')}</span>
-              <span className="text-right">{t('nav.skills')}</span>
-              <span>{t('col.changeRequests')}</span>
-              <span>{t('col.validation')}</span>
+              <span>{t("col.repository")}</span>
+              <span>{t("col.root")}</span>
+              <span>{t("col.revision")}</span>
+              <span>{t("col.synced")}</span>
+              <span className="text-right">{t("nav.triggers")}</span>
+              <span className="text-right">{t("nav.skills")}</span>
+              <span>{t("col.changeRequests")}</span>
+              <span>{t("col.validation")}</span>
             </Th>
             {configs.map((config, index) => {
-              const { validation } = config.revision;
-              const disabled = config.status === 'DISABLED';
+              const { validation } = config.revision
+              const disabled = config.status === "DISABLED"
               return (
                 <div key={config.id}>
-                  <Row cols={configCols} selected={nav.selected === index} rowRef={nav.rowRef(index)} onClick={() => nav.select(index)}>
+                  <Row
+                    cols={configCols}
+                    selected={nav.selected === index}
+                    rowRef={nav.rowRef(index)}
+                    onClick={() => nav.select(index)}
+                  >
                     <span className="font-medium">
-                      <Icon icon={FolderGit2} /> <ExternalLk href={config.url} className="no-underline">{config.repository}</ExternalLk>
+                      <Icon icon={FolderGit2} />{" "}
+                      <ExternalLk href={config.url} className="no-underline">
+                        {config.repository}
+                      </ExternalLk>
                     </span>
                     <span className="font-mono text-sm">{config.root}</span>
                     <span className="font-mono text-sm">r{config.revision.number}</span>
-                    <span className="text-muted">{config.syncedAt ? ago(config.syncedAt) : '—'}</span>
+                    <span className="text-muted">
+                      {config.syncedAt ? ago(config.syncedAt) : "—"}
+                    </span>
                     <span className="text-right font-mono text-sm">{config.triggerCount}</span>
                     <span className="text-right font-mono text-sm">{config.skillCount}</span>
                     {config.changeRequests.length > 0 ? (
-                      <span className="underline decoration-line2 underline-offset-[3px]">{t('config.openCount', { n: config.changeRequests.length })}</span>
+                      <span className="underline decoration-line2 underline-offset-[3px]">
+                        {t("config.openCount", { n: config.changeRequests.length })}
+                      </span>
                     ) : (
                       <span className="text-muted">—</span>
                     )}
                     {disabled ? (
                       <State tone="wait" icon={CircleSlash}>
-                        {t('config.disabled')}
+                        {t("config.disabled")}
                       </State>
                     ) : validation.valid ? (
                       <State tone="ok" icon={CircleCheck}>
-                        {t('config.valid')}
+                        {t("config.valid")}
                       </State>
                     ) : (
                       <State tone="err" icon={CircleX}>
-                        {t('config.invalid', { n: validation.errors.length })}
+                        {t("config.invalid", { n: validation.errors.length })}
                       </State>
                     )}
                   </Row>
@@ -147,12 +216,20 @@ export function ConfigPage() {
                       <Icon icon={TriangleAlert} className="text-err" />
                       <span className="text-err">{config.syncError}</span>
                       {disabled ? (
-                        <span className="text-muted">{t('config.disabledHint')}</span>
+                        <span className="text-muted">{t("config.disabledHint")}</span>
                       ) : (
                         <>
-                          <span className="text-muted">{config.syncedAt ? t('config.lastSynced', { at: ago(config.syncedAt) }) : null}</span>
-                          <Button small isDisabled={syncState.loading} onPress={() => void syncConfig({ configId: config.id })}>
-                            {t('common.retry')}
+                          <span className="text-muted">
+                            {config.syncedAt
+                              ? t("config.lastSynced", { at: ago(config.syncedAt) })
+                              : null}
+                          </span>
+                          <Button
+                            small
+                            isDisabled={syncState.loading}
+                            onPress={() => void syncConfig({ configId: config.id })}
+                          >
+                            {t("common.retry")}
                           </Button>
                           <ActionError error={syncState.error} />
                         </>
@@ -161,20 +238,22 @@ export function ConfigPage() {
                   ) : null}
                   {disabled || validation.valid ? null : <Errors errors={validation.errors} />}
                 </div>
-              );
+              )
             })}
           </Table>
           <AddConfigForm tenantId={tenant.id} repositories={repositories} />
 
-          <Section count={t('config.projectsCount', { n: tenant.projects.length })}>{t('config.projects')}</Section>
-          <Dim className="mb-1.5">{t('config.projectsDetail')}</Dim>
+          <Section count={t("config.projectsCount", { n: tenant.projects.length })}>
+            {t("config.projects")}
+          </Section>
+          <Dim className="mb-1.5">{t("config.projectsDetail")}</Dim>
           {tenant.projects.length > 0 ? (
             <Table>
               <Th cols={projectCols}>
-                <span>{t('col.project')}</span>
-                <span>{t('col.repositories')}</span>
-                <span>{t('col.warmBuild')}</span>
-                <span>{t('col.usedBySessions')}</span>
+                <span>{t("col.project")}</span>
+                <span>{t("col.repositories")}</span>
+                <span>{t("col.warmBuild")}</span>
+                <span>{t("col.usedBySessions")}</span>
               </Th>
               {tenant.projects.map((project) => (
                 <Row key={project.id} cols={projectCols}>
@@ -185,39 +264,50 @@ export function ConfigPage() {
                     ))}
                   </span>
                   {project.warmBuild ? (
-                    <State tone={project.warmBuild.succeeded ? 'ok' : 'err'} icon={Zap}>
+                    <State tone={project.warmBuild.succeeded ? "ok" : "err"} icon={Zap}>
                       {ago(project.warmBuild.finishedAt)}
                     </State>
                   ) : (
                     <span className="text-muted">—</span>
                   )}
-                  {project.sessions.length > 0 ? <span>{project.sessions.map((session) => session.name).join(', ')}</span> : <span className="text-muted">—</span>}
+                  {project.sessions.length > 0 ? (
+                    <span>{project.sessions.map((session) => session.name).join(", ")}</span>
+                  ) : (
+                    <span className="text-muted">—</span>
+                  )}
                 </Row>
               ))}
             </Table>
           ) : null}
 
-          <Section count={t('config.changeRequestsCount', { n: tenant.changeRequests.length })}>{t('col.changeRequests')}</Section>
-          {tenant.changeRequests.length === 0 ? <Dim>{t('config.noChangeRequests')}</Dim> : null}
+          <Section count={t("config.changeRequestsCount", { n: tenant.changeRequests.length })}>
+            {t("col.changeRequests")}
+          </Section>
+          {tenant.changeRequests.length === 0 ? <Dim>{t("config.noChangeRequests")}</Dim> : null}
           {tenant.changeRequests.length > 0 ? (
             <Table>
               <Th cols={changeCols}>
                 <span>#</span>
-                <span>{t('col.title')}</span>
-                <span>{t('col.changes')}</span>
-                <span>{t('col.openedBy')}</span>
-                <span>{t('col.validation')}</span>
+                <span>{t("col.title")}</span>
+                <span>{t("col.changes")}</span>
+                <span>{t("col.openedBy")}</span>
+                <span>{t("col.validation")}</span>
                 <span />
               </Th>
               {tenant.changeRequests.map((change) => (
                 <Row key={change.id} cols={changeCols}>
                   <Id>#{change.number}</Id>
                   <span className="font-medium">{change.title}</span>
-                  <span className="underline decoration-line2 underline-offset-[3px]">{change.changes.map((item) => item.name).filter((name, index, all) => all.indexOf(name) === index).join(', ')}</span>
+                  <span className="underline decoration-line2 underline-offset-[3px]">
+                    {change.changes
+                      .map((item) => item.name)
+                      .filter((name, index, all) => all.indexOf(name) === index)
+                      .join(", ")}
+                  </span>
                   <span className="text-muted">
                     {change.openedFromTask ? (
                       <>
-                        <Icon icon={MessageSquare} /> {t('config.fromChat')}
+                        <Icon icon={MessageSquare} /> {t("config.fromChat")}
                       </>
                     ) : (
                       <>
@@ -227,16 +317,16 @@ export function ConfigPage() {
                   </span>
                   {change.validation.valid ? (
                     <State tone="ok" icon={CircleCheck}>
-                      {t('config.valid')}
+                      {t("config.valid")}
                     </State>
                   ) : (
                     <State tone="err" icon={CircleX}>
-                      {t('config.invalidShort')}
+                      {t("config.invalidShort")}
                     </State>
                   )}
                   <span className="justify-self-end">
                     <Button small icon={ExternalLink} href={change.url}>
-                      {t('common.reviewOnGitHub')}
+                      {t("common.reviewOnGitHub")}
                     </Button>
                   </span>
                 </Row>
@@ -246,5 +336,5 @@ export function ConfigPage() {
         </>
       ) : null}
     </SettingsPage>
-  );
+  )
 }

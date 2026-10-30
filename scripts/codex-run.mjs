@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import process from 'node:process';
+import { spawn } from "node:child_process"
+import { createWriteStream } from "node:fs"
+import fs from "node:fs/promises"
+import path from "node:path"
+import process from "node:process"
 
-const defaultRunsDir = '.sanchoris/codex-runs';
+const defaultRunsDir = ".sanchoris/codex-runs"
 
 function usage() {
   console.log(`Usage:
@@ -23,85 +23,90 @@ Options:
 Example:
   node scripts/codex-run.mjs --prompt tasks/example.md --verify "make check" -- \\
     codex exec --ask-for-approval never < tasks/example.md
-`);
+`)
 }
 
 function parseArgs(argv) {
   const options = {
     copyPrompt: true,
-    name: 'codex-run',
+    name: "codex-run",
     prompt: undefined,
     runsDir: defaultRunsDir,
     verify: [],
-  };
-
-  let index = 0;
-  for (; index < argv.length; index += 1) {
-    const arg = argv[index];
-
-    if (arg === '--') {
-      index += 1;
-      break;
-    }
-
-    if (arg === '-h' || arg === '--help') {
-      options.help = true;
-      return { command: [], options };
-    }
-
-    if (arg === '--no-copy-prompt') {
-      options.copyPrompt = false;
-      continue;
-    }
-
-    if (arg === '--prompt' || arg === '--runs-dir' || arg === '--name' || arg === '--verify') {
-      const value = argv[index + 1];
-      if (!value) {
-        throw new Error(`${arg} requires a value.`);
-      }
-
-      index += 1;
-      if (arg === '--verify') {
-        options.verify.push(value);
-      } else if (arg === '--runs-dir') {
-        options.runsDir = value;
-      } else {
-        options[arg.slice(2)] = value;
-      }
-      continue;
-    }
-
-    throw new Error(`Unknown option: ${arg}`);
   }
 
-  return { command: argv.slice(index), options };
+  let index = 0
+  for (; index < argv.length; index += 1) {
+    const arg = argv[index]
+
+    if (arg === "--") {
+      index += 1
+      break
+    }
+
+    if (arg === "-h" || arg === "--help") {
+      options.help = true
+      return { command: [], options }
+    }
+
+    if (arg === "--no-copy-prompt") {
+      options.copyPrompt = false
+      continue
+    }
+
+    if (arg === "--prompt" || arg === "--runs-dir" || arg === "--name" || arg === "--verify") {
+      const value = argv[index + 1]
+      if (!value) {
+        throw new Error(`${arg} requires a value.`)
+      }
+
+      index += 1
+      if (arg === "--verify") {
+        options.verify.push(value)
+      } else if (arg === "--runs-dir") {
+        options.runsDir = value
+      } else {
+        options[arg.slice(2)] = value
+      }
+      continue
+    }
+
+    throw new Error(`Unknown option: ${arg}`)
+  }
+
+  return { command: argv.slice(index), options }
 }
 
 function safeName(value) {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80) || 'codex-run';
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80) || "codex-run"
+  )
 }
 
 function nowIsoForPath() {
-  return new Date().toISOString().replaceAll(':', '').replace(/\.\d{3}Z$/, 'Z');
+  return new Date()
+    .toISOString()
+    .replaceAll(":", "")
+    .replace(/\.\d{3}Z$/, "Z")
 }
 
 function writeJson(file, value) {
-  return fs.writeFile(`${file}.tmp`, `${JSON.stringify(value, null, 2)}\n`).then(() =>
-    fs.rename(`${file}.tmp`, file),
-  );
+  return fs
+    .writeFile(`${file}.tmp`, `${JSON.stringify(value, null, 2)}\n`)
+    .then(() => fs.rename(`${file}.tmp`, file))
 }
 
 function openLogs(runDir) {
   return {
-    combined: createWriteStream(path.join(runDir, 'combined.log'), { flags: 'a' }),
-    stderr: createWriteStream(path.join(runDir, 'stderr.log'), { flags: 'a' }),
-    stdout: createWriteStream(path.join(runDir, 'stdout.log'), { flags: 'a' }),
-  };
+    combined: createWriteStream(path.join(runDir, "combined.log"), { flags: "a" }),
+    stderr: createWriteStream(path.join(runDir, "stderr.log"), { flags: "a" }),
+    stdout: createWriteStream(path.join(runDir, "stdout.log"), { flags: "a" }),
+  }
 }
 
 function closeLogs(logs) {
@@ -111,14 +116,14 @@ function closeLogs(logs) {
         new Promise((resolve, reject) => {
           stream.end((error) => {
             if (error) {
-              reject(error);
+              reject(error)
             } else {
-              resolve();
+              resolve()
             }
-          });
+          })
         }),
     ),
-  );
+  )
 }
 
 function runChild(command, args, cwd, logs) {
@@ -127,61 +132,61 @@ function runChild(command, args, cwd, logs) {
       cwd,
       env: process.env,
       shell: false,
-      stdio: ['inherit', 'pipe', 'pipe'],
-    });
+      stdio: ["inherit", "pipe", "pipe"],
+    })
 
-    child.stdout.on('data', (chunk) => {
-      logs.stdout.write(chunk);
-      logs.combined.write(chunk);
-      process.stdout.write(chunk);
-    });
+    child.stdout.on("data", (chunk) => {
+      logs.stdout.write(chunk)
+      logs.combined.write(chunk)
+      process.stdout.write(chunk)
+    })
 
-    child.stderr.on('data', (chunk) => {
-      logs.stderr.write(chunk);
-      logs.combined.write(chunk);
-      process.stderr.write(chunk);
-    });
+    child.stderr.on("data", (chunk) => {
+      logs.stderr.write(chunk)
+      logs.combined.write(chunk)
+      process.stderr.write(chunk)
+    })
 
-    child.on('error', (error) => {
-      logs.stderr.write(`${error.stack ?? error.message}\n`);
-      logs.combined.write(`${error.stack ?? error.message}\n`);
-      resolve({ error: error.message, exitCode: 1, pid: child.pid ?? null, signal: null });
-    });
+    child.on("error", (error) => {
+      logs.stderr.write(`${error.stack ?? error.message}\n`)
+      logs.combined.write(`${error.stack ?? error.message}\n`)
+      resolve({ error: error.message, exitCode: 1, pid: child.pid ?? null, signal: null })
+    })
 
-    child.on('exit', (exitCode, signal) => {
-      resolve({ exitCode, pid: child.pid ?? null, signal });
-    });
-  });
+    child.on("exit", (exitCode, signal) => {
+      resolve({ exitCode, pid: child.pid ?? null, signal })
+    })
+  })
 }
 
 function runVerification(command, cwd, runDir, index) {
-  const filePrefix = `verify-${String(index + 1).padStart(2, '0')}`;
-  const stdoutPath = path.join(runDir, `${filePrefix}-stdout.log`);
-  const stderrPath = path.join(runDir, `${filePrefix}-stderr.log`);
-  const stdout = createWriteStream(stdoutPath, { flags: 'a' });
-  const stderr = createWriteStream(stderrPath, { flags: 'a' });
-  const startedAt = new Date().toISOString();
+  const filePrefix = `verify-${String(index + 1).padStart(2, "0")}`
+  const stdoutPath = path.join(runDir, `${filePrefix}-stdout.log`)
+  const stderrPath = path.join(runDir, `${filePrefix}-stderr.log`)
+  const stdout = createWriteStream(stdoutPath, { flags: "a" })
+  const stderr = createWriteStream(stderrPath, { flags: "a" })
+  const startedAt = new Date().toISOString()
 
   return new Promise((resolve) => {
     const child = spawn(command, {
       cwd,
       env: process.env,
       shell: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+      stdio: ["ignore", "pipe", "pipe"],
+    })
 
-    child.stdout.on('data', (chunk) => {
-      stdout.write(chunk);
-      process.stdout.write(chunk);
-    });
+    child.stdout.on("data", (chunk) => {
+      stdout.write(chunk)
+      process.stdout.write(chunk)
+    })
 
-    child.stderr.on('data', (chunk) => {
-      stderr.write(chunk);
-      process.stderr.write(chunk);
-    });
+    child.stderr.on("data", (chunk) => {
+      stderr.write(chunk)
+      process.stderr.write(chunk)
+    })
 
-    child.on('error', (error) => {
-      stderr.write(`${error.stack ?? error.message}\n`);
+    child.on("error", (error) => {
+      stderr.write(`${error.stack ?? error.message}\n`)
       resolve({
         command,
         error: error.message,
@@ -191,13 +196,13 @@ function runVerification(command, cwd, runDir, index) {
         pid: child.pid ?? null,
         signal: null,
         started_at: startedAt,
-        status: 'failed',
-      });
-    });
+        status: "failed",
+      })
+    })
 
-    child.on('exit', (exitCode, signal) => {
-      stdout.end();
-      stderr.end();
+    child.on("exit", (exitCode, signal) => {
+      stdout.end()
+      stderr.end()
       resolve({
         command,
         exit_code: exitCode,
@@ -206,51 +211,51 @@ function runVerification(command, cwd, runDir, index) {
         pid: child.pid ?? null,
         signal,
         started_at: startedAt,
-        status: exitCode === 0 ? 'passed' : 'failed',
-      });
-    });
-  });
+        status: exitCode === 0 ? "passed" : "failed",
+      })
+    })
+  })
 }
 
 async function main() {
-  const { command, options } = parseArgs(process.argv.slice(2));
+  const { command, options } = parseArgs(process.argv.slice(2))
   if (options.help) {
-    usage();
-    return 0;
+    usage()
+    return 0
   }
 
   if (!options.prompt) {
-    throw new Error('--prompt is required.');
+    throw new Error("--prompt is required.")
   }
 
   if (command.length === 0) {
-    throw new Error('A command after -- is required.');
+    throw new Error("A command after -- is required.")
   }
 
-  const cwd = process.cwd();
-  const promptPath = path.resolve(cwd, options.prompt);
-  await fs.access(promptPath);
+  const cwd = process.cwd()
+  const promptPath = path.resolve(cwd, options.prompt)
+  await fs.access(promptPath)
 
-  const runId = `${nowIsoForPath()}-${safeName(options.name)}-${process.pid}`;
-  const runDir = path.resolve(cwd, options.runsDir, runId);
-  await fs.mkdir(runDir, { recursive: true });
+  const runId = `${nowIsoForPath()}-${safeName(options.name)}-${process.pid}`
+  const runDir = path.resolve(cwd, options.runsDir, runId)
+  await fs.mkdir(runDir, { recursive: true })
 
-  const copiedPromptPath = options.copyPrompt ? path.join(runDir, 'prompt.md') : null;
+  const copiedPromptPath = options.copyPrompt ? path.join(runDir, "prompt.md") : null
   if (copiedPromptPath) {
-    await fs.copyFile(promptPath, copiedPromptPath);
+    await fs.copyFile(promptPath, copiedPromptPath)
   }
 
-  const logs = openLogs(runDir);
-  const metadataPath = path.join(runDir, 'metadata.json');
-  const summaryPath = path.join(runDir, 'summary.json');
-  const startedAt = new Date().toISOString();
+  const logs = openLogs(runDir)
+  const metadataPath = path.join(runDir, "metadata.json")
+  const summaryPath = path.join(runDir, "summary.json")
+  const startedAt = new Date().toISOString()
   const summary = {
     command,
     finished_at: null,
     log_paths: {
-      combined: path.join(runDir, 'combined.log'),
-      stderr: path.join(runDir, 'stderr.log'),
-      stdout: path.join(runDir, 'stdout.log'),
+      combined: path.join(runDir, "combined.log"),
+      stderr: path.join(runDir, "stderr.log"),
+      stdout: path.join(runDir, "stdout.log"),
     },
     prompt: {
       copied_path: copiedPromptPath,
@@ -259,14 +264,14 @@ async function main() {
     run_dir: runDir,
     run_id: runId,
     started_at: startedAt,
-    status: 'running',
+    status: "running",
     task_exit_code: null,
     task_signal: null,
     verification: options.verify.map((verifyCommand) => ({
       command: verifyCommand,
-      status: 'pending',
+      status: "pending",
     })),
-  };
+  }
 
   await writeJson(metadataPath, {
     cwd,
@@ -275,56 +280,56 @@ async function main() {
     run_dir: runDir,
     run_id: runId,
     started_at: startedAt,
-  });
-  await writeJson(summaryPath, summary);
+  })
+  await writeJson(summaryPath, summary)
 
-  console.error(`Run directory: ${runDir}`);
-  const taskResult = await runChild(command[0], command.slice(1), cwd, logs);
+  console.error(`Run directory: ${runDir}`)
+  const taskResult = await runChild(command[0], command.slice(1), cwd, logs)
 
-  summary.task_exit_code = taskResult.exitCode;
-  summary.task_pid = taskResult.pid;
-  summary.task_signal = taskResult.signal;
-  summary.status = taskResult.exitCode === 0 ? 'verifying' : 'failed';
+  summary.task_exit_code = taskResult.exitCode
+  summary.task_pid = taskResult.pid
+  summary.task_signal = taskResult.signal
+  summary.status = taskResult.exitCode === 0 ? "verifying" : "failed"
   if (taskResult.error) {
-    summary.error = taskResult.error;
+    summary.error = taskResult.error
   }
-  await writeJson(summaryPath, summary);
+  await writeJson(summaryPath, summary)
 
-  const verificationResults = [];
+  const verificationResults = []
   if (taskResult.exitCode === 0) {
     for (let index = 0; index < options.verify.length; index += 1) {
-      const result = await runVerification(options.verify[index], cwd, runDir, index);
-      verificationResults.push(result);
+      const result = await runVerification(options.verify[index], cwd, runDir, index)
+      verificationResults.push(result)
       summary.verification = [
         ...verificationResults,
         ...options.verify.slice(index + 1).map((verifyCommand) => ({
           command: verifyCommand,
-          status: 'pending',
+          status: "pending",
         })),
-      ];
-      await writeJson(summaryPath, summary);
+      ]
+      await writeJson(summaryPath, summary)
     }
   } else {
     summary.verification = options.verify.map((verifyCommand) => ({
       command: verifyCommand,
-      status: 'skipped',
-    }));
+      status: "skipped",
+    }))
   }
 
-  const failedVerification = verificationResults.find((result) => result.status !== 'passed');
-  summary.finished_at = new Date().toISOString();
-  summary.status = taskResult.exitCode === 0 && !failedVerification ? 'passed' : 'failed';
-  await writeJson(summaryPath, summary);
-  await closeLogs(logs);
+  const failedVerification = verificationResults.find((result) => result.status !== "passed")
+  summary.finished_at = new Date().toISOString()
+  summary.status = taskResult.exitCode === 0 && !failedVerification ? "passed" : "failed"
+  await writeJson(summaryPath, summary)
+  await closeLogs(logs)
 
-  return summary.status === 'passed' ? 0 : 1;
+  return summary.status === "passed" ? 0 : 1
 }
 
 main()
   .then((exitCode) => {
-    process.exitCode = exitCode;
+    process.exitCode = exitCode
   })
   .catch((error) => {
-    console.error(error.message);
-    process.exitCode = 1;
-  });
+    console.error(error.message)
+    process.exitCode = 1
+  })

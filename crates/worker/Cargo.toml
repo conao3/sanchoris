@@ -15,14 +15,25 @@ serde_json.workspace = true
 thiserror.workspace = true
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "signal", "io-util"] }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  "process",
+  "signal",
+  "io-util",
+] }
 async-trait = "0.1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 base64 = "0.23"
 
 [dev-dependencies]
-aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-dynamodb = { version = "1", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+] }
 sanchoris-core = { path = "../core", features = ["test-support"] }
 tempfile = "3"
 

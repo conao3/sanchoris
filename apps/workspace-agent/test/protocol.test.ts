@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
 
-import { describe, expect, it } from "vite-plus/test";
-import type { ZodType } from "zod";
+import { describe, expect, it } from "vite-plus/test"
+import type { ZodType } from "zod"
 
 import {
   AckMessage,
@@ -34,9 +34,9 @@ import {
   UserMessage,
   WorkerCredentialRequestMessage,
   WorkerCredentialResponseMessage,
-} from "../src/protocol.ts";
-import { claudeRateLimit } from "../src/workers/claude.ts";
-import { codexRateLimit, mergeCodexRateLimits } from "../src/workers/codex.ts";
+} from "../src/protocol.ts"
+import { claudeRateLimit } from "../src/workers/claude.ts"
+import { codexRateLimit, mergeCodexRateLimits } from "../src/workers/codex.ts"
 
 const inbound: Record<string, ZodType> = {
   start: StartMessage,
@@ -51,7 +51,7 @@ const inbound: Record<string, ZodType> = {
   ack: AckMessage,
   close: CloseMessage,
   credentials: CredentialsMessage,
-};
+}
 
 const outbound: Record<string, ZodType> = {
   hello: HelloMessage,
@@ -67,32 +67,41 @@ const outbound: Record<string, ZodType> = {
   exec_result: ExecResultMessage,
   git_token_request: GitTokenRequestMessage,
   worker_credential_request: WorkerCredentialRequestMessage,
-};
+}
 
-const examples = [...readFileSync(resolve(import.meta.dirname, "../PROTOCOL.md"), "utf8").matchAll(/```json\n([\s\S]*?)```/g)].map(
-  (match) => JSON.parse(match[1] as string) as Record<string, unknown>,
-);
+const examples = [
+  ...readFileSync(resolve(import.meta.dirname, "../PROTOCOL.md"), "utf8").matchAll(
+    /```json\n([\s\S]*?)```/g,
+  ),
+].map((match) => JSON.parse(match[1] as string) as Record<string, unknown>)
 
 describe("PROTOCOL.md examples", () => {
   it("covers every message type", () => {
-    const types = new Set(examples.map((example) => example.type).filter((type) => typeof type === "string"));
-    const byName = (a: string, b: string) => a.localeCompare(b);
-    expect([...types].sort(byName)).toEqual([...Object.keys(inbound), ...Object.keys(outbound)].sort(byName));
-  });
+    const types = new Set(
+      examples.map((example) => example.type).filter((type) => typeof type === "string"),
+    )
+    const byName = (a: string, b: string) => a.localeCompare(b)
+    expect([...types].sort(byName)).toEqual(
+      [...Object.keys(inbound), ...Object.keys(outbound)].sort(byName),
+    )
+  })
 
-  it.each(examples.map((example, index) => [index, example] as const))("example %i matches the schema", (_index, example) => {
-    if (typeof example.type !== "string") {
-      const schema = "action" in example ? SocketRequest : SocketResponse;
-      expect(() => schema.parse(example)).not.toThrow();
-      return;
-    }
-    const specific = inbound[example.type] ?? outbound[example.type];
-    expect(specific).toBeDefined();
-    expect(() => specific?.parse(example)).not.toThrow();
-    const union = example.type in inbound ? InboundMessage : OutboundMessage;
-    expect(() => union.parse(example)).not.toThrow();
-  });
-});
+  it.each(examples.map((example, index) => [index, example] as const))(
+    "example %i matches the schema",
+    (_index, example) => {
+      if (typeof example.type !== "string") {
+        const schema = "action" in example ? SocketRequest : SocketResponse
+        expect(() => schema.parse(example)).not.toThrow()
+        return
+      }
+      const specific = inbound[example.type] ?? outbound[example.type]
+      expect(specific).toBeDefined()
+      expect(() => specific?.parse(example)).not.toThrow()
+      const union = example.type in inbound ? InboundMessage : OutboundMessage
+      expect(() => union.parse(example)).not.toThrow()
+    },
+  )
+})
 
 describe("rate limit mapping", () => {
   it("maps Claude unified windows", () => {
@@ -114,29 +123,38 @@ describe("rate limit mapping", () => {
         five_hour: { utilization: 0.04, resetsAt: 1793061000, status: "allowed" },
         seven_day: { utilization: 0.15, resetsAt: 1793476800, status: "allowed" },
       },
-    });
-  });
+    })
+  })
 
   it("maps a Claude event without unified windows to its single window", () => {
-    expect(claudeRateLimit({ status: "rejected", resetsAt: 1793061000, rateLimitType: "seven_day", utilization: 1 })).toEqual({
+    expect(
+      claudeRateLimit({
+        status: "rejected",
+        resetsAt: 1793061000,
+        rateLimitType: "seven_day",
+        utilization: 1,
+      }),
+    ).toEqual({
       status: "rejected",
       resetsAt: 1793061000,
       rateLimitType: "seven_day",
       windows: { seven_day: { utilization: 1, resetsAt: 1793061000, status: "rejected" } },
-    });
-  });
+    })
+  })
 
   it("merges and maps Codex snapshots", () => {
     const first = mergeCodexRateLimits(null, {
       limitId: "codex",
       primary: { usedPercent: 40, resetsAt: 1793061000, windowDurationMins: 300 },
       secondary: { usedPercent: 10, resetsAt: 1793476800, windowDurationMins: 10080 },
-    });
+    })
     const merged = mergeCodexRateLimits(first, {
       primary: { usedPercent: 100, resetsAt: 1793061000, windowDurationMins: 300 },
       rateLimitReachedType: "rate_limit_reached",
-    });
-    expect(mergeCodexRateLimits(merged, { limitId: "spark", primary: { usedPercent: 1 } })).toBe(merged);
+    })
+    expect(mergeCodexRateLimits(merged, { limitId: "spark", primary: { usedPercent: 1 } })).toBe(
+      merged,
+    )
     expect(codexRateLimit(merged ?? {})).toEqual({
       status: "rejected",
       resetsAt: 1793061000,
@@ -145,6 +163,6 @@ describe("rate limit mapping", () => {
         five_hour: { utilization: 1, resetsAt: 1793061000, status: "rejected" },
         seven_day: { utilization: 0.1, resetsAt: 1793476800, status: "allowed" },
       },
-    });
-  });
-});
+    })
+  })
+})

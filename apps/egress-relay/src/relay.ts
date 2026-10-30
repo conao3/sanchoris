@@ -1,235 +1,272 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
-import { lookup } from "node:dns/promises";
-import { createServer, type IncomingMessage, type Server } from "node:http";
-import { BlockList, isIP, type Socket } from "node:net";
+import { createHmac, timingSafeEqual } from "node:crypto"
+import { lookup } from "node:dns/promises"
+import { createServer, type IncomingMessage, type Server } from "node:http"
+import { BlockList, isIP, type Socket } from "node:net"
 
 export interface RelayClaims {
-  run: string;
-  exp: number;
-  allow: string[];
+  run: string
+  exp: number
+  allow: string[]
 }
 
 export interface RelayOptions {
-  signingKey: Buffer;
-  platformHosts: string[];
-  denyHosts: string[];
-  log: (entry: Record<string, unknown>) => void;
-  resolve: (host: string) => Promise<string>;
-  connect: (port: number, address: string) => Socket;
-  now: () => number;
-  maxConnections: number;
-  maxTunnelsPerRun: number;
-  idleTimeoutMs: number;
+  signingKey: Buffer
+  platformHosts: string[]
+  denyHosts: string[]
+  log: (entry: Record<string, unknown>) => void
+  resolve: (host: string) => Promise<string>
+  connect: (port: number, address: string) => Socket
+  now: () => number
+  maxConnections: number
+  maxTunnelsPerRun: number
+  idleTimeoutMs: number
 }
 
 export interface Relay {
-  server: Server;
-  tunnels: (run: string) => number;
-  shutdown: () => Promise<void>;
+  server: Server
+  tunnels: (run: string) => number
+  shutdown: () => Promise<void>
 }
 
-export type Decision = { allowed: true; rule: "platform" | "session" } | { allowed: false; reason: string };
+export type Decision =
+  | { allowed: true; rule: "platform" | "session" }
+  | { allowed: false; reason: string }
 
-const ALLOWED_PORT = 443;
+const ALLOWED_PORT = 443
 
-const privateAddresses = new BlockList();
-privateAddresses.addSubnet("0.0.0.0", 8, "ipv4");
-privateAddresses.addSubnet("10.0.0.0", 8, "ipv4");
-privateAddresses.addSubnet("100.64.0.0", 10, "ipv4");
-privateAddresses.addSubnet("127.0.0.0", 8, "ipv4");
-privateAddresses.addSubnet("169.254.0.0", 16, "ipv4");
-privateAddresses.addSubnet("172.16.0.0", 12, "ipv4");
-privateAddresses.addSubnet("192.0.0.0", 24, "ipv4");
-privateAddresses.addSubnet("192.168.0.0", 16, "ipv4");
-privateAddresses.addSubnet("198.18.0.0", 15, "ipv4");
-privateAddresses.addSubnet("224.0.0.0", 4, "ipv4");
-privateAddresses.addSubnet("240.0.0.0", 4, "ipv4");
-privateAddresses.addSubnet("::", 128, "ipv6");
-privateAddresses.addSubnet("::1", 128, "ipv6");
-privateAddresses.addSubnet("64:ff9b::", 96, "ipv6");
-privateAddresses.addSubnet("fc00::", 7, "ipv6");
-privateAddresses.addSubnet("fe80::", 10, "ipv6");
+const privateAddresses = new BlockList()
+privateAddresses.addSubnet("0.0.0.0", 8, "ipv4")
+privateAddresses.addSubnet("10.0.0.0", 8, "ipv4")
+privateAddresses.addSubnet("100.64.0.0", 10, "ipv4")
+privateAddresses.addSubnet("127.0.0.0", 8, "ipv4")
+privateAddresses.addSubnet("169.254.0.0", 16, "ipv4")
+privateAddresses.addSubnet("172.16.0.0", 12, "ipv4")
+privateAddresses.addSubnet("192.0.0.0", 24, "ipv4")
+privateAddresses.addSubnet("192.168.0.0", 16, "ipv4")
+privateAddresses.addSubnet("198.18.0.0", 15, "ipv4")
+privateAddresses.addSubnet("224.0.0.0", 4, "ipv4")
+privateAddresses.addSubnet("240.0.0.0", 4, "ipv4")
+privateAddresses.addSubnet("::", 128, "ipv6")
+privateAddresses.addSubnet("::1", 128, "ipv6")
+privateAddresses.addSubnet("64:ff9b::", 96, "ipv6")
+privateAddresses.addSubnet("fc00::", 7, "ipv6")
+privateAddresses.addSubnet("fe80::", 10, "ipv6")
 
 export function isPrivateAddress(address: string): boolean {
-  const family = isIP(address);
-  if (family === 0) throw new Error(`${address} is not an IP address`);
-  return privateAddresses.check(address, family === 4 ? "ipv4" : "ipv6");
+  const family = isIP(address)
+  if (family === 0) throw new Error(`${address} is not an IP address`)
+  return privateAddresses.check(address, family === 4 ? "ipv4" : "ipv6")
 }
 
 export function hostMatches(host: string, pattern: string): boolean {
-  const name = host.toLowerCase().replace(/\.$/, "");
-  const rule = pattern.toLowerCase().replace(/\.$/, "");
-  if (rule.startsWith("*.")) return name.endsWith(rule.slice(1)) && name.length > rule.length - 1;
-  return name === rule;
+  const name = host.toLowerCase().replace(/\.$/, "")
+  const rule = pattern.toLowerCase().replace(/\.$/, "")
+  if (rule.startsWith("*.")) return name.endsWith(rule.slice(1)) && name.length > rule.length - 1
+  return name === rule
 }
 
 export function verifyToken(token: string, key: Buffer, nowSeconds: number): RelayClaims | null {
-  const dot = token.indexOf(".");
-  if (dot <= 0) return null;
-  const message = token.slice(0, dot);
-  const signature = Buffer.from(token.slice(dot + 1), "hex");
-  const expected = createHmac("sha256", key).update(message).digest();
-  if (signature.length !== expected.length || !timingSafeEqual(signature, expected)) return null;
-  let claims: unknown;
+  const dot = token.indexOf(".")
+  if (dot <= 0) return null
+  const message = token.slice(0, dot)
+  const signature = Buffer.from(token.slice(dot + 1), "hex")
+  const expected = createHmac("sha256", key).update(message).digest()
+  if (signature.length !== expected.length || !timingSafeEqual(signature, expected)) return null
+  let claims: unknown
   try {
-    claims = JSON.parse(Buffer.from(message, "hex").toString("utf8"));
+    claims = JSON.parse(Buffer.from(message, "hex").toString("utf8"))
   } catch {
-    return null;
+    return null
   }
-  const { run, exp, allow } = claims as Partial<RelayClaims>;
-  if (typeof run !== "string" || typeof exp !== "number" || !Array.isArray(allow)) return null;
-  if (!allow.every((host) => typeof host === "string")) return null;
-  if (nowSeconds >= exp) return null;
-  return { run, exp, allow };
+  const { run, exp, allow } = claims as Partial<RelayClaims>
+  if (typeof run !== "string" || typeof exp !== "number" || !Array.isArray(allow)) return null
+  if (!allow.every((host) => typeof host === "string")) return null
+  if (nowSeconds >= exp) return null
+  return { run, exp, allow }
 }
 
-export function decide(host: string, port: number, claims: RelayClaims, options: Pick<RelayOptions, "platformHosts" | "denyHosts">): Decision {
-  if (port !== ALLOWED_PORT) return { allowed: false, reason: `port ${port} is not ${ALLOWED_PORT}` };
-  if (options.denyHosts.some((pattern) => hostMatches(host, pattern))) return { allowed: false, reason: "operator deny list" };
-  if (options.platformHosts.some((pattern) => hostMatches(host, pattern))) return { allowed: true, rule: "platform" };
-  if (claims.allow.some((pattern) => hostMatches(host, pattern))) return { allowed: true, rule: "session" };
-  return { allowed: false, reason: "not in Network.Allow" };
+export function decide(
+  host: string,
+  port: number,
+  claims: RelayClaims,
+  options: Pick<RelayOptions, "platformHosts" | "denyHosts">,
+): Decision {
+  if (port !== ALLOWED_PORT)
+    return { allowed: false, reason: `port ${port} is not ${ALLOWED_PORT}` }
+  if (options.denyHosts.some((pattern) => hostMatches(host, pattern)))
+    return { allowed: false, reason: "operator deny list" }
+  if (options.platformHosts.some((pattern) => hostMatches(host, pattern)))
+    return { allowed: true, rule: "platform" }
+  if (claims.allow.some((pattern) => hostMatches(host, pattern)))
+    return { allowed: true, rule: "session" }
+  return { allowed: false, reason: "not in Network.Allow" }
 }
 
 export function proxyToken(header: string | undefined): string | null {
-  if (header === undefined) return null;
-  const match = /^Basic\s+([A-Za-z0-9+/=]+)$/i.exec(header.trim());
-  if (!match?.[1]) return null;
-  const decoded = Buffer.from(match[1], "base64").toString("utf8");
-  const colon = decoded.indexOf(":");
-  if (colon < 0) return null;
-  return decoded.slice(colon + 1);
+  if (header === undefined) return null
+  const match = /^Basic\s+([A-Za-z0-9+/=]+)$/i.exec(header.trim())
+  if (!match?.[1]) return null
+  const decoded = Buffer.from(match[1], "base64").toString("utf8")
+  const colon = decoded.indexOf(":")
+  if (colon < 0) return null
+  return decoded.slice(colon + 1)
 }
 
 function target(url: string | undefined): { host: string; port: number } | null {
-  const match = /^\[?([^\]]+?)\]?:(\d{1,5})$/.exec(url ?? "");
-  if (!match?.[1] || !match[2]) return null;
-  return { host: match[1], port: Number(match[2]) };
+  const match = /^\[?([^\]]+?)\]?:(\d{1,5})$/.exec(url ?? "")
+  if (!match?.[1] || !match[2]) return null
+  return { host: match[1], port: Number(match[2]) }
 }
 
 function refuse(socket: Socket, status: string, headers: string[] = []): void {
-  socket.end([`HTTP/1.1 ${status}`, ...headers, "Content-Length: 0", "", ""].join("\r\n"));
+  socket.end([`HTTP/1.1 ${status}`, ...headers, "Content-Length: 0", "", ""].join("\r\n"))
 }
 
 interface RelayState {
-  options: RelayOptions;
-  perRun: Map<string, number>;
-  sockets: Set<Socket>;
+  options: RelayOptions
+  perRun: Map<string, number>
+  sockets: Set<Socket>
 }
 
 function track(state: RelayState, socket: Socket): void {
-  state.sockets.add(socket);
-  socket.setTimeout(state.options.idleTimeoutMs, () => socket.destroy());
-  socket.on("close", () => state.sockets.delete(socket));
+  state.sockets.add(socket)
+  socket.setTimeout(state.options.idleTimeoutMs, () => socket.destroy())
+  socket.on("close", () => state.sockets.delete(socket))
 }
 
 function admit(state: RelayState, run: string, client: Socket): boolean {
-  const open = state.perRun.get(run) ?? 0;
-  if (open >= state.options.maxTunnelsPerRun) return false;
-  state.perRun.set(run, open + 1);
+  const open = state.perRun.get(run) ?? 0
+  if (open >= state.options.maxTunnelsPerRun) return false
+  state.perRun.set(run, open + 1)
   client.once("close", () => {
-    const remaining = (state.perRun.get(run) ?? 1) - 1;
-    if (remaining > 0) state.perRun.set(run, remaining);
-    else state.perRun.delete(run);
-  });
-  return true;
+    const remaining = (state.perRun.get(run) ?? 1) - 1
+    if (remaining > 0) state.perRun.set(run, remaining)
+    else state.perRun.delete(run)
+  })
+  return true
 }
 
 function tunnel(request: IncomingMessage, client: Socket, head: Buffer, state: RelayState): void {
-  const { options } = state;
-  client.on("error", () => client.destroy());
-  track(state, client);
-  const destination = target(request.url);
+  const { options } = state
+  client.on("error", () => client.destroy())
+  track(state, client)
+  const destination = target(request.url)
   if (!destination) {
-    refuse(client, "400 Bad Request");
-    return;
+    refuse(client, "400 Bad Request")
+    return
   }
-  const token = proxyToken(request.headers["proxy-authorization"]);
-  const claims = token === null ? null : verifyToken(token, options.signingKey, Math.floor(options.now() / 1000));
+  const token = proxyToken(request.headers["proxy-authorization"])
+  const claims =
+    token === null ? null : verifyToken(token, options.signingKey, Math.floor(options.now() / 1000))
   if (!claims) {
-    options.log({ event: "connect", host: destination.host, port: destination.port, allowed: false, reason: "proxy authentication" });
-    refuse(client, "407 Proxy Authentication Required", ['Proxy-Authenticate: Basic realm="sanchoris"']);
-    return;
+    options.log({
+      event: "connect",
+      host: destination.host,
+      port: destination.port,
+      allowed: false,
+      reason: "proxy authentication",
+    })
+    refuse(client, "407 Proxy Authentication Required", [
+      'Proxy-Authenticate: Basic realm="sanchoris"',
+    ])
+    return
   }
-  const decision = decide(destination.host, destination.port, claims, options);
-  const entry = { event: "connect", run: claims.run, host: destination.host, port: destination.port };
+  const decision = decide(destination.host, destination.port, claims, options)
+  const entry = {
+    event: "connect",
+    run: claims.run,
+    host: destination.host,
+    port: destination.port,
+  }
   if (!decision.allowed) {
-    options.log({ ...entry, allowed: false, reason: decision.reason });
-    refuse(client, "403 Forbidden");
-    return;
+    options.log({ ...entry, allowed: false, reason: decision.reason })
+    refuse(client, "403 Forbidden")
+    return
   }
   if (!admit(state, claims.run, client)) {
-    options.log({ ...entry, allowed: false, reason: `the run has ${options.maxTunnelsPerRun} open tunnels` });
-    refuse(client, "429 Too Many Requests");
-    return;
+    options.log({
+      ...entry,
+      allowed: false,
+      reason: `the run has ${options.maxTunnelsPerRun} open tunnels`,
+    })
+    refuse(client, "429 Too Many Requests")
+    return
   }
   options.resolve(destination.host).then(
     (address) => {
-      if (client.destroyed) return;
+      if (client.destroyed) return
       if (isPrivateAddress(address)) {
-        options.log({ ...entry, address, allowed: false, reason: "private address" });
-        refuse(client, "403 Forbidden");
-        return;
+        options.log({ ...entry, address, allowed: false, reason: "private address" })
+        refuse(client, "403 Forbidden")
+        return
       }
-      const upstream = options.connect(destination.port, address);
-      track(state, upstream);
-      let established = false;
+      const upstream = options.connect(destination.port, address)
+      track(state, upstream)
+      let established = false
       upstream.on("connect", () => {
-        established = true;
-        options.log({ ...entry, address, allowed: true, rule: decision.rule });
-        client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-        if (head.length > 0) upstream.write(head);
-        upstream.pipe(client);
-        client.pipe(upstream);
-      });
+        established = true
+        options.log({ ...entry, address, allowed: true, rule: decision.rule })
+        client.write("HTTP/1.1 200 Connection Established\r\n\r\n")
+        if (head.length > 0) upstream.write(head)
+        upstream.pipe(client)
+        client.pipe(upstream)
+      })
       upstream.on("error", (error) => {
-        options.log({ ...entry, address, allowed: true, error: error.message });
-        if (!established) refuse(client, "502 Bad Gateway");
-        else client.destroy();
-      });
+        options.log({ ...entry, address, allowed: true, error: error.message })
+        if (!established) refuse(client, "502 Bad Gateway")
+        else client.destroy()
+      })
       upstream.on("close", () => {
-        if (established) client.destroy();
-      });
-      client.on("close", () => upstream.destroy());
+        if (established) client.destroy()
+      })
+      client.on("close", () => upstream.destroy())
     },
     (error: Error) => {
-      options.log({ ...entry, allowed: true, error: error.message });
-      refuse(client, "502 Bad Gateway");
+      options.log({ ...entry, allowed: true, error: error.message })
+      refuse(client, "502 Bad Gateway")
     },
-  );
+  )
 }
 
 export function createRelay(options: RelayOptions): Relay {
-  const state: RelayState = { options, perRun: new Map(), sockets: new Set() };
+  const state: RelayState = { options, perRun: new Map(), sockets: new Set() }
   const server = createServer((_request, response) => {
-    response.writeHead(405, { Allow: "CONNECT", "Content-Length": "0" });
-    response.end();
-  });
-  server.maxConnections = options.maxConnections;
-  server.on("connect", (request: IncomingMessage, client: Socket, head: Buffer) => tunnel(request, client, head, state));
-  server.on("error", (error) => options.log({ event: "server_error", error: error.message }));
-  server.on("drop", (data) => options.log({ event: "dropped", reason: "maxConnections", remoteAddress: data?.remoteAddress ?? null }));
+    response.writeHead(405, { Allow: "CONNECT", "Content-Length": "0" })
+    response.end()
+  })
+  server.maxConnections = options.maxConnections
+  server.on("connect", (request: IncomingMessage, client: Socket, head: Buffer) =>
+    tunnel(request, client, head, state),
+  )
+  server.on("error", (error) => options.log({ event: "server_error", error: error.message }))
+  server.on("drop", (data) =>
+    options.log({
+      event: "dropped",
+      reason: "maxConnections",
+      remoteAddress: data?.remoteAddress ?? null,
+    }),
+  )
   return {
     server,
     tunnels: (run) => state.perRun.get(run) ?? 0,
     shutdown: () =>
       new Promise<void>((resolve) => {
-        server.close(() => resolve());
-        server.closeAllConnections();
-        for (const socket of state.sockets) socket.destroy();
+        server.close(() => resolve())
+        server.closeAllConnections()
+        for (const socket of state.sockets) socket.destroy()
       }),
-  };
+  }
 }
 
 export async function resolveHost(host: string): Promise<string> {
-  if (isIP(host) !== 0) return host;
-  const { address } = await lookup(host, { family: 4 });
-  return address;
+  if (isIP(host) !== 0) return host
+  const { address } = await lookup(host, { family: 4 })
+  return address
 }
 
 export function hostList(value: string): string[] {
   return value
     .split(",")
     .map((host) => host.trim())
-    .filter((host) => host !== "");
+    .filter((host) => host !== "")
 }

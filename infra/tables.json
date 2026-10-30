@@ -67,7 +67,9 @@
   ],
   "streamFilters": {
     "MainTable": [
-      { "Pattern": "{\"eventName\":[\"INSERT\"],\"dynamodb\":{\"NewImage\":{\"kind\":{\"S\":[\"msg\"]}}}}" }
+      {
+        "Pattern": "{\"eventName\":[\"INSERT\"],\"dynamodb\":{\"NewImage\":{\"kind\":{\"S\":[\"msg\"]}}}}"
+      }
     ]
   },
   "appendOnlyDeniedActions": [

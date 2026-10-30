@@ -1,34 +1,46 @@
-import { useNavigate } from '@tanstack/react-router';
-import { Ban, CircleCheck, CircleX, Clock } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import type { TenantState } from '../graphql/generated/graphql.ts';
-import { type MessageKey, t } from '../i18n/index.ts';
-import { State } from './ui.tsx';
+import { useNavigate } from "@tanstack/react-router"
+import { Ban, CircleCheck, CircleX, Clock } from "lucide-react"
+import { useEffect, useState } from "react"
+import type { TenantState } from "../graphql/generated/graphql.ts"
+import { type MessageKey, t } from "../i18n/index.ts"
+import { State } from "./ui.tsx"
 
-export type CheckoutOutcome = 'success' | 'canceled';
+export type CheckoutOutcome = "success" | "canceled"
 
 export function checkoutSearch(search: Record<string, unknown>): { checkout?: CheckoutOutcome } {
-  return search.checkout === 'success' || search.checkout === 'canceled' ? { checkout: search.checkout } : {};
+  return search.checkout === "success" || search.checkout === "canceled"
+    ? { checkout: search.checkout }
+    : {}
 }
 
-export function useCheckoutOutcome(checkout: CheckoutOutcome | undefined): CheckoutOutcome | undefined {
-  const navigate = useNavigate();
-  const [returned] = useState(checkout);
+export function useCheckoutOutcome(
+  checkout: CheckoutOutcome | undefined,
+): CheckoutOutcome | undefined {
+  const navigate = useNavigate()
+  const [returned] = useState(checkout)
   useEffect(() => {
     if (checkout) {
-      void navigate({ to: '.', search: {}, replace: true });
+      void navigate({ to: ".", search: {}, replace: true })
     }
-  }, [checkout, navigate]);
-  return returned;
+  }, [checkout, navigate])
+  return returned
 }
 
-export function CheckoutNote({ outcome, success, canceled }: { outcome?: CheckoutOutcome; success: MessageKey; canceled: MessageKey }) {
+export function CheckoutNote({
+  outcome,
+  success,
+  canceled,
+}: {
+  outcome?: CheckoutOutcome
+  success: MessageKey
+  canceled: MessageKey
+}) {
   if (!outcome) {
-    return null;
+    return null
   }
   return (
     <div className="mb-3.5">
-      {outcome === 'success' ? (
+      {outcome === "success" ? (
         <State tone="ok" icon={CircleCheck} wrap>
           {t(success)}
         </State>
@@ -38,29 +50,35 @@ export function CheckoutNote({ outcome, success, canceled }: { outcome?: Checkou
         </State>
       )}
     </div>
-  );
+  )
 }
 
 const reasons: Record<string, MessageKey> = {
-  payment_failed: 'tenantState.paymentFailed',
-};
+  payment_failed: "tenantState.paymentFailed",
+}
 
-export function TenantStateNote({ tenant }: { tenant: { state: TenantState; suspendedReason?: string | null } }) {
-  if (tenant.state !== 'SUSPENDED') {
-    return null;
+export function TenantStateNote({
+  tenant,
+}: {
+  tenant: { state: TenantState; suspendedReason?: string | null }
+}) {
+  if (tenant.state !== "SUSPENDED") {
+    return null
   }
-  const reason = tenant.suspendedReason ? reasons[tenant.suspendedReason] : undefined;
+  const reason = tenant.suspendedReason ? reasons[tenant.suspendedReason] : undefined
   return (
     <div className="mb-3.5">
-      {tenant.suspendedReason === 'payment_pending' ? (
+      {tenant.suspendedReason === "payment_pending" ? (
         <State tone="wait" icon={Clock} wrap>
-          {t('tenantState.paymentPending')}
+          {t("tenantState.paymentPending")}
         </State>
       ) : (
         <State tone="err" icon={Ban} wrap>
-          {reason ? t(reason) : t('tenantState.suspended', { reason: tenant.suspendedReason ?? '' })}
+          {reason
+            ? t(reason)
+            : t("tenantState.suspended", { reason: tenant.suspendedReason ?? "" })}
         </State>
       )}
     </div>
-  );
+  )
 }

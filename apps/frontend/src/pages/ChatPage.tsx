@@ -1,67 +1,96 @@
-import { Link, useNavigate, useParams } from '@tanstack/react-router';
-import clsx from 'clsx';
-import { ChevronDown, CircleDot, Plus } from 'lucide-react';
-import { type KeyboardEvent, useState } from 'react';
-import { Button } from '../components/Button.tsx';
-import { Menu } from '../components/Menu.tsx';
-import { Page } from '../components/Shell.tsx';
-import { TaskState } from '../components/status.tsx';
-import { ActionError, Chip, Dim, ErrorNote, Icon, Id, Kbd, Lk, Row, Section, Skeleton, Sub, Table, Th, Title } from '../components/ui.tsx';
-import { type ChatQuery, ChatDocument, SendChatMessageDocument } from '../graphql/generated/graphql.ts';
-import { locale, t, tx } from '../i18n/index.ts';
-import { clock } from '../lib/format.ts';
-import { useKeys } from '../lib/keys.ts';
-import { useAction } from '../lib/mutation.ts';
-import { IDLE_POLL, LIVE_POLL, useData } from '../lib/query.ts';
-import { isActive, skillStep } from '../lib/taskText.ts';
-import { useTenant } from '../lib/tenant.tsx';
+import { Link, useNavigate, useParams } from "@tanstack/react-router"
+import clsx from "clsx"
+import { ChevronDown, CircleDot, Plus } from "lucide-react"
+import { type KeyboardEvent, useState } from "react"
+import { Button } from "../components/Button.tsx"
+import { Menu } from "../components/Menu.tsx"
+import { Page } from "../components/Shell.tsx"
+import { TaskState } from "../components/status.tsx"
+import {
+  ActionError,
+  Chip,
+  Dim,
+  ErrorNote,
+  Icon,
+  Id,
+  Kbd,
+  Lk,
+  Row,
+  Section,
+  Skeleton,
+  Sub,
+  Table,
+  Th,
+  Title,
+} from "../components/ui.tsx"
+import {
+  type ChatQuery,
+  ChatDocument,
+  SendChatMessageDocument,
+} from "../graphql/generated/graphql.ts"
+import { locale, t, tx } from "../i18n/index.ts"
+import { clock } from "../lib/format.ts"
+import { useKeys } from "../lib/keys.ts"
+import { useAction } from "../lib/mutation.ts"
+import { IDLE_POLL, LIVE_POLL, useData } from "../lib/query.ts"
+import { isActive, skillStep } from "../lib/taskText.ts"
+import { useTenant } from "../lib/tenant.tsx"
 
-type Tenant = NonNullable<ChatQuery['tenant']>;
+type Tenant = NonNullable<ChatQuery["tenant"]>
 
-const andList = new Intl.ListFormat(locale, { type: 'conjunction' });
-type ChatTask = NonNullable<Tenant['task']>;
+const andList = new Intl.ListFormat(locale, { type: "conjunction" })
+type ChatTask = NonNullable<Tenant["task"]>
 
 function shortRepo(repository: string): string {
-  return repository.split('/').pop() ?? repository;
+  return repository.split("/").pop() ?? repository
 }
 
 function scopeLabel(scope: string): string {
-  return scope === 'all' ? t('chat.allProjects') : t('chat.project', { name: scope });
+  return scope === "all" ? t("chat.allProjects") : t("chat.project", { name: scope })
 }
 
 function scopeShort(scope: string): string {
-  return scope === 'all' ? t('chat.allProjects') : scope;
+  return scope === "all" ? t("chat.allProjects") : scope
 }
 
 function scopes(tenant: Tenant) {
   return tenant.triggers
-    .filter((trigger) => trigger.state === 'ENABLED' && trigger.match.source === 'WEB' && trigger.match.chatScope)
+    .filter(
+      (trigger) =>
+        trigger.state === "ENABLED" && trigger.match.source === "WEB" && trigger.match.chatScope,
+    )
     .map((trigger) => {
-      const scope = trigger.match.chatScope ?? '';
-      const repos = trigger.session.repositories;
+      const scope = trigger.match.chatScope ?? ""
+      const repos = trigger.session.repositories
       return {
         value: scope,
         label: scopeLabel(scope),
         detail:
-          scope === 'all'
-            ? t('chat.scopeAllDetail', { repos: repos.join(', ') })
-            : t('chat.scopeProjectDetail', { repos: andList.format(repos.map(shortRepo)) }),
-      };
-    });
+          scope === "all"
+            ? t("chat.scopeAllDetail", { repos: repos.join(", ") })
+            : t("chat.scopeProjectDetail", { repos: andList.format(repos.map(shortRepo)) }),
+      }
+    })
 }
 
-function Composer({ disabled, onSend }: { disabled: boolean; onSend: (text: string) => Promise<boolean> }) {
-  const [text, setText] = useState('');
+function Composer({
+  disabled,
+  onSend,
+}: {
+  disabled: boolean
+  onSend: (text: string) => Promise<boolean>
+}) {
+  const [text, setText] = useState("")
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault()
       if (text.trim() && !disabled) {
         void onSend(text.trim()).then((sent) => {
           if (sent) {
-            setText('');
+            setText("")
           }
-        });
+        })
       }
     }
   }
@@ -74,47 +103,52 @@ function Composer({ disabled, onSend }: { disabled: boolean; onSend: (text: stri
         disabled={disabled}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={onKeyDown}
-        placeholder={t('chat.placeholder')}
-        aria-label={t('chat.placeholder')}
+        placeholder={t("chat.placeholder")}
+        aria-label={t("chat.placeholder")}
         className="min-h-5 flex-1 resize-none bg-transparent outline-none placeholder:text-faint"
       />
-      <Kbd>{t('chat.enterSend')}</Kbd>
+      <Kbd>{t("chat.enterSend")}</Kbd>
     </div>
-  );
+  )
 }
 
 function Thread({ task, tenant }: { task: ChatTask; tenant: Tenant }) {
-  const [send, { error }] = useAction(SendChatMessageDocument, { refetchQueries: [ChatDocument] });
-  const repos = task.session.repositories.join(', ');
-  const run = task.runs[task.runs.length - 1];
-  const requester = task.requester?.member?.user.name;
+  const [send, { error }] = useAction(SendChatMessageDocument, { refetchQueries: [ChatDocument] })
+  const repos = task.session.repositories.join(", ")
+  const run = task.runs[task.runs.length - 1]
+  const requester = task.requester?.member?.user.name
   return (
     <>
       <Title>{task.title}</Title>
       <Sub>
-        <TaskState status={task.status} waitReason={task.waitReason} />{' '}
+        <TaskState status={task.status} waitReason={task.waitReason} />{" "}
         <span className="ml-2">
-          {tx('chat.threadLine', {
+          {tx("chat.threadLine", {
             trigger: <Lk to="/triggers">{task.trigger.name}</Lk>,
-            scope: task.channel ? scopeLabel(task.channel.scope).toLowerCase() : '',
+            scope: task.channel ? scopeLabel(task.channel.scope).toLowerCase() : "",
             session: <span className="font-mono text-sm">{task.session.name}</span>,
             repos: <span className="font-mono text-sm">{repos}</span>,
-            run: run ? t('run.title', { n: run.number }) : '—',
+            run: run ? t("run.title", { n: run.number }) : "—",
           })}
-          {requester ? ` · ${t(task.channel?.kind === 'SLACK' ? 'chat.startedBySlack' : 'chat.startedByWeb', { name: requester })}` : null}
+          {requester
+            ? ` · ${t(task.channel?.kind === "SLACK" ? "chat.startedBySlack" : "chat.startedByWeb", { name: requester })}`
+            : null}
         </span>
       </Sub>
       {task.messages.map((message) => (
         <div key={message.id} className="border-b border-line py-2.5">
           <div className="mb-0.5 text-sm font-semibold">
-            {message.authorKind === 'AGENT' ? 'sanchoris' : (message.member?.user.name ?? '')}
+            {message.authorKind === "AGENT" ? "sanchoris" : (message.member?.user.name ?? "")}
             <span className="ml-1.5 font-normal text-faint">{clock(message.at)}</span>
           </div>
           <div className="whitespace-pre-wrap">{message.text}</div>
           {message.issues.map((issue) => {
-            const blockers = issue.task?.blockedBy ?? [];
+            const blockers = issue.task?.blockedBy ?? []
             return (
-              <div key={`${issue.repository}#${issue.number}`} className="mt-1.5 grid grid-cols-[18px_auto_1fr_auto] items-center gap-2 border-t border-line py-1.5">
+              <div
+                key={`${issue.repository}#${issue.number}`}
+                className="mt-1.5 grid grid-cols-[18px_auto_1fr_auto] items-center gap-2 border-t border-line py-1.5"
+              >
                 <Icon icon={CircleDot} />
                 <span>
                   <Chip>{shortRepo(issue.repository)}</Chip>
@@ -128,42 +162,58 @@ function Thread({ task, tenant }: { task: ChatTask; tenant: Tenant }) {
                 )}
                 <Id>
                   #{issue.number}
-                  {blockers.length > 0 ? ` · ${t('tasks.blockedBy', { ids: blockers.map((blocker) => `#${blocker.issue?.number ?? ''}`).join(', ') })}` : null}
+                  {blockers.length > 0
+                    ? ` · ${t("tasks.blockedBy", { ids: blockers.map((blocker) => `#${blocker.issue?.number ?? ""}`).join(", ") })}`
+                    : null}
                 </Id>
               </div>
-            );
+            )
           })}
         </div>
       ))}
       <Composer
-        disabled={task.status === 'SUCCEEDED' && task.channel?.kind === 'SLACK'}
-        onSend={(text) => send({ input: { tenantId: tenant.id, taskId: task.id, text } }).then(Boolean)}
+        disabled={task.status === "SUCCEEDED" && task.channel?.kind === "SLACK"}
+        onSend={(text) =>
+          send({ input: { tenantId: tenant.id, taskId: task.id, text } }).then(Boolean)
+        }
       />
       <ActionError error={error} className="mt-2" />
     </>
-  );
+  )
 }
 
-function NewChat({ tenant, scope, onPickScope }: { tenant: Tenant; scope?: string; onPickScope: () => void }) {
-  const navigate = useNavigate();
-  const [send, { error }] = useAction(SendChatMessageDocument, { refetchQueries: [ChatDocument] });
-  const options = scopes(tenant);
-  const option = options.find((item) => item.value === scope);
+function NewChat({
+  tenant,
+  scope,
+  onPickScope,
+}: {
+  tenant: Tenant
+  scope?: string
+  onPickScope: () => void
+}) {
+  const navigate = useNavigate()
+  const [send, { error }] = useAction(SendChatMessageDocument, { refetchQueries: [ChatDocument] })
+  const options = scopes(tenant)
+  const option = options.find((item) => item.value === scope)
   return (
     <>
-      <Title>{t('chat.newChat')}</Title>
+      <Title>{t("chat.newChat")}</Title>
       <Sub>
         {option ? (
           <>
-            {t('chat.scopeIs', { scope: option.label })} · {option.detail}
+            {t("chat.scopeIs", { scope: option.label })} · {option.detail}
           </>
         ) : options.length === 0 ? (
           <>
-            {t('chat.noScopes')} <Lk to="/triggers">{t('nav.triggers')}</Lk>
+            {t("chat.noScopes")} <Lk to="/triggers">{t("nav.triggers")}</Lk>
           </>
         ) : (
-          <button type="button" className="underline decoration-line2 underline-offset-[3px]" onClick={onPickScope}>
-            {t('chat.pickScope')}
+          <button
+            type="button"
+            className="underline decoration-line2 underline-offset-[3px]"
+            onClick={onPickScope}
+          >
+            {t("chat.pickScope")}
           </button>
         )}
       </Sub>
@@ -171,98 +221,118 @@ function NewChat({ tenant, scope, onPickScope }: { tenant: Tenant; scope?: strin
         disabled={!scope}
         onSend={(text) =>
           send({ input: { tenantId: tenant.id, scope, text } }).then((result) => {
-            const task = result?.sendChatMessage.task;
+            const task = result?.sendChatMessage.task
             if (task) {
-              void navigate({ to: '/chat/$task', params: { task: task.id } });
+              void navigate({ to: "/chat/$task", params: { task: task.id } })
             }
-            return !!result;
+            return !!result
           })
         }
       />
       <ActionError error={error} className="mt-2" />
     </>
-  );
+  )
 }
 
 function FiledTasks({ task }: { task: ChatTask }) {
   return (
     <>
       <Section count={task.filedTasks.length} first>
-        {t('chat.issuesFiled')}
+        {t("chat.issuesFiled")}
       </Section>
-      <Dim className="mb-1.5">{t('chat.issuesFiledDetail')}</Dim>
-      {task.filedTasks.length === 0 ? <Dim>{t('chat.noIssues')}</Dim> : null}
+      <Dim className="mb-1.5">{t("chat.issuesFiledDetail")}</Dim>
+      {task.filedTasks.length === 0 ? <Dim>{t("chat.noIssues")}</Dim> : null}
       {task.filedTasks.length > 0 ? (
         <Table>
           <Th cols="96px 1fr">
-            <span>{t('col.state')}</span>
-            <span>{t('col.task')}</span>
+            <span>{t("col.state")}</span>
+            <span>{t("col.task")}</span>
           </Th>
           {task.filedTasks.map((filed) => {
-            const run = filed.requiredSkills[0]?.latestRun;
+            const run = filed.requiredSkills[0]?.latestRun
             const details = [
-              filed.parent?.issue ? t('triggers.childOf', { id: `#${filed.parent.issue.number}` }) : filed.trigger.name,
+              filed.parent?.issue
+                ? t("triggers.childOf", { id: `#${filed.parent.issue.number}` })
+                : filed.trigger.name,
               filed.blockedBy.length > 0
-                ? t('tasks.blockedBy', { ids: filed.blockedBy.map((blocker) => `#${blocker.issue?.number ?? ''}`).join(', ') })
+                ? t("tasks.blockedBy", {
+                    ids: filed.blockedBy
+                      .map((blocker) => `#${blocker.issue?.number ?? ""}`)
+                      .join(", "),
+                  })
                 : run
                   ? skillStep(run)
                   : null,
-            ].filter(Boolean);
+            ].filter(Boolean)
             return (
               <Row key={filed.id} cols="96px 1fr" tall>
                 <TaskState status={filed.status} waitReason={filed.waitReason} />
                 <div>
-                  <Lk to="/tasks/$task" params={{ task: filed.id }} className="font-medium no-underline">
+                  <Lk
+                    to="/tasks/$task"
+                    params={{ task: filed.id }}
+                    className="font-medium no-underline"
+                  >
                     {filed.title}
-                  </Lk>{' '}
+                  </Lk>{" "}
                   {filed.issue ? <Id>#{filed.issue.number}</Id> : null}
-                  <Dim>{details.join(' · ')}</Dim>
+                  <Dim>{details.join(" · ")}</Dim>
                 </div>
               </Row>
-            );
+            )
           })}
         </Table>
       ) : null}
     </>
-  );
+  )
 }
 
 export function ChatPage() {
-  const params = useParams({ strict: false });
-  const taskId = params.task;
-  const { slug } = useTenant();
-  const navigate = useNavigate();
+  const params = useParams({ strict: false })
+  const taskId = params.task
+  const { slug } = useTenant()
+  const navigate = useNavigate()
   const { data, error, refetch } = useData(
     ChatDocument,
-    { tenant: slug, task: taskId ?? '', withTask: !!taskId },
-    { poll: (result) => (!taskId ? IDLE_POLL : result.tenant?.task && isActive(result.tenant.task.status) ? LIVE_POLL : 0) },
-  );
-  const [scope, setScope] = useState<string>();
-  const [scopeOpen, setScopeOpen] = useState(!taskId);
-  const tenant = data?.tenant;
-  const task = tenant?.task;
+    { tenant: slug, task: taskId ?? "", withTask: !!taskId },
+    {
+      poll: (result) =>
+        !taskId
+          ? IDLE_POLL
+          : result.tenant?.task && isActive(result.tenant.task.status)
+            ? LIVE_POLL
+            : 0,
+    },
+  )
+  const [scope, setScope] = useState<string>()
+  const [scopeOpen, setScopeOpen] = useState(!taskId)
+  const tenant = data?.tenant
+  const task = tenant?.task
 
   function newChat() {
-    setScope(undefined);
-    setScopeOpen(true);
-    void navigate({ to: '/chat' });
+    setScope(undefined)
+    setScopeOpen(true)
+    void navigate({ to: "/chat" })
   }
 
-  useKeys({ c: newChat });
+  useKeys({ c: newChat })
 
   return (
     <Page
-      crumbs={[{ label: t('nav.chat'), to: '/chat' }, { label: taskId ? (task?.title ?? '…') : t('chat.newChat') }]}
+      crumbs={[
+        { label: t("nav.chat"), to: "/chat" },
+        { label: taskId ? (task?.title ?? "…") : t("chat.newChat") },
+      ]}
       actions={
         <>
           <Button variant="primary" icon={Plus} kbd="c" compact onPress={newChat}>
-            {t('common.newChat')}
+            {t("common.newChat")}
           </Button>
           {tenant ? (
             <Menu
               icon={ChevronDown}
-              label={t('chat.scope')}
-              title={t('chat.startIn')}
+              label={t("chat.scope")}
+              title={t("chat.startIn")}
               align="right"
               compact
               open={scopeOpen && scopes(tenant).length > 0}
@@ -270,9 +340,9 @@ export function ChatPage() {
               value={scope}
               options={scopes(tenant)}
               onChange={(value) => {
-                setScope(value);
+                setScope(value)
                 if (taskId) {
-                  void navigate({ to: '/chat' });
+                  void navigate({ to: "/chat" })
                 }
               }}
             />
@@ -280,8 +350,8 @@ export function ChatPage() {
         </>
       }
       keys={[
-        ['↵', 'chat.send'],
-        ['⇧↵', 'chat.newLine'],
+        ["↵", "chat.send"],
+        ["⇧↵", "chat.newLine"],
       ]}
     >
       {error ? (
@@ -296,25 +366,30 @@ export function ChatPage() {
         <div className="grid min-h-0 flex-1 grid-cols-1 max-lg:content-start max-lg:overflow-auto lg:grid-cols-[260px_1fr_340px]">
           <div className="min-w-0 border-line px-4 py-[18px] max-lg:order-last max-lg:border-t md:px-5 lg:min-h-0 lg:overflow-auto">
             <Section count={tenant.chats.length} first>
-              {t('chat.threads')}
+              {t("chat.threads")}
             </Section>
-            {tenant.chats.length === 0 ? <Dim>{t('chat.noThreads')}</Dim> : null}
+            {tenant.chats.length === 0 ? <Dim>{t("chat.noThreads")}</Dim> : null}
             {tenant.chats.map((chat) => (
               <Link
                 key={chat.id}
                 to="/chat/$task"
                 params={{ task: chat.id }}
-                className={clsx('block rounded-ui px-2 py-[7px] hover:bg-hover', chat.id === taskId && 'bg-hover')}
+                className={clsx(
+                  "block rounded-ui px-2 py-[7px] hover:bg-hover",
+                  chat.id === taskId && "bg-hover",
+                )}
               >
                 <span className="font-medium">{chat.title}</span>
                 <small className="block text-xs text-muted">
                   {[
                     chat.channel ? scopeShort(chat.channel.scope) : null,
-                    chat.channel?.kind === 'SLACK' ? t('chat.slack') : t('chat.web'),
-                    t(chat.filedTasks.length === 1 ? 'chat.issueCountOne' : 'chat.issuesCount', { n: chat.filedTasks.length }),
+                    chat.channel?.kind === "SLACK" ? t("chat.slack") : t("chat.web"),
+                    t(chat.filedTasks.length === 1 ? "chat.issueCountOne" : "chat.issuesCount", {
+                      n: chat.filedTasks.length,
+                    }),
                   ]
                     .filter(Boolean)
-                    .join(' · ')}
+                    .join(" · ")}
                 </small>
               </Link>
             ))}
@@ -324,17 +399,17 @@ export function ChatPage() {
               task ? (
                 <Thread task={task} tenant={tenant} />
               ) : (
-                <Dim>{t('chat.notFound')}</Dim>
+                <Dim>{t("chat.notFound")}</Dim>
               )
             ) : (
               <NewChat tenant={tenant} scope={scope} onPickScope={() => setScopeOpen(true)} />
             )}
           </div>
           <div className="min-w-0 border-line px-4 py-[18px] max-lg:border-t md:px-5 lg:min-h-0 lg:overflow-auto lg:border-l">
-            {task ? <FiledTasks task={task} /> : <Dim>{t('chat.filedHint')}</Dim>}
+            {task ? <FiledTasks task={task} /> : <Dim>{t("chat.filedHint")}</Dim>}
           </div>
         </div>
       )}
     </Page>
-  );
+  )
 }

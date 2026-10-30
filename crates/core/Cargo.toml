@@ -25,11 +25,31 @@ hmac = "0.13"
 sha2 = "0.11"
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process"] }
-aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio", "credentials-process", "sso"] }
-aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
-aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
-aws-sdk-sqs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
-aws-sdk-scheduler = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-config = { version = "1", default-features = false, features = [
+  "behavior-version-latest",
+  "default-https-client",
+  "rt-tokio",
+  "credentials-process",
+  "sso",
+] }
+aws-sdk-dynamodb = { version = "1", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+] }
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+  "sigv4a",
+  "http-1x",
+  "default-https-client",
+  "rt-tokio",
+] }
+aws-sdk-sqs = { version = "1", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+] }
+aws-sdk-scheduler = { version = "1", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+] }
 
 [dev-dependencies]
 sanchoris-core = { path = ".", features = ["test-support"] }
