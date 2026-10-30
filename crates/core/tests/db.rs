@@ -56,6 +56,8 @@ async fn create_task(
                 parent_task_id: None,
                 channel: None,
                 requested_by_member_id: None,
+                requested_by_github_user_id: None,
+                requested_by_github_login: None,
                 blocked_by,
             },
         )
@@ -532,6 +534,8 @@ async fn large_documents_are_stored_in_the_blob_store() {
             parent_task_id: None,
             channel: None,
             requested_by_member_id: None,
+            requested_by_github_user_id: None,
+            requested_by_github_login: None,
             blocked_by: &[],
         },
     )

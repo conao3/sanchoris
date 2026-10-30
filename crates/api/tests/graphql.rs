@@ -1522,7 +1522,22 @@ async fn a_member_resolves_a_skill_approval_from_the_task_page() {
     assert_eq!(code, "FORBIDDEN");
     w.dynamo
         .modify::<Task>(&keys::task_key(tenant, task_id), |task| {
-            task.requested_by_member_id = Some(member_id)
+            task.requested_by_github_user_id = Some(2002);
+            task.requested_by_github_login = Some("sota-dev".into());
+        })
+        .await;
+    let (code, _) = w
+        .error(
+            owner,
+            "ResolveApproval",
+            json!({ "taskId": task_id, "approved": true }),
+        )
+        .await;
+    assert_eq!(code, "FORBIDDEN");
+    w.dynamo
+        .modify::<Task>(&keys::task_key(tenant, task_id), |task| {
+            task.requested_by_github_user_id = Some(1001);
+            task.requested_by_github_login = Some("mika-dev".into());
         })
         .await;
     let resolved = w

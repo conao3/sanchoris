@@ -11,8 +11,8 @@ use sanchoris_core::db::{
 use sanchoris_core::github::CHECK_RUN_COMPLETED;
 use sanchoris_core::item::{Entity, Key};
 use sanchoris_core::items::{
-    CheckWait, CheckWaitMarker, Config, Guard, InboundEvent, Membership, Pending, Project,
-    Repository, SessionDef, SkillDef, Task, TaskName, Trigger, TriggerRate, github_task_name, uniq,
+    CheckWait, CheckWaitMarker, Config, InboundEvent, Pending, Project, Repository, SessionDef,
+    SkillDef, Task, TaskName, Trigger, TriggerRate, github_task_name,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
@@ -492,10 +492,12 @@ struct Placement {
     blocked_by: Vec<Uuid>,
     channel: Option<Value>,
     requested_by_member_id: Option<Uuid>,
+    requested_by_github_user_id: Option<i64>,
+    requested_by_github_login: Option<String>,
 }
 
 enum Plan {
-    Create(Placement),
+    Create(Box<Placement>),
     Done(TriggerEventOutcome),
 }
 
@@ -521,7 +523,7 @@ async fn start(
         Err(error) => return Ok(discarded(format!("Instruction failed to render: {error}"))),
     };
     let placement = match place(worker, tx, inbound, trigger, &start).await? {
-        Plan::Create(placement) => placement,
+        Plan::Create(placement) => *placement,
         Plan::Done(outcome) => return Ok(outcome),
     };
     let Some((session_definition, system_prompt)) = load_session(
@@ -591,6 +593,8 @@ async fn start(
             parent_task_id: placement.parent_task_id,
             channel: placement.channel.as_ref(),
             requested_by_member_id: placement.requested_by_member_id,
+            requested_by_github_user_id: placement.requested_by_github_user_id,
+            requested_by_github_login: placement.requested_by_github_login.as_deref(),
             blocked_by: &placement.blocked_by,
         },
     )
@@ -768,7 +772,7 @@ async fn place(
         "web" | "slack" => place_chat(tx, inbound, trigger, worker.now()).await,
         SCHEDULE_SOURCE => {
             let time = detail["time"].as_str().unwrap_or(&inbound.key).to_string();
-            Ok(Plan::Create(Placement {
+            Ok(Plan::Create(Box::new(Placement {
                 name: format!("{}@{time}", trigger.name),
                 display: format!("{}@{time}", trigger.name),
                 title: format!("{} at {time}", trigger.name),
@@ -776,23 +780,14 @@ async fn place(
                 blocked_by: Vec::new(),
                 channel: None,
                 requested_by_member_id: None,
-            }))
+                requested_by_github_user_id: None,
+                requested_by_github_login: None,
+            })))
         }
         other => Ok(Plan::Done(discarded(format!(
             "unknown event source {other}"
         )))),
     }
-}
-
-async fn member_by_github_login(tx: &mut TenantTx, login: &str) -> Result<Option<Uuid>> {
-    let key = keys::uniq_key(uniq::GITHUB_LOGIN, &login.to_lowercase());
-    let Some(guard) = tx.get::<Guard>(&key).await? else {
-        return Ok(None);
-    };
-    let membership = tx
-        .get::<Membership>(&keys::membership_key(guard.target, tx.tenant_id()))
-        .await?;
-    Ok(membership.map(|m| m.member_id))
 }
 
 async fn task_by_name(worker: &Worker, tx: &TenantTx, name: &str) -> Result<Option<Uuid>> {
@@ -847,10 +842,12 @@ async fn place_github(
     let repo = detail["repository"]
         .as_str()
         .ok_or_else(|| WorkerError::Invalid("GitHub events carry detail.repository".into()))?;
-    let requester = match detail["sender"]["login"].as_str() {
-        Some(login) => member_by_github_login(tx, login).await?,
-        None => None,
-    };
+    let sender_id = detail["sender"]["id"]
+        .as_i64()
+        .ok_or_else(|| WorkerError::Invalid("GitHub events carry detail.sender.id".into()))?;
+    let sender_login = detail["sender"]["login"]
+        .as_str()
+        .ok_or_else(|| WorkerError::Invalid("GitHub events carry detail.sender.login".into()))?;
     let repository_id = detail["repository_id"]
         .as_i64()
         .ok_or_else(|| WorkerError::Invalid("GitHub events carry detail.repository_id".into()))?;
@@ -859,7 +856,7 @@ async fn place_github(
         let check = &detail["check_run"];
         let id = check["id"].as_i64().unwrap_or_default();
         let suffix = format!("@{}#{id}", check["head_sha"].as_str().unwrap_or(""));
-        return Ok(Plan::Create(Placement {
+        return Ok(Plan::Create(Box::new(Placement {
             name: github_task_name(repository_id, &suffix),
             display: format!("{repo}{suffix}"),
             title: format!(
@@ -870,8 +867,10 @@ async fn place_github(
             parent_task_id: None,
             blocked_by: Vec::new(),
             channel: Some(channel),
-            requested_by_member_id: requester,
-        }));
+            requested_by_member_id: None,
+            requested_by_github_user_id: Some(sender_id),
+            requested_by_github_login: Some(sender_login.to_string()),
+        })));
     };
     let Some(installation) = detail["installation"]["id"].as_i64() else {
         return Ok(Plan::Done(discarded(
@@ -946,15 +945,17 @@ async fn place_github(
         }
     }
     let title = detail["issue"]["title"].as_str().unwrap_or("");
-    Ok(Plan::Create(Placement {
+    Ok(Plan::Create(Box::new(Placement {
         name: github_task_name(repository_id, &format!("#{number}")),
         display: format!("{repo}#{number}"),
         title: format!("{title} ({repo}#{number})"),
         parent_task_id,
         blocked_by,
         channel: Some(channel),
-        requested_by_member_id: requester,
-    }))
+        requested_by_member_id: None,
+        requested_by_github_user_id: Some(sender_id),
+        requested_by_github_login: Some(sender_login.to_string()),
+    })))
 }
 
 async fn place_chat(
@@ -1017,7 +1018,7 @@ async fn place_chat(
             ))));
         }
     }
-    Ok(Plan::Create(Placement {
+    Ok(Plan::Create(Box::new(Placement {
         name: format!("{thread}/{}", count + 1),
         display: format!("{thread}/{}", count + 1),
         title: shorten(text),
@@ -1027,7 +1028,9 @@ async fn place_chat(
             json!({ "source": inbound.source, "thread": thread, "channel": detail.get("channel") }),
         ),
         requested_by_member_id,
-    }))
+        requested_by_github_user_id: None,
+        requested_by_github_login: None,
+    })))
 }
 
 async fn load_session(

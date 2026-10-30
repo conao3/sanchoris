@@ -19,7 +19,9 @@ use sanchoris_core::model::{AuditOrigin, TaskStatus as CoreStatus};
 use sanchoris_core::receive::{Admission, SOURCE_CHAT, SOURCE_REPLY, admit_inbound};
 use sanchoris_core::skillrun::{SkillRunError, resolve_waiting_approval};
 use sanchoris_core::store::{Index, SortKey, Update};
-use sanchoris_core::tasks::{abort_task, latest_run, load_task, snoozable, snooze, stop_run};
+use sanchoris_core::tasks::{
+    abort_task, latest_run, load_task, requester_member, snoozable, snooze, stop_run,
+};
 use sanchoris_core::tenants::{
     NewTenant, TENANT_DELETING, TenantError, create_tenant, hold_free_tenant, is_deleting,
     pending_checkout, release_free_tenant,
@@ -893,7 +895,9 @@ impl MutationRoot {
         let task_id = parse_id(&task_id)?;
         let (scope, task) = locate_task(ctx, task_id).await?;
         let (member_id, role) = scope.member()?;
-        if !role.at_least(Role::Admin) && task.requested_by_member_id != Some(member_id) {
+        if !role.at_least(Role::Admin)
+            && requester_member(&mut tx(ctx, scope.tenant_id), &task).await? != Some(member_id)
+        {
             return Err(forbidden(
                 "only an owner, an admin, or the member who requested the task can resolve its approvals",
             ));

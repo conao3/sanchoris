@@ -2,14 +2,15 @@ use crate::common;
 
 use common::{REPO, World};
 use sanchoris_core::items::{
-    ConfigRevision, HeldMessage, InboundEvent, Pending, SessionDef, SkillDef, Task, Tenant,
-    Trigger, TriggerEvent, TriggerRate,
+    ConfigRevision, Credential, HeldMessage, InboundEvent, Pending, SessionDef, SkillDef, Task,
+    Tenant, Trigger, TriggerEvent, TriggerRate,
 };
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
 use sanchoris_core::model::TaskStatus;
 use sanchoris_core::store::retry;
 use sanchoris_worker::ports::GitHubError;
+use sanchoris_worker::usage::credential_of;
 use serde_json::json;
 
 const START_TEXT: &str = "[sanchoris] Trigger labeled-issue started this task: Fix flaky checkout test (acme/shop-web#35).\n\
@@ -141,7 +142,9 @@ async fn labeled_issue_starts_a_running_task_with_the_documented_message() {
     let task = world.task("acme/shop-web#35").await;
     assert_eq!(task.status, "RUNNING");
     assert_eq!(task.title, "Fix flaky checkout test (acme/shop-web#35)");
-    assert_eq!(task.requested_by_member_id, Some(world.seeded.member_id));
+    assert_eq!(task.requested_by_member_id, None);
+    assert_eq!(task.requested_by_github_user_id, Some(1001));
+    assert_eq!(task.requested_by_github_login.as_deref(), Some("mika-dev"));
     let run_id = task.run_id.expect("a run is created");
     assert!(world.runner.started.lock().unwrap().is_empty());
     world.worker.settle().await.unwrap();
@@ -1017,4 +1020,62 @@ async fn readers_see_the_previous_revision_until_an_activation_switches() {
             .unwrap()
             .contains("Keep the diff small.")
     );
+}
+
+#[tokio::test]
+async fn requester_credential_of_a_github_task_is_the_personal_credential_of_the_linked_member() {
+    let world = World::new("pro").await;
+    world
+        .label_issue("delivery-35", 35, "Fix flaky checkout test", "mika-dev")
+        .await;
+    world
+        .worker
+        .worker
+        .handle(&Envelope::new(Job::Inbound {
+            tenant_id: world.tenant(),
+        }))
+        .await
+        .unwrap();
+    let task_id = world.task("acme/shop-web#35").await.id;
+    let task_key = keys::task_key(world.tenant(), task_id);
+    world
+        .dynamo
+        .modify::<Task>(&task_key, |task| {
+            task.definition["Session"]["Definition"]["Worker"]["Credential"] = json!("requester");
+        })
+        .await;
+    let now = chrono::Utc::now();
+    let personal = Credential {
+        id: uuid::Uuid::new_v4(),
+        tenant_id: world.tenant(),
+        scope: "personal".into(),
+        member_id: Some(world.seeded.member_id),
+        name: "mika-claude".into(),
+        provider: "claude".into(),
+        kind: "subscription".into(),
+        account: "mika@acme.test".into(),
+        status: "connected".into(),
+        subscription_plan: None,
+        rejected_at: None,
+        encrypted_value: "AA==".into(),
+        kms_key_id: "test-key".into(),
+        last_used_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    world.dynamo.put(&personal).await;
+    let mut tx = world.store.tx(world.tenant());
+    assert_eq!(
+        credential_of(&mut tx, task_id).await.unwrap().id,
+        personal.id
+    );
+    world
+        .dynamo
+        .modify::<Task>(&task_key, |task| {
+            task.requested_by_github_user_id = Some(2002);
+            task.requested_by_github_login = Some("sota-dev".into());
+        })
+        .await;
+    let mut tx = world.store.tx(world.tenant());
+    assert!(credential_of(&mut tx, task_id).await.is_err());
 }

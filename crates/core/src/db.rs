@@ -165,6 +165,8 @@ pub struct NewTask<'a> {
     pub parent_task_id: Option<Uuid>,
     pub channel: Option<&'a Value>,
     pub requested_by_member_id: Option<Uuid>,
+    pub requested_by_github_user_id: Option<i64>,
+    pub requested_by_github_login: Option<&'a str>,
     pub blocked_by: &'a [Uuid],
 }
 
@@ -202,6 +204,8 @@ pub async fn create_task(tx: &mut TenantTx, task: &NewTask<'_>) -> Result<Record
         channel: task.channel.cloned(),
         start_payload: None,
         requested_by_member_id: task.requested_by_member_id,
+        requested_by_github_user_id: task.requested_by_github_user_id,
+        requested_by_github_login: task.requested_by_github_login.map(str::to_string),
         error: None,
         cause: None,
         runs: 0,

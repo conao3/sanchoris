@@ -1293,6 +1293,8 @@ pub struct Task {
     pub channel: Option<Value>,
     pub start_payload: Option<Value>,
     pub requested_by_member_id: Option<Uuid>,
+    pub requested_by_github_user_id: Option<i64>,
+    pub requested_by_github_login: Option<String>,
     pub error: Option<String>,
     pub cause: Option<String>,
     pub runs: i64,
@@ -1368,6 +1370,14 @@ impl Entity for Task {
             .opt_json("channel", self.channel.as_ref())
             .opt_json("start_payload", self.start_payload.as_ref())
             .opt_uuid("requested_by_member_id", self.requested_by_member_id)
+            .opt_n(
+                "requested_by_github_user_id",
+                self.requested_by_github_user_id,
+            )
+            .opt_s(
+                "requested_by_github_login",
+                self.requested_by_github_login.as_ref(),
+            )
             .opt_s("error", self.error.as_ref())
             .opt_s("cause", self.cause.as_ref())
             .n("runs", self.runs)
@@ -1412,6 +1422,8 @@ impl Entity for Task {
             channel: r.opt_json("channel")?,
             start_payload: r.opt_json("start_payload")?,
             requested_by_member_id: r.opt_uuid("requested_by_member_id")?,
+            requested_by_github_user_id: r.opt_n("requested_by_github_user_id")?,
+            requested_by_github_login: r.opt_s("requested_by_github_login")?,
             error: r.opt_s("error")?,
             cause: r.opt_s("cause")?,
             runs: r.n("runs")?,

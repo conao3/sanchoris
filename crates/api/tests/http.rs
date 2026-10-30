@@ -940,7 +940,8 @@ async fn approvals_need_an_owner_an_admin_or_the_requester_and_are_audited() {
     server
         .dynamo
         .modify::<Task>(&keys::task_key(tenant, task_id), |task| {
-            task.requested_by_member_id = Some(member_id)
+            task.requested_by_github_user_id = Some(1001);
+            task.requested_by_github_login = Some("mika-dev".into());
         })
         .await;
     assert_eq!(

@@ -104,6 +104,12 @@ impl World {
                 seeded.user_id,
             ))
             .await;
+        dynamo
+            .put(&Guard::new(
+                keys::uniq_key(uniq::GITHUB_USER, "1001"),
+                seeded.user_id,
+            ))
+            .await;
         let integration_id = Uuid::new_v4();
         dynamo
             .put(&Integration {
@@ -458,6 +464,8 @@ pub struct TaskView {
     pub title: String,
     pub parent_task_id: Option<Uuid>,
     pub requested_by_member_id: Option<Uuid>,
+    pub requested_by_github_user_id: Option<i64>,
+    pub requested_by_github_login: Option<String>,
     pub run_id: Option<Uuid>,
 }
 
@@ -515,6 +523,8 @@ pub async fn task_view(store: &Store, tenant_id: Uuid, name: &str) -> TaskView {
         title: task.title,
         parent_task_id: task.parent_task_id,
         requested_by_member_id: task.requested_by_member_id,
+        requested_by_github_user_id: task.requested_by_github_user_id,
+        requested_by_github_login: task.requested_by_github_login,
         run_id: runs.last().map(|r| r.id),
     }
 }

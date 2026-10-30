@@ -289,9 +289,12 @@ impl Member {
     async fn tasks_started(&self, ctx: &Context<'_>) -> Result<i32> {
         self.scope.member()?;
         let member_id = self.row.id;
+        let github_user_id = User::load(ctx, self.row.user_id).await?.0.github_user_id;
         let tasks = tx(ctx, self.scope.tenant_id)
             .list::<TaskItem>(&latest_tasks(self.scope.tenant_id), |task| {
                 task.requested_by_member_id == Some(member_id)
+                    || (github_user_id.is_some()
+                        && task.requested_by_github_user_id == github_user_id)
             })
             .await?;
         Ok(i32::try_from(tasks.len())?)

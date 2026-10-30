@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::channel::{OutboxType, enqueue_outbox, enqueue_user_message};
 use crate::db::{DbError, REF_RUN, TenantTx, locate};
 use crate::item::Entity;
-use crate::items::{HeldMessage, PendingTask, Plan, Run, Task, Tenant};
+use crate::items::{Guard, HeldMessage, Membership, PendingTask, Plan, Run, Task, Tenant, uniq};
 use crate::jobs::Job;
 use crate::keys;
 use crate::lifecycle::TaskDecision;
@@ -25,6 +25,31 @@ pub async fn load_task(tx: &mut TenantTx, task_id: Uuid) -> Result<Task, DbError
     tx.get::<Task>(&key)
         .await?
         .ok_or_else(|| DbError::Missing(format!("task {task_id}")))
+}
+
+pub async fn linked_member(
+    tx: &mut TenantTx,
+    github_user_id: i64,
+) -> Result<Option<Uuid>, DbError> {
+    let key = keys::uniq_key(uniq::GITHUB_USER, &github_user_id.to_string());
+    let Some(guard) = tx.get::<Guard>(&key).await? else {
+        return Ok(None);
+    };
+    let membership = tx
+        .get::<Membership>(&keys::membership_key(guard.target, tx.tenant_id()))
+        .await?;
+    Ok(membership.map(|m| m.member_id))
+}
+
+pub async fn requester_member(tx: &mut TenantTx, task: &Task) -> Result<Option<Uuid>, DbError> {
+    match (
+        task.requested_by_member_id,
+        task.requested_by_github_user_id,
+    ) {
+        (Some(member_id), _) => Ok(Some(member_id)),
+        (None, Some(github_user_id)) => linked_member(tx, github_user_id).await,
+        (None, None) => Ok(None),
+    }
 }
 
 pub fn idle_seconds(task: &Task) -> Option<Duration> {

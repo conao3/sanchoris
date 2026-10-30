@@ -573,6 +573,8 @@ pub async fn task_with_run(dynamo: &TestDynamo, seeded: &Seeded) -> (Uuid, Uuid)
         channel: None,
         start_payload: None,
         requested_by_member_id: None,
+        requested_by_github_user_id: None,
+        requested_by_github_login: None,
         error: None,
         cause: None,
         runs: 1,

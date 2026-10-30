@@ -525,6 +525,8 @@ async fn dispatch_chat(
                 parent_task_id: None,
                 channel: Some(&json!({ "source": "web", "thread": thread, "channel": null })),
                 requested_by_member_id: member,
+                requested_by_github_user_id: None,
+                requested_by_github_login: None,
                 blocked_by: &[],
             },
         )
@@ -838,6 +840,8 @@ fn task_item(tx: &mut TenantTx, task: NewTaskItem<'_>) -> Task {
         channel: task.channel,
         start_payload: None,
         requested_by_member_id: task.requested_by,
+        requested_by_github_user_id: None,
+        requested_by_github_login: None,
         error: None,
         cause: None,
         runs: 0,
@@ -1015,6 +1019,13 @@ impl World {
             now,
         )
         .await;
+        let mika_github_id = store
+            .get::<User>(&keys::user_key(mika_user))
+            .await
+            .unwrap()
+            .unwrap()
+            .github_user_id
+            .unwrap();
         let sota_user = user(
             &store,
             "Sota",
@@ -1258,7 +1269,7 @@ impl World {
                 "installation": { "id": 1001 },
                 "issue": { "number": 35, "title": "Fix flaky checkout test", "url": "https://github.com/acme/shop-web/issues/35" },
                 "label": "sanchoris",
-                "sender": { "login": "mika-dev" },
+                "sender": { "login": "mika-dev", "id": mika_github_id, "type": "User" },
             },
         });
         let issue_event_id = trigger_event(
@@ -1298,11 +1309,13 @@ impl World {
                 channel: Some(
                     json!({ "source": "github", "repository": "acme/shop-web", "repository_id": repository_id("acme/shop-web") }),
                 ),
-                requested_by: Some(mika_member),
+                requested_by: None,
                 created_at: now - Duration::hours(2),
                 updated_at: now - Duration::minutes(5),
             },
         );
+        task.requested_by_github_user_id = Some(mika_github_id);
+        task.requested_by_github_login = Some("mika-dev".into());
         task.nudges = 1;
         task.error = Some("Skill.FixesExhausted".into());
         task.cause = Some("The checks still fail after 3 fixes".into());

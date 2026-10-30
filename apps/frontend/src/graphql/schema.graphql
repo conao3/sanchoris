@@ -688,7 +688,18 @@ type Repository {
 
 type Requester {
 	kind: RequesterKind!
+	"""
+	The member who asked, or for a GitHub user the member who linked that GitHub account in this tenant. Null when no member linked it.
+	"""
 	member: Member
+	"""
+	The GitHub user id of the sender of the event that started the task. Null for tasks asked from the screen or a chat.
+	"""
+	githubUserId: ID
+	"""
+	The GitHub login of the sender of the event that started the task, as of the event. Null for tasks asked from the screen or a chat.
+	"""
+	githubLogin: String
 	"""
 	The task whose agent filed the issue.
 	"""
@@ -700,8 +711,18 @@ type Requester {
 }
 
 enum RequesterKind {
+	"""
+	A member who asked from the screen or a chat.
+	"""
 	MEMBER
+	"""
+	The GitHub App bot, on behalf of the agent of another task.
+	"""
 	AGENT
+	"""
+	The GitHub user whose event started the task.
+	"""
+	GITHUB
 }
 
 enum RequiredSkillState {

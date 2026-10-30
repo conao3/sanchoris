@@ -387,6 +387,7 @@
   "task.messageAt": "{at} のメッセージ",
   "task.requestedBy": "依頼者",
   "task.inChat": "{name} (チャット)",
+  "task.githubLinked": "{login} ({name})",
   "task.agentOf": "{title} のエージェント",
   "task.parent": "親",
   "task.children": "子",
@@ -512,7 +513,7 @@
   "credentials.usageTitle": "7日: {week}% · 5時間: {fiveHour}%",
   "credentials.empty": "資格情報はまだありません。サブスクリプションを接続するか、API キーを保存します。",
   "credentials.howPicked": "セッションが資格情報を選ぶ方法",
-  "credentials.howPickedDetail": "セッションは使う資格情報を名前で指します (例: {example})。{requester} と書くと、依頼したメンバーの個人の資格情報を使い、そのメンバーが持っていなければ失敗します。",
+  "credentials.howPickedDetail": "セッションは使う資格情報を名前で指します (例: {example})。{requester} と書くと、依頼したメンバー (GitHub のイベントでは、送り主の GitHub のアカウントを連携したメンバー) の個人の資格情報を使い、該当するメンバーがいないか、そのメンバーが持っていなければ失敗します。",
 
   "members.intro": "{tenant} のメンバー {total} 人中 {n} 人。保留中の招待も数えます。",
   "members.introNoLimit": "{tenant} のメンバー {n} 人 (上限なし)。保留中の招待も数えます。",

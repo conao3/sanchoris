@@ -3,7 +3,7 @@ use sanchoris_core::db::{TenantTx, plan};
 use sanchoris_core::items::{Credential, Tenant, UsageAlert, UsageSnapshot};
 use sanchoris_core::keys;
 use sanchoris_core::store::{Index, SortKey};
-use sanchoris_core::tasks::load_task;
+use sanchoris_core::tasks::{load_task, requester_member};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -37,10 +37,11 @@ pub async fn credential_of(tx: &mut TenantTx, task_id: Uuid) -> Result<Credentia
         .await?;
     credentials.sort_by_key(|a| (a.created_at, a.id));
     let found = if name == sanchoris_config::REQUESTER {
+        let requester = requester_member(tx, &task).await?;
         credentials.into_iter().find(|c| {
             c.scope == "personal"
                 && c.member_id.is_some()
-                && c.member_id == task.requested_by_member_id
+                && c.member_id == requester
                 && c.provider == agent
         })
     } else {

@@ -998,7 +998,7 @@ function buildAcme(): Obj {
     startedAt: ago(40),
     updatedAt: ago(8),
     channel: { kind: "WEB", threadId: "web-thread-1", scope: "all", slackChannel: null },
-    requester: { kind: "MEMBER", member: mika, task: null, viaChat: true },
+    requester: { kind: "MEMBER", githubLogin: null, member: mika, task: null, viaChat: true },
     turns: 9,
     costUsd: 2.05,
   })
@@ -1014,7 +1014,7 @@ function buildAcme(): Obj {
     startedAt: ago(base35),
     updatedAt: ago(68),
     issue: issue("acme/shop-web", 35, "Fix flaky checkout test", () => t35),
-    requester: { kind: "MEMBER", member: mika, task: null, viaChat: true },
+    requester: { kind: "MEMBER", githubLogin: null, member: mika, task: null, viaChat: true },
     turns: 52,
     costUsd: 9.2,
     outputs: [pr("acme/shop-web", 52, "OPEN", base35 - 38)],
@@ -1029,7 +1029,13 @@ function buildAcme(): Obj {
     startedAt: ago(35),
     updatedAt: ago(2),
     issue: issue("acme/shop-web", 38, "Add bulk export", () => t38),
-    requester: { kind: "AGENT", member: null, task: chatExport, viaChat: false },
+    requester: {
+      kind: "AGENT",
+      githubLogin: "sanchoris[bot]",
+      member: null,
+      task: chatExport,
+      viaChat: false,
+    },
     turns: 18,
     costUsd: 4.1,
   })
@@ -1044,7 +1050,13 @@ function buildAcme(): Obj {
     updatedAt: ago(0),
     issue: issue("acme/shop-api", 41, "Orders export endpoint", () => t41),
     parent: t38,
-    requester: { kind: "AGENT", member: null, task: t38, viaChat: false },
+    requester: {
+      kind: "AGENT",
+      githubLogin: "sanchoris[bot]",
+      member: null,
+      task: t38,
+      viaChat: false,
+    },
     turns: 35,
     costUsd: 3.42,
     outputs: [pr("acme/shop-api", 53, "OPEN", 6)],
@@ -1060,7 +1072,13 @@ function buildAcme(): Obj {
     updatedAt: ago(1),
     issue: issue("acme/shop-web", 42, "Export button and CSV download", () => t42),
     parent: t38,
-    requester: { kind: "AGENT", member: null, task: t38, viaChat: false },
+    requester: {
+      kind: "AGENT",
+      githubLogin: "sanchoris[bot]",
+      member: null,
+      task: t38,
+      viaChat: false,
+    },
     turns: 13,
     costUsd: 1.65,
     outputs: [pr("acme/shop-web", 54, "OPEN", 9)],
@@ -1077,7 +1095,13 @@ function buildAcme(): Obj {
     issue: issue("acme/shop-api", 43, "Docs for the export API", () => t43),
     parent: t38,
     blockedBy: [t41],
-    requester: { kind: "AGENT", member: null, task: t38, viaChat: false },
+    requester: {
+      kind: "AGENT",
+      githubLogin: "sanchoris[bot]",
+      member: null,
+      task: t38,
+      viaChat: false,
+    },
   })
   makeTask({
     id: "task-44",
@@ -1091,7 +1115,13 @@ function buildAcme(): Obj {
     startedAt: ago(60 * 20),
     updatedAt: ago(60 * 3),
     issue: issue("acme/shop-web", 44, "Upgrade Node to 24"),
-    requester: { kind: "MEMBER", member: sota, task: null, viaChat: false },
+    requester: {
+      kind: "GITHUB",
+      githubLogin: "sota-dev",
+      member: sota,
+      task: null,
+      viaChat: false,
+    },
     turns: 22,
     costUsd: 2.4,
   })
@@ -1108,7 +1138,13 @@ function buildAcme(): Obj {
     startedAt: ago(50),
     updatedAt: ago(12),
     issue: issue("acme/shop-api", 45, "Release the orders export"),
-    requester: { kind: "MEMBER", member: mika, task: null, viaChat: false },
+    requester: {
+      kind: "GITHUB",
+      githubLogin: "mika-dev",
+      member: mika,
+      task: null,
+      viaChat: false,
+    },
     turns: 14,
     costUsd: 1.9,
   })
@@ -1136,7 +1172,13 @@ function buildAcme(): Obj {
     endedAt: ago(60 * 25),
     updatedAt: ago(60 * 25),
     issue: issue("acme/shop-web", 31, "Fix typo in checkout copy"),
-    requester: { kind: "MEMBER", member: mika, task: null, viaChat: false },
+    requester: {
+      kind: "GITHUB",
+      githubLogin: "lena-oss",
+      member: null,
+      task: null,
+      viaChat: false,
+    },
     turns: 4,
     costUsd: 0.41,
     outputs: [pr("acme/shop-web", 49, "MERGED", 60 * 25 + 8)],
@@ -1156,7 +1198,7 @@ function buildAcme(): Obj {
       scope: "shop",
       slackChannel: "#shop-dev",
     },
-    requester: { kind: "MEMBER", member: mika, task: null, viaChat: true },
+    requester: { kind: "MEMBER", githubLogin: null, member: mika, task: null, viaChat: true },
     turns: 3,
     costUsd: 0.31,
   })
@@ -1175,13 +1217,19 @@ function buildAcme(): Obj {
       scope: "shop",
       slackChannel: "#shop-dev",
     },
-    requester: { kind: "MEMBER", member: sota, task: null, viaChat: true },
+    requester: { kind: "MEMBER", githubLogin: null, member: sota, task: null, viaChat: true },
     turns: 2,
     costUsd: 0.22,
   })
-  t35.requester = { kind: "MEMBER", member: mika, task: chatFlaky, viaChat: true }
+  t35.requester = {
+    kind: "MEMBER",
+    githubLogin: null,
+    member: mika,
+    task: chatFlaky,
+    viaChat: true,
+  }
   const t44 = tasks.find((task) => task.id === "task-44") as Obj
-  t44.requester = { kind: "MEMBER", member: sota, task: chatNode, viaChat: true }
+  t44.requester = { kind: "MEMBER", githubLogin: null, member: sota, task: chatNode, viaChat: true }
 
   const run35 = makeRun(t35, {
     status: "IDLE",

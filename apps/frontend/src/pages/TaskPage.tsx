@@ -319,6 +319,15 @@ export function TaskPage() {
           <Lk to="/tasks/$task" params={{ task: task.requester.task.id }}>
             {t("task.agentOf", { title: task.requester.task.title })}
           </Lk>
+        ) : task.requester.kind === "GITHUB" ? (
+          task.requester.member ? (
+            t("task.githubLinked", {
+              login: task.requester.githubLogin ?? "",
+              name: task.requester.member.user.name,
+            })
+          ) : (
+            (task.requester.githubLogin ?? "")
+          )
         ) : task.requester.viaChat ? (
           t("task.inChat", { name: task.requester.member?.user.name ?? "" })
         ) : (

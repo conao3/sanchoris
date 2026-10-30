@@ -11,7 +11,7 @@ use sanchoris_core::items::{
 use sanchoris_core::keys;
 use sanchoris_core::model::{TaskDefinition, TaskStatus as CoreStatus};
 use sanchoris_core::store::{Index, Listing, SortKey};
-use sanchoris_core::tasks::task_branch;
+use sanchoris_core::tasks::{linked_member, task_branch};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -27,7 +27,7 @@ use crate::error::{not_found, parse_id};
 use crate::scalars::{Timestamp, ts, ts_opt};
 use crate::skill::{Skill, SkillRun};
 use crate::tenant::{current_name, tenant_repositories};
-use crate::trigger::{TaskLimits, Trigger, TriggerEvent, sender_login};
+use crate::trigger::{TaskLimits, Trigger, TriggerEvent};
 
 #[derive(InputObject, Default)]
 pub(crate) struct TaskFilter {
@@ -413,26 +413,43 @@ impl Task {
             return Ok(Some(Requester {
                 kind: RequesterKind::Member,
                 member: Member::find(ctx, self.scope, member_id).await?,
+                github_user_id: None,
+                github_login: None,
                 task: None,
                 via_chat: self.chat_thread().is_some(),
             }));
         }
-        let from_bot = self
-            .trigger_event(ctx)
-            .await?
-            .and_then(|event| sender_login(event.event()))
-            .is_some_and(|login| login.ends_with("[bot]"));
-        if !from_bot {
+        let (Some(github_user_id), Some(github_login)) = (
+            self.row.requested_by_github_user_id,
+            self.row.requested_by_github_login.clone(),
+        ) else {
             return Ok(None);
+        };
+        if github_login.ends_with("[bot]") {
+            let task = match self.row.parent_task_id {
+                Some(parent) => Task::find(ctx, self.scope, parent).await?,
+                None => None,
+            };
+            return Ok(Some(Requester {
+                kind: RequesterKind::Agent,
+                member: None,
+                github_user_id: Some(github_user_id),
+                github_login: Some(github_login),
+                task,
+                via_chat: false,
+            }));
         }
-        let task = match self.row.parent_task_id {
-            Some(parent) => Task::find(ctx, self.scope, parent).await?,
+        let member = match linked_member(&mut tx(ctx, self.scope.tenant_id), github_user_id).await?
+        {
+            Some(member_id) => Member::find(ctx, self.scope, member_id).await?,
             None => None,
         };
         Ok(Some(Requester {
-            kind: RequesterKind::Agent,
-            member: None,
-            task,
+            kind: RequesterKind::Github,
+            member,
+            github_user_id: Some(github_user_id),
+            github_login: Some(github_login),
+            task: None,
             via_chat: false,
         }))
     }
@@ -734,6 +751,8 @@ impl IssueRef {
 pub(crate) struct Requester {
     kind: RequesterKind,
     member: Option<Member>,
+    github_user_id: Option<i64>,
+    github_login: Option<String>,
     task: Option<Task>,
     via_chat: bool,
 }
@@ -744,8 +763,19 @@ impl Requester {
         self.kind
     }
 
+    /// The member who asked, or for a GitHub user the member who linked that GitHub account in this tenant. Null when no member linked it.
     async fn member(&self) -> Option<&Member> {
         self.member.as_ref()
+    }
+
+    /// The GitHub user id of the sender of the event that started the task. Null for tasks asked from the screen or a chat.
+    async fn github_user_id(&self) -> Option<ID> {
+        self.github_user_id.map(|id| ID(id.to_string()))
+    }
+
+    /// The GitHub login of the sender of the event that started the task, as of the event. Null for tasks asked from the screen or a chat.
+    async fn github_login(&self) -> Option<&str> {
+        self.github_login.as_deref()
     }
 
     /// The task whose agent filed the issue.

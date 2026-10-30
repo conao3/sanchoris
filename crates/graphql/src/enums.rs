@@ -262,8 +262,12 @@ db_enum!(ChannelKind, "channel kind", {
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequesterKind {
+    /// A member who asked from the screen or a chat.
     Member,
+    /// The GitHub App bot, on behalf of the agent of another task.
     Agent,
+    /// The GitHub user whose event started the task.
+    Github,
 }
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]

@@ -7,7 +7,7 @@ use sanchoris_core::items::{Member, Membership};
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin};
 use sanchoris_core::skillrun::{self, SkillRunError};
-use sanchoris_core::tasks::load_task;
+use sanchoris_core::tasks::{load_task, requester_member};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -80,7 +80,7 @@ async fn approver(
         .ok_or_else(|| ApiError::NotFound("the approval does not exist".into()))?;
     let task = load_task(tx, skill_run.task_id).await?;
     let allowed = APPROVER_ROLES.contains(&member.role.as_str())
-        || task.requested_by_member_id == Some(member.id);
+        || requester_member(tx, &task).await? == Some(member.id);
     if !allowed {
         return Err(ApiError::Forbidden(
             "only an owner, an admin, or the member who requested the task can resolve its approvals"

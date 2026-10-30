@@ -116,7 +116,8 @@ async fn every_screen_query_validates_and_executes() {
     assert_eq!(task["maxNudges"], 2);
     assert_eq!(task["configRevision"], 1);
     assert_eq!(task["triggerEvent"]["senderLogin"], "mika-dev");
-    assert_eq!(task["requester"]["kind"], "MEMBER");
+    assert_eq!(task["requester"]["kind"], "GITHUB");
+    assert_eq!(task["requester"]["githubLogin"], "mika-dev");
     assert_eq!(task["requester"]["member"]["user"]["name"], "Mika");
     assert_eq!(task["session"]["name"], "shop");
     assert_eq!(task["skillRuns"][0]["stateEntryCount"], 4);
@@ -455,4 +456,43 @@ async fn home_counts_live_workspaces_from_the_tenant_and_running_tasks_from_thei
     assert_eq!(home["tenant"]["activity"]["runningTasks"], 1);
     let operator = w.ok(&w.operator, "OperatorTenants", json!({})).await;
     assert_eq!(operator["operator"]["liveWorkspaces"], 3);
+}
+
+#[tokio::test]
+async fn github_requesters_show_their_login_and_the_member_who_links_them_later() {
+    let w = World::new().await;
+    w.dynamo
+        .modify::<sanchoris_core::items::Task>(&keys::task_key(w.acme, w.issue_task), |task| {
+            task.requested_by_github_user_id = Some(424_242);
+            task.requested_by_github_login = Some("lena-oss".into());
+        })
+        .await;
+    let variables = json!({ "tenant": "acme", "id": w.issue_task });
+    let data = w.ok(&w.mika, "Task", variables.clone()).await;
+    let requester = &data["tenant"]["task"]["requester"];
+    assert_eq!(requester["kind"], "GITHUB");
+    assert_eq!(requester["githubLogin"], "lena-oss");
+    assert_eq!(requester["member"], Value::Null);
+
+    w.dynamo
+        .put(&sanchoris_core::items::Guard::new(
+            keys::uniq_key(sanchoris_core::items::uniq::GITHUB_USER, "424242"),
+            w.ken.user_id,
+        ))
+        .await;
+    let data = w.ok(&w.mika, "Task", variables.clone()).await;
+    let requester = &data["tenant"]["task"]["requester"];
+    assert_eq!(requester["kind"], "GITHUB");
+    assert_eq!(requester["githubLogin"], "lena-oss");
+    assert_eq!(requester["member"]["user"]["name"], "Ken");
+
+    w.dynamo
+        .modify::<sanchoris_core::items::Task>(&keys::task_key(w.acme, w.issue_task), |task| {
+            task.requested_by_github_login = Some("sanchoris[bot]".into());
+        })
+        .await;
+    let data = w.ok(&w.mika, "Task", variables).await;
+    let requester = &data["tenant"]["task"]["requester"];
+    assert_eq!(requester["kind"], "AGENT");
+    assert_eq!(requester["member"], Value::Null);
 }

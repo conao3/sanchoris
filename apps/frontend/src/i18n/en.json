@@ -387,6 +387,7 @@
   "task.messageAt": "message at {at}",
   "task.requestedBy": "Requested by",
   "task.inChat": "{name}, in chat",
+  "task.githubLinked": "{login} ({name})",
   "task.agentOf": "the agent of {title}",
   "task.parent": "Parent",
   "task.children": "Children",
@@ -512,7 +513,7 @@
   "credentials.usageTitle": "7 days: {week}% · 5 hours: {fiveHour}%",
   "credentials.empty": "No credentials yet. Connect a subscription or save an API key.",
   "credentials.howPicked": "How a session picks a credential",
-  "credentials.howPickedDetail": "A session names the credential it uses, for example {example}. Writing {requester} uses the personal credential of the member who asked, and fails if that member has none.",
+  "credentials.howPickedDetail": "A session names the credential it uses, for example {example}. Writing {requester} uses the personal credential of the member who asked, or for a GitHub event the member who linked the GitHub account of its sender, and fails if there is no such member or that member has none.",
 
   "members.intro": "{n} of {total} members in {tenant}. Invitations count while they are pending.",
   "members.introNoLimit": "{n} members in {tenant}, with no limit. Invitations count while they are pending.",
