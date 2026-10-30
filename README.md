@@ -17,7 +17,7 @@ Sanchoris is a pnpm + Vite frontend and Rust backend monorepo.
 - `scripts/build-lambda.mjs`: builds the frontend and the Lambda zips (`pnpm build:lambda <release|lambda-dev>`)
 - `scripts/nextest.sh`: runs `cargo nextest run` against the DynamoDB Local instances it starts
 - `vite.config.ts`, `tsconfig.base.json`: the vite-plus toolchain of the TypeScript apps (format, lint, type check, tests, the frontend build, and the Node bundles of the workspace agent and the relay)
-- `flake.nix`, `Makefile`: the Nix devShell, `nix fmt`, and `make check`
+- `flake.nix`, `Makefile`: the Nix devShell, `nix fmt`, `nix run`, and `make check`
 - `scripts/deploy.mjs`, `scripts/e2e-aws.mjs`: deploy to an AWS environment and run an issue through it end to end (`AGENTS.md`)
 - `scripts/e2e/fake-agent.ts`: the scripted workspace agent used by the end-to-end test
 
@@ -49,6 +49,14 @@ The dev command creates the DynamoDB tables at startup (`pnpm dynamo:create`), b
 - Linked worktree, e.g. branch `fix-health`: `https://fix-health.sanchoris.localhost/`
 
 A local workspace runs `apps/workspace-agent` with Claude Code, so the dev environment also needs `CLAUDE_CONFIG_DIR` and `SANCHORIS_CLAUDE_PATH` (see `apps/workspace-agent/PROTOCOL.md`) and a `sanchoris` command on `PATH`.
+
+## `nix run`
+
+```sh
+SANCHORIS_BIND_ADDR=127.0.0.1:8080 nix run
+```
+
+builds the frontend, the workspace agent bundle, and the `sanchoris` and `sanchoris-dynamo-create` binaries inside the flake (`packages.default`), starts an in-memory DynamoDB Local on a free port, creates the tables, and runs `sanchoris all` on `SANCHORIS_BIND_ADDR` with the built frontend, so `http://<SANCHORIS_BIND_ADDR>/` serves the web app and `/api/graphql` the API. It sets the local values itself (the DynamoDB endpoint, region and table names, local records, the workspace agent command, and the directories under `${XDG_STATE_HOME:-~/.local/state}/sanchoris`) and takes the rest of the [Environment](#environment) from the caller, for example `set -a; . ./.env.local; set +a` first. The frontend in the package is built for the dev Cognito client, whose Hosted UI accepts only `https://sanchoris.localhost`, so sign in through portless (`portless alias sanchoris <port>`).
 
 ## The `sanchoris` binary
 

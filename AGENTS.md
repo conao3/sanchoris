@@ -39,7 +39,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs `nix develop --command make che
 | `apps/egress-relay` | Workspace egress `CONNECT` proxy (`src/relay.ts`) |
 | `infra/` | `tables.json`, `plans.json`, the Workspace and relay Dockerfiles |
 | `vite.config.ts`, `tsconfig.base.json` | The vite-plus settings of every app: Oxfmt, Oxlint, Vitest (projects `unit` and `smoke`), the frontend build, the `vp pack` bundles of the workspace agent and the relay, and the `vp run` tasks `check` and `build-frontend`; each app's `tsconfig.json` extends `tsconfig.base.json` |
-| `flake.nix`, `Makefile` | The devShell, `nix fmt` (treefmt), and `make check` / `make schema` |
+| `flake.nix`, `Makefile` | The devShell, `nix fmt` (treefmt), `nix run` (`packages.default`), and `make check` / `make schema` |
 | `scripts/` | `dev.mjs` (`pnpm dev`), `build-lambda.mjs` (`pnpm build:lambda <release|lambda-dev>`), `nextest.sh`, `install-hooks.mjs`, `deploy.mjs`, `e2e-aws.mjs` (its DynamoDB lookups in `lib/e2e-task.mjs`), `e2e/fake-agent.ts`, `e2e/aws-lookup.mjs` |
 
 ## Checks per area
