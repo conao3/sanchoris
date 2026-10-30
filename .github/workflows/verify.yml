@@ -19,6 +19,7 @@ jobs:
     timeout-minutes: 75
     env:
       CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 4G
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -57,11 +58,11 @@ jobs:
             sccache-${{ runner.os }}-
 
       - name: Enter the devShell
-        run: nix develop .#ci --command true
+        run: nix develop --command true
 
       - name: scripts/verify.sh full
-        run: nix develop .#ci --command scripts/verify.sh full
+        run: nix develop --command scripts/verify.sh full
 
       - name: sccache stats
         if: ${{ !cancelled() }}
-        run: nix develop .#ci --command sccache --show-stats
+        run: nix develop --command sccache --show-stats

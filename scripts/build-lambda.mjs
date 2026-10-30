@@ -38,8 +38,6 @@ step('cargo', [
   'lambda',
   'build',
   ...profiles[profile],
-  '--compiler',
-  'cargo',
   '--target',
   'aarch64-unknown-linux-musl',
   '--output-format',

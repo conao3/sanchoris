@@ -75,7 +75,7 @@ The SQS body is the `Envelope` JSON: `{"id": "<uuid>", "job": {"type": "<job>", 
 
 ## Lambda functions
 
-One crate (`crates/api`) builds every function as its own binary. `pnpm build:lambda <release|lambda-dev>` builds the frontend into `apps/frontend/dist` (embedded by the `api` binary), cross-compiles the binaries with `cargo lambda` for `aarch64-unknown-linux-musl` (static, so the glibc of the runtime does not matter) with the Cargo profile `release` (prd) or `lambda-dev` (dev; `Cargo.toml`), and writes `target/lambda/<function>/bootstrap.zip`. Deploy each zip on the `provided.al2023` runtime with the `arm64` architecture and the handler `bootstrap` (custom runtimes ignore the name; the binary is the handler).
+One crate (`crates/api`) builds every function as its own binary. `pnpm build:lambda <release|lambda-dev>` builds the frontend into `apps/frontend/dist` (embedded by the `api` binary), cross-compiles the binaries with `cargo lambda` and Zig for `aarch64-unknown-linux-musl` (static, so the glibc of the runtime does not matter) with the Cargo profile `release` (prd) or `lambda-dev` (dev; `Cargo.toml`), and writes `target/lambda/<function>/bootstrap.zip`. Deploy each zip on the `provided.al2023` runtime with the `arm64` architecture and the handler `bootstrap` (custom runtimes ignore the name; the binary is the handler).
 
 | Function | Handler | Trigger | Timeout, memory | Environment | Secrets (SSM) | IAM actions |
 |---|---|---|---|---|---|---|

@@ -61,7 +61,7 @@ VITE_COGNITO_DOMAIN=dev-auth-k8s.sancode.dev VITE_COGNITO_CLIENT_ID=<client id> 
   nix develop -c pnpm build:lambda lambda-dev
 ```
 
-builds the frontend into `apps/frontend/dist`, then, with the Cargo profile `lambda-dev` for dev (`release` for prd), `target/lambda/{api,channel,channel-authorizer,worker,relay}/bootstrap.zip` for `provided.al2023` on `arm64` (static `aarch64-unknown-linux-musl` binaries cross-compiled by `cargo lambda` with the devShell's musl cross linker). The `api` binary embeds `apps/frontend/dist` and serves it on the same origin as the API, so the deployment needs no separate static hosting; it refuses to start when the build embedded no `index.html`. `docs/architecture.md` ("Lambda functions") lists each function's trigger, handler, variables, and IAM actions.
+builds the frontend into `apps/frontend/dist`, then, with the Cargo profile `lambda-dev` for dev (`release` for prd), `target/lambda/{api,channel,channel-authorizer,worker,relay}/bootstrap.zip` for `provided.al2023` on `arm64` (static `aarch64-unknown-linux-musl` binaries cross-compiled by `cargo lambda` with the devShell's Zig as the C compiler and linker). The `api` binary embeds `apps/frontend/dist` and serves it on the same origin as the API, so the deployment needs no separate static hosting; it refuses to start when the build embedded no `index.html`. `docs/architecture.md` ("Lambda functions") lists each function's trigger, handler, variables, and IAM actions.
 
 | Endpoint | Purpose |
 | --- | --- |
