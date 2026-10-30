@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "portless run --name sanchoris -- pnpm run dev:app",
-    "dev:app": "vp dev --host 127.0.0.1 --port ${PORT:-5173}",
+    "dev:app": "vp dev --config ../../vite.config.ts --host 127.0.0.1 --port ${PORT:-5173}",
     "dev:mock": "VITE_MOCK_API=1 pnpm run dev:app",
     "codegen": "graphql-codegen --config codegen.ts",
     "codegen:check": "graphql-codegen --config codegen.ts --check"

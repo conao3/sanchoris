@@ -186,18 +186,37 @@ for (const dir of ["docs", "records", "sockets", "workspaces"]) {
 console.log(`sanchoris dev api: ${backendUrl}`)
 console.log(`sanchoris dev public origin: ${process.env.SANCHORIS_PUBLIC_URL}`)
 
-run("api", "cargo", ["watch", "-x", "run -p sanchoris-api --bin sanchoris -- all"], {
-  SANCHORIS_BIND_ADDR: `127.0.0.1:${backendPort}`,
-  SANCHORIS_CONTROL_URL: `ws://127.0.0.1:${backendPort}/runs/channel`,
-  SANCHORIS_WORKSPACE_COMMAND: `node --no-warnings ${resolve("apps/workspace-agent/src/bin/workspace-agent.ts")}`,
-  SANCHORIS_DOCS_DIR: join(devDir, "docs"),
-  SANCHORIS_FRONTEND_DIR: resolve("apps/frontend/dist"),
-  SANCHORIS_SOCKET_DIR: join(devDir, "sockets"),
-  SANCHORIS_WORKSPACES_DIR: join(devDir, "workspaces"),
-  ...(process.env.SANCHORIS_RECORDS_STORE === "s3"
-    ? {}
-    : { SANCHORIS_RECORDS_DIR: join(devDir, "records") }),
-})
+run(
+  "api",
+  "cargo",
+  [
+    "watch",
+    "-w",
+    "crates",
+    "-w",
+    "Cargo.toml",
+    "-w",
+    "Cargo.lock",
+    "-w",
+    "infra/tables.json",
+    "-w",
+    "infra/plans.json",
+    "-x",
+    "run -p sanchoris-api --bin sanchoris -- all",
+  ],
+  {
+    SANCHORIS_BIND_ADDR: `127.0.0.1:${backendPort}`,
+    SANCHORIS_CONTROL_URL: `ws://127.0.0.1:${backendPort}/runs/channel`,
+    SANCHORIS_WORKSPACE_COMMAND: `node --no-warnings ${resolve("apps/workspace-agent/src/bin/workspace-agent.ts")}`,
+    SANCHORIS_DOCS_DIR: join(devDir, "docs"),
+    SANCHORIS_FRONTEND_DIR: resolve("apps/frontend/dist"),
+    SANCHORIS_SOCKET_DIR: join(devDir, "sockets"),
+    SANCHORIS_WORKSPACES_DIR: join(devDir, "workspaces"),
+    ...(process.env.SANCHORIS_RECORDS_STORE === "s3"
+      ? {}
+      : { SANCHORIS_RECORDS_DIR: join(devDir, "records") }),
+  },
+)
 
 run("frontend", "pnpm", ["--filter", "@sanchoris/frontend", "dev"], {
   VITE_BACKEND_URL: backendUrl,
