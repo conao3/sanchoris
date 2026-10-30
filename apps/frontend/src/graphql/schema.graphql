@@ -1,1127 +1,1385 @@
+type Activity {
+	runningTasks: Int!
+	runsToday: Int!
+	costTodayUsd: Float!
+	pullRequestsOpenedToday: Int!
+	"""
+	Runs started per hour over the last 24 hours, oldest first (24 values).
+	"""
+	runsLast24h: [Int!]!
+}
+
+enum ActorKind {
+	MEMBER
+	AGENT
+	TRIGGER
+	SYSTEM
+	OPERATOR
+}
+
+input AddConfigInput {
+	tenantId: ID!
+	repository: String!
+	root: String!
+	branch: String!
+}
+
+type AddConfigPayload {
+	config: Config
+	errors: [ValidationError!]!
+}
+
+input AddCredentialInput {
+	tenantId: ID!
+	name: String!
+	provider: ApiKeyProvider!
+	key: String!
+	scope: CredentialScope!
+}
+
+enum ApiKeyProvider {
+	ANTHROPIC
+	OPENAI
+	BEDROCK
+}
+
+type Approval {
+	message: String!
+	requestedAt: DateTime!
+}
+
+type AuditEvent {
+	id: ID!
+	at: DateTime!
+	actorKind: ActorKind!
+	"""
+	The member name, the trigger name, or the run and task of an agent.
+	"""
+	actorName: String!
+	action: String!
+	target: String!
+	targetTask: Task
+	summary: String
+	origin: AuditOrigin!
+	"""
+	The client IP for WEB.
+	"""
+	ip: String
+}
+
+input AuditFilter {
+	actorKind: ActorKind
+	memberId: ID
+	action: String
+	since: DateTime
+}
+
+enum AuditOrigin {
+	WEB
+	GITHUB
+	SLACK
+	SYSTEM
+}
+
+enum BillingUnit {
+	TENANT
+	SEAT
+}
+
+type ChangePlanPayload {
+	tenant: Tenant!
+	checkoutUrl: String
+}
+
+type ChangeRequest {
+	id: ID!
+	config: Config!
+	number: Int!
+	title: String!
+	url: String!
+	state: ChangeRequestState!
+	changes: [ConfigObjectRef!]!
+	validation: Validation!
+	"""
+	The chat task that opened it. Null when a member opened it.
+	"""
+	openedFromTask: Task
+	openedBy: Member
+	openedAt: DateTime!
+}
+
+enum ChangeRequestState {
+	OPEN
+	MERGED
+	CLOSED
+}
+
+type Channel {
+	kind: ChannelKind!
+	threadId: String!
+	"""
+	all or a project name.
+	"""
+	scope: String!
+	slackChannel: String
+}
+
+enum ChannelKind {
+	WEB
+	SLACK
+}
+
+enum ChatAuthorKind {
+	MEMBER
+	AGENT
+}
+
+type ChatMessage {
+	id: ID!
+	authorKind: ChatAuthorKind!
+	member: Member
+	text: String!
+	at: DateTime!
+	"""
+	Issues the agent filed in this message.
+	"""
+	issues: [IssueRef!]!
+}
+
+type Config {
+	id: ID!
+	"""
+	The repository's current owner/name on GitHub, updated when the repository is renamed or transferred.
+	"""
+	repository: String!
+	"""
+	The GitHub repository id that the config follows. Null when the config was disabled before its name resolved to a repository.
+	"""
+	repositoryId: ID
+	status: ConfigStatus!
+	root: String!
+	branch: String!
+	url: String!
+	"""
+	The URL that creates a skill folder on GitHub.
+	"""
+	newSkillUrl: String!
+	revision: ConfigRevision!
+	revisions(limit: Int = 10): [ConfigRevision!]!
+	syncedAt: DateTime
+	"""
+	Why the last sync failed, for example when GitHub is unreachable or a repository named in sanchoris.yaml is not in the GitHub App installation, or why the config is DISABLED. Null after a successful sync.
+	"""
+	syncError: String
+	triggerCount: Int!
+	skillCount: Int!
+	projects: [Project!]!
+	changeRequests(state: ChangeRequestState): [ChangeRequest!]!
+}
+
+enum ConfigObjectKind {
+	TRIGGER
+	SESSION
+	SKILL
+	PROJECT
+}
+
+type ConfigObjectRef {
+	kind: ConfigObjectKind!
+	name: String!
+}
+
+type ConfigRevision {
+	id: ID!
+	"""
+	The revision number shown as r41.
+	"""
+	number: Int!
+	commitSha: String!
+	committedAt: DateTime!
+	validation: Validation!
+}
+
+enum ConfigStatus {
+	ACTIVE
+	"""
+	The repository was removed from the GitHub App installation or deleted. The config no longer syncs or starts tasks.
+	"""
+	DISABLED
+}
+
+input CreateTenantInput {
+	name: String!
+	planId: ID!
+}
+
+type CreateTenantPayload {
+	"""
+	The new tenant. On a paid plan it stays SUSPENDED with the reason payment_pending until the checkout completes.
+	"""
+	tenant: Tenant
+	"""
+	Set when the plan is paid: the Stripe Checkout to open.
+	"""
+	checkoutUrl: String
+}
+
+type Credential {
+	id: ID!
+	"""
+	The name a session refers to.
+	"""
+	name: String!
+	provider: Provider!
+	kind: CredentialKind!
+	"""
+	The subscription plan, such as Max or Team. Null for keys.
+	"""
+	subscriptionPlan: String
+	"""
+	The login email, or a masked key.
+	"""
+	account: String!
+	scope: CredentialScope!
+	"""
+	The member who owns a personal credential.
+	"""
+	owner: Member
+	status: CredentialStatus!
+	"""
+	When the provider rejected the login. Set while status is RECONNECT.
+	"""
+	rejectedAt: DateTime
+	lastUsedAt: DateTime
+	"""
+	The latest usage of a subscription. Null for keys and for logins to reconnect.
+	"""
+	usage: UsageSnapshot
+}
+
+enum CredentialKind {
+	SUBSCRIPTION
+	API_KEY
+	BEDROCK
+}
+
+enum CredentialScope {
+	PERSONAL
+	ORGANIZATION
+}
+
+enum CredentialStatus {
+	CONNECTED
+	RECONNECT
+}
+
 """
 An ISO 8601 date-time string in UTC, for example 2026-10-26T14:05:00Z.
 """
 scalar DateTime
 
-type Query {
-  "The signed-in user, the tenants they belong to and the invitations addressed to them."
-  viewer: Viewer!
-  "The plans a tenant can choose, ordered by price. The Admin plan is not among them."
-  plans: [Plan!]!
-  "A tenant the viewer is a member of. Null when it does not exist or the viewer is not a member."
-  tenant(slug: String!): Tenant
-  "Operator console. Null unless the viewer is a sanchoris operator."
-  operator: Operator
-  "Templates offered by New from template on Triggers and by the first-run setup."
-  triggerTemplates: [TriggerTemplate!]!
-}
-
-type Mutation {
-  "Creates a tenant owned by the viewer on a plan of Viewer.newTenantPlans. A paid plan returns a Stripe Checkout URL and creates the tenant after payment; Free and Admin return the tenant."
-  createTenant(input: CreateTenantInput!): CreateTenantPayload!
-  "Accepts an invitation addressed to the viewer and returns the new membership."
-  acceptInvitation(invitationId: ID!): Member!
-  "Starts linking the viewer's GitHub account. Returns the GitHub authorize URL to open and sets the cookie that binds the flow to this browser."
-  connectGitHub: RedirectPayload!
-  "Starts installing the GitHub App for a tenant (admins). Returns the GitHub install URL to open and sets the cookie that binds the flow to this browser."
-  installGitHubApp(tenantId: ID!): RedirectPayload!
-  "Unlinks the viewer's GitHub account."
-  unlinkGitHub: Viewer!
-  "Records the viewer's sign-out in the audit log of each of the viewer's tenants. The client then ends the Cognito session."
-  signOut: Boolean!
-  "Starts the Slack installation for a tenant. Returns the URL to open."
-  connectSlack(tenantId: ID!): RedirectPayload!
-
-  inviteMember(input: InviteMemberInput!): Invitation!
-  revokeInvitation(invitationId: ID!): Invitation!
-  changeMemberRole(memberId: ID!, role: Role!): Member!
-  removeMember(memberId: ID!): ID!
-
-  "Sends the message to the task's agent session and resumes a NEEDS_YOU task."
-  resumeTask(input: ResumeTaskInput!): Task!
-  "Takes a NEEDS_YOU or usage-limited task out of the needs-you lists until the given time. A usage-limited task resumes no earlier than that time. Resuming or stopping the task, or a change of its status, ends the snooze."
-  snoozeTask(taskId: ID!, until: DateTime!): Task!
-  "Stops the task. Its status becomes ABORTED."
-  stopTask(taskId: ID!): Task!
-  "Approves or rejects the approval that the task's skill waits for. Owners, admins, and the member who requested the task can resolve it."
-  resolveApproval(taskId: ID!, approved: Boolean!): Task!
-  "Stops the agent session of a run."
-  stopRun(runId: ID!): Run!
-  """
-  Sends a chat message. With taskId, the message goes to that task's agent session.
-  Without taskId, a new chat starts in the given scope ("all" or a project name).
-  """
-  sendChatMessage(input: SendChatMessageInput!): SendChatMessagePayload!
-
-  setTriggerState(triggerId: ID!, state: TriggerState!): Trigger!
-  "Opens a change request on a config repository that adds a trigger from a template."
-  proposeTriggerFromTemplate(input: ProposeTriggerInput!): ChangeRequest!
-
-  """
-  Adds a config after checking the repository. Returns the validation errors when the check fails.
-  No mutation removes a config: removing its repository from the GitHub App installation on GitHub disables it.
-  """
-  addConfig(input: AddConfigInput!): AddConfigPayload!
-  "Reads the config repository again. A DISABLED config cannot be synced."
-  syncConfig(configId: ID!): Config!
-
-  "Saves an API key credential. Subscriptions are connected with the sanchoris CLI."
-  addCredential(input: AddCredentialInput!): Credential!
-  "Removes an API key, or disconnects a subscription login."
-  removeCredential(credentialId: ID!): ID!
-
-  "Changes the plan. Returns a Stripe Checkout URL when payment is needed. Refused for a tenant on the Admin plan and for the Admin plan as the target."
-  changePlan(tenantId: ID!, planId: ID!): ChangePlanPayload!
-  "Returns the URL of the Stripe customer portal. Refused for a tenant on the Admin plan."
-  openBillingPortal(tenantId: ID!): RedirectPayload!
-  "Returns a short-lived URL of the audit log as JSON Lines."
-  exportAuditLog(tenantId: ID!, filter: AuditFilter): RedirectPayload!
-
-  "Deletes the tenant (owners). slug must equal the tenant's slug. The tenant becomes DELETING at once: its unfinished tasks stop, its subscription is cancelled, and the worker then removes its data and records."
-  deleteTenant(tenantId: ID!, slug: String!): ID!
-
-  "Operator only."
-  suspendTenant(tenantId: ID!, reason: String!): Tenant!
-  "Operator only."
-  unsuspendTenant(tenantId: ID!): Tenant!
-}
-
-type RedirectPayload {
-  url: String!
-}
-
-
-type Viewer {
-  user: User!
-  memberships: [Member!]!
-  "Pending invitations addressed to the viewer's email."
-  invitations: [Invitation!]!
-  isOperator: Boolean!
-  "The plans the viewer can create a tenant on: the Admin plan alone when the sign-in has a verified @sancode.dev email, otherwise the plans of Query.plans."
-  newTenantPlans: [Plan!]!
-}
-
-type User {
-  id: ID!
-  email: String!
-  name: String!
-  "The linked GitHub login. Null until the user links GitHub in Settings → Integrations."
-  githubLogin: String
-}
-
-enum Role {
-  OWNER
-  ADMIN
-  MEMBER
-}
-
-type Member {
-  id: ID!
-  user: User!
-  tenant: Tenant!
-  role: Role!
-  joinedAt: DateTime!
-  lastActiveAt: DateTime
-  "Tasks this member requested, counted up to 200."
-  tasksStarted: Int!
-  "Personal credentials of this member. Empty unless the viewer is this member or an admin or owner."
-  credentials: [Credential!]!
-}
-
-enum InvitationState {
-  PENDING
-  ACCEPTED
-  REVOKED
-  EXPIRED
-}
-
-type Invitation {
-  id: ID!
-  email: String!
-  role: Role!
-  state: InvitationState!
-  invitedBy: Member!
-  expiresAt: DateTime!
-  tenantName: String!
-}
-
-enum BillingUnit {
-  TENANT
-  SEAT
-}
-
-enum LimitPeriod {
-  "The limit counts from the creation of the tenant."
-  TOTAL
-  MONTH
-}
-
-type Plan {
-  id: ID!
-  name: String!
-  priceUsd: Int!
-  billingUnit: BillingUnit!
-  "Null when the plan has no limit."
-  taskLimit: Int
-  "Null when the plan has no limit."
-  workspaceHourLimit: Int
-  limitPeriod: LimitPeriod!
-  "Null when the plan has no limit."
-  memberLimit: Int
-  concurrencyLimit: Int!
-  "Inbound events (GitHub webhooks, chat messages, replies) that the tenant can send in one minute; later ones in the minute are dropped."
-  inboundEventsPerMinute: Int!
-  retentionDays: Int!
-  auditRetentionDays: Int!
-  requiresPayment: Boolean!
-  "The plan of tenants created by a verified @sancode.dev email. It has no price, and its tenants do not change plans or open Stripe."
-  isAdmin: Boolean!
-}
-
-enum TenantState {
-  ACTIVE
-  SUSPENDED
-  "Set by deleteTenant. Mutations, webhooks, triggers and dispatch stop for the tenant until the worker removes it."
-  DELETING
-}
-
-enum GitHubOwnerKind {
-  ORGANIZATION
-  USER
+enum EventSource {
+	GITHUB
+	SLACK
+	WEB
+	SCHEDULE
 }
 
 type GitHubOwner {
-  kind: GitHubOwnerKind!
-  login: String!
+	kind: GitHubOwnerKind!
+	login: String!
 }
 
-type Tenant {
-  id: ID!
-  slug: String!
-  name: String!
-  plan: Plan!
-  state: TenantState!
-  suspendedReason: String
-  createdAt: DateTime!
-  "The GitHub account the GitHub App is installed on."
-  githubOwner: GitHubOwner
-  viewerMember: Member!
-  usage: TenantUsage!
-  activity: Activity!
-  setup: Setup!
-
-  members: [Member!]!
-  invitations(state: InvitationState): [Invitation!]!
-  integrations: [Integration!]!
-  credentials: [Credential!]!
-  configs: [Config!]!
-  projects: [Project!]!
-  sessions: [Session!]!
-  changeRequests(state: ChangeRequestState): [ChangeRequest!]!
-
-  triggers: [Trigger!]!
-  "Recent trigger events of all triggers, newest first."
-  triggerEvents(limit: Int = 20): [TriggerEvent!]!
-  skills: [Skill!]!
-  skill(name: String!): Skill
-
-  "The latest 200 tasks that match the filter, ordered with NEEDS_YOU first, then by last update, newest first."
-  tasks(filter: TaskFilter): [Task!]!
-  task(id: ID!): Task
-  "The latest 200 chat tasks (threads), newest first."
-  chats: [Task!]!
-  "Audit events, newest first."
-  auditEvents(filter: AuditFilter, limit: Int = 100): [AuditEvent!]!
-}
-
-type TenantUsage {
-  periodStart: DateTime!
-  "The end of the period. The counts reset at this time. Null for plans with TOTAL limits."
-  periodEnd: DateTime
-  tasksThisPeriod: Int!
-  workspaceSecondsThisPeriod: Int!
-  "Members plus pending invitations, compared with Plan.memberLimit."
-  seatsUsed: Int!
-  "Concurrency slots in use, compared with Plan.concurrencyLimit. A run holds one from its dispatch until its workspace stops, also while its task waits or needs you."
-  liveWorkspaces: Int!
-}
-
-type Activity {
-  runningTasks: Int!
-  runsToday: Int!
-  costTodayUsd: Float!
-  pullRequestsOpenedToday: Int!
-  "Runs started per hour over the last 24 hours, oldest first (24 values)."
-  runsLast24h: [Int!]!
-}
-
-"Progress of the first-run setup. Home shows the setup steps until complete is true."
-type Setup {
-  githubLinked: Boolean!
-  appInstalled: Boolean!
-  configAdded: Boolean!
-  credentialConnected: Boolean!
-  triggerEnabled: Boolean!
-  firstTaskStarted: Boolean!
-  projectCreated: Boolean!
-  slackConnected: Boolean!
-  complete: Boolean!
-}
-
-type Operator {
-  tenants: [Tenant!]!
-  "Concurrency slots in use across all tenants."
-  liveWorkspaces: Int!
-  runHoursThisMonth: Float!
-  revenueThisMonthUsd: Int!
-}
-
-
-enum IntegrationKind {
-  GITHUB_INSTALLATION
-  SLACK
-}
-
-enum IntegrationStatus {
-  CONNECTED
-  NOT_CONNECTED
-  ERROR
+enum GitHubOwnerKind {
+	ORGANIZATION
+	USER
 }
 
 type Integration {
-  id: ID!
-  kind: IntegrationKind!
-  status: IntegrationStatus!
-  "The GitHub account or the Slack workspace."
-  account: String
-  "Repositories selected for the GitHub App, as owner/name."
-  repositories: [String!]!
-  manageUrl: String
-  lastSyncedAt: DateTime
-  error: String
-}
-
-type ValidationError {
-  "The file in the config repository, relative to the config root."
-  path: String!
-  line: Int
-  column: Int
-  message: String!
-}
-
-type Validation {
-  valid: Boolean!
-  errors: [ValidationError!]!
-}
-
-type ConfigRevision {
-  id: ID!
-  "The revision number shown as r41."
-  number: Int!
-  commitSha: String!
-  committedAt: DateTime!
-  validation: Validation!
-}
-
-enum ConfigStatus {
-  ACTIVE
-  "The repository was removed from the GitHub App installation or deleted. The config no longer syncs or starts tasks."
-  DISABLED
-}
-
-type Config {
-  id: ID!
-  "The repository's current owner/name on GitHub, updated when the repository is renamed or transferred."
-  repository: String!
-  "The GitHub repository id that the config follows. Null when the config was disabled before its name resolved to a repository."
-  repositoryId: ID
-  status: ConfigStatus!
-  root: String!
-  branch: String!
-  url: String!
-  "The URL that creates a skill folder on GitHub."
-  newSkillUrl: String!
-  revision: ConfigRevision!
-  revisions(limit: Int = 10): [ConfigRevision!]!
-  syncedAt: DateTime
-  "Why the last sync failed, for example when GitHub is unreachable or a repository named in sanchoris.yaml is not in the GitHub App installation, or why the config is DISABLED. Null after a successful sync."
-  syncError: String
-  triggerCount: Int!
-  skillCount: Int!
-  projects: [Project!]!
-  changeRequests(state: ChangeRequestState): [ChangeRequest!]!
-}
-
-type WarmBuild {
-  succeeded: Boolean!
-  finishedAt: DateTime!
-}
-
-type Repository {
-  id: ID!
-  "The name inside the project, such as frontend."
-  name: String!
-  "The repository's current owner/name on GitHub."
-  fullName: String!
-  url: String!
-  warmBuild: WarmBuild
-}
-
-type Project {
-  id: ID!
-  name: String!
-  config: Config!
-  systemPrompt: String
-  repositories: [Repository!]!
-  "The latest warm build of its repositories."
-  warmBuild: WarmBuild
-  "Sessions that clone this project."
-  sessions: [Session!]!
-}
-
-enum WorkspaceCompute {
-  STANDARD
-}
-
-enum WorkspaceArchitecture {
-  ARM64
-  X86_64
-}
-
-enum UsageLimitResume {
-  AUTO
-  MANUAL
-}
-
-type Session {
-  id: ID!
-  name: String!
-  agent: Provider!
-  model: String!
-  "The credential name, or requester."
-  credentialName: String!
-  credential: Credential
-  project: Project
-  "Repositories cloned into the workspace, as owner/name."
-  repositories: [String!]!
-  "Repositories the GitHub token can reach, as owner/name or owner/*."
-  githubRepositories: [String!]!
-  compute: WorkspaceCompute!
-  architecture: WorkspaceArchitecture!
-  idleSeconds: Int!
-  usageLimitResume: UsageLimitResume!
-}
-
-enum ChangeRequestState {
-  OPEN
-  MERGED
-  CLOSED
-}
-
-enum ConfigObjectKind {
-  TRIGGER
-  SESSION
-  SKILL
-  PROJECT
-}
-
-type ConfigObjectRef {
-  kind: ConfigObjectKind!
-  name: String!
-}
-
-type ChangeRequest {
-  id: ID!
-  config: Config!
-  number: Int!
-  title: String!
-  url: String!
-  state: ChangeRequestState!
-  changes: [ConfigObjectRef!]!
-  validation: Validation!
-  "The chat task that opened it. Null when a member opened it."
-  openedFromTask: Task
-  openedBy: Member
-  openedAt: DateTime!
-}
-
-
-enum Provider {
-  CLAUDE
-  CODEX
-}
-
-enum CredentialKind {
-  SUBSCRIPTION
-  API_KEY
-  BEDROCK
-}
-
-enum CredentialScope {
-  PERSONAL
-  ORGANIZATION
-}
-
-enum CredentialStatus {
-  CONNECTED
-  RECONNECT
-}
-
-type UsageWindow {
-  "0 to 1"
-  utilization: Float!
-  resetsAt: DateTime!
-}
-
-type UsageSnapshot {
-  takenAt: DateTime!
-  fiveHour: UsageWindow
-  sevenDay: UsageWindow
-}
-
-type Credential {
-  id: ID!
-  "The name a session refers to."
-  name: String!
-  provider: Provider!
-  kind: CredentialKind!
-  "The subscription plan, such as Max or Team. Null for keys."
-  subscriptionPlan: String
-  "The login email, or a masked key."
-  account: String!
-  scope: CredentialScope!
-  "The member who owns a personal credential."
-  owner: Member
-  status: CredentialStatus!
-  "When the provider rejected the login. Set while status is RECONNECT."
-  rejectedAt: DateTime
-  lastUsedAt: DateTime
-  "The latest usage of a subscription. Null for keys and for logins to reconnect."
-  usage: UsageSnapshot
-}
-
-enum ApiKeyProvider {
-  ANTHROPIC
-  OPENAI
-  BEDROCK
-}
-
-
-enum TriggerState {
-  ENABLED
-  DISABLED
-}
-
-enum TriggerEventKind {
-  ISSUE_LABELED
-  ISSUE_COMMENT_CREATED
-  CHECK_RUN_COMPLETED
-  MESSAGE
-  SCHEDULE
-}
-
-enum EventSource {
-  GITHUB
-  SLACK
-  WEB
-  SCHEDULE
-}
-
-"What the EventPattern or ScheduleExpression matches."
-type TriggerMatch {
-  source: EventSource!
-  kind: TriggerEventKind!
-  repositories: [String!]!
-  labels: [String!]!
-  "detail.sender.login values. Empty when the pattern uses author_association."
-  senders: [String!]!
-  "The chat scope: all or a project name."
-  chatScope: String
-  slackChannel: String
-  scheduleExpression: String
-  nextRunAt: DateTime
-}
-
-type TaskLimits {
-  turns: Int!
-  costUsd: Float!
-  timeoutSeconds: Int!
-  heartbeatSeconds: Int!
-  childrenMaxDepth: Int!
-  childrenMaxCount: Int!
-}
-
-type Trigger {
-  id: ID!
-  name: String!
-  state: TriggerState!
-  match: TriggerMatch!
-  "The YAML of the trigger in the config repository."
-  yaml: String!
-  session: Session!
-  instruction: String!
-  skills: [Skill!]!
-  requiredSkills: [Skill!]!
-  maxNudges: Int!
-  limits: TaskLimits!
-  config: Config!
-  editUrl: String!
-  tasksLast7d: Int!
-  "Tasks of this trigger that are not finished, counted up to 200."
-  activeTasks: Int!
-  openChangeRequest: ChangeRequest
-  events(limit: Int = 20): [TriggerEvent!]!
-}
-
-enum TriggerEventResult {
-  STARTED
-  SKIPPED
-  DISCARDED
-}
-
-enum TriggerEventReason {
-  "The task tree is over Start.Limits.Children."
-  CHILD_LIMIT
-  "The sender is not in the event pattern."
-  SENDER_NOT_ALLOWED
-  "More events than the receive limit."
-  RECEIVE_LIMIT
-  "A task with the same name exists."
-  DUPLICATE
-}
-
-type TriggerEvent {
-  id: ID!
-  receivedAt: DateTime!
-  trigger: Trigger!
-  result: TriggerEventResult!
-  "Set for SKIPPED and DISCARDED."
-  reason: TriggerEventReason
-  "The login that caused the event, such as who added the label."
-  senderLogin: String
-  "The started task."
-  task: Task
-  "For CHILD_LIMIT, the task whose limit was reached."
-  limitedTask: Task
-  idempotencyKey: String!
-}
-
-type TriggerTemplate {
-  id: ID!
-  name: String!
-  description: String!
-}
-
-
-enum SkillKind {
-  RELIABLE
-  PLAIN
-}
-
-enum StateType {
-  TASK
-  PASS
-  CHOICE
-  WAIT
-  SUCCEED
-  FAIL
-}
-
-enum TransitionKind {
-  NEXT
-  CHOICE
-  DEFAULT
-  CATCH
-}
-
-type SkillInput {
-  name: String!
-  type: String!
-}
-
-type StateTransition {
-  to: String!
-  kind: TransitionKind!
-  "The condition, such as success or fixes ≥ 3, for CHOICE and CATCH."
-  label: String
-}
-
-"Counts of skill runs at a state, for the flow diagram."
-type StateActivity {
-  running: Int!
-  withAgent: Int!
-  needsYou: Int!
-  succeededToday: Int!
-}
-
-type SkillState {
-  name: String!
-  type: StateType!
-  "The resource of a TASK state, such as sanchoris:::github:createPullRequests."
-  resource: String
-  "A short text for the node: the Comment, or the resource action."
-  summary: String!
-  transitions: [StateTransition!]!
-  "Layout coordinates from skill.yaml."
-  x: Int!
-  y: Int!
-  activity: StateActivity!
-}
-
-type SkillStats {
-  days: Int!
-  runs: Int!
-  succeeded: Int!
-  medianDurationSeconds: Int
-  medianHandoffs: Int
-  gaveUp: Int!
-  "The error names of the failed runs, most frequent first."
-  failureErrors: [String!]!
-}
-
-type Skill {
-  id: ID!
-  name: String!
-  kind: SkillKind!
-  "The description from SKILL.md: when the agent calls it."
-  description: String!
-  "The Comment of skill.yaml."
-  comment: String
-  inputs: [SkillInput!]!
-  timeoutSeconds: Int
-  skillMd: String!
-  "Null for a plain skill."
-  skillYaml: String
-  startAt: String
-  states: [SkillState!]!
-  requiredBy: [Trigger!]!
-  config: Config
-  editUrl: String
-  stats(days: Int = 30): SkillStats!
-  recentRuns(limit: Int = 10): [SkillRun!]!
-  openChangeRequest: ChangeRequest
-}
-
-enum SkillRunStatus {
-  RUNNING
-  WAITING_AGENT
-  WAITING
-  SUCCEEDED
-  FAILED
-}
-
-enum StateEntryStatus {
-  RUNNING
-  WAITING
-  SUCCEEDED
-  FAILED
-  CAUGHT
-  TIMED_OUT
-}
-
-type SkillRun {
-  id: ID!
-  "The number of the run inside its task."
-  number: Int!
-  skill: Skill!
-  task: Task!
-  "The run (agent session) that called the skill."
-  run: Run
-  status: SkillRunStatus!
-  "The state the run is at, or ended at."
-  currentState: String
-  "How many times the skill handed work back to the agent (fix rounds)."
-  handoffs: Int!
-  input: String!
-  output: String
-  error: String
-  cause: String
-  startedAt: DateTime!
-  endedAt: DateTime
-  stateEntryCount: Int!
-  "State entries ordered by sequence. With last, only the last entries."
-  stateEntries(last: Int): [StateEntry!]!
-  outputs: [Output!]!
-}
-
-type StateEntry {
-  id: ID!
-  sequence: Int!
-  stateName: String!
-  stateType: StateType!
-  status: StateEntryStatus!
-  enteredAt: DateTime!
-  exitedAt: DateTime
-  attempts: Int!
-  input: String
-  output: String
-  error: String
-  cause: String
-  nextState: String
-  "A one-line result for the table."
-  result: String
-}
-
-
-enum TaskStatus {
-  PENDING
-  RUNNING
-  WAITING
-  NEEDS_YOU
-  SUCCEEDED
-  FAILED
-  ABORTED
-}
-
-enum WaitReason {
-  SKILL
-  USAGE_LIMIT
-  CHAT
-}
-
-enum PendingReason {
-  BLOCKED
-  CONCURRENCY
-  PLAN_LIMIT
-}
-
-enum NeedsYouReason {
-  SKILL_FAILED
-  NUDGES_EXHAUSTED
-  AGENT_ASKED
-  APPROVAL_REQUESTED
-  USAGE_LIMIT
-  LIMIT_EXCEEDED
-  WORKSPACE_STOPPED
-}
-
-enum ChannelKind {
-  WEB
-  SLACK
-}
-
-type Channel {
-  kind: ChannelKind!
-  threadId: String!
-  "all or a project name."
-  scope: String!
-  slackChannel: String
-}
-
-type IssueRef {
-  "owner/name"
-  repository: String!
-  number: Int!
-  title: String!
-  url: String!
-  "The task the issue started, if any."
-  task: Task
-}
-
-enum RequesterKind {
-  MEMBER
-  AGENT
-}
-
-type Requester {
-  kind: RequesterKind!
-  member: Member
-  "The task whose agent filed the issue."
-  task: Task
-  "True when the member asked in a chat."
-  viaChat: Boolean!
-}
-
-enum RequiredSkillState {
-  NOT_RUN
-  RUNNING
-  SUCCEEDED
-  FAILED
-}
-
-type RequiredSkillStatus {
-  skill: Skill!
-  state: RequiredSkillState!
-  latestRun: SkillRun
-}
-
-input TaskFilter {
-  statuses: [TaskStatus!]
-  triggerId: ID
-  skillName: String
-  "Only tasks that are not finished."
-  active: Boolean
-  "Only tasks that are snoozed (true) or that are not (false)."
-  snoozed: Boolean
-}
-
-type Task {
-  id: ID!
-  "The idempotency key the trigger chose."
-  name: String!
-  title: String!
-  status: TaskStatus!
-  waitReason: WaitReason
-  pendingReason: PendingReason
-  needsYouReason: NeedsYouReason
-  "The approval that the task's skill waits for; null when none waits."
-  approval: Approval
-  "When a usage-limited task resumes."
-  resumeAt: DateTime
-  autoResume: Boolean!
-  "Until when the task is out of the needs-you lists; null when it is not snoozed."
-  snoozedUntil: DateTime
-  nudges: Int!
-  maxNudges: Int!
-  error: String
-  cause: String
-  createdAt: DateTime!
-  startedAt: DateTime
-  endedAt: DateTime
-  updatedAt: DateTime!
-  trigger: Trigger!
-  triggerEvent: TriggerEvent
-  requester: Requester
-  session: Session!
-  "The config revision pinned when the task started."
-  configRevision: Int!
-  issue: IssueRef
-  channel: Channel
-  parent: Task
-  children: [Task!]!
-  blockedBy: [Task!]!
-  "Tasks started from issues this task filed, with their descendants."
-  filedTasks: [Task!]!
-  requiredSkills: [RequiredSkillStatus!]!
-  skillRuns: [SkillRun!]!
-  runs: [Run!]!
-  run(number: Int!): Run
-  outputs: [Output!]!
-  messages: [ChatMessage!]!
-  limits: TaskLimits!
-  turns: Int!
-  costUsd: Float!
-}
-
-type Approval {
-  message: String!
-  requestedAt: DateTime!
-}
-
-enum RunStatus {
-  CREATING
-  RUNNING
-  IDLE
-  COMPLETED
-  FAILED
-}
-
-type Workspace {
-  platform: String!
-  compute: WorkspaceCompute!
-  architecture: WorkspaceArchitecture!
-  "The ECS capacity provider the workspace runs on (FARGATE_SPOT or FARGATE); null before it launches and for local workspaces."
-  capacityProvider: String
-  vcpu: Int!
-  memoryMib: Int!
-  "Repository names cloned into the workspace."
-  repositories: [String!]!
-  branch: String!
-  baseCommit: String!
-}
-
-enum LogLineKind {
-  "Platform messages: workspace and session lifecycle."
-  SYSTEM
-  "Instructions sanchoris sent to the session."
-  INSTRUCTION
-  AGENT
-  TOOL
-  "Skill and session events."
-  EVENT
-  "Messages people sent."
-  USER
-  ERROR
-}
-
-type LogLine {
-  sequence: Int!
-  at: DateTime!
-  kind: LogLineKind!
-  "May span lines."
-  text: String!
-  "Set on the usage-limit snapshots that the worker reports."
-  rateLimit: LogRateLimit
-}
-
-type LogRateLimit {
-  "The provider's status: allowed, allowed_warning, or rejected; rejected means the usage limit was reached."
-  status: String!
-  resetsAt: DateTime
-}
-
-type Run {
-  id: ID!
-  number: Int!
-  task: Task!
-  sessionName: String!
-  agent: Provider!
-  model: String!
-  credentialName: String!
-  agentSessionId: String
-  status: RunStatus!
-  startedAt: DateTime!
-  endedAt: DateTime
-  turns: Int!
-  costUsd: Float!
-  summary: String
-  workspace: Workspace!
-  "Log lines ordered by sequence, after the given sequence."
-  log(after: Int): [LogLine!]!
-  skillRuns: [SkillRun!]!
-  outputs: [Output!]!
-}
-
-enum OutputKind {
-  PULL_REQUEST
-  COMMENT
-}
-
-enum OutputState {
-  OPEN
-  MERGED
-  CLOSED
-}
-
-type Output {
-  id: ID!
-  kind: OutputKind!
-  "owner/name"
-  repository: String!
-  number: Int!
-  url: String!
-  state: OutputState!
-  createdAt: DateTime!
-}
-
-enum ChatAuthorKind {
-  MEMBER
-  AGENT
-}
-
-type ChatMessage {
-  id: ID!
-  authorKind: ChatAuthorKind!
-  member: Member
-  text: String!
-  at: DateTime!
-  "Issues the agent filed in this message."
-  issues: [IssueRef!]!
-}
-
-
-enum ActorKind {
-  MEMBER
-  AGENT
-  TRIGGER
-  SYSTEM
-  OPERATOR
-}
-
-enum AuditOrigin {
-  WEB
-  GITHUB
-  SLACK
-  SYSTEM
-}
-
-type AuditEvent {
-  id: ID!
-  at: DateTime!
-  actorKind: ActorKind!
-  "The member name, the trigger name, or the run and task of an agent."
-  actorName: String!
-  action: String!
-  target: String!
-  targetTask: Task
-  summary: String
-  origin: AuditOrigin!
-  "The client IP for WEB."
-  ip: String
-}
-
-input AuditFilter {
-  actorKind: ActorKind
-  memberId: ID
-  action: String
-  since: DateTime
-}
-
-
-input CreateTenantInput {
-  name: String!
-  planId: ID!
-}
-
-type CreateTenantPayload {
-  "The new tenant. On a paid plan it stays SUSPENDED with the reason payment_pending until the checkout completes."
-  tenant: Tenant
-  "Set when the plan is paid: the Stripe Checkout to open."
-  checkoutUrl: String
+	id: ID!
+	kind: IntegrationKind!
+	status: IntegrationStatus!
+	"""
+	The GitHub account or the Slack workspace.
+	"""
+	account: String
+	"""
+	Repositories selected for the GitHub App, as owner/name.
+	"""
+	repositories: [String!]!
+	manageUrl: String
+	lastSyncedAt: DateTime
+	error: String
+}
+
+enum IntegrationKind {
+	GITHUB_INSTALLATION
+	SLACK
+}
+
+enum IntegrationStatus {
+	CONNECTED
+	NOT_CONNECTED
+	ERROR
+}
+
+type Invitation {
+	id: ID!
+	email: String!
+	role: Role!
+	state: InvitationState!
+	invitedBy: Member!
+	expiresAt: DateTime!
+	tenantName: String!
+}
+
+enum InvitationState {
+	PENDING
+	ACCEPTED
+	REVOKED
+	EXPIRED
 }
 
 input InviteMemberInput {
-  tenantId: ID!
-  email: String!
-  role: Role!
+	tenantId: ID!
+	email: String!
+	role: Role!
 }
 
-input ResumeTaskInput {
-  taskId: ID!
-  message: String!
+type IssueRef {
+	"""
+	owner/name
+	"""
+	repository: String!
+	number: Int!
+	title: String!
+	url: String!
+	"""
+	The task the issue started, if any.
+	"""
+	task: Task
 }
 
-input SendChatMessageInput {
-  tenantId: ID!
-  taskId: ID
-  "all or a project name. Required when taskId is not given."
-  scope: String
-  text: String!
+enum LimitPeriod {
+	"""
+	The limit counts from the creation of the tenant.
+	"""
+	TOTAL
+	MONTH
 }
 
-type SendChatMessagePayload {
-  task: Task!
-  message: ChatMessage!
+type LogLine {
+	sequence: Int!
+	at: DateTime!
+	kind: LogLineKind!
+	"""
+	May span lines.
+	"""
+	text: String!
+	"""
+	Set on the usage-limit snapshots that the worker reports.
+	"""
+	rateLimit: LogRateLimit
+}
+
+enum LogLineKind {
+	"""
+	Platform messages: workspace and session lifecycle.
+	"""
+	SYSTEM
+	"""
+	Instructions sanchoris sent to the session.
+	"""
+	INSTRUCTION
+	AGENT
+	TOOL
+	"""
+	Skill and session events.
+	"""
+	EVENT
+	"""
+	Messages people sent.
+	"""
+	USER
+	ERROR
+}
+
+type LogRateLimit {
+	"""
+	The provider's status: allowed, allowed_warning, or rejected; rejected means the usage limit was reached.
+	"""
+	status: String!
+	resetsAt: DateTime
+}
+
+type Member {
+	id: ID!
+	user: User!
+	tenant: Tenant!
+	role: Role!
+	joinedAt: DateTime!
+	lastActiveAt: DateTime
+	"""
+	Tasks this member requested, counted up to 200.
+	"""
+	tasksStarted: Int!
+	"""
+	Personal credentials of this member. Empty unless the viewer is this member or an admin or owner.
+	"""
+	credentials: [Credential!]!
+}
+
+type Mutation {
+	"""
+	Creates a tenant owned by the viewer on a plan of Viewer.newTenantPlans. A paid plan returns a Stripe Checkout URL and creates the tenant after payment; Free and Admin return the tenant.
+	"""
+	createTenant(input: CreateTenantInput!): CreateTenantPayload!
+	"""
+	Accepts an invitation addressed to the viewer and returns the new membership.
+	"""
+	acceptInvitation(invitationId: ID!): Member!
+	"""
+	Starts linking the viewer's GitHub account. Returns the GitHub authorize URL to open and sets the cookie that binds the flow to this browser.
+	"""
+	connectGitHub: RedirectPayload!
+	"""
+	Starts installing the GitHub App for a tenant (admins). Returns the GitHub install URL to open and sets the cookie that binds the flow to this browser.
+	"""
+	installGitHubApp(tenantId: ID!): RedirectPayload!
+	"""
+	Unlinks the viewer's GitHub account.
+	"""
+	unlinkGitHub: Viewer!
+	"""
+	Records the viewer's sign-out in the audit log of each of the viewer's tenants. The client then ends the Cognito session.
+	"""
+	signOut: Boolean!
+	"""
+	Starts the Slack installation for a tenant. Returns the URL to open.
+	"""
+	connectSlack(tenantId: ID!): RedirectPayload!
+	inviteMember(input: InviteMemberInput!): Invitation!
+	revokeInvitation(invitationId: ID!): Invitation!
+	changeMemberRole(memberId: ID!, role: Role!): Member!
+	removeMember(memberId: ID!): ID!
+	"""
+	Sends the message to the task's agent session and resumes a NEEDS_YOU task.
+	"""
+	resumeTask(input: ResumeTaskInput!): Task!
+	"""
+	Takes a NEEDS_YOU or usage-limited task out of the needs-you lists until the given time. A usage-limited task resumes no earlier than that time. Resuming or stopping the task, or a change of its status, ends the snooze.
+	"""
+	snoozeTask(taskId: ID!, until: DateTime!): Task!
+	"""
+	Stops the task. Its status becomes ABORTED.
+	"""
+	stopTask(taskId: ID!): Task!
+	"""
+	Approves or rejects the approval that the task's skill waits for. Owners, admins, and the member who requested the task can resolve it.
+	"""
+	resolveApproval(taskId: ID!, approved: Boolean!): Task!
+	"""
+	Stops the agent session of a run.
+	"""
+	stopRun(runId: ID!): Run!
+	"""
+	Sends a chat message. With taskId, the message goes to that task's agent session.
+	Without taskId, a new chat starts in the given scope ("all" or a project name).
+	"""
+	sendChatMessage(input: SendChatMessageInput!): SendChatMessagePayload!
+	setTriggerState(triggerId: ID!, state: TriggerState!): Trigger!
+	"""
+	Opens a change request on a config repository that adds a trigger from a template.
+	"""
+	proposeTriggerFromTemplate(input: ProposeTriggerInput!): ChangeRequest!
+	"""
+	Adds a config after checking the repository. Returns the validation errors when the check fails.
+	No mutation removes a config: removing its repository from the GitHub App installation on GitHub disables it.
+	"""
+	addConfig(input: AddConfigInput!): AddConfigPayload!
+	"""
+	Reads the config repository again. A DISABLED config cannot be synced.
+	"""
+	syncConfig(configId: ID!): Config!
+	"""
+	Saves an API key credential. Subscriptions are connected with the sanchoris CLI.
+	"""
+	addCredential(input: AddCredentialInput!): Credential!
+	"""
+	Removes an API key, or disconnects a subscription login.
+	"""
+	removeCredential(credentialId: ID!): ID!
+	"""
+	Changes the plan. Returns a Stripe Checkout URL when payment is needed. Refused for a tenant on the Admin plan and for the Admin plan as the target.
+	"""
+	changePlan(tenantId: ID!, planId: ID!): ChangePlanPayload!
+	"""
+	Returns the URL of the Stripe customer portal. Refused for a tenant on the Admin plan.
+	"""
+	openBillingPortal(tenantId: ID!): RedirectPayload!
+	"""
+	Returns a short-lived URL of the audit log as JSON Lines.
+	"""
+	exportAuditLog(tenantId: ID!, filter: AuditFilter): RedirectPayload!
+	"""
+	Deletes the tenant (owners). slug must equal the tenant's slug. The tenant becomes DELETING at once: its unfinished tasks stop, its subscription is cancelled, and the worker then removes its data and records.
+	"""
+	deleteTenant(tenantId: ID!, slug: String!): ID!
+	"""
+	Operator only.
+	"""
+	suspendTenant(tenantId: ID!, reason: String!): Tenant!
+	"""
+	Operator only.
+	"""
+	unsuspendTenant(tenantId: ID!): Tenant!
+}
+
+enum NeedsYouReason {
+	SKILL_FAILED
+	NUDGES_EXHAUSTED
+	AGENT_ASKED
+	APPROVAL_REQUESTED
+	USAGE_LIMIT
+	LIMIT_EXCEEDED
+	WORKSPACE_STOPPED
+}
+
+type Operator {
+	tenants: [Tenant!]!
+	"""
+	Concurrency slots in use across all tenants.
+	"""
+	liveWorkspaces: Int!
+	runHoursThisMonth: Float!
+	revenueThisMonthUsd: Int!
+}
+
+type Output {
+	id: ID!
+	kind: OutputKind!
+	"""
+	owner/name
+	"""
+	repository: String!
+	number: Int!
+	url: String!
+	state: OutputState!
+	createdAt: DateTime!
+}
+
+enum OutputKind {
+	PULL_REQUEST
+	COMMENT
+}
+
+enum OutputState {
+	OPEN
+	MERGED
+	CLOSED
+}
+
+enum PendingReason {
+	BLOCKED
+	CONCURRENCY
+	PLAN_LIMIT
+}
+
+type Plan {
+	id: ID!
+	name: String!
+	priceUsd: Int!
+	billingUnit: BillingUnit!
+	"""
+	Null when the plan has no limit.
+	"""
+	taskLimit: Int
+	"""
+	Null when the plan has no limit.
+	"""
+	workspaceHourLimit: Int
+	limitPeriod: LimitPeriod!
+	"""
+	Null when the plan has no limit.
+	"""
+	memberLimit: Int
+	concurrencyLimit: Int!
+	"""
+	Inbound events (GitHub webhooks, chat messages, replies) that the tenant can send in one minute; later ones in the minute are dropped.
+	"""
+	inboundEventsPerMinute: Int!
+	retentionDays: Int!
+	auditRetentionDays: Int!
+	requiresPayment: Boolean!
+	"""
+	The plan of tenants created by a verified @sancode.dev email. It has no price, and its tenants do not change plans or open Stripe.
+	"""
+	isAdmin: Boolean!
+}
+
+type Project {
+	id: ID!
+	name: String!
+	config: Config!
+	systemPrompt: String
+	repositories: [Repository!]!
+	"""
+	The latest warm build of its repositories.
+	"""
+	warmBuild: WarmBuild
+	"""
+	Sessions that clone this project.
+	"""
+	sessions: [Session!]!
 }
 
 input ProposeTriggerInput {
-  tenantId: ID!
-  configId: ID!
-  templateId: ID!
-  repository: String!
+	tenantId: ID!
+	configId: ID!
+	templateId: ID!
+	repository: String!
 }
 
-input AddConfigInput {
-  tenantId: ID!
-  repository: String!
-  root: String!
-  branch: String!
+enum Provider {
+	CLAUDE
+	CODEX
 }
 
-type AddConfigPayload {
-  config: Config
-  errors: [ValidationError!]!
+type Query {
+	"""
+	The signed-in user, the tenants they belong to and the invitations addressed to them.
+	"""
+	viewer: Viewer!
+	"""
+	The plans a tenant can choose, ordered by price. The Admin plan is not among them.
+	"""
+	plans: [Plan!]!
+	"""
+	A tenant the viewer is a member of. Null when it does not exist or the viewer is not a member.
+	"""
+	tenant(slug: String!): Tenant
+	"""
+	Operator console. Null unless the viewer is a sanchoris operator.
+	"""
+	operator: Operator
+	"""
+	Templates offered by New from template on Triggers and by the first-run setup.
+	"""
+	triggerTemplates: [TriggerTemplate!]!
 }
 
-input AddCredentialInput {
-  tenantId: ID!
-  name: String!
-  provider: ApiKeyProvider!
-  key: String!
-  scope: CredentialScope!
+type RedirectPayload {
+	url: String!
 }
 
-type ChangePlanPayload {
-  tenant: Tenant!
-  checkoutUrl: String
+type Repository {
+	id: ID!
+	"""
+	The name inside the project, such as frontend.
+	"""
+	name: String!
+	"""
+	The repository's current owner/name on GitHub.
+	"""
+	fullName: String!
+	url: String!
+	warmBuild: WarmBuild
+}
+
+type Requester {
+	kind: RequesterKind!
+	member: Member
+	"""
+	The task whose agent filed the issue.
+	"""
+	task: Task
+	"""
+	True when the member asked in a chat.
+	"""
+	viaChat: Boolean!
+}
+
+enum RequesterKind {
+	MEMBER
+	AGENT
+}
+
+enum RequiredSkillState {
+	NOT_RUN
+	RUNNING
+	SUCCEEDED
+	FAILED
+}
+
+type RequiredSkillStatus {
+	skill: Skill!
+	state: RequiredSkillState!
+	latestRun: SkillRun
+}
+
+input ResumeTaskInput {
+	taskId: ID!
+	message: String!
+}
+
+enum Role {
+	OWNER
+	ADMIN
+	MEMBER
+}
+
+type Run {
+	id: ID!
+	number: Int!
+	task: Task!
+	sessionName: String!
+	agent: Provider!
+	model: String!
+	credentialName: String!
+	agentSessionId: String
+	status: RunStatus!
+	startedAt: DateTime!
+	endedAt: DateTime
+	turns: Int!
+	costUsd: Float!
+	summary: String
+	workspace: Workspace!
+	"""
+	Log lines ordered by sequence, after the given sequence.
+	"""
+	log(after: Int): [LogLine!]!
+	skillRuns: [SkillRun!]!
+	outputs: [Output!]!
+}
+
+enum RunStatus {
+	CREATING
+	RUNNING
+	IDLE
+	COMPLETED
+	FAILED
+}
+
+input SendChatMessageInput {
+	tenantId: ID!
+	taskId: ID
+	"""
+	all or a project name. Required when taskId is not given.
+	"""
+	scope: String
+	text: String!
+}
+
+type SendChatMessagePayload {
+	task: Task!
+	message: ChatMessage!
+}
+
+type Session {
+	id: ID!
+	name: String!
+	agent: Provider!
+	model: String!
+	"""
+	The credential name, or requester.
+	"""
+	credentialName: String!
+	credential: Credential
+	project: Project
+	"""
+	Repositories cloned into the workspace, as owner/name.
+	"""
+	repositories: [String!]!
+	"""
+	Repositories the GitHub token can reach, as owner/name or owner/*.
+	"""
+	githubRepositories: [String!]!
+	compute: WorkspaceCompute!
+	architecture: WorkspaceArchitecture!
+	idleSeconds: Int!
+	usageLimitResume: UsageLimitResume!
+}
+
+"""
+Progress of the first-run setup. Home shows the setup steps until complete is true.
+"""
+type Setup {
+	githubLinked: Boolean!
+	appInstalled: Boolean!
+	configAdded: Boolean!
+	credentialConnected: Boolean!
+	triggerEnabled: Boolean!
+	firstTaskStarted: Boolean!
+	projectCreated: Boolean!
+	slackConnected: Boolean!
+	complete: Boolean!
+}
+
+type Skill {
+	id: ID!
+	name: String!
+	kind: SkillKind!
+	"""
+	The description from SKILL.md: when the agent calls it.
+	"""
+	description: String!
+	"""
+	The Comment of skill.yaml.
+	"""
+	comment: String
+	inputs: [SkillInput!]!
+	timeoutSeconds: Int
+	skillMd: String!
+	"""
+	Null for a plain skill.
+	"""
+	skillYaml: String
+	startAt: String
+	states: [SkillState!]!
+	requiredBy: [Trigger!]!
+	config: Config
+	editUrl: String
+	stats(days: Int = 30): SkillStats!
+	recentRuns(limit: Int = 10): [SkillRun!]!
+	openChangeRequest: ChangeRequest
+}
+
+type SkillInput {
+	name: String!
+	type: String!
+}
+
+enum SkillKind {
+	RELIABLE
+	PLAIN
+}
+
+type SkillRun {
+	id: ID!
+	"""
+	The number of the run inside its task.
+	"""
+	number: Int!
+	skill: Skill!
+	task: Task!
+	"""
+	The run (agent session) that called the skill.
+	"""
+	run: Run
+	status: SkillRunStatus!
+	"""
+	The state the run is at, or ended at.
+	"""
+	currentState: String
+	"""
+	How many times the skill handed work back to the agent (fix rounds).
+	"""
+	handoffs: Int!
+	input: String!
+	output: String
+	error: String
+	cause: String
+	startedAt: DateTime!
+	endedAt: DateTime
+	stateEntryCount: Int!
+	"""
+	State entries ordered by sequence. With last, only the last entries.
+	"""
+	stateEntries(last: Int): [StateEntry!]!
+	outputs: [Output!]!
+}
+
+enum SkillRunStatus {
+	RUNNING
+	WAITING_AGENT
+	WAITING
+	SUCCEEDED
+	FAILED
+}
+
+type SkillState {
+	name: String!
+	type: StateType!
+	"""
+	The resource of a TASK state, such as sanchoris:::github:createPullRequests.
+	"""
+	resource: String
+	"""
+	A short text for the node: the Comment, or the resource action.
+	"""
+	summary: String!
+	transitions: [StateTransition!]!
+	"""
+	Layout coordinates from skill.yaml.
+	"""
+	x: Int!
+	y: Int!
+	activity: StateActivity!
+}
+
+type SkillStats {
+	days: Int!
+	runs: Int!
+	succeeded: Int!
+	medianDurationSeconds: Int
+	medianHandoffs: Int
+	gaveUp: Int!
+	"""
+	The error names of the failed runs, most frequent first.
+	"""
+	failureErrors: [String!]!
+}
+
+"""
+Counts of skill runs at a state, for the flow diagram.
+"""
+type StateActivity {
+	running: Int!
+	withAgent: Int!
+	needsYou: Int!
+	succeededToday: Int!
+}
+
+type StateEntry {
+	id: ID!
+	sequence: Int!
+	stateName: String!
+	stateType: StateType!
+	status: StateEntryStatus!
+	enteredAt: DateTime!
+	exitedAt: DateTime
+	attempts: Int!
+	input: String
+	output: String
+	error: String
+	cause: String
+	nextState: String
+	"""
+	A one-line result for the table.
+	"""
+	result: String
+}
+
+enum StateEntryStatus {
+	RUNNING
+	WAITING
+	SUCCEEDED
+	FAILED
+	CAUGHT
+	TIMED_OUT
+}
+
+type StateTransition {
+	to: String!
+	kind: TransitionKind!
+	"""
+	The condition, such as success or fixes ≥ 3, for CHOICE and CATCH.
+	"""
+	label: String
+}
+
+enum StateType {
+	TASK
+	PASS
+	CHOICE
+	WAIT
+	SUCCEED
+	FAIL
+}
+
+type Task {
+	id: ID!
+	"""
+	The idempotency key the trigger chose.
+	"""
+	name: String!
+	title: String!
+	status: TaskStatus!
+	waitReason: WaitReason
+	pendingReason: PendingReason
+	needsYouReason: NeedsYouReason
+	"""
+	The approval that the task's skill waits for; null when none waits.
+	"""
+	approval: Approval
+	"""
+	When a usage-limited task resumes.
+	"""
+	resumeAt: DateTime
+	autoResume: Boolean!
+	"""
+	Until when the task is out of the needs-you lists; null when it is not snoozed.
+	"""
+	snoozedUntil: DateTime
+	nudges: Int!
+	maxNudges: Int!
+	error: String
+	cause: String
+	createdAt: DateTime!
+	startedAt: DateTime
+	endedAt: DateTime
+	updatedAt: DateTime!
+	trigger: Trigger!
+	triggerEvent: TriggerEvent
+	requester: Requester
+	session: Session!
+	"""
+	The config revision pinned when the task started.
+	"""
+	configRevision: Int!
+	issue: IssueRef
+	channel: Channel
+	parent: Task
+	children: [Task!]!
+	blockedBy: [Task!]!
+	"""
+	Tasks started from issues this task filed, with their descendants.
+	"""
+	filedTasks: [Task!]!
+	requiredSkills: [RequiredSkillStatus!]!
+	skillRuns: [SkillRun!]!
+	runs: [Run!]!
+	run(number: Int!): Run
+	outputs: [Output!]!
+	messages: [ChatMessage!]!
+	limits: TaskLimits!
+	turns: Int!
+	costUsd: Float!
+}
+
+input TaskFilter {
+	statuses: [TaskStatus!]
+	triggerId: ID
+	skillName: String
+	"""
+	Only tasks that are not finished.
+	"""
+	active: Boolean
+	"""
+	Only tasks that are snoozed (true) or that are not (false).
+	"""
+	snoozed: Boolean
+}
+
+type TaskLimits {
+	turns: Int!
+	costUsd: Float!
+	timeoutSeconds: Int!
+	heartbeatSeconds: Int!
+	childrenMaxDepth: Int!
+	childrenMaxCount: Int!
+}
+
+enum TaskStatus {
+	PENDING
+	RUNNING
+	WAITING
+	NEEDS_YOU
+	SUCCEEDED
+	FAILED
+	ABORTED
+}
+
+type Tenant {
+	id: ID!
+	slug: String!
+	name: String!
+	plan: Plan!
+	state: TenantState!
+	suspendedReason: String
+	createdAt: DateTime!
+	"""
+	The GitHub account the GitHub App is installed on.
+	"""
+	githubOwner: GitHubOwner
+	viewerMember: Member!
+	usage: TenantUsage!
+	activity: Activity!
+	setup: Setup!
+	members: [Member!]!
+	invitations(state: InvitationState): [Invitation!]!
+	integrations: [Integration!]!
+	credentials: [Credential!]!
+	configs: [Config!]!
+	projects: [Project!]!
+	sessions: [Session!]!
+	changeRequests(state: ChangeRequestState): [ChangeRequest!]!
+	triggers: [Trigger!]!
+	"""
+	Recent trigger events of all triggers, newest first.
+	"""
+	triggerEvents(limit: Int = 20): [TriggerEvent!]!
+	skills: [Skill!]!
+	skill(name: String!): Skill
+	"""
+	The latest 200 tasks that match the filter, ordered with NEEDS_YOU first, then by last update, newest first.
+	"""
+	tasks(filter: TaskFilter): [Task!]!
+	task(id: ID!): Task
+	"""
+	The latest 200 chat tasks (threads), newest first.
+	"""
+	chats: [Task!]!
+	"""
+	Audit events, newest first.
+	"""
+	auditEvents(filter: AuditFilter, limit: Int = 100): [AuditEvent!]!
+}
+
+enum TenantState {
+	ACTIVE
+	SUSPENDED
+	"""
+	Set by deleteTenant. Mutations, webhooks, triggers and dispatch stop for the tenant until the worker removes it.
+	"""
+	DELETING
+}
+
+type TenantUsage {
+	periodStart: DateTime!
+	"""
+	The end of the period. The counts reset at this time. Null for plans with TOTAL limits.
+	"""
+	periodEnd: DateTime
+	tasksThisPeriod: Int!
+	workspaceSecondsThisPeriod: Int!
+	"""
+	Members plus pending invitations, compared with Plan.memberLimit.
+	"""
+	seatsUsed: Int!
+	"""
+	Concurrency slots in use, compared with Plan.concurrencyLimit. A run holds one from its dispatch until its workspace stops, also while its task waits or needs you.
+	"""
+	liveWorkspaces: Int!
+}
+
+enum TransitionKind {
+	NEXT
+	CHOICE
+	DEFAULT
+	CATCH
+}
+
+type Trigger {
+	id: ID!
+	name: String!
+	state: TriggerState!
+	match: TriggerMatch!
+	"""
+	The YAML of the trigger in the config repository.
+	"""
+	yaml: String!
+	session: Session!
+	instruction: String!
+	skills: [Skill!]!
+	requiredSkills: [Skill!]!
+	maxNudges: Int!
+	limits: TaskLimits!
+	config: Config!
+	editUrl: String!
+	tasksLast7d: Int!
+	"""
+	Tasks of this trigger that are not finished, counted up to 200.
+	"""
+	activeTasks: Int!
+	openChangeRequest: ChangeRequest
+	events(limit: Int = 20): [TriggerEvent!]!
+}
+
+type TriggerEvent {
+	id: ID!
+	receivedAt: DateTime!
+	trigger: Trigger!
+	result: TriggerEventResult!
+	"""
+	Set for SKIPPED and DISCARDED.
+	"""
+	reason: TriggerEventReason
+	"""
+	The login that caused the event, such as who added the label.
+	"""
+	senderLogin: String
+	"""
+	The started task.
+	"""
+	task: Task
+	"""
+	For CHILD_LIMIT, the task whose limit was reached.
+	"""
+	limitedTask: Task
+	idempotencyKey: String!
+}
+
+enum TriggerEventKind {
+	ISSUE_LABELED
+	ISSUE_COMMENT_CREATED
+	CHECK_RUN_COMPLETED
+	MESSAGE
+	SCHEDULE
+}
+
+enum TriggerEventReason {
+	"""
+	The task tree is over Start.Limits.Children.
+	"""
+	CHILD_LIMIT
+	"""
+	The sender is not in the event pattern.
+	"""
+	SENDER_NOT_ALLOWED
+	"""
+	More events than the receive limit.
+	"""
+	RECEIVE_LIMIT
+	"""
+	A task with the same name exists.
+	"""
+	DUPLICATE
+}
+
+enum TriggerEventResult {
+	STARTED
+	SKIPPED
+	DISCARDED
+}
+
+"""
+What the EventPattern or ScheduleExpression matches.
+"""
+type TriggerMatch {
+	source: EventSource!
+	kind: TriggerEventKind!
+	repositories: [String!]!
+	labels: [String!]!
+	"""
+	detail.sender.login values. Empty when the pattern uses author_association.
+	"""
+	senders: [String!]!
+	"""
+	The chat scope: all or a project name.
+	"""
+	chatScope: String
+	slackChannel: String
+	scheduleExpression: String
+	nextRunAt: DateTime
+}
+
+enum TriggerState {
+	ENABLED
+	DISABLED
+}
+
+type TriggerTemplate {
+	id: ID!
+	name: String!
+	description: String!
+}
+
+enum UsageLimitResume {
+	AUTO
+	MANUAL
+}
+
+type UsageSnapshot {
+	takenAt: DateTime!
+	fiveHour: UsageWindow
+	sevenDay: UsageWindow
+}
+
+type UsageWindow {
+	"""
+	0 to 1
+	"""
+	utilization: Float!
+	resetsAt: DateTime!
+}
+
+type User {
+	id: ID!
+	email: String!
+	name: String!
+	"""
+	The linked GitHub login. Null until the user links GitHub in Settings → Integrations.
+	"""
+	githubLogin: String
+}
+
+type Validation {
+	valid: Boolean!
+	errors: [ValidationError!]!
+}
+
+type ValidationError {
+	"""
+	The file in the config repository, relative to the config root.
+	"""
+	path: String!
+	line: Int
+	column: Int
+	message: String!
+}
+
+type Viewer {
+	user: User!
+	memberships: [Member!]!
+	"""
+	Pending invitations addressed to the viewer's email.
+	"""
+	invitations: [Invitation!]!
+	isOperator: Boolean!
+	"""
+	The plans the viewer can create a tenant on: the Admin plan alone when the sign-in has a verified @sancode.dev email, otherwise the plans of Query.plans.
+	"""
+	newTenantPlans: [Plan!]!
+}
+
+enum WaitReason {
+	SKILL
+	USAGE_LIMIT
+	CHAT
+}
+
+type WarmBuild {
+	succeeded: Boolean!
+	finishedAt: DateTime!
+}
+
+type Workspace {
+	platform: String!
+	compute: WorkspaceCompute!
+	architecture: WorkspaceArchitecture!
+	"""
+	The ECS capacity provider the workspace runs on (FARGATE_SPOT or FARGATE); null before it launches and for local workspaces.
+	"""
+	capacityProvider: String
+	vcpu: Int!
+	memoryMib: Int!
+	"""
+	Repository names cloned into the workspace.
+	"""
+	repositories: [String!]!
+	branch: String!
+	baseCommit: String!
+}
+
+enum WorkspaceArchitecture {
+	ARM64
+	X86_64
+}
+
+enum WorkspaceCompute {
+	STANDARD
+}
+
+"""
+Directs the executor to include this field or fragment only when the `if` argument is true.
+"""
+directive @include(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+"""
+Directs the executor to skip this field or fragment when the `if` argument is true.
+"""
+directive @skip(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+schema {
+	query: Query
+	mutation: Mutation
 }

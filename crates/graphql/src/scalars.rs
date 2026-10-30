@@ -4,6 +4,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Timestamp(pub DateTime<Utc>);
 
+/// An ISO 8601 date-time string in UTC, for example 2026-10-26T14:05:00Z.
 #[Scalar(name = "DateTime")]
 impl ScalarType for Timestamp {
     fn parse(value: Value) -> InputValueResult<Self> {

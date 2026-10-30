@@ -63,7 +63,9 @@ pub(crate) struct CreateTenantInput {
 
 #[derive(SimpleObject)]
 pub(crate) struct CreateTenantPayload {
+    /// The new tenant. On a paid plan it stays SUSPENDED with the reason payment_pending until the checkout completes.
     tenant: Option<Tenant>,
+    /// Set when the plan is paid: the Stripe Checkout to open.
     checkout_url: Option<String>,
 }
 
@@ -88,6 +90,7 @@ pub(crate) struct SendChatMessageInput {
     tenant_id: ID,
     #[graphql(name = "taskId")]
     task_id: Option<ID>,
+    /// all or a project name. Required when taskId is not given.
     scope: Option<String>,
     text: String,
 }
@@ -270,6 +273,7 @@ fn worker_error(error: impl std::fmt::Display) -> Error {
 
 #[Object(name = "Mutation")]
 impl MutationRoot {
+    /// Creates a tenant owned by the viewer on a plan of Viewer.newTenantPlans. A paid plan returns a Stripe Checkout URL and creates the tenant after payment; Free and Admin return the tenant.
     async fn create_tenant(
         &self,
         ctx: &Context<'_>,
@@ -342,6 +346,7 @@ impl MutationRoot {
         })
     }
 
+    /// Accepts an invitation addressed to the viewer and returns the new membership.
     async fn accept_invitation(&self, ctx: &Context<'_>, invitation_id: ID) -> Result<Member> {
         let invitation_id = parse_id(&invitation_id)?;
         let user = auth(ctx)?;
@@ -423,6 +428,7 @@ impl MutationRoot {
         Member::load(ctx, member_scope(ctx, tenant_id).await?, member_id).await
     }
 
+    /// Starts linking the viewer's GitHub account. Returns the GitHub authorize URL to open and sets the cookie that binds the flow to this browser.
     #[graphql(name = "connectGitHub")]
     async fn connect_github(&self, ctx: &Context<'_>) -> Result<RedirectPayload> {
         let user = auth(ctx)?;
@@ -437,6 +443,7 @@ impl MutationRoot {
         Ok(RedirectPayload { url: redirect.url })
     }
 
+    /// Starts installing the GitHub App for a tenant (admins). Returns the GitHub install URL to open and sets the cookie that binds the flow to this browser.
     #[graphql(name = "installGitHubApp")]
     async fn install_github_app(
         &self,
@@ -469,6 +476,7 @@ impl MutationRoot {
         Ok(RedirectPayload { url: redirect.url })
     }
 
+    /// Unlinks the viewer's GitHub account.
     #[graphql(name = "unlinkGitHub")]
     async fn unlink_github(&self, ctx: &Context<'_>) -> Result<Viewer> {
         let login = viewer_user(ctx)
@@ -501,11 +509,13 @@ impl MutationRoot {
         Ok(Viewer)
     }
 
+    /// Records the viewer's sign-out in the audit log of each of the viewer's tenants. The client then ends the Cognito session.
     async fn sign_out(&self, ctx: &Context<'_>) -> Result<bool> {
         audit_user_tenants(ctx, "auth.sign_out", "Signed out").await?;
         Ok(true)
     }
 
+    /// Starts the Slack installation for a tenant. Returns the URL to open.
     async fn connect_slack(&self, ctx: &Context<'_>, tenant_id: ID) -> Result<RedirectPayload> {
         let scope = tenant_scope(ctx, &tenant_id).await?;
         let member_id = scope.require(Role::Admin, "connecting Slack")?;
@@ -759,6 +769,7 @@ impl MutationRoot {
         Ok(member_id)
     }
 
+    /// Sends the message to the task's agent session and resumes a NEEDS_YOU task.
     async fn resume_task(&self, ctx: &Context<'_>, input: ResumeTaskInput) -> Result<Task> {
         let task_id = parse_id(&input.task_id)?;
         let (scope, _) = locate_task(ctx, task_id).await?;
@@ -804,6 +815,7 @@ impl MutationRoot {
         Task::load(ctx, scope, task_id).await
     }
 
+    /// Takes a NEEDS_YOU or usage-limited task out of the needs-you lists until the given time. A usage-limited task resumes no earlier than that time. Resuming or stopping the task, or a change of its status, ends the snooze.
     async fn snooze_task(&self, ctx: &Context<'_>, task_id: ID, until: Timestamp) -> Result<Task> {
         let task_id = parse_id(&task_id)?;
         let (scope, _) = locate_task(ctx, task_id).await?;
@@ -837,6 +849,7 @@ impl MutationRoot {
         Task::load(ctx, scope, task_id).await
     }
 
+    /// Stops the task. Its status becomes ABORTED.
     async fn stop_task(&self, ctx: &Context<'_>, task_id: ID) -> Result<Task> {
         let task_id = parse_id(&task_id)?;
         let (scope, task) = locate_task(ctx, task_id).await?;
@@ -870,6 +883,7 @@ impl MutationRoot {
         Task::load(ctx, scope, task_id).await
     }
 
+    /// Approves or rejects the approval that the task's skill waits for. Owners, admins, and the member who requested the task can resolve it.
     async fn resolve_approval(
         &self,
         ctx: &Context<'_>,
@@ -920,6 +934,7 @@ impl MutationRoot {
         Task::load(ctx, scope, task_id).await
     }
 
+    /// Stops the agent session of a run.
     async fn stop_run(&self, ctx: &Context<'_>, run_id: ID) -> Result<Run> {
         let run_id = parse_id(&run_id)?;
         let (scope, _) = locate_ref(ctx, "run", run_id, REF_RUN).await?;
@@ -958,6 +973,8 @@ impl MutationRoot {
         Run::load(ctx, scope, run_id).await
     }
 
+    /// Sends a chat message. With taskId, the message goes to that task's agent session.
+    /// Without taskId, a new chat starts in the given scope ("all" or a project name).
     async fn send_chat_message(
         &self,
         ctx: &Context<'_>,
@@ -1131,6 +1148,7 @@ impl MutationRoot {
         Trigger::load(ctx, scope, trigger_id).await
     }
 
+    /// Opens a change request on a config repository that adds a trigger from a template.
     async fn propose_trigger_from_template(
         &self,
         ctx: &Context<'_>,
@@ -1245,6 +1263,8 @@ impl MutationRoot {
         Ok(ChangeRequest::new(scope, config.row.repository, row))
     }
 
+    /// Adds a config after checking the repository. Returns the validation errors when the check fails.
+    /// No mutation removes a config: removing its repository from the GitHub App installation on GitHub disables it.
     async fn add_config(
         &self,
         ctx: &Context<'_>,
@@ -1364,6 +1384,7 @@ impl MutationRoot {
         })
     }
 
+    /// Reads the config repository again. A DISABLED config cannot be synced.
     async fn sync_config(&self, ctx: &Context<'_>, config_id: ID) -> Result<Config> {
         let config_id = parse_id(&config_id)?;
         let (scope, config) = locate_item::<items::Config>(ctx, "config", config_id, |tenant| {
@@ -1405,6 +1426,7 @@ impl MutationRoot {
         Config::load(ctx, scope, config_id).await
     }
 
+    /// Saves an API key credential. Subscriptions are connected with the sanchoris CLI.
     async fn add_credential(
         &self,
         ctx: &Context<'_>,
@@ -1484,6 +1506,7 @@ impl MutationRoot {
         Credential::by_id(ctx, scope, credential_id).await
     }
 
+    /// Removes an API key, or disconnects a subscription login.
     async fn remove_credential(&self, ctx: &Context<'_>, credential_id: ID) -> Result<ID> {
         let id = parse_id(&credential_id)?;
         let (scope, credential) =
@@ -1521,6 +1544,7 @@ impl MutationRoot {
         Ok(credential_id)
     }
 
+    /// Changes the plan. Returns a Stripe Checkout URL when payment is needed. Refused for a tenant on the Admin plan and for the Admin plan as the target.
     async fn change_plan(
         &self,
         ctx: &Context<'_>,
@@ -1642,6 +1666,7 @@ impl MutationRoot {
         })
     }
 
+    /// Returns the URL of the Stripe customer portal. Refused for a tenant on the Admin plan.
     async fn open_billing_portal(
         &self,
         ctx: &Context<'_>,
@@ -1676,6 +1701,7 @@ impl MutationRoot {
         Ok(RedirectPayload { url })
     }
 
+    /// Returns a short-lived URL of the audit log as JSON Lines.
     async fn export_audit_log(
         &self,
         ctx: &Context<'_>,
@@ -1720,6 +1746,7 @@ impl MutationRoot {
         Ok(RedirectPayload { url })
     }
 
+    /// Deletes the tenant (owners). slug must equal the tenant's slug. The tenant becomes DELETING at once: its unfinished tasks stop, its subscription is cancelled, and the worker then removes its data and records.
     async fn delete_tenant(&self, ctx: &Context<'_>, tenant_id: ID, slug: String) -> Result<ID> {
         let scope = tenant_scope(ctx, &tenant_id).await?;
         let member_id = scope.require(Role::Owner, "deleting the tenant")?;
@@ -1798,6 +1825,7 @@ impl MutationRoot {
         Ok(ID(scope.tenant_id.to_string()))
     }
 
+    /// Operator only.
     async fn suspend_tenant(
         &self,
         ctx: &Context<'_>,
@@ -1822,6 +1850,7 @@ impl MutationRoot {
         .await
     }
 
+    /// Operator only.
     async fn unsuspend_tenant(&self, ctx: &Context<'_>, tenant_id: ID) -> Result<Tenant> {
         if !is_operator(ctx).await? {
             return Err(forbidden("only operators can unsuspend tenants"));

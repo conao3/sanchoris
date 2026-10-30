@@ -6,6 +6,10 @@ license.workspace = true
 repository.workspace = true
 autotests = false
 
+[[bin]]
+name = "sanchoris-graphql-sdl"
+path = "src/bin/sdl.rs"
+
 [dependencies]
 sanchoris-config.workspace = true
 sanchoris-core.workspace = true

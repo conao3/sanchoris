@@ -125,6 +125,7 @@ impl Trigger {
         self.trigger_match()
     }
 
+    /// The YAML of the trigger in the config repository.
     async fn yaml(&self) -> Result<String> {
         let mut document = Map::new();
         document.insert(self.row.name.clone(), self.definition());
@@ -184,6 +185,7 @@ impl Trigger {
             .await
     }
 
+    /// Tasks of this trigger that are not finished, counted up to 200.
     async fn active_tasks(&self, ctx: &Context<'_>) -> Result<i32> {
         self.task_count(ctx, None, true).await
     }
@@ -312,6 +314,7 @@ impl TriggerMatch {
     }
 }
 
+/// What the EventPattern or ScheduleExpression matches.
 #[Object]
 impl TriggerMatch {
     async fn source(&self) -> EventSource {
@@ -330,10 +333,12 @@ impl TriggerMatch {
         &self.labels
     }
 
+    /// detail.sender.login values. Empty when the pattern uses author_association.
     async fn senders(&self) -> &[String] {
         &self.senders
     }
 
+    /// The chat scope: all or a project name.
     async fn chat_scope(&self) -> Option<&str> {
         self.chat_scope.as_deref()
     }
@@ -445,14 +450,17 @@ impl TriggerEvent {
         )
     }
 
+    /// Set for SKIPPED and DISCARDED.
     async fn reason(&self) -> Option<TriggerEventReason> {
         self.reason_kind()
     }
 
+    /// The login that caused the event, such as who added the label.
     async fn sender_login(&self) -> Option<String> {
         sender_login(&self.row.event)
     }
 
+    /// The started task.
     async fn task(&self, ctx: &Context<'_>) -> Result<Option<Task>> {
         match self.row.task_id {
             Some(task_id) => Task::find(ctx, self.scope, task_id).await,
@@ -460,6 +468,7 @@ impl TriggerEvent {
         }
     }
 
+    /// For CHILD_LIMIT, the task whose limit was reached.
     async fn limited_task(&self, ctx: &Context<'_>) -> Result<Option<Task>> {
         if self.reason_kind() != Some(TriggerEventReason::ChildLimit) {
             return Ok(None);

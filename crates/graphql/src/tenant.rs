@@ -143,6 +143,7 @@ impl Tenant {
         Ok(ts(self.row.created_at))
     }
 
+    /// The GitHub account the GitHub App is installed on.
     async fn github_owner(&self, ctx: &Context<'_>) -> Result<Option<GitHubOwner>> {
         self.scope.operator_or_member()?;
         let rows = self.integration_rows(ctx).await?;
@@ -335,6 +336,7 @@ impl Tenant {
         Trigger::all(ctx, self.scope).await
     }
 
+    /// Recent trigger events of all triggers, newest first.
     async fn trigger_events(
         &self,
         ctx: &Context<'_>,
@@ -354,6 +356,7 @@ impl Tenant {
         Skill::by_name(ctx, self.scope, &name).await
     }
 
+    /// The latest 200 tasks that match the filter, ordered with NEEDS_YOU first, then by last update, newest first.
     async fn tasks(&self, ctx: &Context<'_>, filter: Option<TaskFilter>) -> Result<Vec<Task>> {
         self.scope.member()?;
         Task::list(ctx, self.scope, filter.unwrap_or_default()).await
@@ -364,11 +367,13 @@ impl Tenant {
         Task::find(ctx, self.scope, parse_id(&id)?).await
     }
 
+    /// The latest 200 chat tasks (threads), newest first.
     async fn chats(&self, ctx: &Context<'_>) -> Result<Vec<Task>> {
         self.scope.member()?;
         Task::chats(ctx, self.scope).await
     }
 
+    /// Audit events, newest first.
     async fn audit_events(
         &self,
         ctx: &Context<'_>,
@@ -441,6 +446,7 @@ impl TenantUsage {
         ts(self.period_start)
     }
 
+    /// The end of the period. The counts reset at this time. Null for plans with TOTAL limits.
     async fn period_end(&self) -> Option<Timestamp> {
         ts_opt(self.period_end)
     }
@@ -453,10 +459,12 @@ impl TenantUsage {
         self.workspace_seconds_this_period
     }
 
+    /// Members plus pending invitations, compared with Plan.memberLimit.
     async fn seats_used(&self) -> i32 {
         self.seats_used
     }
 
+    /// Concurrency slots in use, compared with Plan.concurrencyLimit. A run holds one from its dispatch until its workspace stops, also while its task waits or needs you.
     async fn live_workspaces(&self) -> i32 {
         self.live_workspaces
     }
@@ -488,6 +496,7 @@ impl Activity {
         self.pull_requests_opened_today
     }
 
+    /// Runs started per hour over the last 24 hours, oldest first (24 values).
     #[graphql(name = "runsLast24h")]
     async fn runs_last_24h(&self) -> &[i32] {
         &self.runs_last_24h
@@ -505,6 +514,7 @@ pub(crate) struct Setup {
     pub slack_connected: bool,
 }
 
+/// Progress of the first-run setup. Home shows the setup steps until complete is true.
 #[Object]
 impl Setup {
     async fn github_linked(&self) -> bool {
@@ -581,6 +591,7 @@ impl Integration {
         }
     }
 
+    /// The GitHub account or the Slack workspace.
     async fn account(&self) -> Option<&str> {
         match self {
             Self::Row(row) if row.kind == "slack" => detail_str(row, "team_name"),
@@ -589,6 +600,7 @@ impl Integration {
         }
     }
 
+    /// Repositories selected for the GitHub App, as owner/name.
     async fn repositories(&self) -> Result<Vec<String>> {
         match self {
             Self::Row(row) => Ok(github_repositories(&row.details)?
@@ -651,6 +663,7 @@ impl Operator {
         Ok(tenants)
     }
 
+    /// Concurrency slots in use across all tenants.
     async fn live_workspaces(&self, ctx: &Context<'_>) -> Result<i32> {
         let mut total = 0;
         for tenant_id in &self.tenant_ids {

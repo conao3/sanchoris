@@ -1,10 +1,10 @@
 use async_graphql::{Enum, Error};
 
 macro_rules! db_enum {
-    ($name:ident, $kind:literal, { $($variant:ident => $text:literal),+ $(,)? }) => {
+    ($name:ident, $kind:literal, { $($(#[$meta:meta])* $variant:ident => $text:literal),+ $(,)? }) => {
         #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
         pub enum $name {
-            $($variant,)+
+            $($(#[$meta])* $variant,)+
         }
 
         impl $name {
@@ -38,6 +38,7 @@ db_enum!(BillingUnit, "billing unit", {
 });
 
 db_enum!(LimitPeriod, "limit period", {
+    /// The limit counts from the creation of the tenant.
     Total => "total",
     Month => "month",
 });
@@ -45,6 +46,7 @@ db_enum!(LimitPeriod, "limit period", {
 db_enum!(TenantState, "tenant state", {
     Active => "active",
     Suspended => "suspended",
+    /// Set by deleteTenant. Mutations, webhooks, triggers and dispatch stop for the tenant until the worker removes it.
     Deleting => "deleting",
 });
 
@@ -68,6 +70,7 @@ pub enum IntegrationStatus {
 
 db_enum!(ConfigStatus, "config status", {
     Active => "active",
+    /// The repository was removed from the GitHub App installation or deleted. The config no longer syncs or starts tasks.
     Disabled => "disabled",
 });
 
@@ -169,9 +172,13 @@ db_enum!(TriggerEventResult, "trigger event result", {
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerEventReason {
+    /// The task tree is over Start.Limits.Children.
     ChildLimit,
+    /// The sender is not in the event pattern.
     SenderNotAllowed,
+    /// More events than the receive limit.
     ReceiveLimit,
+    /// A task with the same name exists.
     Duplicate,
 }
 
@@ -277,11 +284,15 @@ db_enum!(RunStatus, "run status", {
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLineKind {
+    /// Platform messages: workspace and session lifecycle.
     System,
+    /// Instructions sanchoris sent to the session.
     Instruction,
     Agent,
     Tool,
+    /// Skill and session events.
     Event,
+    /// Messages people sent.
     User,
     Error,
 }

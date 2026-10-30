@@ -48,6 +48,7 @@ impl User {
         &self.0.display_name
     }
 
+    /// The linked GitHub login. Null until the user links GitHub in Settings → Integrations.
     async fn github_login(&self) -> Option<&str> {
         self.0.github_login.as_deref()
     }
@@ -69,6 +70,7 @@ impl Viewer {
         Ok(members)
     }
 
+    /// Pending invitations addressed to the viewer's email.
     async fn invitations(&self, ctx: &Context<'_>) -> Result<Vec<Invitation>> {
         let user = auth(ctx)?;
         let at = now(ctx);
@@ -111,6 +113,7 @@ impl Viewer {
         is_operator(ctx).await
     }
 
+    /// The plans the viewer can create a tenant on: the Admin plan alone when the sign-in has a verified @sancode.dev email, otherwise the plans of Query.plans.
     async fn new_tenant_plans(&self, ctx: &Context<'_>) -> Result<Vec<Plan>> {
         Plan::for_new_tenant(ctx).await
     }
@@ -169,10 +172,12 @@ impl Plan {
         BillingUnit::from_db(&self.0.billing_unit)
     }
 
+    /// Null when the plan has no limit.
     async fn task_limit(&self) -> Result<Option<i32>> {
         Ok(self.0.task_limit.map(i32::try_from).transpose()?)
     }
 
+    /// Null when the plan has no limit.
     async fn workspace_hour_limit(&self) -> Result<Option<i32>> {
         Ok(self
             .0
@@ -185,6 +190,7 @@ impl Plan {
         self.period()
     }
 
+    /// Null when the plan has no limit.
     async fn member_limit(&self) -> Result<Option<i32>> {
         Ok(self.0.member_limit.map(i32::try_from).transpose()?)
     }
@@ -193,6 +199,7 @@ impl Plan {
         Ok(i32::try_from(self.0.max_concurrency)?)
     }
 
+    /// Inbound events (GitHub webhooks, chat messages, replies) that the tenant can send in one minute; later ones in the minute are dropped.
     async fn inbound_events_per_minute(&self) -> Result<i32> {
         Ok(i32::try_from(self.0.inbound_events_per_minute)?)
     }
@@ -209,6 +216,7 @@ impl Plan {
         self.0.price_cents > 0
     }
 
+    /// The plan of tenants created by a verified @sancode.dev email. It has no price, and its tenants do not change plans or open Stripe.
     #[graphql(name = "isAdmin")]
     async fn admin(&self) -> bool {
         self.is_admin()
@@ -277,6 +285,7 @@ impl Member {
         ts_opt(self.row.last_active_at)
     }
 
+    /// Tasks this member requested, counted up to 200.
     async fn tasks_started(&self, ctx: &Context<'_>) -> Result<i32> {
         self.scope.member()?;
         let member_id = self.row.id;
@@ -288,6 +297,7 @@ impl Member {
         Ok(i32::try_from(tasks.len())?)
     }
 
+    /// Personal credentials of this member. Empty unless the viewer is this member or an admin or owner.
     async fn credentials(&self, ctx: &Context<'_>) -> Result<Vec<Credential>> {
         let (viewer, role) = self.scope.member()?;
         let member_id = self.row.id;
@@ -428,6 +438,7 @@ pub(crate) struct UsageWindow {
 
 #[Object]
 impl UsageWindow {
+    /// 0 to 1
     async fn utilization(&self) -> f64 {
         self.utilization
     }
@@ -466,6 +477,7 @@ impl Credential {
         ID(self.row.id.to_string())
     }
 
+    /// The name a session refers to.
     async fn name(&self) -> &str {
         &self.row.name
     }
@@ -478,10 +490,12 @@ impl Credential {
         CredentialKind::from_db(&self.row.kind)
     }
 
+    /// The subscription plan, such as Max or Team. Null for keys.
     async fn subscription_plan(&self) -> Option<&str> {
         self.row.subscription_plan.as_deref()
     }
 
+    /// The login email, or a masked key.
     async fn account(&self) -> &str {
         &self.row.account
     }
@@ -490,6 +504,7 @@ impl Credential {
         CredentialScope::from_db(&self.row.scope)
     }
 
+    /// The member who owns a personal credential.
     async fn owner(&self, ctx: &Context<'_>) -> Result<Option<Member>> {
         match self.row.member_id {
             Some(member_id) => Ok(Some(Member::load(ctx, self.scope, member_id).await?)),
@@ -501,6 +516,7 @@ impl Credential {
         CredentialStatus::from_db(&self.row.status)
     }
 
+    /// When the provider rejected the login. Set while status is RECONNECT.
     async fn rejected_at(&self) -> Option<Timestamp> {
         ts_opt(self.row.rejected_at)
     }
@@ -509,6 +525,7 @@ impl Credential {
         ts_opt(self.row.last_used_at)
     }
 
+    /// The latest usage of a subscription. Null for keys and for logins to reconnect.
     async fn usage(&self, ctx: &Context<'_>) -> Result<Option<UsageSnapshot>> {
         if self.row.kind != "subscription" || self.row.status != "connected" {
             return Ok(None);

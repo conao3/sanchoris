@@ -35,7 +35,9 @@ pub(crate) struct TaskFilter {
     #[graphql(name = "triggerId")]
     pub trigger_id: Option<ID>,
     pub skill_name: Option<String>,
+    /// Only tasks that are not finished.
     pub active: Option<bool>,
+    /// Only tasks that are snoozed (true) or that are not (false).
     pub snoozed: Option<bool>,
 }
 
@@ -256,6 +258,7 @@ impl Task {
         ID(self.row.id.to_string())
     }
 
+    /// The idempotency key the trigger chose.
     async fn name(&self, ctx: &Context<'_>) -> Result<String> {
         Ok(self
             .row
@@ -337,6 +340,7 @@ impl Task {
         })
     }
 
+    /// The approval that the task's skill waits for; null when none waits.
     async fn approval(&self, ctx: &Context<'_>) -> Result<Option<Approval>> {
         if self.row.status.is_terminal() {
             return Ok(None);
@@ -345,6 +349,7 @@ impl Task {
         Ok(waiting_approval(&mut tx, self.row.id).await?.map(Approval))
     }
 
+    /// When a usage-limited task resumes.
     async fn resume_at(&self) -> Option<Timestamp> {
         ts_opt(self.row.resume_at)
     }
@@ -353,6 +358,7 @@ impl Task {
         Ok(self.definition()?.session.definition["UsageLimit"]["Resume"] == "auto")
     }
 
+    /// Until when the task is out of the needs-you lists; null when it is not snoozed.
     async fn snoozed_until(&self, ctx: &Context<'_>) -> Option<Timestamp> {
         ts_opt(
             self.row
@@ -435,6 +441,7 @@ impl Task {
         self.session_data(ctx).await
     }
 
+    /// The config revision pinned when the task started.
     async fn config_revision(&self, ctx: &Context<'_>) -> Result<i32> {
         let mut tx = tx(ctx, self.scope.tenant_id);
         let revision_id = self.row.config_revision_id;
@@ -510,6 +517,7 @@ impl Task {
         .await
     }
 
+    /// Tasks started from issues this task filed, with their descendants.
     async fn filed_tasks(&self) -> Vec<Task> {
         Vec::new()
     }
@@ -652,6 +660,7 @@ impl Channel {
         &self.thread_id
     }
 
+    /// all or a project name.
     async fn scope(&self) -> &str {
         &self.scope
     }
@@ -691,6 +700,7 @@ impl IssueRef {
 
 #[Object]
 impl IssueRef {
+    /// owner/name
     async fn repository(&self) -> &str {
         &self.repository
     }
@@ -707,6 +717,7 @@ impl IssueRef {
         &self.url
     }
 
+    /// The task the issue started, if any.
     async fn task(&self, ctx: &Context<'_>) -> Result<Option<Task>> {
         Task::by_name(
             ctx,
@@ -737,10 +748,12 @@ impl Requester {
         self.member.as_ref()
     }
 
+    /// The task whose agent filed the issue.
     async fn task(&self) -> Option<&Task> {
         self.task.as_ref()
     }
 
+    /// True when the member asked in a chat.
     async fn via_chat(&self) -> bool {
         self.via_chat
     }
@@ -1034,6 +1047,7 @@ impl Run {
         })
     }
 
+    /// Log lines ordered by sequence, after the given sequence.
     async fn log(&self, ctx: &Context<'_>, after: Option<i32>) -> Result<Vec<LogLine>> {
         Ok(self
             .log_lines(ctx)
@@ -1083,6 +1097,7 @@ impl Workspace {
         self.architecture
     }
 
+    /// The ECS capacity provider the workspace runs on (FARGATE_SPOT or FARGATE); null before it launches and for local workspaces.
     async fn capacity_provider(&self) -> Option<&str> {
         self.capacity_provider.as_deref()
     }
@@ -1095,6 +1110,7 @@ impl Workspace {
         Ok(i32::try_from(self.memory_mib)?)
     }
 
+    /// Repository names cloned into the workspace.
     async fn repositories(&self) -> &[String] {
         &self.repositories
     }
@@ -1125,6 +1141,7 @@ pub(crate) struct LogRateLimit {
 
 #[Object]
 impl LogRateLimit {
+    /// The provider's status: allowed, allowed_warning, or rejected; rejected means the usage limit was reached.
     async fn status(&self) -> &str {
         &self.status
     }
@@ -1148,10 +1165,12 @@ impl LogLine {
         self.kind
     }
 
+    /// May span lines.
     async fn text(&self) -> &str {
         &self.text
     }
 
+    /// Set on the usage-limit snapshots that the worker reports.
     async fn rate_limit(&self) -> Option<&LogRateLimit> {
         self.rate_limit.as_ref()
     }
@@ -1216,6 +1235,7 @@ impl Output {
         OutputKind::from_db(&self.row.kind)
     }
 
+    /// owner/name
     async fn repository(&self, ctx: &Context<'_>) -> Result<String> {
         Ok(current_name(
             &tenant_repositories(ctx, self.row.tenant_id).await?,
@@ -1367,6 +1387,7 @@ impl ChatMessage {
         ts(self.at)
     }
 
+    /// Issues the agent filed in this message.
     async fn issues(&self) -> Vec<IssueRef> {
         Vec::new()
     }

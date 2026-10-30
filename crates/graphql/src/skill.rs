@@ -220,10 +220,12 @@ impl Skill {
         self.kind
     }
 
+    /// The description from SKILL.md: when the agent calls it.
     async fn description(&self) -> &str {
         &self.description
     }
 
+    /// The Comment of skill.yaml.
     async fn comment(&self) -> Option<&str> {
         self.definition.as_ref()?.comment.as_deref()
     }
@@ -258,6 +260,7 @@ impl Skill {
         &self.skill_md
     }
 
+    /// Null for a plain skill.
     async fn skill_yaml(&self) -> Option<&str> {
         self.skill_yaml.as_deref()
     }
@@ -633,6 +636,7 @@ impl StateTransition {
         self.kind
     }
 
+    /// The condition, such as success or fixes ≥ 3, for CHOICE and CATCH.
     async fn label(&self) -> Option<&str> {
         self.label.as_deref()
     }
@@ -646,6 +650,7 @@ pub(crate) struct StateActivity {
     succeeded_today: i32,
 }
 
+/// Counts of skill runs at a state, for the flow diagram.
 #[Object]
 impl StateActivity {
     async fn running(&self) -> i32 {
@@ -687,10 +692,12 @@ impl SkillState {
         self.kind
     }
 
+    /// The resource of a TASK state, such as sanchoris:::github:createPullRequests.
     async fn resource(&self) -> Option<&str> {
         self.resource.as_deref()
     }
 
+    /// A short text for the node: the Comment, or the resource action.
     async fn summary(&self) -> &str {
         &self.summary
     }
@@ -699,6 +706,7 @@ impl SkillState {
         &self.transitions
     }
 
+    /// Layout coordinates from skill.yaml.
     async fn x(&self) -> i32 {
         self.x
     }
@@ -748,6 +756,7 @@ impl SkillStats {
         self.gave_up
     }
 
+    /// The error names of the failed runs, most frequent first.
     async fn failure_errors(&self) -> &[String] {
         &self.failure_errors
     }
@@ -809,6 +818,7 @@ impl SkillRun {
         ID(self.row.id.to_string())
     }
 
+    /// The number of the run inside its task.
     async fn number(&self) -> i32 {
         self.row.number
     }
@@ -830,6 +840,7 @@ impl SkillRun {
         Task::load(ctx, self.scope, self.row.task_id).await
     }
 
+    /// The run (agent session) that called the skill.
     async fn run(&self, ctx: &Context<'_>) -> Result<Option<Run>> {
         match self.row.run_id {
             Some(run_id) => Ok(Some(Run::load(ctx, self.scope, run_id).await?)),
@@ -841,10 +852,12 @@ impl SkillRun {
         SkillRunStatus::from_db(self.row.status.as_str())
     }
 
+    /// The state the run is at, or ended at.
     async fn current_state(&self) -> Option<&str> {
         self.row.current_state.as_deref()
     }
 
+    /// How many times the skill handed work back to the agent (fix rounds).
     async fn handoffs(&self, ctx: &Context<'_>) -> Result<i32> {
         count_handoffs(&mut tx(ctx, self.scope.tenant_id), &self.row).await
     }
@@ -878,6 +891,7 @@ impl SkillRun {
         Ok(i32::try_from(entries.len())?)
     }
 
+    /// State entries ordered by sequence. With last, only the last entries.
     async fn state_entries(&self, ctx: &Context<'_>, last: Option<i32>) -> Result<Vec<StateEntry>> {
         let mut listing = Listing::main(keys::task_pk(self.scope.tenant_id, self.row.task_id))
             .prefix(&format!("{}#E#", keys::skill_run_prefix(self.row.number)))
@@ -953,6 +967,7 @@ impl StateEntry {
         self.0.next_state.as_deref()
     }
 
+    /// A one-line result for the table.
     async fn result(&self) -> Option<String> {
         if let Some(error) = &self.0.error {
             return Some(match &self.0.cause {

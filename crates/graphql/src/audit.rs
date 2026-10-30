@@ -143,6 +143,7 @@ impl AuditEvent {
         ActorKind::from_db(&self.row.actor_kind)
     }
 
+    /// The member name, the trigger name, or the run and task of an agent.
     #[graphql(name = "actorName")]
     async fn actor_name_field(&self) -> String {
         self.actor_name()
@@ -179,6 +180,7 @@ impl AuditEvent {
         })?)
     }
 
+    /// The client IP for WEB.
     async fn ip(&self) -> Option<&str> {
         self.row.source_ip.as_deref()
     }

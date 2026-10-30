@@ -135,10 +135,12 @@ impl Config {
         ID(self.row.id.to_string())
     }
 
+    /// The repository's current owner/name on GitHub, updated when the repository is renamed or transferred.
     async fn repository(&self) -> &str {
         &self.row.repository
     }
 
+    /// The GitHub repository id that the config follows. Null when the config was disabled before its name resolved to a repository.
     async fn repository_id(&self) -> Option<ID> {
         self.row.repository_id.map(|id| ID(id.to_string()))
     }
@@ -169,6 +171,7 @@ impl Config {
         }
     }
 
+    /// The URL that creates a skill folder on GitHub.
     async fn new_skill_url(&self) -> String {
         format!(
             "https://github.com/{}/new/{}/{}skills",
@@ -214,6 +217,7 @@ impl Config {
         ts_opt(self.row.synced_at)
     }
 
+    /// Why the last sync failed, for example when GitHub is unreachable or a repository named in sanchoris.yaml is not in the GitHub App installation, or why the config is DISABLED. Null after a successful sync.
     async fn sync_error(&self) -> Option<&str> {
         self.row.sync_error.as_deref()
     }
@@ -264,6 +268,7 @@ impl ConfigRevision {
         }
     }
 
+    /// The revision number shown as r41.
     async fn number(&self) -> Result<i32> {
         match self {
             Self::Stored(row) => Ok(i32::try_from(row.number)?),
@@ -347,6 +352,7 @@ pub(crate) struct ValidationError {
 
 #[Object]
 impl ValidationError {
+    /// The file in the config repository, relative to the config root.
     async fn path(&self) -> &str {
         &self.path
     }
@@ -454,6 +460,7 @@ impl Project {
             .collect())
     }
 
+    /// The latest warm build of its repositories.
     async fn warm_build(&self, ctx: &Context<'_>) -> Result<Option<WarmBuild>> {
         Ok(self
             .repository_rows(ctx)
@@ -463,6 +470,7 @@ impl Project {
             .max_by_key(|build| build.finished_at))
     }
 
+    /// Sessions that clone this project.
     async fn sessions(&self, ctx: &Context<'_>) -> Result<Vec<Session>> {
         Ok(Session::all(ctx, self.scope)
             .await?
@@ -499,10 +507,12 @@ impl Repository {
         ID(self.0.id.to_string())
     }
 
+    /// The name inside the project, such as frontend.
     async fn name(&self) -> &str {
         &self.0.name
     }
 
+    /// The repository's current owner/name on GitHub.
     async fn full_name(&self) -> &str {
         &self.0.full_name
     }
@@ -625,6 +635,7 @@ impl Session {
         Ok(self.parsed()?.worker.model)
     }
 
+    /// The credential name, or requester.
     async fn credential_name(&self) -> Result<String> {
         Ok(self.parsed()?.worker.credential)
     }
@@ -646,10 +657,12 @@ impl Session {
         }
     }
 
+    /// Repositories cloned into the workspace, as owner/name.
     async fn repositories(&self, ctx: &Context<'_>) -> Result<Vec<String>> {
         self.repository_names(ctx).await
     }
 
+    /// Repositories the GitHub token can reach, as owner/name or owner/*.
     async fn github_repositories(&self) -> Result<Vec<String>> {
         Ok(self.parsed()?.github.repos)
     }
@@ -791,6 +804,7 @@ impl ChangeRequest {
         )
     }
 
+    /// The chat task that opened it. Null when a member opened it.
     async fn opened_from_task(&self, ctx: &Context<'_>) -> Result<Option<Task>> {
         match self.row.requested_by_task_id {
             Some(task_id) => Task::find(ctx, self.scope, task_id).await,
