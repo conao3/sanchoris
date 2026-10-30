@@ -14,13 +14,15 @@ Read this file instead of reading `README.md` and `docs/architecture.md` in full
 
 | Command | Runs | When |
 |---|---|---|
-| `scripts/verify.sh quick` | Against the merge base with the local `master`: `cargo fmt --check` when Rust changed; clippy `-D warnings` on the changed crates and their dependents; nextest on the changed crates; the e2e test (which also runs `scripts/e2e/aws-lookup.mjs`, the DynamoDB lookups of `scripts/e2e-aws.mjs`, against the finished Task) when a crate, the workspace agent, `scripts/e2e`, `scripts/e2e-aws.mjs`, or `scripts/lib/e2e-task.mjs` changed and `sanchoris-api` is not among the tested crates; `pnpm --filter <package> check` for each changed TS app | While working |
-| `scripts/verify.sh full` | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo nextest run --workspace` (with the e2e test), `pnpm check` | Before each commit and merge |
-| `scripts/verify.sh test <nextest arguments>` | `cargo nextest run <arguments>`, e.g. `-p sanchoris-worker -E 'test(/^supervisor::/)'` or `-p sanchoris-core -E 'test(/plan/)'` | One test while iterating |
+| `make check` | `nix fmt -- --ci` (nixfmt and rustfmt); the diff of `apps/frontend/src/graphql/schema.graphql` against the output of `sanchoris-graphql-sdl`; `vp run check`; `cargo clippy --all-targets -- -D warnings`; `scripts/nextest.sh --workspace` (with the e2e test, which also runs `scripts/e2e/aws-lookup.mjs`, the DynamoDB lookups of `scripts/e2e-aws.mjs`, against the finished Task) | Before each commit and merge; the pre-commit hook and CI run it |
+| `vp run check` | The TypeScript part of `make check`: `graphql-codegen --check` of the frontend, `vp check` (Oxfmt, Oxlint with type-aware rules and its type check), `vp test --project unit` | While working on `apps/` |
+| `scripts/nextest.sh <nextest arguments>` | `cargo nextest run <arguments>` against DynamoDB Local, e.g. `-p sanchoris-worker -E 'test(/^supervisor::/)'` or `-p sanchoris-core -E 'test(/plan/)'` | One test while iterating |
 
-All three re-enter the devShell when started outside it, run `pnpm install` when `node_modules` is missing, and print each step's time. Before the tests they start eight DynamoDB Local instances, run nextest with eight test threads, and export the ports as `SANCHORIS_TEST_DYNAMO_PORTS`; `TestDynamo` (`crates/core/src/testing.rs`) connects to the instance of its nextest slot (`NEXTEST_TEST_GLOBAL_SLOT`), so each instance serves one test at a time, and each test creates its own tables with a unique suffix. A test process started without that variable starts its own DynamoDB Local (about 5 s), and nextest runs every test in its own process, so run nextest through `scripts/verify.sh test`.
+Run them in the devShell (`nix develop -c make check`). `make check` runs `vp install --frozen-lockfile` first when `node_modules` is older than a manifest or the lockfile, and `make schema` rewrites `schema.graphql` from the resolvers (regenerate the client types with `pnpm -C apps/frontend run codegen` afterwards). `scripts/nextest.sh` starts eight DynamoDB Local instances, runs nextest with eight test threads, and exports the ports as `SANCHORIS_TEST_DYNAMO_PORTS`; `TestDynamo` (`crates/core/src/testing.rs`) connects to the instance of its nextest slot (`NEXTEST_TEST_GLOBAL_SLOT`), so each instance serves one test at a time, and each test creates its own tables with a unique suffix. A test process started without that variable starts its own DynamoDB Local (about 5 s), and nextest runs every test in its own process, so run nextest through `scripts/nextest.sh`.
 
-GitHub Actions (`.github/workflows/verify.yml`) runs `scripts/verify.sh full` on `ubuntu-latest` for pushes to `master` and for pull requests, in the devShell of `flake.nix`, with `SCCACHE_CACHE_SIZE=4G` (the shell's default is 30 GB) and `CARGO_INCREMENTAL=0`, so that sccache also caches the workspace crates. The Lambda build cross-compiles with Zig, which the binary cache has, so entering the shell builds nothing from source. The job caches the Nix store, the cargo registry, and `~/.cache/sccache` (keyed on `flake.lock` and `Cargo.lock`). To run the workflow locally, use `act pull_request -P ubuntu-latest=catthehacker/ubuntu:act-latest`: act runs the job on the host network, and the job's sccache server listens on the socket in the container's home, apart from the host's.
+`vp install` runs the root `postinstall`: `scripts/install-hooks.mjs` writes `.vite-hooks/pre-commit` (`nix develop --command make check`), and `vp config --no-agent` points `core.hooksPath` at `.vite-hooks` unless `core.hooksPath` already names another directory.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs `nix develop --command make check` and then `nix build` on `ubuntu-latest` for pushes to `master` and for pull requests, with `SCCACHE_CACHE_SIZE=4G` (the shell's default is 30 GB) and `CARGO_INCREMENTAL=0`, so that sccache also caches the workspace crates. The Lambda build cross-compiles with Zig, which the binary cache has, so entering the shell builds nothing from source. The job caches the Nix store, the cargo registry, and `~/.cache/sccache` (keyed on `flake.lock` and `Cargo.lock`). To run the workflow locally, use `act pull_request -P ubuntu-latest=catthehacker/ubuntu:act-latest`: act runs the job on the host network, and the job's sccache server listens on the socket in the container's home, apart from the host's.
 
 ## Map
 
@@ -36,20 +38,23 @@ GitHub Actions (`.github/workflows/verify.yml`) runs `scripts/verify.sh full` on
 | `apps/workspace-agent` | Agent inside a Workspace (`src/agent.ts`, `src/channel.ts`, workers in `src/workers`) and the `sanchoris` command (`src/cli.ts`); protocol in `PROTOCOL.md` |
 | `apps/egress-relay` | Workspace egress `CONNECT` proxy (`src/relay.ts`) |
 | `infra/` | `tables.json`, `plans.json`, the Workspace and relay Dockerfiles |
-| `scripts/` | `dev.mjs` (`pnpm dev`), `build-lambda.mjs` (`pnpm build:lambda <release|lambda-dev>`), `verify.sh`, `deploy.mjs`, `e2e-aws.mjs` (its DynamoDB lookups in `lib/e2e-task.mjs`), `e2e/fake-agent.ts`, `e2e/aws-lookup.mjs` |
+| `vite.config.ts`, `tsconfig.base.json` | The vite-plus settings of every app: Oxfmt, Oxlint, Vitest (projects `unit` and `smoke`), the frontend build, the `vp pack` bundles of the workspace agent and the relay, and the `vp run` tasks `check` and `build-frontend`; each app's `tsconfig.json` extends `tsconfig.base.json` |
+| `flake.nix`, `Makefile` | The devShell, `nix fmt` (treefmt), and `make check` / `make schema` |
+| `scripts/` | `dev.mjs` (`pnpm dev`), `build-lambda.mjs` (`pnpm build:lambda <release|lambda-dev>`), `nextest.sh`, `install-hooks.mjs`, `deploy.mjs`, `e2e-aws.mjs` (its DynamoDB lookups in `lib/e2e-task.mjs`), `e2e/fake-agent.ts`, `e2e/aws-lookup.mjs` |
 
 ## Checks per area
 
-`scripts/verify.sh quick` picks these from the changed files; run one directly when iterating on a single test.
+Run the check of the area while iterating; `make check` runs all of them.
 
 | Change | Check |
 |---|---|
-| A crate | `scripts/verify.sh test -p <crate>`; one file: `scripts/verify.sh test -p sanchoris-api -E 'test(/^http::/)'` (each `tests/<file>.rs` is the module `<file>` of the crate's one test binary `tests/main.rs`) |
-| `apps/frontend/src/graphql/*.graphql` | `scripts/verify.sh test -p sanchoris-api -E 'test(/^graphql::/)'` (runs every operation) and `scripts/verify.sh test -p sanchoris-graphql -E 'test(/^schema_contract::/)'` |
-| `apps/frontend` | `pnpm --filter @sanchoris/frontend check`; UI changes also in the browser through `pnpm dev` (README "Development") |
-| `apps/workspace-agent`, `scripts/e2e`, `scripts/e2e-aws.mjs`, `scripts/lib/e2e-task.mjs` | `pnpm --filter @sanchoris/workspace-agent check` and `scripts/verify.sh test -p sanchoris-api -E 'test(/^e2e::/)'` |
-| `apps/egress-relay` | `pnpm --filter @sanchoris/egress-relay check` |
-| `infra/tables.json`, `infra/plans.json` | `scripts/verify.sh test -p sanchoris-core`, then the aws-infra-k8s template check (`docs/014-sanchoris.md` "Deploy") |
+| A crate | `scripts/nextest.sh -p <crate>`; one file: `scripts/nextest.sh -p sanchoris-api -E 'test(/^http::/)'` (each `tests/<file>.rs` is the module `<file>` of the crate's one test binary `tests/main.rs`) |
+| `apps/frontend/src/graphql/*.graphql` | `scripts/nextest.sh -p sanchoris-api -E 'test(/^graphql::/)'` (runs every operation) and `vp run check` (the generated client types) |
+| The GraphQL schema in `crates/graphql` | `make schema`, `pnpm -C apps/frontend run codegen`, then the `*.graphql` checks above |
+| `apps/frontend` | `vp run check`; UI changes also in the browser through `pnpm dev` (README "Development") |
+| `apps/workspace-agent`, `scripts/e2e`, `scripts/e2e-aws.mjs`, `scripts/lib/e2e-task.mjs` | `vp run check` and `scripts/nextest.sh -p sanchoris-api -E 'test(/^e2e::/)'`; the smoke tests that run Claude Code: `vp test --project smoke <file>` |
+| `apps/egress-relay` | `vp run check` |
+| `infra/tables.json`, `infra/plans.json` | `scripts/nextest.sh -p sanchoris-core`, then the aws-infra-k8s template check (`docs/014-sanchoris.md` "Deploy") |
 | Lambda functions, their variables or IAM | Keep `docs/architecture.md` "Lambda functions" and aws-infra-k8s `docs/014-sanchoris.md` "Lambda functions" in step |
 | Behavior in AWS (Workspaces, relay, webhooks) | `scripts/deploy.mjs dev`, then `scripts/e2e-aws.mjs dev --arch arm64` and `--arch x86_64` |
 
@@ -71,7 +76,7 @@ Turn each one into a test before fixing it.
    - HTTP: GitHub webhooks from the App's recent deliveries (`gh api /app/hook/deliveries` with the App JWT), Stripe events with `GET /v1/events/<id>`.
    - The functions log JSON (`LogFormat: JSON`) to `/aws/lambda/<prefix>-sanchoris-<function>`; `aws logs filter-log-events --filter-pattern '{ $.level = "ERROR" }'` finds the failing invocation and its request id.
 2. Save it under `crates/api/tests/fixtures/`, replacing ids that the test creates with `{{name}}` placeholders, and load it with `fixture(name, vars)` in `crates/api/tests/lambda.rs` (`sqs_event`, `stream_event`, and `websocket_event` wrap the recorded `sqs.json`, `stream.json`, and `websocket-*.json`; `http.json` and `authorizer.json` are the HTTP API and authorizer events).
-3. Write the failing test in `lambda.rs` against `TestDynamo`, fix the bug, and run `scripts/verify.sh test -p sanchoris-api -E 'test(/^lambda::/)'`.
+3. Write the failing test in `lambda.rs` against `TestDynamo`, fix the bug, and run `scripts/nextest.sh -p sanchoris-api -E 'test(/^lambda::/)'`.
 
 ## Design documents
 

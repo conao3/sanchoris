@@ -10,7 +10,8 @@
     "dev": "node scripts/dev.mjs",
     "dynamo:local": "mkdir -p .sanchoris/dynamodb && dynamodb-local -sharedDb -disableTelemetry -dbPath .sanchoris/dynamodb -port ${SANCHORIS_DYNAMO_PORT:?set SANCHORIS_DYNAMO_PORT}",
     "dynamo:create": "cargo run -q -p sanchoris-core --bin sanchoris-dynamo-create",
-    "build:lambda": "node scripts/build-lambda.mjs"
+    "build:lambda": "node scripts/build-lambda.mjs",
+    "postinstall": "node scripts/install-hooks.mjs && vp config --no-agent"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

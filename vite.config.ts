@@ -101,10 +101,6 @@ export default defineConfig({
         command: "vp build",
         cache: { input: [{ auto: true }, "!apps/frontend/dist/**"] },
       },
-      "build-node": {
-        command: "vp pack",
-        cache: { input: [{ auto: true }, "!apps/*/dist/**"] },
-      },
     },
   },
 } satisfies ViteUserConfig)

@@ -11,3 +11,8 @@ dist/
 
 # Local dev state (records, sockets, workspaces, codex runs)
 /.sanchoris/
+
+result
+.direnv/
+.claude-dev/
+.vite-hooks/

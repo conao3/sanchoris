@@ -51,7 +51,7 @@ impl World {
         let root = repo_root();
         assert!(
             root.join("apps/workspace-agent/node_modules").exists(),
-            "run `pnpm install` before the end-to-end test"
+            "run `vp install` before the end-to-end test"
         );
         let dir = tempfile::tempdir().unwrap();
         let git_root = dir.path().join("git");

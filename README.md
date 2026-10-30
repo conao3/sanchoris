@@ -15,7 +15,9 @@ Sanchoris is a pnpm + Vite frontend and Rust backend monorepo.
 - `infra/tables.json`, `infra/plans.json`: the DynamoDB table definitions (CloudFormation properties) and the plan catalog, read by `sanchoris-dynamo-create` and the tests
 - `scripts/dev.mjs`: local development process supervisor
 - `scripts/build-lambda.mjs`: builds the frontend and the Lambda zips (`pnpm build:lambda <release|lambda-dev>`)
-- `scripts/verify.sh`: the checks (`quick` for the changed crates and apps, `full` for everything)
+- `scripts/nextest.sh`: runs `cargo nextest run` against the DynamoDB Local instances it starts
+- `vite.config.ts`, `tsconfig.base.json`: the vite-plus toolchain of the TypeScript apps (format, lint, type check, tests, the frontend build, and the Node bundles of the workspace agent and the relay)
+- `flake.nix`, `Makefile`: the Nix devShell, `nix fmt`, and `make check`
 - `scripts/deploy.mjs`, `scripts/e2e-aws.mjs`: deploy to an AWS environment and run an issue through it end to end (`AGENTS.md`)
 - `scripts/e2e/fake-agent.ts`: the scripted workspace agent used by the end-to-end test
 
@@ -30,7 +32,7 @@ nix develop
 Install the JavaScript dependencies:
 
 ```sh
-pnpm install
+vp install
 ```
 
 Run the frontend, the api, and the worker on one local development host:
@@ -191,14 +193,14 @@ SANCHORIS_TABLE_MAIN=<main table> SANCHORIS_TABLE_AUDIT=<audit table> \
   cargo run -q -p sanchoris-core --bin sanchoris-dynamo-create
 ```
 
-The Rust tests (`sanchoris_core::testing::TestDynamo`) connect to one of the DynamoDB Local instances whose ports `scripts/verify.sh` exports in `SANCHORIS_TEST_DYNAMO_PORTS` (the one of the test's nextest slot), or start their own in-memory instance on a free port when the variable is unset, and create uniquely named tables per test.
+The Rust tests (`sanchoris_core::testing::TestDynamo`) connect to one of the DynamoDB Local instances whose ports `scripts/nextest.sh` exports in `SANCHORIS_TEST_DYNAMO_PORTS` (the one of the test's nextest slot), or start their own in-memory instance on a free port when the variable is unset, and create uniquely named tables per test.
 
 The frontend GraphQL documents live in `apps/frontend/src/graphql/` (`schema.graphql`, `mvp-shell.graphql`, and the GraphQL Code Generator output in `generated/`).
 
 ## End-to-end test
 
 ```sh
-nix develop -c pnpm e2e
+nix develop -c scripts/nextest.sh -p sanchoris-api -E 'test(/^e2e::/)'
 ```
 
 The test (`crates/api/tests/e2e.rs`) starts DynamoDB Local, a fake GitHub (REST, GraphQL, and bare git repositories on disk), and the same assembly as `sanchoris all` in process (`server::LocalServer` with a stub token verifier, so the member reply goes through the `resumeTask` mutation). The worker starts the real `apps/workspace-agent` (with the scripted worker in `scripts/e2e/fake-agent.ts`) through `LocalProcessRunner`. It covers:
@@ -206,7 +208,7 @@ The test (`crates/api/tests/e2e.rs`) starts DynamoDB Local, a fake GitHub (REST,
 - A signed `issues.labeled` webhook starts the task; the agent commits and runs `sanchoris skill run open-pr-green-ci`; the skill pushes the branch to the bare repository, opens a pull request, hands the failing check back to the agent, which fixes and continues; the passing check comments on the issue and the task succeeds.
 - Checks that keep failing put the task in `NEEDS_YOU` (`Skill.FixesExhausted`); a member's reply resumes it and the second skill run succeeds.
 
-Run `pnpm install` first; the workspace agent runs from source with Node.
+Run `vp install` first; the workspace agent runs from source with Node.
 
 `crates/api/tests/http.rs` covers the HTTP endpoints and the local Run channel (webhook signatures, duplicate deliveries, installation events, Stripe, approvals, records, outbox delivery, sequence deduplication, and the close on an out-of-order message). `crates/api/tests/lambda.rs` drives the Lambda handlers with recorded API Gateway WebSocket and authorizer events, SQS batches, and DynamoDB Streams records (`crates/api/tests/fixtures/`), with a recording connection sender in place of the Management API.
 
@@ -240,7 +242,7 @@ Each worktree gets its own DynamoDB Local port and table names. portless detects
 Use the local runner when starting a Codex task that should leave inspectable logs:
 
 ```sh
-node scripts/codex-run.mjs --prompt tasks/example.md --verify "pnpm check" -- \
+node scripts/codex-run.mjs --prompt tasks/example.md --verify "make check" -- \
   codex exec --ask-for-approval never < tasks/example.md
 ```
 
@@ -263,7 +265,7 @@ The runner only creates log directories and runs the explicit command after `--`
 ## Checks
 
 ```sh
-scripts/verify.sh full
+nix develop -c make check
 ```
 
-runs `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo nextest run --workspace` (with the end-to-end test), and `pnpm check`. `scripts/verify.sh quick` runs them for the crates and apps changed since the merge base with the local `master`. `scripts/verify.sh test <arguments>` runs `cargo nextest run <arguments>` against the DynamoDB Local instances it starts.
+runs `nix fmt -- --ci` (nixfmt and rustfmt), compares `apps/frontend/src/graphql/schema.graphql` with the schema that `sanchoris-graphql-sdl` prints from the resolvers (`make schema` rewrites it), runs `vp run check` (the frontend codegen check, Oxfmt, Oxlint with its type check, and the Vitest unit tests), `cargo clippy --all-targets -- -D warnings`, and `scripts/nextest.sh --workspace` (with the end-to-end test). The pre-commit hook that `vp install` writes to `.vite-hooks/pre-commit` and the GitHub Actions workflow `.github/workflows/ci.yml` run the same command. `scripts/nextest.sh <arguments>` runs `cargo nextest run <arguments>` against the DynamoDB Local instances it starts.

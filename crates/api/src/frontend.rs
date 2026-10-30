@@ -33,7 +33,7 @@ impl Frontend {
     pub fn dir(path: PathBuf) -> Result<Self, String> {
         if !path.join(INDEX).is_file() {
             return Err(format!(
-                "SANCHORIS_FRONTEND_DIR: {} has no {INDEX} (run pnpm build)",
+                "SANCHORIS_FRONTEND_DIR: {} has no {INDEX} (run vp run build-frontend)",
                 path.display()
             ));
         }
@@ -43,7 +43,7 @@ impl Frontend {
     pub fn embedded() -> Result<Self, String> {
         if Dist::get(INDEX).is_none() {
             return Err(format!(
-                "the api binary embeds no apps/frontend/dist/{INDEX} (run pnpm build before building it)"
+                "the api binary embeds no apps/frontend/dist/{INDEX} (run vp run build-frontend before building it)"
             ));
         }
         Ok(Self::Embedded)

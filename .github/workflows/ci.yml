@@ -1,4 +1,4 @@
-name: verify
+name: CI
 
 on:
   push:
@@ -10,13 +10,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: verify-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  verify:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
     env:
       CARGO_INCREMENTAL: "0"
       SCCACHE_CACHE_SIZE: 4G
@@ -57,11 +57,11 @@ jobs:
             sccache-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
             sccache-${{ runner.os }}-
 
-      - name: Enter the devShell
-        run: nix develop --command true
+      - name: make check
+        run: nix develop --command make check
 
-      - name: scripts/verify.sh full
-        run: nix develop --command scripts/verify.sh full
+      - name: nix build
+        run: nix build
 
       - name: sccache stats
         if: ${{ !cancelled() }}
