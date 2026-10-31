@@ -18,6 +18,7 @@ export function Menu<T extends string>({
   open: controlledOpen,
   onOpenChange,
   compact,
+  reason,
 }: {
   label: ReactNode
   icon?: LucideIcon
@@ -29,6 +30,7 @@ export function Menu<T extends string>({
   open?: boolean
   onOpenChange?: (open: boolean) => void
   compact?: boolean
+  reason?: string
 }) {
   const [localOpen, setLocalOpen] = useState(false)
   const open = controlledOpen ?? localOpen
@@ -64,10 +66,10 @@ export function Menu<T extends string>({
 
   return (
     <span ref={ref} className="relative inline-block">
-      <Button icon={icon} compact={compact} onPress={() => setOpen(!open)}>
+      <Button icon={icon} compact={compact} reason={reason} onPress={() => setOpen(!open)}>
         {label}
       </Button>
-      {open ? (
+      {open && !reason ? (
         <div
           ref={popup}
           className={clsx(

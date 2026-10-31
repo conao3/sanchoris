@@ -14,6 +14,7 @@ type ConfirmDialogProps = {
   confirmIcon?: LucideIcon
   onConfirm: () => void
   isConfirmDisabled?: boolean
+  confirmReason?: string
   focusConfirm?: boolean
   error?: { message: string } | null
 }
@@ -27,12 +28,13 @@ export function ConfirmDialog({
   confirmIcon,
   onConfirm,
   isConfirmDisabled,
+  confirmReason,
   focusConfirm = true,
   error,
 }: ConfirmDialogProps) {
   function submit(event: FormEvent) {
     event.preventDefault()
-    if (!isConfirmDisabled) {
+    if (!isConfirmDisabled && !confirmReason) {
       onConfirm()
     }
   }
@@ -62,6 +64,8 @@ export function ConfirmDialog({
                 icon={confirmIcon}
                 kbd="↵"
                 isDisabled={isConfirmDisabled}
+                reason={confirmReason}
+                reasonAlign="right"
                 autoFocus={focusConfirm}
               >
                 {confirmLabel}

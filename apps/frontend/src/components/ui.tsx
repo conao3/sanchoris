@@ -5,6 +5,7 @@ import { CircleAlert, Inbox } from "lucide-react"
 import type { CSSProperties, ReactNode } from "react"
 import { t } from "../i18n/index.ts"
 import { Button } from "./Button.tsx"
+import { Reason } from "./Reason.tsx"
 
 export type Tone = "run" | "ok" | "warn" | "err" | "wait"
 
@@ -207,35 +208,42 @@ export function Toggle({
   on,
   onToggle,
   isDisabled,
+  reason,
 }: {
   on: boolean
   onToggle?: () => void
   isDisabled?: boolean
+  reason?: string
 }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      disabled={isDisabled}
-      onClick={(event) => {
-        event.stopPropagation()
-        onToggle?.()
-      }}
-      className="inline-flex cursor-pointer items-center gap-[7px] text-sm text-muted disabled:cursor-not-allowed"
-    >
-      <i
-        className={clsx("relative block h-3.5 w-[26px] rounded-[7px]", on ? "bg-ink" : "bg-line2")}
+    <Reason reason={reason} align="right">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        disabled={isDisabled || !!reason}
+        onClick={(event) => {
+          event.stopPropagation()
+          onToggle?.()
+        }}
+        className="inline-flex cursor-pointer items-center gap-[7px] text-sm text-muted disabled:cursor-not-allowed"
       >
-        <span
+        <i
           className={clsx(
-            "absolute top-0.5 size-2.5 rounded-full bg-white",
-            on ? "right-0.5" : "left-0.5",
+            "relative block h-3.5 w-[26px] rounded-[7px]",
+            on ? "bg-ink" : "bg-line2",
           )}
-        />
-      </i>
-      {on ? t("common.on") : t("common.off")}
-    </button>
+        >
+          <span
+            className={clsx(
+              "absolute top-0.5 size-2.5 rounded-full bg-white",
+              on ? "right-0.5" : "left-0.5",
+            )}
+          />
+        </i>
+        {on ? t("common.on") : t("common.off")}
+      </button>
+    </Reason>
   )
 }
 

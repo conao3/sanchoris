@@ -2,6 +2,7 @@ import clsx from "clsx"
 import type { LucideIcon } from "lucide-react"
 import type { ReactNode } from "react"
 import { Button as RACButton } from "react-aria-components"
+import { Reason } from "./Reason.tsx"
 import { Kbd } from "./ui.tsx"
 
 type ButtonVariant = "default" | "primary" | "danger"
@@ -15,6 +16,8 @@ type ButtonProps = {
   compact?: boolean
   href?: string
   isDisabled?: boolean
+  reason?: string
+  reasonAlign?: "left" | "right"
   autoFocus?: boolean
   type?: "button" | "submit"
   onPress?: () => void
@@ -36,6 +39,8 @@ export function Button({
   compact,
   href,
   isDisabled,
+  reason,
+  reasonAlign,
   autoFocus,
   type = "button",
   onPress,
@@ -55,7 +60,7 @@ export function Button({
       {kbd ? <Kbd tone={variant === "primary" ? "inverse" : "button"}>{kbd}</Kbd> : null}
     </>
   )
-  if (href) {
+  if (href && !reason) {
     return (
       <a href={href} target="_blank" rel="noreferrer" className={classes}>
         {content}
@@ -63,14 +68,16 @@ export function Button({
     )
   }
   return (
-    <RACButton
-      type={type}
-      isDisabled={isDisabled}
-      autoFocus={autoFocus}
-      onPress={onPress}
-      className={classes}
-    >
-      {content}
-    </RACButton>
+    <Reason reason={reason} align={reasonAlign}>
+      <RACButton
+        type={type}
+        isDisabled={isDisabled || !!reason}
+        autoFocus={autoFocus}
+        onPress={onPress}
+        className={classes}
+      >
+        {content}
+      </RACButton>
+    </Reason>
   )
 }
