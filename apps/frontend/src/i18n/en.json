@@ -313,8 +313,6 @@
   "chat.startedBySlack": "started by {name} in Slack",
   "chat.placeholder": "Message sanchoris…",
   "chat.enterSend": "↵ send",
-  "chat.send": "Send",
-  "chat.newLine": "New line",
   "chat.issuesFiled": "Issues filed from this thread",
   "chat.issuesFiledDetail": "Each issue started its own task, asynchronously.",
   "chat.noIssues": "No issues filed yet.",

@@ -313,8 +313,6 @@
   "chat.startedBySlack": "{name} が Slack で開始",
   "chat.placeholder": "sanchoris にメッセージ…",
   "chat.enterSend": "↵ 送信",
-  "chat.send": "送信",
-  "chat.newLine": "改行",
   "chat.issuesFiled": "このスレッドから起票した issue",
   "chat.issuesFiledDetail": "issue ごとに、別のタスクが非同期に始まりました。",
   "chat.noIssues": "起票した issue はまだありません。",

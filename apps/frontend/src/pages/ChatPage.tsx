@@ -1,5 +1,4 @@
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
-import clsx from "clsx"
 import { CircleDot, Plus } from "lucide-react"
 import { type KeyboardEvent, useState } from "react"
 import { Button } from "../components/Button.tsx"
@@ -63,7 +62,7 @@ function Composer({
   disabled,
   onSend,
 }: {
-  disabled: boolean
+  disabled?: boolean
   onSend: (text: string) => Promise<boolean>
 }) {
   const [text, setText] = useState("")
@@ -164,20 +163,23 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
           })}
         </div>
       ))}
-      {finished && task ? (
-        <Dim className="mt-2.5">
-          {t("chat.continueHint", { n: (task.conversationSequence ?? 1) + 1 })}
-        </Dim>
+      {conversation.kind === "WEB" ? (
+        <>
+          {finished && task ? (
+            <Dim className="mt-2.5">
+              {t("chat.continueHint", { n: (task.conversationSequence ?? 1) + 1 })}
+            </Dim>
+          ) : null}
+          <Composer
+            onSend={(text) =>
+              send({
+                input: { tenantId: tenant.id, conversationId: conversation.id, text },
+              }).then(Boolean)
+            }
+          />
+          <ActionError error={error} className="mt-2" />
+        </>
       ) : null}
-      <Composer
-        disabled={conversation.kind === "SLACK"}
-        onSend={(text) =>
-          send({
-            input: { tenantId: tenant.id, conversationId: conversation.id, text },
-          }).then(Boolean)
-        }
-      />
-      <ActionError error={error} className="mt-2" />
     </>
   )
 }
@@ -203,7 +205,7 @@ function SessionPicker({
           cols="160px 1fr"
           tall
           selected={session.id === selected?.id}
-          onClick={() => onSelect(session.id)}
+          onClick={session.id === selected?.id ? undefined : () => onSelect(session.id)}
         >
           <span className="font-mono text-sm">{session.name}</span>
           <div>
@@ -252,28 +254,30 @@ function NewChat({
         <SessionPicker sessions={tenant.sessions} selected={session} onSelect={onSelect} />
       ) : null}
       {session ? <Dim className="mt-2.5">{sessionSkills(session)}</Dim> : null}
-      <Composer
-        disabled={!session}
-        onSend={(text) =>
-          send({
-            input: {
-              tenantId: tenant.id,
-              sessionName: session?.name,
-              configId: session?.config.id,
-              text,
-            },
-          }).then((result) => {
-            const conversation = result?.sendChatMessage.conversation
-            if (conversation) {
-              void navigate({
-                to: "/chat/$conversation",
-                params: { conversation: conversation.id },
-              })
-            }
-            return !!result
-          })
-        }
-      />
+      {hasConfig && tenant.sessions.length > 0 ? (
+        <Composer
+          disabled={!session}
+          onSend={(text) =>
+            send({
+              input: {
+                tenantId: tenant.id,
+                sessionName: session?.name,
+                configId: session?.config.id,
+                text,
+              },
+            }).then((result) => {
+              const conversation = result?.sendChatMessage.conversation
+              if (conversation) {
+                void navigate({
+                  to: "/chat/$conversation",
+                  params: { conversation: conversation.id },
+                })
+              }
+              return !!result
+            })
+          }
+        />
+      ) : null}
       <ActionError error={error} className="mt-2" />
     </>
   )
@@ -369,7 +373,7 @@ export function ChatPage() {
   return (
     <Page
       crumbs={[
-        { label: t("nav.chat"), to: "/chat" },
+        { label: t("nav.chat"), to: conversationId ? "/chat" : undefined },
         { label: conversationId ? (conversation?.title ?? "…") : t("chat.newChat") },
       ]}
       actions={
@@ -379,10 +383,7 @@ export function ChatPage() {
           </Button>
         ) : null
       }
-      keys={[
-        ["↵", "chat.send"],
-        ["⇧↵", "chat.newLine"],
-      ]}
+      keys={conversationId ? [["c", "common.newChat"]] : []}
     >
       {error ? (
         <div className="px-4 py-6 md:px-6">
@@ -399,28 +400,40 @@ export function ChatPage() {
               {t("chat.threads")}
             </Section>
             {tenant.conversations.length === 0 ? <Dim>{t("chat.noThreads")}</Dim> : null}
-            {tenant.conversations.map((item) => (
-              <Link
-                key={item.id}
-                to="/chat/$conversation"
-                params={{ conversation: item.id }}
-                className={clsx(
-                  "block rounded-ui px-2 py-[7px] hover:bg-hover",
-                  item.id === conversationId && "bg-hover",
-                )}
-              >
-                <span className="font-medium">{item.title}</span>
-                <small className="block text-xs text-muted">
-                  {[
-                    item.sessionName,
-                    item.kind === "SLACK" ? t("chat.slack") : t("chat.web"),
-                    t(item.filedTasks.length === 1 ? "chat.issueCountOne" : "chat.issuesCount", {
-                      n: item.filedTasks.length,
-                    }),
-                  ].join(" · ")}
-                </small>
-              </Link>
-            ))}
+            {tenant.conversations.map((item) => {
+              const content = (
+                <>
+                  <span className="font-medium">{item.title}</span>
+                  <small className="block text-xs text-muted">
+                    {[
+                      item.sessionName,
+                      item.kind === "SLACK" ? t("chat.slack") : t("chat.web"),
+                      t(item.filedTasks.length === 1 ? "chat.issueCountOne" : "chat.issuesCount", {
+                        n: item.filedTasks.length,
+                      }),
+                    ].join(" · ")}
+                  </small>
+                </>
+              )
+              return item.id === conversationId ? (
+                <div
+                  key={item.id}
+                  aria-current="page"
+                  className="block rounded-ui bg-hover px-2 py-[7px]"
+                >
+                  {content}
+                </div>
+              ) : (
+                <Link
+                  key={item.id}
+                  to="/chat/$conversation"
+                  params={{ conversation: item.id }}
+                  className="block rounded-ui px-2 py-[7px] hover:bg-hover"
+                >
+                  {content}
+                </Link>
+              )
+            })}
           </div>
           <div className="min-w-0 border-line px-4 py-[18px] max-lg:order-first md:px-5 lg:min-h-0 lg:overflow-auto lg:border-l">
             {conversationId ? (
