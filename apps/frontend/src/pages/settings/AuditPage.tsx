@@ -29,7 +29,7 @@ import {
 } from "../../graphql/generated/graphql.ts"
 import { type MessageKey, t } from "../../i18n/index.ts"
 import { dayTime } from "../../lib/format.ts"
-import { useListNav } from "../../lib/keys.ts"
+import { listKeys, useListNav } from "../../lib/keys.ts"
 import { useAction } from "../../lib/mutation.ts"
 import { useData } from "../../lib/query.ts"
 import { useTenant } from "../../lib/tenant.tsx"
@@ -99,11 +99,7 @@ export function AuditPage() {
           {t("audit.export")}
         </Button>
       }
-      keys={[
-        ["j k", "keys.move"],
-        ["/", "keys.filter"],
-        ["e", "audit.exportKey"],
-      ]}
+      keys={[...listKeys(events.length), ["/", "keys.filter"], ["e", "audit.exportKey"]]}
     >
       <Title>{t("settings.audit")}</Title>
       <Sub>{t("audit.intro", { tenant: tenant?.name ?? "" })}</Sub>
@@ -123,18 +119,20 @@ export function AuditPage() {
             })),
           ]}
         />
-        <Menu
-          label={action || t("audit.allActions")}
-          value={action}
-          onChange={setAction}
-          options={[
-            { value: "", label: t("audit.allActions") },
-            ...actions.map((item) => ({
-              value: item,
-              label: <span className="font-mono text-sm">{item}</span>,
-            })),
-          ]}
-        />
+        {actions.length > 0 || action ? (
+          <Menu
+            label={action || t("audit.allActions")}
+            value={action}
+            onChange={setAction}
+            options={[
+              { value: "", label: t("audit.allActions") },
+              ...actions.map((item) => ({
+                value: item,
+                label: <span className="font-mono text-sm">{item}</span>,
+              })),
+            ]}
+          />
+        ) : null}
         <Menu
           label={t(periods.find((item) => item.value === period)?.label ?? "audit.last7")}
           value={period}
@@ -173,7 +171,7 @@ export function AuditPage() {
                   cols={cols}
                   selected={nav.selected === index}
                   rowRef={nav.rowRef(index)}
-                  onClick={() => nav.select(index)}
+                  onClick={nav.pick(index)}
                 >
                   <span className="font-mono text-sm">{dayTime(event.at)}</span>
                   <span>

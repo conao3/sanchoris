@@ -153,7 +153,7 @@ export function CreateTenantPage() {
                   cols="120px 1fr 100px"
                   className="max-md:grid-cols-[minmax(0,1fr)_auto]! max-md:gap-y-0.5 max-md:py-2 max-md:[&>:nth-child(2)]:col-span-2 max-md:[&>:nth-child(2)]:row-start-2"
                   selected={isSelected}
-                  onClick={() => setPlanId(plan.id)}
+                  onClick={isSelected ? undefined : () => setPlanId(plan.id)}
                 >
                   <span className="font-medium" role="radio" aria-checked={isSelected}>
                     {plan.name}

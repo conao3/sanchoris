@@ -21,7 +21,7 @@ import {
 } from "../graphql/generated/graphql.ts"
 import { t } from "../i18n/index.ts"
 import { hours } from "../lib/format.ts"
-import { useListNav } from "../lib/keys.ts"
+import { listKeys, useListNav } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
 import { useData } from "../lib/query.ts"
 
@@ -61,7 +61,7 @@ export function OperatorTenantsPage() {
           {t("operator.only")}
         </State>
       }
-      keys={[["j k", "keys.move"]]}
+      keys={listKeys(tenants.length)}
     >
       <Pg>
         <Title>{t("nav.tenants")}</Title>
@@ -99,11 +99,9 @@ export function OperatorTenantsPage() {
                     cols={cols}
                     selected={nav.selected === index}
                     rowRef={nav.rowRef(index)}
-                    onClick={() => nav.select(index)}
+                    onClick={nav.pick(index)}
                   >
-                    <span className="font-medium underline decoration-line2 underline-offset-[3px]">
-                      {tenant.name}
-                    </span>
+                    <span className="font-medium">{tenant.name}</span>
                     <span className="font-mono text-sm">
                       {tenant.githubOwner
                         ? `${tenant.githubOwner.kind === "ORGANIZATION" ? t("operator.org") : t("operator.user")}: ${tenant.githubOwner.login}`

@@ -28,9 +28,9 @@ import {
   type TriggersQuery,
   TriggersDocument,
 } from "../graphql/generated/graphql.ts"
-import { locale, t, tx } from "../i18n/index.ts"
+import { locale, type MessageKey, t, tx } from "../i18n/index.ts"
 import { weekdayTime, when } from "../lib/format.ts"
-import { useListNav } from "../lib/keys.ts"
+import { listKeys, useListNav } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
 import { useData } from "../lib/query.ts"
 import { useTenant } from "../lib/tenant.tsx"
@@ -236,6 +236,13 @@ export function TriggersPage() {
   const [panel, setPanel] = useState(false)
   const tenant = data?.tenant
   const triggers = tenant?.triggers ?? []
+  const canPropose =
+    (data?.triggerTemplates.length ?? 0) > 0 &&
+    (tenant?.configs.length ?? 0) > 0 &&
+    (tenant?.integrations ?? []).some(
+      (integration) =>
+        integration.kind === "GITHUB_INSTALLATION" && integration.repositories.length > 0,
+    )
 
   function toggle(trigger: Trigger) {
     void setTriggerState({
@@ -253,7 +260,7 @@ export function TriggersPage() {
       }
     },
     {
-      n: () => setPanel(true),
+      ...(canPropose ? { n: () => setPanel(!panel) } : {}),
       t: () => {
         const trigger = triggers[nav.selected]
         if (trigger) {
@@ -275,19 +282,20 @@ export function TriggersPage() {
     <Page
       crumbs={[{ label: t("nav.triggers") }]}
       actions={
-        <Button variant="primary" icon={Plus} kbd="n" onPress={() => setPanel(!panel)}>
-          {t("triggers.newFromTemplate")}
-        </Button>
+        canPropose ? (
+          <Button variant="primary" icon={Plus} kbd="n" onPress={() => setPanel(!panel)}>
+            {t("triggers.newFromTemplate")}
+          </Button>
+        ) : null
       }
       keys={[
-        ["j k", "keys.move"],
-        ["↵", "keys.openOnGitHub"],
-        ["n", "triggers.newFromTemplate"],
-        ["t", "keys.onOff"],
+        ...listKeys(triggers.length, "keys.openOnGitHub"),
+        ...(canPropose ? [["n", "triggers.newFromTemplate"] as [string, MessageKey]] : []),
+        ...(triggers.length > 0 ? [["t", "keys.onOff"] as [string, MessageKey]] : []),
       ]}
     >
       <div className="relative min-h-0 flex-1">
-        {panel && tenant && data ? (
+        {panel && canPropose && tenant && data ? (
           <TemplatePanel
             tenant={tenant}
             templates={data.triggerTemplates}
@@ -321,7 +329,7 @@ export function TriggersPage() {
                     tall
                     selected={nav.selected === index}
                     rowRef={nav.rowRef(index)}
-                    onClick={() => nav.select(index)}
+                    onClick={nav.pick(index)}
                   >
                     <div className="flex flex-col items-start gap-0.5">
                       <ExternalLk href={trigger.editUrl} className="font-medium no-underline">

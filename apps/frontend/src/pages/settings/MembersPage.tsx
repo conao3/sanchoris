@@ -27,7 +27,7 @@ import {
 } from "../../graphql/generated/graphql.ts"
 import { type MessageKey, t } from "../../i18n/index.ts"
 import { ago, until } from "../../lib/format.ts"
-import { useListNav } from "../../lib/keys.ts"
+import { listKeys, useListNav } from "../../lib/keys.ts"
 import { useAction } from "../../lib/mutation.ts"
 import { useData } from "../../lib/query.ts"
 import { useTenant } from "../../lib/tenant.tsx"
@@ -129,32 +129,31 @@ export function MembersPage() {
   const emailRef = useRef<HTMLInputElement>(null)
   const tenant = data?.tenant
   const members = tenant?.members ?? []
-  const nav = useListNav(members.length, () => undefined, {
-    i: () => {
-      setInviting(true)
-      window.setTimeout(() => emailRef.current?.focus())
-    },
-  })
   const viewerRole = tenant?.viewerMember.role
   const canManage = viewerRole === "OWNER" || viewerRole === "ADMIN"
+  const nav = useListNav(
+    members.length,
+    () => undefined,
+    canManage
+      ? {
+          i: () => {
+            setInviting(true)
+            window.setTimeout(() => emailRef.current?.focus())
+          },
+        }
+      : {},
+  )
   const cols = "1fr 100px 130px 130px 110px 110px"
   const inviteCols = "1fr 100px 160px 140px 100px"
 
   return (
     <SettingsPage
       tab="members"
-      keys={
-        canManage
-          ? [
-              ["g s", "nav.settings"],
-              ["j k", "keys.move"],
-              ["i", "members.invite"],
-            ]
-          : [
-              ["g s", "nav.settings"],
-              ["j k", "keys.move"],
-            ]
-      }
+      keys={[
+        ["g s", "nav.settings"],
+        ...listKeys(members.length),
+        ...(canManage ? [["i", "members.invite"] as [string, MessageKey]] : []),
+      ]}
       actions={
         canManage ? (
           <Button variant="primary" icon={Plus} kbd="i" onPress={() => setInviting(!inviting)}>
@@ -197,15 +196,13 @@ export function MembersPage() {
                 cols={cols}
                 selected={nav.selected === index}
                 rowRef={nav.rowRef(index)}
-                onClick={() => nav.select(index)}
+                onClick={nav.pick(index)}
               >
                 <div>
                   <span className="font-medium">{member.user.name}</span>{" "}
                   <Id>{member.user.githubLogin ?? t("members.githubNotLinked")}</Id>
                 </div>
-                {canManage &&
-                member.role !== "OWNER" &&
-                (viewerRole === "OWNER" || member.role !== "ADMIN") ? (
+                {viewerRole === "OWNER" && member.role !== "OWNER" ? (
                   <select
                     aria-label={t("col.role")}
                     className="h-7 rounded-ui border border-line2 bg-bg px-1 text-sm"
@@ -216,9 +213,7 @@ export function MembersPage() {
                       void changeRole({ memberId: member.id, role: event.target.value as Role })
                     }
                   >
-                    {viewerRole === "OWNER" ? (
-                      <option value="ADMIN">{t("role.admin")}</option>
-                    ) : null}
+                    <option value="ADMIN">{t("role.admin")}</option>
                     <option value="MEMBER">{t("role.member")}</option>
                   </select>
                 ) : (

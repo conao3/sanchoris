@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import type { MessageKey } from "../i18n/index.ts"
 
 export type KeyBindings = Record<string, () => void>
 
@@ -85,11 +86,25 @@ export function useListNav(
     ...extra,
   })
 
+  const selected = Math.min(index, Math.max(0, count - 1))
+
   return {
-    selected: Math.min(index, Math.max(0, count - 1)),
+    selected,
     select: setIndex,
+    pick: (position: number) => (position === selected ? undefined : () => setIndex(position)),
     rowRef: (position: number) => (element: HTMLDivElement | null) => {
       rows.current[position] = element
     },
   }
+}
+
+export function listKeys(count: number, open?: MessageKey): [string, MessageKey][] {
+  const keys: [string, MessageKey][] = []
+  if (count > 1) {
+    keys.push(["j k", "keys.move"])
+  }
+  if (count > 0 && open) {
+    keys.push(["↵", open])
+  }
+  return keys
 }

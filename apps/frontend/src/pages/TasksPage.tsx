@@ -23,9 +23,9 @@ import {
   type TaskRowFragment,
   TasksDocument,
 } from "../graphql/generated/graphql.ts"
-import { t } from "../i18n/index.ts"
+import { type MessageKey, t } from "../i18n/index.ts"
 import { age, issueLabel, usd } from "../lib/format.ts"
-import { useListNav } from "../lib/keys.ts"
+import { listKeys, useListNav } from "../lib/keys.ts"
 import { IDLE_POLL, LIVE_POLL, useData } from "../lib/query.ts"
 import { isActive, originName, skillProgress } from "../lib/taskText.ts"
 import { useTenant } from "../lib/tenant.tsx"
@@ -93,13 +93,16 @@ export function TasksPage() {
     }
   }
 
+  const triggers = tenant?.triggers ?? []
+  const skills = (tenant?.skills ?? []).filter((skill) => skill.kind === "RELIABLE")
   const nav = useListNav(rows.length, open, {
     c: () => void navigate({ to: "/chat" }),
-    "/": () => setFilterOpen(true),
-    Escape: () => setFilterOpen(false),
+    ...(triggers.length > 0
+      ? { "/": () => setFilterOpen(true), Escape: () => setFilterOpen(false) }
+      : {}),
   })
   const cols = "170px minmax(220px,1fr) 110px 250px 64px 60px"
-  const triggerName = tenant?.triggers.find((trigger) => trigger.id === triggerId)?.name
+  const triggerName = triggers.find((trigger) => trigger.id === triggerId)?.name
 
   return (
     <Page
@@ -115,9 +118,8 @@ export function TasksPage() {
         </Button>
       }
       keys={[
-        ["j k", "keys.move"],
-        ["↵", "keys.open"],
-        ["/", "keys.filter"],
+        ...listKeys(rows.length, "keys.open"),
+        ...(triggers.length > 0 ? [["/", "keys.filter"] as [string, MessageKey]] : []),
         ["c", "common.newChat"],
       ]}
     >
@@ -125,33 +127,32 @@ export function TasksPage() {
         <Title>{t("nav.tasks")}</Title>
         <Sub>{t("tasks.intro", { n: rows.length })}</Sub>
         <div className="mb-3.5 flex flex-wrap gap-2">
-          <Menu
-            icon={Zap}
-            open={filterOpen}
-            onOpenChange={setFilterOpen}
-            label={triggerName ?? t("tasks.allTriggers")}
-            value={triggerId}
-            onChange={setTriggerId}
-            options={[
-              { value: "", label: t("tasks.allTriggers") },
-              ...(tenant?.triggers ?? []).map((trigger) => ({
-                value: trigger.id,
-                label: trigger.name,
-              })),
-            ]}
-          />
-          <Menu
-            icon={Puzzle}
-            label={skillName || t("tasks.allSkills")}
-            value={skillName}
-            onChange={setSkillName}
-            options={[
-              { value: "", label: t("tasks.allSkills") },
-              ...(tenant?.skills ?? [])
-                .filter((skill) => skill.kind === "RELIABLE")
-                .map((skill) => ({ value: skill.name, label: skill.name })),
-            ]}
-          />
+          {triggers.length > 0 ? (
+            <Menu
+              icon={Zap}
+              open={filterOpen}
+              onOpenChange={setFilterOpen}
+              label={triggerName ?? t("tasks.allTriggers")}
+              value={triggerId}
+              onChange={setTriggerId}
+              options={[
+                { value: "", label: t("tasks.allTriggers") },
+                ...triggers.map((trigger) => ({ value: trigger.id, label: trigger.name })),
+              ]}
+            />
+          ) : null}
+          {skills.length > 0 ? (
+            <Menu
+              icon={Puzzle}
+              label={skillName || t("tasks.allSkills")}
+              value={skillName}
+              onChange={setSkillName}
+              options={[
+                { value: "", label: t("tasks.allSkills") },
+                ...skills.map((skill) => ({ value: skill.name, label: skill.name })),
+              ]}
+            />
+          ) : null}
           <Menu
             label={t("tasks.stateLabel", { state: t(stateLabels[state]) })}
             value={state}

@@ -160,10 +160,10 @@ export function Row({
       ref={rowRef}
       onClick={onClick}
       className={clsx(
-        "grid items-center gap-3.5 border-b border-line px-1 last:border-b-0 hover:bg-sub",
+        "grid items-center gap-3.5 border-b border-line px-1 last:border-b-0",
         tall ? "min-h-14 py-1.5" : "min-h-10",
         selected && "bg-sub shadow-[inset_2px_0_0_var(--color-ink)]",
-        onClick && "cursor-pointer",
+        onClick && "cursor-pointer hover:bg-sub",
         className,
       )}
       style={{ gridTemplateColumns: fixedColumns(cols) }}

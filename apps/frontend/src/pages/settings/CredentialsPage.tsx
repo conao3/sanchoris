@@ -35,7 +35,7 @@ import {
 } from "../../graphql/generated/graphql.ts"
 import { type MessageKey, t, tx } from "../../i18n/index.ts"
 import { ago } from "../../lib/format.ts"
-import { useListNav } from "../../lib/keys.ts"
+import { listKeys, useListNav } from "../../lib/keys.ts"
 import { useAction } from "../../lib/mutation.ts"
 import { useData } from "../../lib/query.ts"
 import { useTenant } from "../../lib/tenant.tsx"
@@ -61,10 +61,7 @@ export function CredentialsPage() {
   return (
     <SettingsPage
       tab="credentials"
-      keys={[
-        ["g s", "nav.settings"],
-        ["j k", "keys.move"],
-      ]}
+      keys={[["g s", "nav.settings"], ...listKeys(credentials.length)]}
       actions={
         <Button variant="primary" icon={Plus} onPress={() => setConnect(!connect)}>
           {t("credentials.connect")}
@@ -115,7 +112,7 @@ export function CredentialsPage() {
                   cols={cols}
                   selected={nav.selected === index}
                   rowRef={nav.rowRef(index)}
-                  onClick={() => nav.select(index)}
+                  onClick={nav.pick(index)}
                 >
                   <span className="font-mono text-sm">{credential.name}</span>
                   <span className="font-medium">
@@ -165,7 +162,7 @@ export function CredentialsPage() {
                         ? ago(credential.lastUsedAt)
                         : t("credentials.never")}
                   </span>
-                  {reconnect ? (
+                  {reconnect && connect ? null : reconnect ? (
                     <Button
                       variant="primary"
                       small

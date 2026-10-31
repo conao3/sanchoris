@@ -37,7 +37,7 @@ import {
 } from "../../graphql/generated/graphql.ts"
 import { t } from "../../i18n/index.ts"
 import { ago } from "../../lib/format.ts"
-import { useListNav } from "../../lib/keys.ts"
+import { listKeys, useListNav } from "../../lib/keys.ts"
 import { useAction } from "../../lib/mutation.ts"
 import { useData } from "../../lib/query.ts"
 import { useTenant } from "../../lib/tenant.tsx"
@@ -143,11 +143,7 @@ export function ConfigPage() {
   return (
     <SettingsPage
       tab="config"
-      keys={[
-        ["g s", "nav.settings"],
-        ["j k", "keys.move"],
-        ["↵", "keys.openOnGitHub"],
-      ]}
+      keys={[["g s", "nav.settings"], ...listKeys(configs.length, "keys.openOnGitHub")]}
     >
       <Title>{t("settings.config")}</Title>
       <Sub>{t("config.intro")}</Sub>
@@ -175,7 +171,7 @@ export function ConfigPage() {
                     cols={configCols}
                     selected={nav.selected === index}
                     rowRef={nav.rowRef(index)}
-                    onClick={() => nav.select(index)}
+                    onClick={nav.pick(index)}
                   >
                     <span className="font-medium">
                       <Icon icon={FolderGit2} />{" "}
@@ -191,9 +187,7 @@ export function ConfigPage() {
                     <span className="text-right font-mono text-sm">{config.triggerCount}</span>
                     <span className="text-right font-mono text-sm">{config.skillCount}</span>
                     {config.changeRequests.length > 0 ? (
-                      <span className="underline decoration-line2 underline-offset-[3px]">
-                        {t("config.openCount", { n: config.changeRequests.length })}
-                      </span>
+                      <span>{t("config.openCount", { n: config.changeRequests.length })}</span>
                     ) : (
                       <span className="text-muted">—</span>
                     )}
@@ -241,7 +235,9 @@ export function ConfigPage() {
               )
             })}
           </Table>
-          <AddConfigForm tenantId={tenant.id} repositories={repositories} />
+          {repositories.length > 0 ? (
+            <AddConfigForm tenantId={tenant.id} repositories={repositories} />
+          ) : null}
 
           <Section count={t("config.projectsCount", { n: tenant.projects.length })}>
             {t("config.projects")}
@@ -298,7 +294,7 @@ export function ConfigPage() {
                 <Row key={change.id} cols={changeCols}>
                   <Id>#{change.number}</Id>
                   <span className="font-medium">{change.title}</span>
-                  <span className="underline decoration-line2 underline-offset-[3px]">
+                  <span>
                     {change.changes
                       .map((item) => item.name)
                       .filter((name, index, all) => all.indexOf(name) === index)

@@ -23,7 +23,7 @@ import {
   Title,
 } from "../components/ui.tsx"
 import { SkillDocument } from "../graphql/generated/graphql.ts"
-import { t } from "../i18n/index.ts"
+import { type MessageKey, t } from "../i18n/index.ts"
 import { between, duration, durationLong, issueLabel, percent, when } from "../lib/format.ts"
 import { useKeys } from "../lib/keys.ts"
 import { useData } from "../lib/query.ts"
@@ -78,7 +78,7 @@ export function SkillPage() {
             states={skill.states}
             startAt={skill.startAt}
             selected={selected ?? busiest}
-            onSelect={setSelected}
+            onSelect={(state) => setSelected(state === selected ? undefined : state)}
           />
         ) : (
           <Code>{t("skill.plainNote")}</Code>
@@ -224,7 +224,7 @@ export function SkillPage() {
         ) : null
       }
       keys={[
-        ["e", "common.editOnGitHub"],
+        ...(skill?.editUrl ? [["e", "common.editOnGitHub"] as [string, MessageKey]] : []),
         ["Esc", "keys.back"],
       ]}
     >

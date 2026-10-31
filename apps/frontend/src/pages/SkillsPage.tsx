@@ -16,9 +16,9 @@ import {
   Title,
 } from "../components/ui.tsx"
 import { SkillsDocument } from "../graphql/generated/graphql.ts"
-import { t, tx } from "../i18n/index.ts"
+import { type MessageKey, t, tx } from "../i18n/index.ts"
 import { duration, percent } from "../lib/format.ts"
-import { useListNav } from "../lib/keys.ts"
+import { listKeys, useListNav } from "../lib/keys.ts"
 import { useData } from "../lib/query.ts"
 import { useTenant } from "../lib/tenant.tsx"
 
@@ -36,27 +36,26 @@ export function SkillsPage() {
     }
   }
 
-  const nav = useListNav(skills.length, open, {
-    n: () => {
-      if (newSkillUrl) {
-        window.open(newSkillUrl, "_blank", "noreferrer")
-      }
-    },
-  })
+  const nav = useListNav(
+    skills.length,
+    open,
+    newSkillUrl ? { n: () => void window.open(newSkillUrl, "_blank", "noreferrer") } : {},
+  )
   const cols = "170px 110px 1fr 190px 70px 70px 90px"
 
   return (
     <Page
       crumbs={[{ label: t("nav.skills") }]}
       actions={
-        <Button variant="primary" icon={Plus} kbd="n" href={newSkillUrl} isDisabled={!newSkillUrl}>
-          {t("skills.add")}
-        </Button>
+        newSkillUrl ? (
+          <Button variant="primary" icon={Plus} kbd="n" href={newSkillUrl}>
+            {t("skills.add")}
+          </Button>
+        ) : null
       }
       keys={[
-        ["j k", "keys.move"],
-        ["↵", "keys.open"],
-        ["n", "skills.add"],
+        ...listKeys(skills.length, "keys.open"),
+        ...(newSkillUrl ? [["n", "skills.add"] as [string, MessageKey]] : []),
       ]}
     >
       <Pg>

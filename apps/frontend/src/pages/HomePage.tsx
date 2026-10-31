@@ -213,7 +213,7 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
           className: stackedRow,
           selected: nav.selected === index,
           rowRef: nav.rowRef(index),
-          onClick: () => nav.select(index),
+          onClick: nav.pick(index),
         }
         if (item.kind === "task") {
           const { task } = item
@@ -227,7 +227,10 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
                 ) : null}
                 <Dim>{needsYouText(task)}</Dim>
               </div>
-              <Button kbd="↵" onPress={() => openAttention(item)}>
+              <Button
+                kbd={nav.selected === index ? "↵" : undefined}
+                onPress={() => openAttention(item)}
+              >
                 {t("home.openTask")}
               </Button>
             </Row>
@@ -489,7 +492,6 @@ export function HomePage() {
         setup
           ? [["↵", "keys.continue"]]
           : [
-              ["g h", "nav.home"],
               ["g t", "nav.tasks"],
               ["g r", "nav.triggers"],
               ["c", "common.newChat"],
