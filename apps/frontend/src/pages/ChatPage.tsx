@@ -1,9 +1,8 @@
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import clsx from "clsx"
-import { ChevronDown, CircleDot, Plus } from "lucide-react"
+import { CircleDot, Plus } from "lucide-react"
 import { type KeyboardEvent, useState } from "react"
 import { Button } from "../components/Button.tsx"
-import { Menu } from "../components/Menu.tsx"
 import { Page } from "../components/Shell.tsx"
 import { TaskState } from "../components/status.tsx"
 import {
@@ -353,7 +352,6 @@ export function ChatPage() {
     },
   )
   const [picked, setPicked] = useState<string>()
-  const [pickerOpen, setPickerOpen] = useState(false)
   const tenant = data?.tenant
   const conversation = tenant?.conversation
   const sessions = tenant?.sessions ?? []
@@ -363,15 +361,7 @@ export function ChatPage() {
 
   function newChat() {
     setPicked(undefined)
-    setPickerOpen(sessions.length > 1)
     void navigate({ to: "/chat" })
-  }
-
-  function pick(id: string) {
-    setPicked(id)
-    if (conversationId) {
-      void navigate({ to: "/chat" })
-    }
   }
 
   useKeys({ c: newChat })
@@ -383,29 +373,9 @@ export function ChatPage() {
         { label: conversationId ? (conversation?.title ?? "…") : t("chat.newChat") },
       ]}
       actions={
-        <>
-          <Button variant="primary" icon={Plus} kbd="c" compact onPress={newChat}>
-            {t("common.newChat")}
-          </Button>
-          {sessions.length > 1 ? (
-            <Menu
-              icon={ChevronDown}
-              label={t("chat.session")}
-              title={t("chat.startIn")}
-              align="right"
-              compact
-              open={pickerOpen}
-              onOpenChange={setPickerOpen}
-              value={session?.id}
-              options={sessions.map((candidate) => ({
-                value: candidate.id,
-                label: candidate.name,
-                detail: sessionDetail(candidate),
-              }))}
-              onChange={pick}
-            />
-          ) : null}
-        </>
+        <Button variant="primary" icon={Plus} kbd="c" compact onPress={newChat}>
+          {t("common.newChat")}
+        </Button>
       }
       keys={[
         ["↵", "chat.send"],
@@ -458,7 +428,7 @@ export function ChatPage() {
                 <Dim>{t("chat.notFound")}</Dim>
               )
             ) : (
-              <NewChat tenant={tenant} session={session} onSelect={pick} />
+              <NewChat tenant={tenant} session={session} onSelect={setPicked} />
             )}
           </div>
           <div className="min-w-0 border-line px-4 py-[18px] max-lg:border-t md:px-5 lg:min-h-0 lg:overflow-auto lg:border-l">

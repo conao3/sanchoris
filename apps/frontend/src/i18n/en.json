@@ -292,7 +292,6 @@
 
   "chat.threads": "Threads",
   "chat.noThreads": "No chats yet.",
-  "chat.startIn": "Start a chat in",
   "chat.session": "Session",
   "chat.sessionWhat": "Worker, repositories, and skills",
   "chat.sessionIs": "Session: {session}",

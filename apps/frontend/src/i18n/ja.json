@@ -292,7 +292,6 @@
 
   "chat.threads": "スレッド",
   "chat.noThreads": "チャットはまだありません。",
-  "chat.startIn": "チャットを始めるセッション",
   "chat.session": "セッション",
   "chat.sessionWhat": "ワーカー、リポジトリ、Skill",
   "chat.sessionIs": "セッション: {session}",
