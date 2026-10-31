@@ -1959,12 +1959,13 @@ function operatorOnly(
 }
 
 export function buildFixtures() {
-  const acme = buildAcme(localStorage.getItem("sanchoris_mock_role") ?? "OWNER")
+  const mockRole = localStorage.getItem("sanchoris_mock_role")
+  const acme = buildAcme(mockRole ?? "OWNER")
   const northwind = buildSetupTenant({
     slug: "northwind",
     name: "northwind",
     planName: "Starter",
-    role: "ADMIN",
+    role: mockRole ?? "ADMIN",
     installed: true,
   })
   const tenants = [acme, northwind]
