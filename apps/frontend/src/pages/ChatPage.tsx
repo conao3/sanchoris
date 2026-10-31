@@ -364,7 +364,7 @@ export function ChatPage() {
     void navigate({ to: "/chat" })
   }
 
-  useKeys({ c: newChat })
+  useKeys(conversationId ? { c: newChat } : {})
 
   return (
     <Page
@@ -373,9 +373,11 @@ export function ChatPage() {
         { label: conversationId ? (conversation?.title ?? "…") : t("chat.newChat") },
       ]}
       actions={
-        <Button variant="primary" icon={Plus} kbd="c" compact onPress={newChat}>
-          {t("common.newChat")}
-        </Button>
+        conversationId ? (
+          <Button variant="primary" icon={Plus} kbd="c" compact onPress={newChat}>
+            {t("common.newChat")}
+          </Button>
+        ) : null
       }
       keys={[
         ["↵", "chat.send"],
