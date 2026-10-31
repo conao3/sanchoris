@@ -1,3 +1,4 @@
+use sanchoris_config::Start;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -59,7 +60,7 @@ string_enum!(TaskStatus, "task status", {
 string_enum!(WaitReason, "wait reason", {
     Skill => "skill",
     UsageLimit => "usage_limit",
-    Chat => "chat",
+    Message => "message",
 });
 
 string_enum!(SkillRunStatus, "skill run status", {
@@ -118,7 +119,9 @@ pub struct NamedDefinition {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct TaskDefinition {
-    pub trigger: NamedDefinition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<NamedDefinition>,
+    pub start: Start,
     pub session: NamedDefinition,
     pub skills: Vec<NamedDefinition>,
 }

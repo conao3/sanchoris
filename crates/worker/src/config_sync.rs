@@ -11,8 +11,8 @@ use sanchoris_core::db::{
 };
 use sanchoris_core::item::{Entity, Key, format_time};
 use sanchoris_core::items::{
-    CONFIG_DISABLED, Config, ConfigRevision, Credential, GitHubRepository, Guard, NextTrigger,
-    Project, Repository, SessionDef, SkillDef, Task, Trigger, TriggerSpec,
+    CONFIG_DISABLED, Config, ConfigRevision, Conversation, Credential, GitHubRepository, Guard,
+    NextTrigger, Project, Repository, SessionDef, SkillDef, Task, TaskOrigin, Trigger, TriggerSpec,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
@@ -438,11 +438,30 @@ async fn retire_definitions(
         tx.commit().await?;
     }
     let trigger_ids = triggers.iter().map(|t| t.id).collect::<BTreeSet<_>>();
+    let conversation_ids = store
+        .query_index::<Conversation>(
+            Index::Gsi1,
+            &keys::conversations_index(tenant_id),
+            SortKey::All,
+        )
+        .await?
+        .into_iter()
+        .filter(|conversation| conversation.config_id == config_id)
+        .map(|conversation| conversation.id)
+        .collect::<BTreeSet<_>>();
     let unfinished = store
         .query_index::<Task>(Index::Gsi1, &keys::tasks_index(tenant_id), SortKey::All)
         .await?
         .into_iter()
-        .filter(|task| trigger_ids.contains(&task.trigger_id) && !task.status.is_terminal());
+        .filter(|task| {
+            let of_config = match task.origin {
+                TaskOrigin::Trigger { trigger_id, .. } => trigger_ids.contains(&trigger_id),
+                TaskOrigin::Conversation {
+                    conversation_id, ..
+                } => conversation_ids.contains(&conversation_id),
+            };
+            of_config && !task.status.is_terminal()
+        });
     for task in unfinished {
         retrying(|| async {
             let mut tx = store.tx(tenant_id);
@@ -795,6 +814,7 @@ async fn activate(
                 config_revision_id: revision_id,
                 name: name.clone(),
                 definition: serde_json::to_value(session)?,
+                chat_skills: sanchoris_config::chat_skills(repository, name),
             },
         )
         .await?;

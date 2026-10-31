@@ -153,14 +153,11 @@ db_enum!(TriggerEventKind, "trigger event kind", {
     IssueLabeled => "Issue Labeled",
     IssueCommentCreated => "Issue Comment Created",
     CheckRunCompleted => "Check Run Completed",
-    Message => "Message",
     Schedule => "Scheduled Event",
 });
 
 db_enum!(EventSource, "event source", {
     Github => "github",
-    Slack => "slack",
-    Web => "web",
     Schedule => "schedule",
 });
 
@@ -234,7 +231,8 @@ db_enum!(TaskStatus, "task status", {
 db_enum!(WaitReason, "wait reason", {
     Skill => "skill",
     UsageLimit => "usage_limit",
-    Chat => "chat",
+    /// The conversation task finished its turn and waits for the next message.
+    Message => "message",
 });
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,7 +253,7 @@ pub enum NeedsYouReason {
     WorkspaceStopped,
 }
 
-db_enum!(ChannelKind, "channel kind", {
+db_enum!(ConversationKind, "conversation kind", {
     Web => "web",
     Slack => "slack",
 });
@@ -304,6 +302,7 @@ pub enum LogLineKind {
 db_enum!(OutputKind, "output kind", {
     PullRequest => "pull_request",
     Comment => "comment",
+    Issue => "issue",
 });
 
 db_enum!(OutputState, "output state", {

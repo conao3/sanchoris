@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, OnceCell};
 
 use crate::ports::{
-    CheckRun, ConfigSource, GitHubClient, GitHubError, GitHubReader, GitHubRepository,
-    IssueComment, IssueRef, IssueRelations, MergeResult, NewPullRequest, PullRequest,
+    CheckRun, ConfigSource, GitHubClient, GitHubError, GitHubReader, GitHubRepository, Issue,
+    IssueComment, IssueRef, IssueRelations, MergeResult, NewIssue, NewPullRequest, PullRequest,
 };
 use transport::{HttpRequest, HttpResponse, HttpTransport};
 
@@ -148,6 +148,15 @@ fn comment(value: &Value) -> Result<IssueComment, GitHubError> {
         id: integer(value, "/id")?,
         body: string(value, "/body")?,
         url: string(value, "/html_url")?,
+    })
+}
+
+fn issue(value: &Value) -> Result<Issue, GitHubError> {
+    Ok(Issue {
+        number: integer(value, "/number")?,
+        url: string(value, "/html_url")?,
+        title: string(value, "/title")?,
+        body: value["body"].as_str().unwrap_or_default().to_string(),
     })
 }
 
@@ -538,6 +547,48 @@ impl GitHubClient for GitHubApi {
                 .ok_or_else(|| GitHubError::Decode("missing /merged".into()))?,
             sha: value.get("sha").and_then(Value::as_str).map(str::to_string),
         })
+    }
+
+    async fn create_issue(
+        &self,
+        installation: i64,
+        repo: &str,
+        new_issue: &NewIssue<'_>,
+    ) -> Result<Issue, GitHubError> {
+        let value = self
+            .call(
+                installation,
+                "POST",
+                &format!("/repos/{repo}/issues"),
+                Some(json!({
+                    "title": new_issue.title,
+                    "body": new_issue.body,
+                    "labels": new_issue.labels,
+                })),
+            )
+            .await?;
+        issue(&value)
+    }
+
+    async fn recent_issues(
+        &self,
+        installation: i64,
+        repo: &str,
+    ) -> Result<Vec<Issue>, GitHubError> {
+        let value = self
+            .call(
+                installation,
+                "GET",
+                &format!("/repos/{repo}/issues?state=all&sort=created&direction=desc&per_page=100"),
+                None,
+            )
+            .await?;
+        value
+            .as_array()
+            .ok_or_else(|| GitHubError::Decode(format!("issues of {repo} are not a list")))?
+            .iter()
+            .map(issue)
+            .collect()
     }
 
     async fn list_issue_comments(

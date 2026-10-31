@@ -1,3 +1,4 @@
+use sanchoris_config::FILE_ISSUE_SKILL;
 use serde_json::{Map, Value};
 
 pub const PREFIX: &str = "[sanchoris]";
@@ -193,6 +194,48 @@ pub fn start_message(message: &StartMessage<'_>) -> String {
             text.push_str(&line);
         }
     }
+    text
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatStartMessage<'a> {
+    pub session_name: &'a str,
+    pub member: &'a str,
+    pub skills: &'a [OfferedSkill],
+    pub text: &'a str,
+}
+
+pub fn chat_start_message(message: &ChatStartMessage<'_>) -> String {
+    let mut text = format!(
+        "{PREFIX} {} started this chat in session {}. The last reply of each of your turns is posted to the chat, and the member's next message comes to this session.",
+        message.member, message.session_name
+    );
+    if !message.skills.is_empty() {
+        let listed = message
+            .skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        text.push_str(&format!(
+            "\nSkills: {listed}. Run one with `sanchoris skill run <name> --input '<JSON of its inputs>'`."
+        ));
+        for line in message.skills.iter().filter_map(inputs_line) {
+            text.push('\n');
+            text.push_str(&line);
+        }
+    }
+    if message
+        .skills
+        .iter()
+        .any(|skill| skill.name == FILE_ISSUE_SKILL)
+    {
+        text.push_str(&format!(
+            "\nWork that belongs in its own task, for example in another repository, goes into an issue: `sanchoris skill run {FILE_ISSUE_SKILL} --input '{{\"Repo\": \"owner/name\", \"Title\": \"...\", \"Body\": \"...\", \"Labels\": [\"...\"]}}'`. Write the body so that an agent who has not seen this chat can do the work, and add the labels that the repository's trigger reacts to; that trigger starts the task and the chat shows it."
+        ));
+    }
+    text.push_str("\n\n");
+    text.push_str(&reply_message(message.member, message.text));
     text
 }
 
@@ -392,14 +435,51 @@ mod tests {
     #[test]
     fn start_message_without_skills_has_no_skills_line() {
         let text = start_message(&StartMessage {
-            trigger_name: "chat-all",
+            trigger_name: "nightly",
             task_title: "Thread",
             instruction: "hello",
             skills: &[],
         });
         assert_eq!(
             text,
-            "[sanchoris] Trigger chat-all started this task: Thread.\nInstruction: hello"
+            "[sanchoris] Trigger nightly started this task: Thread.\nInstruction: hello"
+        );
+    }
+
+    #[test]
+    fn chat_start_message_names_the_session_and_how_to_file_issues() {
+        let skills = [OfferedSkill {
+            name: "file-issue".into(),
+            required: false,
+            inputs: vec![OfferedInput {
+                name: "Repo".into(),
+                kind: "string".into(),
+                value: None,
+            }],
+        }];
+        let text = chat_start_message(&ChatStartMessage {
+            session_name: "all",
+            member: "Mika",
+            skills: &skills,
+            text: "Split the checkout work.",
+        });
+        let lines = text.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines[0],
+            "[sanchoris] Mika started this chat in session all. The last reply of each of your turns is posted to the chat, and the member's next message comes to this session."
+        );
+        assert_eq!(
+            lines[1],
+            "Skills: file-issue. Run one with `sanchoris skill run <name> --input '<JSON of its inputs>'`."
+        );
+        assert_eq!(
+            lines[2],
+            "Inputs of file-issue: Repo (string) not resolved."
+        );
+        assert!(lines[3].contains("sanchoris skill run file-issue --input"));
+        assert_eq!(
+            lines[5..],
+            ["[sanchoris] Message from Mika:", "Split the checkout work."]
         );
     }
 

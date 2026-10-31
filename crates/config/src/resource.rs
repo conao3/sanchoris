@@ -104,6 +104,13 @@ pub const RESOURCES: &[Resource] = &[
         optional_parameters: &[],
     },
     Resource {
+        service: "github",
+        action: "createIssue",
+        pattern: IntegrationPattern::RequestResponse,
+        required_parameters: &["Repo", "Title", "Body", "Labels"],
+        optional_parameters: &[],
+    },
+    Resource {
         service: "chat",
         action: "post",
         pattern: IntegrationPattern::RequestResponse,

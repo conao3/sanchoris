@@ -146,7 +146,10 @@ async fn a_renamed_repository_keeps_starting_its_triggers_by_id() {
         tasks[0].display_name(std::slice::from_ref(&renamed)),
         "acme/storefront#70"
     );
-    assert_eq!(tasks[0].trigger_id, trigger_of(world.seeded.config_id));
+    assert_eq!(
+        tasks[0].origin.trigger_id(),
+        Some(trigger_of(world.seeded.config_id))
+    );
 }
 
 #[tokio::test]
@@ -218,7 +221,7 @@ async fn configs_on_swapped_names_do_not_start_each_others_triggers() {
         .tasks()
         .await
         .into_iter()
-        .map(|task| (task.name, task.trigger_id))
+        .map(|task| (task.name, task.origin.trigger_id().unwrap()))
         .collect::<Vec<_>>();
     started.sort();
     assert_eq!(
@@ -412,15 +415,16 @@ async fn the_backfill_moves_definitions_under_the_active_revision_and_task_names
         .await
         .unwrap()
         .unwrap();
-    let new_guard = keys::task_name_key(tenant_id, stored.trigger_id, &stored.name);
-    let old_guard = keys::task_name_key(tenant_id, stored.trigger_id, "acme/shop-web#35");
-    world
-        .dynamo
-        .modify::<Task>(&stored.key(), |task| {
-            task.name = "acme/shop-web#35".into();
-            task.channel = Some(json!({ "source": "github", "repository": "acme/shop-web" }));
-        })
-        .await;
+    let trigger_id = stored.origin.trigger_id().unwrap();
+    let new_guard = keys::task_name_key(tenant_id, trigger_id, &stored.name);
+    let old_guard = keys::task_name_key(tenant_id, trigger_id, "acme/shop-web#35");
+    let mut legacy = world.store.get_item(&stored.key()).await.unwrap().unwrap();
+    legacy.insert("name".into(), AttributeValue::S("acme/shop-web#35".into()));
+    legacy.insert(
+        "channel".into(),
+        AttributeValue::S(r#"{"source":"github","repository":"acme/shop-web"}"#.into()),
+    );
+    world.dynamo.put_raw(legacy).await;
     let mut tx = world.store.tx(tenant_id);
     let guard = tx.require::<TaskName>(&new_guard).await.unwrap();
     tx.delete(&new_guard).unwrap();
@@ -471,7 +475,7 @@ async fn the_backfill_moves_definitions_under_the_active_revision_and_task_names
         .unwrap()
         .unwrap();
     assert_eq!(moved.name, "github:7101#35");
-    assert_eq!(moved.channel.unwrap()["repository_id"], SHOP_WEB_ID);
+    assert_eq!(moved.repository_id(), Some(SHOP_WEB_ID));
     assert!(world.store.get_item(&old_guard).await.unwrap().is_none());
     assert!(world.store.get_item(&new_guard).await.unwrap().is_some());
     assert_eq!(world.task("acme/shop-web#35").await.id, task.id);

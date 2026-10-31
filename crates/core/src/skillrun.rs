@@ -511,16 +511,7 @@ async fn on_finished(
 }
 
 pub fn required_skills(definition: &TaskDefinition) -> Vec<String> {
-    definition.trigger.definition["Start"]["RequiredSkills"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+    definition.start.required_skills.clone()
 }
 
 #[derive(Debug, Clone, PartialEq)]

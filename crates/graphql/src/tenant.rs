@@ -16,6 +16,7 @@ use crate::account::{Credential, Invitation, Member, Plan};
 use crate::audit::{AuditEvent, AuditFilter};
 use crate::config::{ChangeRequest, Config, Project, Session};
 use crate::context::{Access, Scope, now, tx, viewer_user};
+use crate::conversation::Conversation;
 use crate::enums::{
     ChangeRequestState, GitHubOwnerKind, IntegrationKind, IntegrationStatus, InvitationState,
     LimitPeriod, TenantState,
@@ -367,10 +368,15 @@ impl Tenant {
         Task::find(ctx, self.scope, parse_id(&id)?).await
     }
 
-    /// The latest 200 chat tasks (threads), newest first.
-    async fn chats(&self, ctx: &Context<'_>) -> Result<Vec<Task>> {
+    /// The latest 200 conversations, most recently updated first.
+    async fn conversations(&self, ctx: &Context<'_>) -> Result<Vec<Conversation>> {
         self.scope.member()?;
-        Task::chats(ctx, self.scope).await
+        Conversation::latest(ctx, self.scope).await
+    }
+
+    async fn conversation(&self, ctx: &Context<'_>, id: ID) -> Result<Option<Conversation>> {
+        self.scope.member()?;
+        Conversation::find(ctx, self.scope, parse_id(&id)?).await
     }
 
     /// Audit events, newest first.

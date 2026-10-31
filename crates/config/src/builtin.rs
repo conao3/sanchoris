@@ -7,11 +7,20 @@ pub struct BuiltinSkillSource {
     pub skill_yaml: Option<&'static str>,
 }
 
-pub const BUILTIN_SKILL_SOURCES: &[BuiltinSkillSource] = &[BuiltinSkillSource {
-    name: "open-pr-green-ci",
-    skill_md: include_str!("../skills/open-pr-green-ci/SKILL.md"),
-    skill_yaml: Some(include_str!("../skills/open-pr-green-ci/skill.yaml")),
-}];
+pub const FILE_ISSUE_SKILL: &str = "file-issue";
+
+pub const BUILTIN_SKILL_SOURCES: &[BuiltinSkillSource] = &[
+    BuiltinSkillSource {
+        name: "open-pr-green-ci",
+        skill_md: include_str!("../skills/open-pr-green-ci/SKILL.md"),
+        skill_yaml: Some(include_str!("../skills/open-pr-green-ci/skill.yaml")),
+    },
+    BuiltinSkillSource {
+        name: FILE_ISSUE_SKILL,
+        skill_md: include_str!("../skills/file-issue/SKILL.md"),
+        skill_yaml: Some(include_str!("../skills/file-issue/skill.yaml")),
+    },
+];
 
 pub fn builtin_skills() -> Vec<Skill> {
     BUILTIN_SKILL_SOURCES

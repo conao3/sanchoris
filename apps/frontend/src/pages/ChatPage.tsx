@@ -28,7 +28,7 @@ import {
   ChatDocument,
   SendChatMessageDocument,
 } from "../graphql/generated/graphql.ts"
-import { locale, t, tx } from "../i18n/index.ts"
+import { t, tx } from "../i18n/index.ts"
 import { clock } from "../lib/format.ts"
 import { useKeys } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
@@ -37,40 +37,27 @@ import { isActive, skillStep } from "../lib/taskText.ts"
 import { useTenant } from "../lib/tenant.tsx"
 
 type Tenant = NonNullable<ChatQuery["tenant"]>
-
-const andList = new Intl.ListFormat(locale, { type: "conjunction" })
-type ChatTask = NonNullable<Tenant["task"]>
+type ChatSession = Tenant["sessions"][number]
+type ChatConversation = NonNullable<Tenant["conversation"]>
 
 function shortRepo(repository: string): string {
   return repository.split("/").pop() ?? repository
 }
 
-function scopeLabel(scope: string): string {
-  return scope === "all" ? t("chat.allProjects") : t("chat.project", { name: scope })
+function sessionDetail(session: ChatSession): string {
+  return t("chat.sessionDetail", {
+    agent: t(session.agent === "CODEX" ? "provider.codex" : "provider.claude"),
+    repos: session.repositories.map(shortRepo).join(", "),
+    github: session.githubRepositories.join(", "),
+  })
 }
 
-function scopeShort(scope: string): string {
-  return scope === "all" ? t("chat.allProjects") : scope
-}
-
-function scopes(tenant: Tenant) {
-  return tenant.triggers
-    .filter(
-      (trigger) =>
-        trigger.state === "ENABLED" && trigger.match.source === "WEB" && trigger.match.chatScope,
-    )
-    .map((trigger) => {
-      const scope = trigger.match.chatScope ?? ""
-      const repos = trigger.session.repositories
-      return {
-        value: scope,
-        label: scopeLabel(scope),
-        detail:
-          scope === "all"
-            ? t("chat.scopeAllDetail", { repos: repos.join(", ") })
-            : t("chat.scopeProjectDetail", { repos: andList.format(repos.map(shortRepo)) }),
-      }
-    })
+function sessionSkills(session: ChatSession): string {
+  return session.callableSkills.length > 0
+    ? t("chat.sessionSkills", {
+        skills: session.callableSkills.map((skill) => skill.name).join(", "),
+      })
+    : t("chat.noSkills")
 }
 
 function Composer({
@@ -112,30 +99,37 @@ function Composer({
   )
 }
 
-function Thread({ task, tenant }: { task: ChatTask; tenant: Tenant }) {
+function Thread({ conversation, tenant }: { conversation: ChatConversation; tenant: Tenant }) {
   const [send, { error }] = useAction(SendChatMessageDocument, { refetchQueries: [ChatDocument] })
-  const repos = task.session.repositories.join(", ")
-  const run = task.runs[task.runs.length - 1]
-  const requester = task.requester?.member?.user.name
+  const task = conversation.latestTask
+  const run = task?.runs[task.runs.length - 1]
+  const repos = conversation.session?.repositories.join(", ") ?? ""
+  const starter = conversation.createdBy?.user.name
+  const finished = task ? !isActive(task.status) : false
   return (
     <>
-      <Title>{task.title}</Title>
+      <Title>{conversation.title}</Title>
       <Sub>
-        <TaskState status={task.status} waitReason={task.waitReason} />{" "}
+        {task ? <TaskState status={task.status} waitReason={task.waitReason} /> : null}{" "}
         <span className="ml-2">
           {tx("chat.threadLine", {
-            trigger: <Lk to="/triggers">{task.trigger.name}</Lk>,
-            scope: task.channel ? scopeLabel(task.channel.scope).toLowerCase() : "",
-            session: <span className="font-mono text-sm">{task.session.name}</span>,
+            session: <span className="font-mono text-sm">{conversation.sessionName}</span>,
             repos: <span className="font-mono text-sm">{repos}</span>,
+            task: task ? (
+              <Lk to="/tasks/$task" params={{ task: task.id }}>
+                {t("chat.taskN", { n: task.conversationSequence ?? 1 })}
+              </Lk>
+            ) : (
+              "—"
+            ),
             run: run ? t("run.title", { n: run.number }) : "—",
           })}
-          {requester
-            ? ` · ${t(task.channel?.kind === "SLACK" ? "chat.startedBySlack" : "chat.startedByWeb", { name: requester })}`
+          {starter
+            ? ` · ${t(conversation.kind === "SLACK" ? "chat.startedBySlack" : "chat.startedByWeb", { name: starter })}`
             : null}
         </span>
       </Sub>
-      {task.messages.map((message) => (
+      {conversation.messages.map((message) => (
         <div key={message.id} className="border-b border-line py-2.5">
           <div className="mb-0.5 text-sm font-semibold">
             {message.authorKind === "AGENT" ? "sanchoris" : (message.member?.user.name ?? "")}
@@ -171,10 +165,17 @@ function Thread({ task, tenant }: { task: ChatTask; tenant: Tenant }) {
           })}
         </div>
       ))}
+      {finished && task ? (
+        <Dim className="mt-2.5">
+          {t("chat.continueHint", { n: (task.conversationSequence ?? 1) + 1 })}
+        </Dim>
+      ) : null}
       <Composer
-        disabled={task.status === "SUCCEEDED" && task.channel?.kind === "SLACK"}
+        disabled={conversation.kind === "SLACK"}
         onSend={(text) =>
-          send({ input: { tenantId: tenant.id, taskId: task.id, text } }).then(Boolean)
+          send({
+            input: { tenantId: tenant.id, conversationId: conversation.id, text },
+          }).then(Boolean)
         }
       />
       <ActionError error={error} className="mt-2" />
@@ -182,48 +183,93 @@ function Thread({ task, tenant }: { task: ChatTask; tenant: Tenant }) {
   )
 }
 
+function SessionPicker({
+  sessions,
+  selected,
+  onSelect,
+}: {
+  sessions: ChatSession[]
+  selected?: ChatSession
+  onSelect: (id: string) => void
+}) {
+  return (
+    <Table className="mt-3">
+      <Th cols="160px 1fr">
+        <span>{t("chat.session")}</span>
+        <span>{t("chat.sessionWhat")}</span>
+      </Th>
+      {sessions.map((session) => (
+        <Row
+          key={session.id}
+          cols="160px 1fr"
+          tall
+          selected={session.id === selected?.id}
+          onClick={() => onSelect(session.id)}
+        >
+          <span className="font-mono text-sm">{session.name}</span>
+          <div>
+            <div>{sessionDetail(session)}</div>
+            <Dim>{sessionSkills(session)}</Dim>
+          </div>
+        </Row>
+      ))}
+    </Table>
+  )
+}
+
 function NewChat({
   tenant,
-  scope,
-  onPickScope,
+  session,
+  onSelect,
 }: {
   tenant: Tenant
-  scope?: string
-  onPickScope: () => void
+  session?: ChatSession
+  onSelect: (id: string) => void
 }) {
   const navigate = useNavigate()
   const [send, { error }] = useAction(SendChatMessageDocument, { refetchQueries: [ChatDocument] })
-  const options = scopes(tenant)
-  const option = options.find((item) => item.value === scope)
+  const hasConfig = tenant.configs.some((config) => config.status === "ACTIVE")
   return (
     <>
       <Title>{t("chat.newChat")}</Title>
       <Sub>
-        {option ? (
+        {!hasConfig ? (
           <>
-            {t("chat.scopeIs", { scope: option.label })} · {option.detail}
+            {t("chat.noConfig")} <Lk to="/settings/config">{t("settings.config")}</Lk>
           </>
-        ) : options.length === 0 ? (
+        ) : tenant.sessions.length === 0 ? (
           <>
-            {t("chat.noScopes")} <Lk to="/triggers">{t("nav.triggers")}</Lk>
+            {t("chat.noSessions")} <Lk to="/settings/config">{t("settings.config")}</Lk>
+          </>
+        ) : session ? (
+          <>
+            {t("chat.sessionIs", { session: session.name })} · {sessionDetail(session)}
           </>
         ) : (
-          <button
-            type="button"
-            className="underline decoration-line2 underline-offset-[3px]"
-            onClick={onPickScope}
-          >
-            {t("chat.pickScope")}
-          </button>
+          t("chat.pickSession")
         )}
       </Sub>
+      {tenant.sessions.length > 1 ? (
+        <SessionPicker sessions={tenant.sessions} selected={session} onSelect={onSelect} />
+      ) : null}
+      {session ? <Dim className="mt-2.5">{sessionSkills(session)}</Dim> : null}
       <Composer
-        disabled={!scope}
+        disabled={!session}
         onSend={(text) =>
-          send({ input: { tenantId: tenant.id, scope, text } }).then((result) => {
-            const task = result?.sendChatMessage.task
-            if (task) {
-              void navigate({ to: "/chat/$task", params: { task: task.id } })
+          send({
+            input: {
+              tenantId: tenant.id,
+              sessionName: session?.name,
+              configId: session?.config.id,
+              text,
+            },
+          }).then((result) => {
+            const conversation = result?.sendChatMessage.conversation
+            if (conversation) {
+              void navigate({
+                to: "/chat/$conversation",
+                params: { conversation: conversation.id },
+              })
             }
             return !!result
           })
@@ -234,26 +280,27 @@ function NewChat({
   )
 }
 
-function FiledTasks({ task }: { task: ChatTask }) {
+function FiledTasks({ conversation }: { conversation: ChatConversation }) {
+  const filedTasks = conversation.filedTasks
   return (
     <>
-      <Section count={task.filedTasks.length} first>
+      <Section count={filedTasks.length} first>
         {t("chat.issuesFiled")}
       </Section>
       <Dim className="mb-1.5">{t("chat.issuesFiledDetail")}</Dim>
-      {task.filedTasks.length === 0 ? <Dim>{t("chat.noIssues")}</Dim> : null}
-      {task.filedTasks.length > 0 ? (
+      {filedTasks.length === 0 ? <Dim>{t("chat.noIssues")}</Dim> : null}
+      {filedTasks.length > 0 ? (
         <Table>
           <Th cols="96px 1fr">
             <span>{t("col.state")}</span>
             <span>{t("col.task")}</span>
           </Th>
-          {task.filedTasks.map((filed) => {
+          {filedTasks.map((filed) => {
             const run = filed.requiredSkills[0]?.latestRun
             const details = [
               filed.parent?.issue
                 ? t("triggers.childOf", { id: `#${filed.parent.issue.number}` })
-                : filed.trigger.name,
+                : filed.trigger?.name,
               filed.blockedBy.length > 0
                 ? t("tasks.blockedBy", {
                     ids: filed.blockedBy
@@ -289,30 +336,42 @@ function FiledTasks({ task }: { task: ChatTask }) {
 
 export function ChatPage() {
   const params = useParams({ strict: false })
-  const taskId = params.task
+  const conversationId = params.conversation
   const { slug } = useTenant()
   const navigate = useNavigate()
   const { data, error, refetch } = useData(
     ChatDocument,
-    { tenant: slug, task: taskId ?? "", withTask: !!taskId },
+    { tenant: slug, conversation: conversationId ?? "", withConversation: !!conversationId },
     {
-      poll: (result) =>
-        !taskId
-          ? IDLE_POLL
-          : result.tenant?.task && isActive(result.tenant.task.status)
-            ? LIVE_POLL
-            : 0,
+      poll: (result) => {
+        const task = result.tenant?.conversation?.latestTask
+        if (!conversationId) {
+          return IDLE_POLL
+        }
+        return task && isActive(task.status) ? LIVE_POLL : IDLE_POLL
+      },
     },
   )
-  const [scope, setScope] = useState<string>()
-  const [scopeOpen, setScopeOpen] = useState(!taskId)
+  const [picked, setPicked] = useState<string>()
+  const [pickerOpen, setPickerOpen] = useState(false)
   const tenant = data?.tenant
-  const task = tenant?.task
+  const conversation = tenant?.conversation
+  const sessions = tenant?.sessions ?? []
+  const [only] = sessions
+  const session =
+    sessions.length === 1 ? only : sessions.find((candidate) => candidate.id === picked)
 
   function newChat() {
-    setScope(undefined)
-    setScopeOpen(true)
+    setPicked(undefined)
+    setPickerOpen(sessions.length > 1)
     void navigate({ to: "/chat" })
+  }
+
+  function pick(id: string) {
+    setPicked(id)
+    if (conversationId) {
+      void navigate({ to: "/chat" })
+    }
   }
 
   useKeys({ c: newChat })
@@ -321,30 +380,29 @@ export function ChatPage() {
     <Page
       crumbs={[
         { label: t("nav.chat"), to: "/chat" },
-        { label: taskId ? (task?.title ?? "…") : t("chat.newChat") },
+        { label: conversationId ? (conversation?.title ?? "…") : t("chat.newChat") },
       ]}
       actions={
         <>
           <Button variant="primary" icon={Plus} kbd="c" compact onPress={newChat}>
             {t("common.newChat")}
           </Button>
-          {tenant ? (
+          {sessions.length > 1 ? (
             <Menu
               icon={ChevronDown}
-              label={t("chat.scope")}
+              label={t("chat.session")}
               title={t("chat.startIn")}
               align="right"
               compact
-              open={scopeOpen && scopes(tenant).length > 0}
-              onOpenChange={setScopeOpen}
-              value={scope}
-              options={scopes(tenant)}
-              onChange={(value) => {
-                setScope(value)
-                if (taskId) {
-                  void navigate({ to: "/chat" })
-                }
-              }}
+              open={pickerOpen}
+              onOpenChange={setPickerOpen}
+              value={session?.id}
+              options={sessions.map((candidate) => ({
+                value: candidate.id,
+                label: candidate.name,
+                detail: sessionDetail(candidate),
+              }))}
+              onChange={pick}
             />
           ) : null}
         </>
@@ -365,48 +423,50 @@ export function ChatPage() {
       ) : (
         <div className="grid min-h-0 flex-1 grid-cols-1 max-lg:content-start max-lg:overflow-auto lg:grid-cols-[260px_1fr_340px]">
           <div className="min-w-0 border-line px-4 py-[18px] max-lg:order-last max-lg:border-t md:px-5 lg:min-h-0 lg:overflow-auto">
-            <Section count={tenant.chats.length} first>
+            <Section count={tenant.conversations.length} first>
               {t("chat.threads")}
             </Section>
-            {tenant.chats.length === 0 ? <Dim>{t("chat.noThreads")}</Dim> : null}
-            {tenant.chats.map((chat) => (
+            {tenant.conversations.length === 0 ? <Dim>{t("chat.noThreads")}</Dim> : null}
+            {tenant.conversations.map((item) => (
               <Link
-                key={chat.id}
-                to="/chat/$task"
-                params={{ task: chat.id }}
+                key={item.id}
+                to="/chat/$conversation"
+                params={{ conversation: item.id }}
                 className={clsx(
                   "block rounded-ui px-2 py-[7px] hover:bg-hover",
-                  chat.id === taskId && "bg-hover",
+                  item.id === conversationId && "bg-hover",
                 )}
               >
-                <span className="font-medium">{chat.title}</span>
+                <span className="font-medium">{item.title}</span>
                 <small className="block text-xs text-muted">
                   {[
-                    chat.channel ? scopeShort(chat.channel.scope) : null,
-                    chat.channel?.kind === "SLACK" ? t("chat.slack") : t("chat.web"),
-                    t(chat.filedTasks.length === 1 ? "chat.issueCountOne" : "chat.issuesCount", {
-                      n: chat.filedTasks.length,
+                    item.sessionName,
+                    item.kind === "SLACK" ? t("chat.slack") : t("chat.web"),
+                    t(item.filedTasks.length === 1 ? "chat.issueCountOne" : "chat.issuesCount", {
+                      n: item.filedTasks.length,
                     }),
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
+                  ].join(" · ")}
                 </small>
               </Link>
             ))}
           </div>
           <div className="min-w-0 border-line px-4 py-[18px] max-lg:order-first md:px-5 lg:min-h-0 lg:overflow-auto lg:border-l">
-            {taskId ? (
-              task ? (
-                <Thread task={task} tenant={tenant} />
+            {conversationId ? (
+              conversation ? (
+                <Thread conversation={conversation} tenant={tenant} />
               ) : (
                 <Dim>{t("chat.notFound")}</Dim>
               )
             ) : (
-              <NewChat tenant={tenant} scope={scope} onPickScope={() => setScopeOpen(true)} />
+              <NewChat tenant={tenant} session={session} onSelect={pick} />
             )}
           </div>
           <div className="min-w-0 border-line px-4 py-[18px] max-lg:border-t md:px-5 lg:min-h-0 lg:overflow-auto lg:border-l">
-            {task ? <FiledTasks task={task} /> : <Dim>{t("chat.filedHint")}</Dim>}
+            {conversation ? (
+              <FiledTasks conversation={conversation} />
+            ) : (
+              <Dim>{t("chat.filedHint")}</Dim>
+            )}
           </div>
         </div>
       )}

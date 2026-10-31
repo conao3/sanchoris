@@ -34,7 +34,7 @@ function taskLook(status: TaskStatus, waitReason?: WaitReason | null): Look {
       if (waitReason === "USAGE_LIMIT") {
         return { tone: "wait", icon: Timer, label: "status.limited" }
       }
-      if (waitReason === "CHAT") {
+      if (waitReason === "MESSAGE") {
         return { tone: "wait", icon: MessageCircle, label: "status.waitingForMessage" }
       }
       return { tone: "wait", icon: Clock, label: "status.waiting" }

@@ -6,9 +6,9 @@ use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use common::World;
 use sanchoris_core::item::Table;
 use sanchoris_core::items::{
-    CONFIG_DISABLED, ChangeRequest, Config, Credential, Guard, InboundEvent, Invitation, Member,
-    Membership, OutboxItem, Pending, ReceiveRate, Run, RunEventItem, SkillRunItem, Tenant, Trigger,
-    User,
+    CONFIG_DISABLED, ChangeRequest, ChatMessage, Config, Credential, Guard, Invitation, Member,
+    Membership, OutboxItem, Pending, ReceiveRate, Run, RunEventItem, SkillRunItem, Task,
+    TaskOrigin, Tenant, Trigger, User,
 };
 use sanchoris_core::jobs::{Deletion, Job, Relayed};
 use sanchoris_core::keys;
@@ -24,14 +24,6 @@ use uuid::Uuid;
 
 fn iso(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Secs, true)
-}
-
-async fn inbound_text(w: &World, text: &str) -> InboundEvent {
-    w.all::<InboundEvent>()
-        .await
-        .into_iter()
-        .find(|event| event.event["detail"]["text"] == text)
-        .unwrap_or_else(|| panic!("no inbound event says {text}"))
 }
 
 #[tokio::test]
@@ -126,7 +118,7 @@ async fn owners_delete_a_tenant_by_typing_its_slug_and_its_work_stops() {
         ("SyncConfig", json!({ "configId": w.config_id })),
         (
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "scope": "all", "text": "hi" } }),
+            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "hi" } }),
         ),
         (
             "InviteMember",
@@ -294,81 +286,79 @@ async fn task_and_run_mutations_reach_the_agent_session() {
 }
 
 #[tokio::test]
-async fn chat_messages_start_threads_and_continue_them() {
+async fn chat_messages_start_conversations_and_continue_them() {
     let w = World::new().await;
 
     let started = w
         .ok(
             &w.ken,
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "scope": "all", "text": "Add a dark mode" } }),
+            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "Add a dark mode" } }),
         )
         .await;
-    let task_id: Uuid = started["sendChatMessage"]["task"]["id"]
+    let payload = &started["sendChatMessage"];
+    let conversation_id: Uuid = payload["conversation"]["id"]
         .as_str()
         .unwrap()
         .parse()
         .unwrap();
+    let task_id: Uuid = payload["task"]["id"].as_str().unwrap().parse().unwrap();
     assert_ne!(task_id, w.chat_task);
+    assert_eq!(payload["message"]["text"], "Add a dark mode");
+    let task = w.task(w.acme, task_id).await;
+    assert_eq!(task.requested_by_member_id, w.ken.member_id);
     assert_eq!(
-        started["sendChatMessage"]["message"]["text"],
-        "Add a dark mode"
+        task.origin,
+        TaskOrigin::Conversation {
+            conversation_id,
+            sequence: 1
+        }
     );
-    let event = inbound_text(&w, "Add a dark mode").await;
-    assert_eq!(event.tenant_id, w.acme);
-    let event = event.event;
-    assert_eq!(event["source"], "web");
-    assert_eq!(event["detail-type"], "Message");
-    assert_eq!(event["detail"]["scope"], "all");
-    assert_eq!(event["detail"]["user"], "Ken");
-    assert_eq!(
-        event["detail"]["member_id"],
-        w.ken.member_id.unwrap().to_string()
-    );
-    assert_eq!(
-        w.task(w.acme, task_id).await.requested_by_member_id,
-        w.ken.member_id
-    );
-    let audit = w.audit(w.acme, "chat.message_send").await;
-    assert_eq!(audit.target_kind, "chat");
+    assert_eq!(task.status, TaskStatus::Pending);
+    let audit = w.audit(w.acme, "chat.start").await;
+    assert_eq!(audit.target_kind, "conversation");
 
     let chat = w
         .ok(
             &w.ken,
             "Chat",
-            json!({ "tenant": "acme", "task": task_id, "withTask": true }),
+            json!({ "tenant": "acme", "conversation": conversation_id, "withConversation": true }),
         )
         .await;
+    let conversation = &chat["tenant"]["conversation"];
+    assert_eq!(conversation["messages"][0]["text"], "Add a dark mode");
+    assert_eq!(conversation["createdBy"]["user"]["name"], "Ken");
+    assert_eq!(conversation["sessionName"], "all");
+    assert_eq!(conversation["latestTask"]["id"], task_id.to_string());
     assert_eq!(
-        chat["tenant"]["task"]["messages"][0]["text"],
-        "Add a dark mode"
-    );
-    assert_eq!(
-        chat["tenant"]["task"]["requester"]["member"]["user"]["name"],
-        "Ken"
+        chat["tenant"]["conversations"][0]["id"],
+        conversation_id.to_string()
     );
 
     let continued = w
         .ok(
             &w.mika,
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "taskId": w.chat_task, "text": "Any update?" } }),
+            json!({ "input": { "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "Any update?" } }),
         )
         .await;
     assert_eq!(
         continued["sendChatMessage"]["task"]["id"],
         w.chat_task.to_string()
     );
-    let continued = inbound_text(&w, "Any update?").await;
-    assert_eq!(continued.event["detail"]["thread"], "thread-1");
+    assert_eq!(
+        w.task(w.acme, w.chat_task).await.status,
+        TaskStatus::Running
+    );
+    w.audit(w.acme, "chat.message_send").await;
     let chat = w
         .ok(
             &w.mika,
             "Chat",
-            json!({ "tenant": "acme", "task": w.chat_task, "withTask": true }),
+            json!({ "tenant": "acme", "conversation": w.chat_conversation, "withConversation": true }),
         )
         .await;
-    let texts = chat["tenant"]["task"]["messages"]
+    let texts = chat["tenant"]["conversation"]["messages"]
         .as_array()
         .unwrap()
         .iter()
@@ -383,24 +373,52 @@ async fn chat_messages_start_threads_and_continue_them() {
         ]
     );
 
-    assert_eq!(
-        w.error_code(
+    w.dynamo
+        .modify::<Task>(&keys::task_key(w.acme, w.chat_task), |task| {
+            task.status = TaskStatus::Succeeded;
+        })
+        .await;
+    let next = w
+        .ok(
             &w.mika,
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "scope": "shop", "text": "hi" } }),
+            json!({ "input": { "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "Next step" } }),
         )
-        .await,
-        "BAD_USER_INPUT"
-    );
-    assert_eq!(
-        w.error_code(
-            &w.mika,
-            "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "taskId": w.issue_task, "text": "hi" } }),
-        )
-        .await,
-        "BAD_USER_INPUT"
-    );
+        .await;
+    let next_id: Uuid = next["sendChatMessage"]["task"]["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_ne!(next_id, w.chat_task);
+    let next_task = w.task(w.acme, next_id).await;
+    assert_eq!(next_task.name, "2");
+    assert_eq!(next_task.requested_by_member_id, w.mika.member_id);
+
+    for (input, code) in [
+        (
+            json!({ "tenantId": w.acme, "sessionName": "nope", "text": "hi" }),
+            "BAD_USER_INPUT",
+        ),
+        (
+            json!({ "tenantId": w.acme, "text": "hi" }),
+            "BAD_USER_INPUT",
+        ),
+        (
+            json!({ "tenantId": w.acme, "conversationId": Uuid::new_v4(), "text": "hi" }),
+            "NOT_FOUND",
+        ),
+        (
+            json!({ "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "  " }),
+            "BAD_USER_INPUT",
+        ),
+    ] {
+        assert_eq!(
+            w.error_code(&w.mika, "SendChatMessage", json!({ "input": input }))
+                .await,
+            code
+        );
+    }
 }
 
 #[tokio::test]
@@ -1615,7 +1633,7 @@ async fn chat_messages_and_resumes_over_the_receive_limit_are_rate_limited() {
         .run(
             &w.ken,
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "scope": "all", "text": "Flood" } }),
+            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "Flood" } }),
         )
         .await;
     let extensions = response.errors[0].extensions.as_ref().unwrap();
@@ -1631,10 +1649,10 @@ async fn chat_messages_and_resumes_over_the_receive_limit_are_rate_limited() {
         "receive limit: the tenant already received {limit} events"
     )));
     assert!(
-        w.all::<InboundEvent>()
+        w.all::<ChatMessage>()
             .await
             .iter()
-            .all(|event| event.event["detail"]["text"] != "Flood")
+            .all(|message| message.text != "Flood")
     );
     assert_eq!(
         w.error_code(

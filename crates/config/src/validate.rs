@@ -1,3 +1,4 @@
+use crate::builtin::FILE_ISSUE_SKILL;
 use crate::config::{
     Checkout, Compute, Config, PermissionLevel, Session, Trigger, TriggerSource, is_repo_name,
 };
@@ -35,18 +36,14 @@ pub const KNOWN_STATES_ERRORS: &[&str] = &[
     errors::NO_CHOICE_MATCHED,
 ];
 
-pub const EVENT_TYPES: &[(&str, &[&str])] = &[
-    (
-        "github",
-        &[
-            "Issue Labeled",
-            "Issue Comment Created",
-            "Check Run Completed",
-        ],
-    ),
-    ("slack", &["Message"]),
-    ("web", &["Message"]),
-];
+pub const EVENT_TYPES: &[(&str, &[&str])] = &[(
+    "github",
+    &[
+        "Issue Labeled",
+        "Issue Comment Created",
+        "Check Run Completed",
+    ],
+)];
 
 pub const GITHUB_ACTOR_PATHS: &[&[&str]] = &[
     &["sender", "login"],
@@ -129,13 +126,29 @@ struct Validator<'a> {
     errors: &'a mut Vec<ValidationError>,
 }
 
-fn covers(patterns: &[String], repo: &str) -> bool {
+pub fn covers(patterns: &[String], repo: &str) -> bool {
     patterns.iter().any(|p| match p.strip_suffix("/*") {
         Some(owner) => repo
             .split_once('/')
             .is_some_and(|(o, _)| o.eq_ignore_ascii_case(owner)),
         None => p.eq_ignore_ascii_case(repo),
     })
+}
+
+fn resolve_repo(config: &Config, session: &Session, name: &str) -> Option<String> {
+    if is_repo_name(name) {
+        return Some(name.to_string());
+    }
+    let Checkout::Project(project) = &session.checkout else {
+        return None;
+    };
+    config
+        .projects
+        .get(project)?
+        .repos
+        .get(name)?
+        .full_name()
+        .map(str::to_string)
 }
 
 fn level_name(level: PermissionLevel) -> &'static str {
@@ -157,22 +170,6 @@ impl Validator<'_> {
         for (name, trigger) in &config.triggers {
             self.trigger(config, name, trigger);
         }
-    }
-
-    fn resolve_repo(&self, config: &Config, session: &Session, name: &str) -> Option<String> {
-        if is_repo_name(name) {
-            return Some(name.to_string());
-        }
-        let Checkout::Project(project) = &session.checkout else {
-            return None;
-        };
-        config
-            .projects
-            .get(project)?
-            .repos
-            .get(name)?
-            .full_name()
-            .map(str::to_string)
     }
 
     fn session(&mut self, config: &Config, name: &str, session: &Session) {
@@ -394,10 +391,7 @@ impl Validator<'_> {
                 for (i, item) in items.iter().enumerate() {
                     match item.as_str() {
                         Some(s) if EVENT_TYPES.iter().any(|(src, _)| *src == s) => out.push(s),
-                        _ => self.error(
-                            index(&at(loc, "source"), i),
-                            "source must be one of github, slack, web",
-                        ),
+                        _ => self.error(index(&at(loc, "source"), i), "source must be github"),
                     }
                 }
                 out
@@ -405,7 +399,7 @@ impl Validator<'_> {
             _ => {
                 self.error(
                     at(loc, "source"),
-                    "missing required field; list the event source (github, slack, or web)",
+                    "missing required field; list the event source (github)",
                 );
                 return;
             }
@@ -432,11 +426,6 @@ impl Validator<'_> {
         let Some(detail) = pattern.get("detail").filter(|d| d.is_object()) else {
             self.error(&detail_loc, "missing required field");
             return;
-        };
-        let has = |path: &[&str]| {
-            path.iter()
-                .try_fold(detail, |v, key| v.get(*key))
-                .is_some_and(|v| !v.is_null())
         };
         if sources.contains(&"github") {
             for path in GITHUB_ACTOR_PATHS {
@@ -475,7 +464,7 @@ impl Validator<'_> {
                         let Some(name) = item.as_str() else { continue };
                         let rloc = index(&at(&detail_loc, "repository"), i);
                         let Some(session) = session else { continue };
-                        match self.resolve_repo(config, session, name) {
+                        match resolve_repo(config, session, name) {
                             None => self.error(
                                 rloc,
                                 format!("{name:?} is neither owner/name nor a repository of the session's project"),
@@ -491,22 +480,6 @@ impl Validator<'_> {
                 Some(_) => {}
             }
         }
-        if sources.contains(&"slack") {
-            for key in ["channel", "user"] {
-                if !has(&[key]) {
-                    self.error(
-                        at(&detail_loc, key),
-                        "missing required field for Slack triggers",
-                    );
-                }
-            }
-        }
-        if sources.contains(&"web") && !has(&["scope"]) {
-            self.error(
-                at(&detail_loc, "scope"),
-                "missing required field for Web triggers",
-            );
-        }
     }
 
     fn skill_access(
@@ -517,50 +490,72 @@ impl Validator<'_> {
         skill: &Skill,
         loc: &str,
     ) {
-        let Some(definition) = &skill.definition else {
-            return;
+        for problem in skill_access_problems(config, session_name, session, skill) {
+            self.error(loc, problem);
+        }
+    }
+}
+
+fn skill_access_problems(
+    config: &Config,
+    session_name: &str,
+    session: &Session,
+    skill: &Skill,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let Some(definition) = &skill.definition else {
+        return problems;
+    };
+    for (state_name, state) in &definition.states {
+        let State::Task(task) = state else { continue };
+        let Ok(resource) = parse_resource(&task.resource) else {
+            continue;
         };
-        for (state_name, state) in &definition.states {
-            let State::Task(task) = state else { continue };
-            let Ok(resource) = parse_resource(&task.resource) else {
-                continue;
-            };
-            for (permission, level) in resource.permissions() {
-                let granted = session.github.permissions.get(*permission);
-                if granted.is_none_or(|g| g < level) {
-                    self.error(
-                        loc,
-                        format!(
-                            "skill {} state {state_name} uses {} which needs {permission}: {}, but session {session_name} grants {}",
-                            skill.name,
-                            task.resource,
-                            level_name(*level),
-                            granted.map_or("nothing", |g| level_name(*g)),
-                        ),
-                    );
-                }
+        for (permission, level) in resource.permissions() {
+            let granted = session.github.permissions.get(*permission);
+            if granted.is_none_or(|g| g < level) {
+                problems.push(format!(
+                    "skill {} state {state_name} uses {} which needs {permission}: {}, but session {session_name} grants {}",
+                    skill.name,
+                    task.resource,
+                    level_name(*level),
+                    granted.map_or("nothing", |g| level_name(*g)),
+                ));
             }
-            for name in literal_repos(task) {
-                match self.resolve_repo(config, session, &name) {
-                    None => self.error(
-                        loc,
-                        format!(
-                            "skill {} state {state_name} names repository {name:?}, which is neither owner/name nor a repository of session {session_name}'s project",
-                            skill.name
-                        ),
-                    ),
-                    Some(repo) if !covers(&session.github.repos, &repo) => self.error(
-                        loc,
-                        format!(
-                            "skill {} state {state_name} uses {repo}, which is outside session {session_name}'s GitHub.Repos",
-                            skill.name
-                        ),
-                    ),
-                    Some(_) => {}
-                }
+        }
+        for name in literal_repos(task) {
+            match resolve_repo(config, session, &name) {
+                None => problems.push(format!(
+                    "skill {} state {state_name} names repository {name:?}, which is neither owner/name nor a repository of session {session_name}'s project",
+                    skill.name
+                )),
+                Some(repo) if !covers(&session.github.repos, &repo) => problems.push(format!(
+                    "skill {} state {state_name} uses {repo}, which is outside session {session_name}'s GitHub.Repos",
+                    skill.name
+                )),
+                Some(_) => {}
             }
         }
     }
+    problems
+}
+
+pub fn chat_skills(repository: &ConfigRepository, session_name: &str) -> Vec<String> {
+    let Some(session) = repository.config.sessions.get(session_name) else {
+        return Vec::new();
+    };
+    let mut names = repository
+        .skills
+        .values()
+        .filter(|skill| {
+            skill.name == FILE_ISSUE_SKILL
+                || skill_access_problems(&repository.config, session_name, session, skill)
+                    .is_empty()
+        })
+        .map(|skill| skill.name.clone())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
 }
 
 fn placeholder_names(text: &str) -> Vec<&str> {

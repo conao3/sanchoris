@@ -115,7 +115,6 @@ export const triggerTemplates: Obj[] = [
     name: "labeled-issue",
     description: "Labeled issue → agent → pull requests with green checks",
   },
-  { id: "tpl-chat-all", name: "chat-all", description: "Web chat across all projects" },
   {
     id: "tpl-weekly-deps",
     name: "weekly-deps",
@@ -438,6 +437,8 @@ function buildAcme(): Obj {
     compute: "STANDARD",
     idleSeconds: 900,
     usageLimitResume: "AUTO",
+    config: configMain,
+    callableSkills: [],
   })
   const shopSession = session(
     "shop",
@@ -693,6 +694,8 @@ function buildAcme(): Obj {
     openChangeRequest: () => null,
   }
   skills.push(openPr, bump, writeTests)
+  shopSession.callableSkills = [openPr]
+  depsSession.callableSkills = [openPr]
 
   const limits = (costUsd: number, timeoutSeconds: number) => ({
     turns: 60,
@@ -735,8 +738,6 @@ function buildAcme(): Obj {
     repositories: [],
     labels: [],
     senders: [],
-    chatScope: null,
-    slackChannel: null,
     scheduleExpression: null,
     nextRunAt: null,
     ...spec,
@@ -755,29 +756,14 @@ function buildAcme(): Obj {
     requiredSkills: [openPr],
     tasksLast7d: 9,
   })
-  const chatAll = trigger({
-    name: "chat-all",
-    state: "ENABLED",
-    match: match({ source: "WEB", kind: "MESSAGE", chatScope: "all" }),
-    session: allSession,
-    instruction: "<text>",
-    requiredSkills: [],
+  const chatStart = (session: Obj): Obj => ({
+    session,
     maxNudges: 0,
     limits: limits(10, 86400),
-    tasksLast7d: 5,
-  })
-  const chatShop = trigger({
-    name: "chat-shop",
-    state: "ENABLED",
-    match: match({ source: "WEB", kind: "MESSAGE", chatScope: "shop" }),
-    session: shopSession,
-    instruction: "<text>",
     requiredSkills: [],
-    skills: [openPr],
-    maxNudges: 0,
-    limits: limits(10, 86400),
-    tasksLast7d: 1,
   })
+  const chatAll = chatStart(allSession)
+  const chatShop = chatStart(shopSession)
   const weeklyDeps = trigger({
     name: "weekly-deps",
     state: "ENABLED",
@@ -865,19 +851,21 @@ function buildAcme(): Obj {
       requester: null,
       configRevision: 41,
       issue: null,
-      channel: null,
+      trigger: null,
+      conversation: null,
+      conversationSequence: null,
       parent: null,
       blockedBy: [],
       runs: [],
       outputs: [],
-      messages: [],
       turns: 0,
       costUsd: 0,
       ...spec,
     }
-    item.session = spec.session ?? spec.trigger.session
-    item.maxNudges = spec.trigger.maxNudges
-    item.limits = spec.trigger.limits
+    const start = spec.start ?? spec.trigger
+    item.session = spec.session ?? start.session
+    item.maxNudges = start.maxNudges
+    item.limits = start.limits
     item.children = () => tasks.filter((task) => task.parent === item)
     item.filedTasks = () => {
       const roots = tasks.filter((task) => task.requester?.task === item)
@@ -886,7 +874,7 @@ function buildAcme(): Obj {
     item.skillRuns = () =>
       skillRuns.filter((run) => run.task === item).sort((a, b) => a.number - b.number)
     item.requiredSkills = () =>
-      item.trigger.requiredSkills.map((skill: Obj) => {
+      start.requiredSkills.map((skill: Obj) => {
         const runs = skillRuns.filter((run) => run.task === item && run.skill === skill)
         const latestRun = runs[runs.length - 1] ?? null
         const state = !latestRun
@@ -992,13 +980,13 @@ function buildAcme(): Obj {
     id: "task-chat-export",
     title: "Bulk export for orders",
     status: "WAITING",
-    waitReason: "CHAT",
-    trigger: chatAll,
+    waitReason: "MESSAGE",
+    start: chatAll,
+    conversationSequence: 1,
     createdAt: ago(40),
     startedAt: ago(40),
     updatedAt: ago(8),
-    channel: { kind: "WEB", threadId: "web-thread-1", scope: "all", slackChannel: null },
-    requester: { kind: "MEMBER", githubLogin: null, member: mika, task: null, viaChat: true },
+    requester: { kind: "MEMBER", githubLogin: null, member: mika, task: null },
     turns: 9,
     costUsd: 2.05,
   })
@@ -1014,7 +1002,7 @@ function buildAcme(): Obj {
     startedAt: ago(base35),
     updatedAt: ago(68),
     issue: issue("acme/shop-web", 35, "Fix flaky checkout test", () => t35),
-    requester: { kind: "MEMBER", githubLogin: null, member: mika, task: null, viaChat: true },
+    requester: { kind: "MEMBER", githubLogin: null, member: mika, task: null },
     turns: 52,
     costUsd: 9.2,
     outputs: [pr("acme/shop-web", 52, "OPEN", base35 - 38)],
@@ -1034,7 +1022,6 @@ function buildAcme(): Obj {
       githubLogin: "sanchoris[bot]",
       member: null,
       task: chatExport,
-      viaChat: false,
     },
     turns: 18,
     costUsd: 4.1,
@@ -1055,7 +1042,6 @@ function buildAcme(): Obj {
       githubLogin: "sanchoris[bot]",
       member: null,
       task: t38,
-      viaChat: false,
     },
     turns: 35,
     costUsd: 3.42,
@@ -1077,7 +1063,6 @@ function buildAcme(): Obj {
       githubLogin: "sanchoris[bot]",
       member: null,
       task: t38,
-      viaChat: false,
     },
     turns: 13,
     costUsd: 1.65,
@@ -1100,7 +1085,6 @@ function buildAcme(): Obj {
       githubLogin: "sanchoris[bot]",
       member: null,
       task: t38,
-      viaChat: false,
     },
   })
   makeTask({
@@ -1120,7 +1104,6 @@ function buildAcme(): Obj {
       githubLogin: "sota-dev",
       member: sota,
       task: null,
-      viaChat: false,
     },
     turns: 22,
     costUsd: 2.4,
@@ -1143,7 +1126,6 @@ function buildAcme(): Obj {
       githubLogin: "mika-dev",
       member: mika,
       task: null,
-      viaChat: false,
     },
     turns: 14,
     costUsd: 1.9,
@@ -1177,7 +1159,6 @@ function buildAcme(): Obj {
       githubLogin: "lena-oss",
       member: null,
       task: null,
-      viaChat: false,
     },
     turns: 4,
     costUsd: 0.41,
@@ -1187,18 +1168,13 @@ function buildAcme(): Obj {
     id: "task-chat-flaky",
     title: "Fix flaky checkout test",
     status: "SUCCEEDED",
-    trigger: chatShop,
+    start: chatShop,
+    conversationSequence: 1,
     createdAt: ago(base35 + 15),
     startedAt: ago(base35 + 15),
     endedAt: ago(base35 + 2),
     updatedAt: ago(base35 + 2),
-    channel: {
-      kind: "SLACK",
-      threadId: "slack-thread-1",
-      scope: "shop",
-      slackChannel: "#shop-dev",
-    },
-    requester: { kind: "MEMBER", githubLogin: null, member: mika, task: null, viaChat: true },
+    requester: { kind: "MEMBER", githubLogin: null, member: mika, task: null },
     turns: 3,
     costUsd: 0.31,
   })
@@ -1206,18 +1182,13 @@ function buildAcme(): Obj {
     id: "task-chat-node",
     title: "Upgrade Node to 24",
     status: "SUCCEEDED",
-    trigger: chatShop,
+    start: chatShop,
+    conversationSequence: 1,
     createdAt: ago(60 * 21),
     startedAt: ago(60 * 21),
     endedAt: ago(60 * 20),
     updatedAt: ago(60 * 20),
-    channel: {
-      kind: "SLACK",
-      threadId: "slack-thread-2",
-      scope: "shop",
-      slackChannel: "#shop-dev",
-    },
-    requester: { kind: "MEMBER", githubLogin: null, member: sota, task: null, viaChat: true },
+    requester: { kind: "MEMBER", githubLogin: null, member: sota, task: null },
     turns: 2,
     costUsd: 0.22,
   })
@@ -1226,10 +1197,9 @@ function buildAcme(): Obj {
     githubLogin: null,
     member: mika,
     task: chatFlaky,
-    viaChat: true,
   }
   const t44 = tasks.find((task) => task.id === "task-44") as Obj
-  t44.requester = { kind: "MEMBER", githubLogin: null, member: sota, task: chatNode, viaChat: true }
+  t44.requester = { kind: "MEMBER", githubLogin: null, member: sota, task: chatNode }
 
   const run35 = makeRun(t35, {
     status: "IDLE",
@@ -1509,7 +1479,7 @@ function buildAcme(): Obj {
     text: string,
     issues: Obj[] = [],
   ): Obj => ({ id, authorKind, member, at: ago(minutes), text, issues })
-  chatExport.messages = [
+  const exportMessages = [
     message(
       "msg-1",
       "MEMBER",
@@ -1538,7 +1508,7 @@ function buildAcme(): Obj {
       "Created #41, #42 and #43 as children of #38. Two agents are working now. I will post here when the pull requests are open.",
     ),
   ]
-  chatFlaky.messages = [
+  const flakyMessages = [
     message(
       "msg-f1",
       "MEMBER",
@@ -1550,12 +1520,46 @@ function buildAcme(): Obj {
       issue("acme/shop-web", 35, "Fix flaky checkout test", () => t35),
     ]),
   ]
-  chatNode.messages = [
+  const nodeMessages = [
     message("msg-n1", "MEMBER", sota, 60 * 21, "Please upgrade shop-web to Node 24."),
     message("msg-n2", "AGENT", null, 60 * 20, "Filed #44. The task will open a pull request.", [
       issue("acme/shop-web", 44, "Upgrade Node to 24", () => t44),
     ]),
   ]
+  const conversations: Obj[] = []
+  const conversation = (
+    id: string,
+    kind: string,
+    task: Obj,
+    createdBy: Obj,
+    messages: Obj[],
+    filed: () => Obj[],
+  ): Obj => {
+    const item: Obj = {
+      id,
+      title: task.title,
+      kind,
+      sessionName: task.session.name,
+      session: task.session,
+      slackThreadTs: kind === "SLACK" ? `17300000${conversations.length}.000100` : null,
+      createdBy,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+      messages,
+      tasks: () => tasks.filter((candidate) => candidate.conversation === item),
+      latestTask: () => {
+        const own = tasks.filter((candidate) => candidate.conversation === item)
+        return own[own.length - 1] ?? null
+      },
+      filedTasks: filed,
+    }
+    task.conversation = item
+    conversations.push(item)
+    return item
+  }
+  conversation("conv-export", "WEB", chatExport, mika, exportMessages, () => [t38, t41, t42, t43])
+  conversation("conv-flaky", "SLACK", chatFlaky, mika, flakyMessages, () => [t35])
+  conversation("conv-node", "SLACK", chatNode, sota, nodeMessages, () => [t44])
   chatExport.filedTasks = () => [t38, t41, t42, t43]
   chatFlaky.filedTasks = () => [t35]
   chatNode.filedTasks = () => [t44]
@@ -1586,7 +1590,6 @@ function buildAcme(): Obj {
       limitedTask: t38,
       senderLogin: "sanchoris[bot]",
     }),
-    event("ev-4", 40, chatAll, "STARTED", { task: chatExport, senderLogin: "mika-dev" }),
     event("ev-5", 60 * 24 * 2, labeledIssue, "SKIPPED", {
       reason: "SENDER_NOT_ALLOWED",
       senderLogin: "tanaka-dev",
@@ -1761,18 +1764,19 @@ function buildAcme(): Obj {
       return tasks.filter((task) => {
         if (filter.statuses && !filter.statuses.includes(task.status)) return false
         if (filter.active && ["SUCCEEDED", "FAILED", "ABORTED"].includes(task.status)) return false
-        if (filter.triggerId && task.trigger.id !== filter.triggerId) return false
+        if (filter.triggerId && task.trigger?.id !== filter.triggerId) return false
         if (
           filter.skillName &&
-          !task.trigger.requiredSkills.some((skill: Obj) => skill.name === filter.skillName)
+          !task.requiredSkills().some((required: Obj) => required.skill.name === filter.skillName)
         )
           return false
         return true
       })
     },
     task: (args: Obj) => tasks.find((task) => task.id === args.id) ?? null,
-    chats: () =>
-      tasks.filter((task) => task.channel).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    conversations: () => [...conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    conversation: (args: Obj) => conversations.find((item) => item.id === args.id) ?? null,
+    conversationList: conversations,
     auditEvents: (args: Obj) => {
       const filter = args.filter ?? {}
       return auditEvents
@@ -1786,8 +1790,6 @@ function buildAcme(): Obj {
         .slice(0, args.limit ?? 100)
     },
     auditList: auditEvents,
-    sessionByScope: (scope: string) =>
-      triggers.find((item) => item.match.chatScope === scope && item.state === "ENABLED"),
   })
   return tenant
 }
@@ -1926,7 +1928,9 @@ export function buildSetupTenant(spec: {
     taskList: [],
     tasks: () => [],
     task: () => null,
-    chats: () => [],
+    conversations: () => [],
+    conversation: () => null,
+    conversationList: [],
     auditEvents: () => [],
     auditList: [],
   })

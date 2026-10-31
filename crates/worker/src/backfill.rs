@@ -1,12 +1,11 @@
 use sanchoris_core::db::{REF_TRIGGER_EVENT, locate};
 use sanchoris_core::item::{Entity, Item, ItemReader, KIND, Key, Table};
 use sanchoris_core::items::{
-    CheckWaitMarker, Config, GITHUB_TASK_PREFIX, Output, Task, TaskName, Tenant, TriggerEvent,
-    github_task_name,
+    CheckWaitMarker, Config, GITHUB_TASK_PREFIX, Output, Task, TaskName, TaskOrigin, Tenant,
+    TriggerEvent, github_task_name,
 };
 use sanchoris_core::keys;
 use sanchoris_core::store::{Index, SortKey};
-use serde_json::json;
 use uuid::Uuid;
 
 use crate::config_sync::reactivate;
@@ -15,6 +14,7 @@ use crate::ports::{Installation, repository_named};
 use crate::{Worker, installations};
 
 const LEGACY_DEFINITION_PREFIXES: [&str; 3] = ["PROJECT#", "SESSION#", "SKILL#"];
+const LEGACY_CHANNEL: &str = "channel";
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BackfillReport {
@@ -90,34 +90,47 @@ async fn definitions(
     Ok(())
 }
 
+fn legacy_github_repository(item: &Item) -> Result<Option<String>> {
+    Ok(ItemReader::new(item)
+        .opt_json(LEGACY_CHANNEL)?
+        .filter(|channel| channel["source"] == "github")
+        .and_then(|channel| channel["repository"].as_str().map(str::to_string)))
+}
+
 async fn task_names(worker: &Worker, tenant_id: Uuid, report: &mut BackfillReport) -> Result<()> {
-    let tasks = worker
+    let items = worker
         .store
-        .query_index::<Task>(Index::Gsi1, &keys::tasks_index(tenant_id), SortKey::All)
+        .query_items(
+            Table::Main,
+            Some(Index::Gsi1),
+            &keys::tasks_index(tenant_id),
+            &SortKey::All,
+            true,
+            None,
+        )
         .await?;
-    for listed in tasks {
-        if listed.name.starts_with(GITHUB_TASK_PREFIX) {
+    for item in items.iter().filter(|item| kind_of(item) == Some("task")) {
+        let listed_name = ItemReader::new(item).s("name")?;
+        if listed_name.starts_with(GITHUB_TASK_PREFIX) {
             continue;
         }
-        let Some(repository) = listed
-            .channel
-            .as_ref()
-            .filter(|channel| channel["source"] == "github")
-            .and_then(|channel| channel["repository"].as_str())
-            .map(str::to_string)
-        else {
+        let Some(repository) = legacy_github_repository(item)? else {
             continue;
         };
-        let Some(suffix) = listed.name.strip_prefix(&repository).map(str::to_string) else {
+        let listed_id = ItemReader::new(item).uuid("id")?;
+        let Some(suffix) = listed_name.strip_prefix(&repository).map(str::to_string) else {
             report.lines.push(format!(
-                "tenant {tenant_id} task {}: the name {} does not start with {repository}, left as it is",
-                listed.id, listed.name
+                "tenant {tenant_id} task {listed_id}: the name {listed_name} does not start with {repository}, left as it is"
             ));
             continue;
         };
         let mut tx = worker.tx(tenant_id);
-        let mut task = tx.require::<Task>(&listed.key()).await?;
-        let Some(trigger_event_id) = task.trigger_event_id else {
+        let mut task = tx.require::<Task>(&Key::of(Table::Main, item)?).await?;
+        let TaskOrigin::Trigger {
+            trigger_id,
+            trigger_event_id: Some(trigger_event_id),
+        } = task.origin
+        else {
             continue;
         };
         let Some(location) = locate(&mut tx, trigger_event_id, REF_TRIGGER_EVENT).await? else {
@@ -132,11 +145,8 @@ async fn task_names(worker: &Worker, tenant_id: Uuid, report: &mut BackfillRepor
             continue;
         };
         let old_name = std::mem::replace(&mut task.name, github_task_name(repository_id, &suffix));
-        if let Some(channel) = task.channel.as_mut() {
-            channel["repository_id"] = json!(repository_id);
-        }
         tx.put(&task)?;
-        let old_key = keys::task_name_key(tenant_id, task.trigger_id, &old_name);
+        let old_key = keys::task_name_key(tenant_id, trigger_id, &old_name);
         let created_at = match tx.get::<TaskName>(&old_key).await? {
             Some(old) => {
                 tx.delete(&old_key)?;
@@ -146,7 +156,7 @@ async fn task_names(worker: &Worker, tenant_id: Uuid, report: &mut BackfillRepor
         };
         let renamed = TaskName {
             tenant_id,
-            trigger_id: task.trigger_id,
+            trigger_id,
             name: task.name.clone(),
             task_id: task.id,
             created_at,
@@ -247,14 +257,16 @@ async fn outputs(
         let r = ItemReader::new(item);
         let repository = r.s("repository")?;
         let url = r.s("url")?;
-        let task = worker
-            .store
-            .get::<Task>(&keys::task_key(tenant_id, r.uuid("task_id")?))
-            .await?;
-        let of_task = task
-            .and_then(|task| task.channel)
-            .filter(|channel| channel["repository"] == repository.as_str())
-            .and_then(|channel| channel["repository_id"].as_i64());
+        let task_key = keys::task_key(tenant_id, r.uuid("task_id")?);
+        let of_task = match worker.store.get_item(&task_key).await? {
+            Some(task_item)
+                if legacy_github_repository(&task_item)?.as_deref()
+                    == Some(repository.as_str()) =>
+            {
+                Task::read(&ItemReader::new(&task_item))?.repository_id()
+            }
+            _ => None,
+        };
         let resolved = repository_named(installations, &repository)
             .or_else(|| {
                 let path = url.strip_prefix("https://github.com/")?;
@@ -281,6 +293,7 @@ async fn outputs(
                     repository_id,
                     number: r.n("number")?,
                     url: url.clone(),
+                    title: r.opt_s("title")?,
                     state: r.opt_s("state")?,
                     created_at: r.time("created_at")?,
                     updated_at: r.time("updated_at")?,

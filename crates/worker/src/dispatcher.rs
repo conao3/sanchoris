@@ -11,17 +11,16 @@ use sanchoris_core::db::{
 use sanchoris_core::github::CHECK_RUN_COMPLETED;
 use sanchoris_core::item::{Entity, Key};
 use sanchoris_core::items::{
-    CheckWait, CheckWaitMarker, Config, InboundEvent, Pending, Project, Repository, SessionDef,
-    SkillDef, Task, TaskName, Trigger, TriggerRate, github_task_name,
+    CheckWait, CheckWaitMarker, Config, FiledIssue, InboundEvent, Pending, Project, Repository,
+    SessionDef, SkillDef, Task, TaskName, TaskOrigin, Trigger, TriggerRate, github_task_name,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
-use sanchoris_core::lifecycle::TaskDecision;
 use sanchoris_core::messages::{self, OfferedInput, OfferedSkill, StartMessage};
-use sanchoris_core::model::{ActorKind, AuditOrigin, NamedDefinition, TaskDefinition, TaskStatus};
+use sanchoris_core::model::{ActorKind, AuditOrigin, NamedDefinition, TaskDefinition};
 use sanchoris_core::pattern::EventPattern;
 use sanchoris_core::store::{Index, SortKey, Update};
-use sanchoris_core::tasks::{apply_decision, latest_run, load_task, send_to_task};
+use sanchoris_core::tasks::load_task;
 use sanchoris_core::transform::{InputTransformer, render_instruction};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -50,47 +49,6 @@ pub async fn process_inbound(worker: &Worker, tenant_id: Uuid) -> Result<usize> 
         process_marker(worker, tenant_id, &marker.key).await?;
         processed += 1;
     }
-}
-
-pub async fn dispatch_inbound(
-    worker: &Worker,
-    tenant_id: Uuid,
-    source: &str,
-    key: &str,
-) -> Result<usize> {
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        match dispatch_inbound_once(worker, tenant_id, source, key).await {
-            Err(error) if error.is_conflict() && attempt < worker.settings.conflict_attempts => {}
-            other => return other,
-        }
-    }
-}
-
-async fn dispatch_inbound_once(
-    worker: &Worker,
-    tenant_id: Uuid,
-    source: &str,
-    key: &str,
-) -> Result<usize> {
-    let inbound = worker
-        .store
-        .get::<InboundEvent>(&keys::inbound_event_key(tenant_id, source, key))
-        .await?
-        .ok_or_else(|| {
-            WorkerError::Invalid(format!("inbound event {source}:{key} does not exist"))
-        })?;
-    if inbound.processed_at.is_some() {
-        return Ok(0);
-    }
-    process_marker(
-        worker,
-        tenant_id,
-        &keys::pending_inbound_key(tenant_id, inbound.received_at, inbound.id),
-    )
-    .await?;
-    Ok(1)
 }
 
 pub async fn dispatch(worker: &Worker, tenant_id: Uuid) -> Result<usize> {
@@ -474,7 +432,7 @@ fn skipped(reason: impl Into<String>) -> TriggerEventOutcome {
     }
 }
 
-fn shorten(text: &str) -> String {
+pub(crate) fn shorten(text: &str) -> String {
     let line = text.lines().next().unwrap_or("").trim();
     if line.chars().count() <= TITLE_LIMIT {
         return line.to_string();
@@ -490,7 +448,6 @@ struct Placement {
     title: String,
     parent_task_id: Option<Uuid>,
     blocked_by: Vec<Uuid>,
-    channel: Option<Value>,
     requested_by_member_id: Option<Uuid>,
     requested_by_github_user_id: Option<i64>,
     requested_by_github_login: Option<String>,
@@ -539,7 +496,13 @@ async fn start(
             start.session
         )));
     };
-    let repositories = checkout_repositories(tx, trigger, &session_definition).await?;
+    let repositories = checkout_repositories(
+        tx,
+        trigger.config_id,
+        trigger.config_revision_id,
+        &session_definition,
+    )
+    .await?;
     let mut skills = Vec::new();
     let mut loaded = Vec::new();
     for name in &start.skills {
@@ -555,7 +518,7 @@ async fn start(
         loaded.push(skill);
     }
     let definition = TaskDefinition {
-        trigger: NamedDefinition {
+        trigger: Some(NamedDefinition {
             name: trigger.name.clone(),
             definition: trigger_definition(
                 &trigger.state,
@@ -564,7 +527,8 @@ async fn start(
                 trigger.input_transformer.as_ref(),
                 &trigger.start,
             ),
-        },
+        }),
+        start: start.clone(),
         session: NamedDefinition {
             name: start.session.clone(),
             definition: session_definition.clone(),
@@ -584,14 +548,15 @@ async fn start(
     let recorded = db::create_task(
         tx,
         &NewTask {
-            trigger_id: trigger.id,
-            trigger_event_id: Some(trigger_event_id),
+            origin: TaskOrigin::Trigger {
+                trigger_id: trigger.id,
+                trigger_event_id: Some(trigger_event_id),
+            },
             config_revision_id: trigger.config_revision_id,
             name: &placement.name,
             title: &placement.title,
             definition: &definition,
             parent_task_id: placement.parent_task_id,
-            channel: placement.channel.as_ref(),
             requested_by_member_id: placement.requested_by_member_id,
             requested_by_github_user_id: placement.requested_by_github_user_id,
             requested_by_github_login: placement.requested_by_github_login.as_deref(),
@@ -606,11 +571,33 @@ async fn start(
         )));
     };
     let known = known_inputs(&repositories, &inbound.event);
-    let offered = loaded
+    let offered = offered_skills(&loaded, &start.required_skills, &known);
+    let text = messages::start_message(&StartMessage {
+        trigger_name: &trigger.name,
+        task_title: &placement.title,
+        instruction: &instruction,
+        skills: &offered,
+    });
+    let mut task = load_task(tx, task_id).await?;
+    task.start_payload = Some(json!({
+        "instruction": text,
+        "systemPrompt": system_prompt,
+        "repositories": repositories,
+    }));
+    tx.put(&task)?;
+    Ok(TriggerEventOutcome::Started)
+}
+
+pub(crate) fn offered_skills(
+    loaded: &[Skill],
+    required: &[String],
+    known: &BTreeMap<&'static str, (String, Value)>,
+) -> Vec<OfferedSkill> {
+    loaded
         .iter()
         .map(|skill| OfferedSkill {
             name: skill.name.clone(),
-            required: start.required_skills.contains(&skill.name),
+            required: required.contains(&skill.name),
             inputs: skill
                 .definition
                 .iter()
@@ -631,33 +618,20 @@ async fn start(
                 })
                 .collect(),
         })
-        .collect::<Vec<_>>();
-    let text = messages::start_message(&StartMessage {
-        trigger_name: &trigger.name,
-        task_title: &placement.title,
-        instruction: &instruction,
-        skills: &offered,
-    });
-    let mut task = load_task(tx, task_id).await?;
-    task.start_payload = Some(json!({
-        "instruction": text,
-        "systemPrompt": system_prompt,
-        "repositories": repositories,
-    }));
-    tx.put(&task)?;
-    Ok(TriggerEventOutcome::Started)
+        .collect()
 }
 
-async fn checkout_repositories(
+pub(crate) async fn checkout_repositories(
     tx: &mut TenantTx,
-    trigger: &Trigger,
+    config_id: Uuid,
+    config_revision_id: Uuid,
     session_definition: &Value,
 ) -> Result<Vec<String>> {
     let session: sanchoris_config::Session = serde_json::from_value(session_definition.clone())?;
     match session.checkout {
         Checkout::Repos(names) => {
             let config = tx
-                .require::<Config>(&keys::config_key(tx.tenant_id(), trigger.config_id))
+                .require::<Config>(&keys::config_key(tx.tenant_id(), config_id))
                 .await?;
             names
                 .iter()
@@ -676,8 +650,8 @@ async fn checkout_repositories(
         Checkout::Project(project) => {
             let mut rows = tx
                 .query::<Repository>(
-                    &keys::config_pk(tx.tenant_id(), trigger.config_id),
-                    &keys::project_repositories_prefix(trigger.config_revision_id, &project),
+                    &keys::config_pk(tx.tenant_id(), config_id),
+                    &keys::project_repositories_prefix(config_revision_id, &project),
                 )
                 .await?;
             rows.sort_by(|a, b| a.name.cmp(&b.name));
@@ -686,7 +660,10 @@ async fn checkout_repositories(
     }
 }
 
-fn known_inputs(repositories: &[String], event: &Value) -> BTreeMap<&'static str, (String, Value)> {
+pub(crate) fn known_inputs(
+    repositories: &[String],
+    event: &Value,
+) -> BTreeMap<&'static str, (String, Value)> {
     let mut known = BTreeMap::new();
     known.insert("Repos", ("array".to_string(), json!(repositories)));
     let detail = &event["detail"];
@@ -769,7 +746,6 @@ async fn place(
     let detail = &inbound.event["detail"];
     match inbound.source.as_str() {
         "github" => place_github(worker, tx, detail, start).await,
-        "web" | "slack" => place_chat(tx, inbound, trigger, worker.now()).await,
         SCHEDULE_SOURCE => {
             let time = detail["time"].as_str().unwrap_or(&inbound.key).to_string();
             Ok(Plan::Create(Box::new(Placement {
@@ -778,7 +754,6 @@ async fn place(
                 title: format!("{} at {time}", trigger.name),
                 parent_task_id: None,
                 blocked_by: Vec::new(),
-                channel: None,
                 requested_by_member_id: None,
                 requested_by_github_user_id: None,
                 requested_by_github_login: None,
@@ -805,7 +780,7 @@ async fn task_by_name(worker: &Worker, tx: &TenantTx, name: &str) -> Result<Opti
         .map(|n| n.task_id))
 }
 
-async fn depth_of(tx: &mut TenantTx, task_id: Uuid) -> Result<i64> {
+async fn tree_of(tx: &mut TenantTx, task_id: Uuid) -> Result<(i64, Task)> {
     let mut depth = 0;
     let mut current = load_task(tx, task_id).await?;
     while let Some(parent) = current.parent_task_id {
@@ -821,7 +796,7 @@ async fn depth_of(tx: &mut TenantTx, task_id: Uuid) -> Result<i64> {
         depth += 1;
         current = next;
     }
-    Ok(depth)
+    Ok((depth, current))
 }
 
 async fn app_sender(worker: &Worker, detail: &Value) -> Result<Option<String>> {
@@ -851,7 +826,6 @@ async fn place_github(
     let repository_id = detail["repository_id"]
         .as_i64()
         .ok_or_else(|| WorkerError::Invalid("GitHub events carry detail.repository_id".into()))?;
-    let channel = json!({ "source": "github", "repository": repo, "repository_id": repository_id });
     let Some(number) = detail["issue"]["number"].as_i64() else {
         let check = &detail["check_run"];
         let id = check["id"].as_i64().unwrap_or_default();
@@ -866,7 +840,6 @@ async fn place_github(
             ),
             parent_task_id: None,
             blocked_by: Vec::new(),
-            channel: Some(channel),
             requested_by_member_id: None,
             requested_by_github_user_id: Some(sender_id),
             requested_by_github_login: Some(sender_login.to_string()),
@@ -898,13 +871,33 @@ async fn place_github(
         Some(parent) => task_by_name(worker, tx, &parent.task_name())
             .await?
             .map(|id| (format!("{}#{}", parent.repository, parent.number), id)),
-        None => None,
+        None => tx
+            .get::<FiledIssue>(&keys::filed_issue_key(
+                tx.tenant_id(),
+                repository_id,
+                number,
+            ))
+            .await?
+            .map(|filed| {
+                (
+                    format!("the task that filed {repo}#{number}"),
+                    filed.task_id,
+                )
+            }),
     };
     let mut parent_task_id = None;
     match parent {
         Some((parent_name, parent_id)) => {
-            let limits = start.limits.children;
-            let depth = depth_of(tx, parent_id).await? + 1;
+            let (depth, root) = tree_of(tx, parent_id).await?;
+            let limits = match root.origin {
+                TaskOrigin::Conversation { .. } => {
+                    let root_definition: TaskDefinition =
+                        serde_json::from_value(root.definition.clone())?;
+                    root_definition.start.limits.children
+                }
+                TaskOrigin::Trigger { .. } => start.limits.children,
+            };
+            let depth = depth + 1;
             if u64::try_from(depth).expect("depth is positive") > limits.max_depth {
                 return Ok(Plan::Done(skipped(format!(
                     "children limit: depth {depth} exceeds MaxDepth {}",
@@ -951,89 +944,13 @@ async fn place_github(
         title: format!("{title} ({repo}#{number})"),
         parent_task_id,
         blocked_by,
-        channel: Some(channel),
         requested_by_member_id: None,
         requested_by_github_user_id: Some(sender_id),
         requested_by_github_login: Some(sender_login.to_string()),
     })))
 }
 
-async fn place_chat(
-    tx: &mut TenantTx,
-    inbound: &InboundEvent,
-    trigger: &Trigger,
-    now: DateTime<Utc>,
-) -> Result<Plan> {
-    let detail = &inbound.event["detail"];
-    let Some(thread) = detail["thread"].as_str() else {
-        return Ok(Plan::Done(discarded("chat events need detail.thread")));
-    };
-    let text = detail["text"].as_str().unwrap_or("");
-    let names = tx
-        .query::<TaskName>(
-            &keys::trigger_pk(tx.tenant_id(), trigger.id),
-            &format!("TASK#{thread}/"),
-        )
-        .await?;
-    let count = names.len();
-    let latest = names
-        .into_iter()
-        .max_by(|a, b| (a.created_at, a.task_id).cmp(&(b.created_at, b.task_id)));
-    let requested_by_member_id = detail["member_id"].as_str().and_then(|id| id.parse().ok());
-    if let Some(latest) = latest {
-        let task = load_task(tx, latest.task_id).await?;
-        if !task.status.is_terminal() {
-            let user = detail["user"].as_str().unwrap_or("user");
-            let message = messages::reply_message(user, text);
-            let Some(run_id) = latest_run(tx, task.id).await? else {
-                let mut task = task;
-                let Some(payload) = task.start_payload.as_mut() else {
-                    return Ok(Plan::Done(skipped(format!(
-                        "the thread's task {} has no start instruction yet",
-                        task.name
-                    ))));
-                };
-                let instruction = payload["instruction"].as_str().unwrap_or("");
-                payload["instruction"] = json!(format!("{instruction}\n\n{message}"));
-                task.updated_at = now;
-                tx.put(&task)?;
-                return Ok(Plan::Done(discarded(format!(
-                    "added to the start instruction of the pending task {}",
-                    task.name
-                ))));
-            };
-            let dedupe = format!("chat:{}", inbound.key);
-            if task.status == TaskStatus::NeedsYou {
-                let decision = TaskDecision::Resume {
-                    message,
-                    reset_nudges: true,
-                };
-                apply_decision(tx, task.id, run_id, &decision, &dedupe, now).await?;
-            } else {
-                send_to_task(tx, task.id, run_id, &message, &dedupe, now).await?;
-            }
-            return Ok(Plan::Done(discarded(format!(
-                "delivered to the active task {} as a message",
-                task.name
-            ))));
-        }
-    }
-    Ok(Plan::Create(Box::new(Placement {
-        name: format!("{thread}/{}", count + 1),
-        display: format!("{thread}/{}", count + 1),
-        title: shorten(text),
-        parent_task_id: None,
-        blocked_by: Vec::new(),
-        channel: Some(
-            json!({ "source": inbound.source, "thread": thread, "channel": detail.get("channel") }),
-        ),
-        requested_by_member_id,
-        requested_by_github_user_id: None,
-        requested_by_github_login: None,
-    })))
-}
-
-async fn load_session(
+pub(crate) async fn load_session(
     tx: &mut TenantTx,
     config_id: Uuid,
     revision_id: Uuid,
@@ -1061,7 +978,7 @@ async fn load_session(
     Ok(Some((session.definition, system_prompt)))
 }
 
-async fn load_skill(
+pub(crate) async fn load_skill(
     tx: &mut TenantTx,
     config_id: Uuid,
     revision_id: Uuid,

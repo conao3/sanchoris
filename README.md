@@ -155,7 +155,7 @@ The schema's ports are wired as follows:
 | Slack | Not available: `connectSlack` fails with `BAD_USER_INPUT` "Slack is not available yet" |
 | Config sync | `addConfig` and `syncConfig` run the config syncer for that config inline, in the api process or the api Lambda (GitHub reads and DynamoDB writes, within the API Gateway 29 s limit) |
 | Config repository | `addConfig` reads the branch head through the GitHub App and validates it; `proposeTriggerFromTemplate` creates a branch, commits the trigger into `sanchoris.yaml` (Contents API), and opens a pull request |
-| Chat | `sendChatMessage` runs the trigger dispatcher for the tenant inline, so the new task is in the response; starting the Workspace (`Reconcile`) stays with the worker |
+| Chat | `sendChatMessage` writes the message and starts or continues the conversation's task in the same transaction, so the task is in the response; starting the Workspace (`Reconcile`) stays with the worker |
 | Audit export | Writes `t/<tenant>/audit/<file>.jsonl` to the records store (the records bucket or the local directory) and returns a signed GET URL (15 minutes) |
 | Credentials | AES-256-GCM with `SANCHORIS_CREDENTIAL_KEY`, bound to the tenant id |
 

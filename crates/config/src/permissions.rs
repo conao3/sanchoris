@@ -32,6 +32,7 @@ pub fn required_permissions(
         ("github", "createPullRequests") => &[("pull_requests", Write)],
         ("github", "checks") => &[("checks", Read)],
         ("github", "commentOnIssue") => &[("issues", Write)],
+        ("github", "createIssue") => &[("issues", Write)],
         ("github", "mergePullRequest") => &[("contents", Write), ("pull_requests", Write)],
         _ => &[],
     }

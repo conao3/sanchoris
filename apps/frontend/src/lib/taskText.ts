@@ -86,3 +86,13 @@ export function limitedText(task: {
   parts.push(task.autoResume ? t("task.autoResumeOn") : t("task.autoResumeOff"))
   return parts.join(" · ")
 }
+
+export function originName(task: {
+  trigger: { name: string } | null
+  conversation: { sessionName: string } | null
+}): string {
+  if (task.trigger) {
+    return task.trigger.name
+  }
+  return t("tasks.chatSession", { session: task.conversation?.sessionName ?? "" })
+}

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, Utc};
+use sanchoris_config::Limits;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -34,6 +35,7 @@ pub struct Plan {
     pub max_idle_seconds: i64,
     pub max_children_depth: i64,
     pub max_children_count: i64,
+    pub chat_limits: Limits,
     pub computes: Vec<String>,
     pub workspace_cpu: i64,
     pub workspace_memory_mib: i64,
@@ -68,6 +70,10 @@ impl Entity for Plan {
             .n("max_idle_seconds", self.max_idle_seconds)
             .n("max_children_depth", self.max_children_depth)
             .n("max_children_count", self.max_children_count)
+            .json(
+                "chat_limits",
+                &serde_json::to_value(&self.chat_limits).expect("limits serialize"),
+            )
             .strs("computes", &self.computes)
             .n("workspace_cpu", self.workspace_cpu)
             .n("workspace_memory_mib", self.workspace_memory_mib)
@@ -96,6 +102,8 @@ impl Entity for Plan {
             max_idle_seconds: r.n("max_idle_seconds")?,
             max_children_depth: r.n("max_children_depth")?,
             max_children_count: r.n("max_children_count")?,
+            chat_limits: serde_json::from_value(r.json("chat_limits")?)
+                .map_err(|error| DbError::Decode(format!("plan chat_limits: {error}")))?,
             computes: r.strs("computes")?,
             workspace_cpu: r.n("workspace_cpu")?,
             workspace_memory_mib: r.n("workspace_memory_mib")?,
@@ -902,6 +910,7 @@ pub struct SessionDef {
     pub config_revision_id: Uuid,
     pub name: String,
     pub definition: Value,
+    pub chat_skills: Vec<String>,
 }
 
 impl Entity for SessionDef {
@@ -922,7 +931,8 @@ impl Entity for SessionDef {
             .uuid("config_id", self.config_id)
             .uuid("config_revision_id", self.config_revision_id)
             .s("name", &self.name)
-            .json("definition", &self.definition);
+            .json("definition", &self.definition)
+            .strs("chat_skills", &self.chat_skills);
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -933,6 +943,7 @@ impl Entity for SessionDef {
             config_revision_id: r.uuid("config_revision_id")?,
             name: r.s("name")?,
             definition: r.json("definition")?,
+            chat_skills: r.strs("chat_skills")?,
         })
     }
 }
@@ -1274,12 +1285,50 @@ impl Entity for TaskName {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskOrigin {
+    Trigger {
+        trigger_id: Uuid,
+        trigger_event_id: Option<Uuid>,
+    },
+    Conversation {
+        conversation_id: Uuid,
+        sequence: i64,
+    },
+}
+
+impl TaskOrigin {
+    pub fn trigger_id(self) -> Option<Uuid> {
+        match self {
+            Self::Trigger { trigger_id, .. } => Some(trigger_id),
+            Self::Conversation { .. } => None,
+        }
+    }
+
+    pub fn trigger_event_id(self) -> Option<Uuid> {
+        match self {
+            Self::Trigger {
+                trigger_event_id, ..
+            } => trigger_event_id,
+            Self::Conversation { .. } => None,
+        }
+    }
+
+    pub fn conversation_id(self) -> Option<Uuid> {
+        match self {
+            Self::Trigger { .. } => None,
+            Self::Conversation {
+                conversation_id, ..
+            } => Some(conversation_id),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Task {
     pub id: Uuid,
     pub tenant_id: Uuid,
-    pub trigger_id: Uuid,
-    pub trigger_event_id: Option<Uuid>,
+    pub origin: TaskOrigin,
     pub config_revision_id: Uuid,
     pub name: String,
     pub title: String,
@@ -1290,7 +1339,6 @@ pub struct Task {
     pub nudges: i64,
     pub definition: Value,
     pub parent_task_id: Option<Uuid>,
-    pub channel: Option<Value>,
     pub start_payload: Option<Value>,
     pub requested_by_member_id: Option<Uuid>,
     pub requested_by_github_user_id: Option<i64>,
@@ -1334,12 +1382,6 @@ impl Task {
             .iter()
             .find(|repository| repository.id == id)
             .map(|repository| repository.full_name.clone())
-            .or_else(|| {
-                self.channel
-                    .as_ref()
-                    .and_then(|channel| channel["repository"].as_str())
-                    .map(str::to_string)
-            })
             .unwrap_or_else(|| format!("#{id}"));
         format!("{current}{suffix}")
     }
@@ -1353,10 +1395,24 @@ impl Entity for Task {
     }
 
     fn write(&self, w: &mut ItemWriter) {
+        match self.origin {
+            TaskOrigin::Trigger {
+                trigger_id,
+                trigger_event_id,
+            } => {
+                w.uuid("trigger_id", trigger_id)
+                    .opt_uuid("trigger_event_id", trigger_event_id);
+            }
+            TaskOrigin::Conversation {
+                conversation_id,
+                sequence,
+            } => {
+                w.uuid("conversation_id", conversation_id)
+                    .n("conversation_sequence", sequence);
+            }
+        }
         w.uuid("id", self.id)
             .uuid("tenant_id", self.tenant_id)
-            .uuid("trigger_id", self.trigger_id)
-            .opt_uuid("trigger_event_id", self.trigger_event_id)
             .uuid("config_revision_id", self.config_revision_id)
             .s("name", &self.name)
             .s("title", &self.title)
@@ -1367,7 +1423,6 @@ impl Entity for Task {
             .n("nudges", self.nudges)
             .json("definition", &self.definition)
             .opt_uuid("parent_task_id", self.parent_task_id)
-            .opt_json("channel", self.channel.as_ref())
             .opt_json("start_payload", self.start_payload.as_ref())
             .opt_uuid("requested_by_member_id", self.requested_by_member_id)
             .opt_n(
@@ -1401,8 +1456,16 @@ impl Entity for Task {
         Ok(Self {
             id: r.uuid("id")?,
             tenant_id: r.uuid("tenant_id")?,
-            trigger_id: r.uuid("trigger_id")?,
-            trigger_event_id: r.opt_uuid("trigger_event_id")?,
+            origin: match r.opt_uuid("conversation_id")? {
+                Some(conversation_id) => TaskOrigin::Conversation {
+                    conversation_id,
+                    sequence: r.n("conversation_sequence")?,
+                },
+                None => TaskOrigin::Trigger {
+                    trigger_id: r.uuid("trigger_id")?,
+                    trigger_event_id: r.opt_uuid("trigger_event_id")?,
+                },
+            },
             config_revision_id: r.uuid("config_revision_id")?,
             name: r.s("name")?,
             title: r.s("title")?,
@@ -1419,7 +1482,6 @@ impl Entity for Task {
             nudges: r.n("nudges")?,
             definition: r.json("definition")?,
             parent_task_id: r.opt_uuid("parent_task_id")?,
-            channel: r.opt_json("channel")?,
             start_payload: r.opt_json("start_payload")?,
             requested_by_member_id: r.opt_uuid("requested_by_member_id")?,
             requested_by_github_user_id: r.opt_n("requested_by_github_user_id")?,
@@ -1851,6 +1913,10 @@ impl Entity for StateEntryItem {
     }
 }
 
+pub const OUTPUT_PULL_REQUEST: &str = "pull_request";
+pub const OUTPUT_COMMENT: &str = "comment";
+pub const OUTPUT_ISSUE: &str = "issue";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Output {
     pub id: Uuid,
@@ -1863,6 +1929,7 @@ pub struct Output {
     pub repository_id: i64,
     pub number: i64,
     pub url: String,
+    pub title: Option<String>,
     pub state: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -1893,6 +1960,7 @@ impl Entity for Output {
             .n("repository_id", self.repository_id)
             .n("number", self.number)
             .s("url", &self.url)
+            .opt_s("title", self.title.as_ref())
             .opt_s("state", self.state.as_ref())
             .time("created_at", self.created_at)
             .time("updated_at", self.updated_at)
@@ -1912,6 +1980,7 @@ impl Entity for Output {
             repository_id: r.n("repository_id")?,
             number: r.n("number")?,
             url: r.s("url")?,
+            title: r.opt_s("title")?,
             state: r.opt_s("state")?,
             created_at: r.time("created_at")?,
             updated_at: r.time("updated_at")?,
@@ -2359,13 +2428,6 @@ impl Entity for InboundEvent {
             .time("received_at", self.received_at)
             .opt_time("processed_at", self.processed_at)
             .opt_s("error", self.error.as_ref());
-        if let Some(thread) = self.event["detail"]["thread"].as_str() {
-            w.s(
-                "gsi1pk",
-                keys::thread_index(self.tenant_id, &self.source, thread),
-            )
-            .s("gsi1sk", keys::time_id(self.received_at, self.id));
-        }
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -2658,14 +2720,110 @@ impl Entity for TriggerRate {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Conversation {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub kind: String,
+    pub config_id: Uuid,
+    pub session_name: String,
+    pub slack_thread_ts: Option<String>,
+    pub created_by_member_id: Uuid,
+    pub title: String,
+    pub tasks: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+pub const CONVERSATION_WEB: &str = "web";
+pub const CONVERSATION_SLACK: &str = "slack";
+
+impl Entity for Conversation {
+    const KIND: &'static str = "conversation";
+
+    fn key(&self) -> Key {
+        keys::conversation_key(self.tenant_id, self.id)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("id", self.id)
+            .uuid("tenant_id", self.tenant_id)
+            .s("conversation_kind", &self.kind)
+            .uuid("config_id", self.config_id)
+            .s("session_name", &self.session_name)
+            .opt_s("slack_thread_ts", self.slack_thread_ts.as_ref())
+            .uuid("created_by_member_id", self.created_by_member_id)
+            .s("title", &self.title)
+            .n("tasks", self.tasks)
+            .time("created_at", self.created_at)
+            .time("updated_at", self.updated_at)
+            .s("gsi1pk", keys::conversations_index(self.tenant_id))
+            .s("gsi1sk", keys::time_id(self.updated_at, self.id));
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            id: r.uuid("id")?,
+            tenant_id: r.uuid("tenant_id")?,
+            kind: r.s("conversation_kind")?,
+            config_id: r.uuid("config_id")?,
+            session_name: r.s("session_name")?,
+            slack_thread_ts: r.opt_s("slack_thread_ts")?,
+            created_by_member_id: r.uuid("created_by_member_id")?,
+            title: r.s("title")?,
+            tasks: r.n("tasks")?,
+            created_at: r.time("created_at")?,
+            updated_at: r.time("updated_at")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationTask {
+    pub tenant_id: Uuid,
+    pub conversation_id: Uuid,
+    pub sequence: i64,
+    pub task_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+impl Entity for ConversationTask {
+    const KIND: &'static str = "conversation_task";
+
+    fn key(&self) -> Key {
+        keys::conversation_task_key(self.tenant_id, self.conversation_id, self.sequence)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .uuid("conversation_id", self.conversation_id)
+            .n("sequence", self.sequence)
+            .uuid("task_id", self.task_id)
+            .time("created_at", self.created_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            conversation_id: r.uuid("conversation_id")?,
+            sequence: r.n("sequence")?,
+            task_id: r.uuid("task_id")?,
+            created_at: r.time("created_at")?,
+        })
+    }
+}
+
+pub const AUTHOR_MEMBER: &str = "member";
+pub const AUTHOR_AGENT: &str = "agent";
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChatMessage {
     pub id: Uuid,
     pub tenant_id: Uuid,
-    pub task_id: Uuid,
+    pub conversation_id: Uuid,
+    pub task_id: Option<Uuid>,
     pub run_id: Option<Uuid>,
-    pub outbox_id: Option<Uuid>,
-    pub channel: Option<Value>,
     pub author_kind: String,
+    pub member_id: Option<Uuid>,
     pub text: String,
     pub created_at: DateTime<Utc>,
 }
@@ -2674,17 +2832,22 @@ impl Entity for ChatMessage {
     const KIND: &'static str = "chat_message";
 
     fn key(&self) -> Key {
-        keys::chat_message_key(self.tenant_id, self.task_id, self.created_at, self.id)
+        keys::chat_message_key(
+            self.tenant_id,
+            self.conversation_id,
+            self.created_at,
+            self.id,
+        )
     }
 
     fn write(&self, w: &mut ItemWriter) {
         w.uuid("id", self.id)
             .uuid("tenant_id", self.tenant_id)
-            .uuid("task_id", self.task_id)
+            .uuid("conversation_id", self.conversation_id)
+            .opt_uuid("task_id", self.task_id)
             .opt_uuid("run_id", self.run_id)
-            .opt_uuid("outbox_id", self.outbox_id)
-            .opt_json("channel", self.channel.as_ref())
             .s("author_kind", &self.author_kind)
+            .opt_uuid("member_id", self.member_id)
             .s("text", &self.text)
             .time("created_at", self.created_at);
     }
@@ -2693,12 +2856,47 @@ impl Entity for ChatMessage {
         Ok(Self {
             id: r.uuid("id")?,
             tenant_id: r.uuid("tenant_id")?,
-            task_id: r.uuid("task_id")?,
+            conversation_id: r.uuid("conversation_id")?,
+            task_id: r.opt_uuid("task_id")?,
             run_id: r.opt_uuid("run_id")?,
-            outbox_id: r.opt_uuid("outbox_id")?,
-            channel: r.opt_json("channel")?,
             author_kind: r.s("author_kind")?,
+            member_id: r.opt_uuid("member_id")?,
             text: r.s("text")?,
+            created_at: r.time("created_at")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FiledIssue {
+    pub tenant_id: Uuid,
+    pub repository_id: i64,
+    pub number: i64,
+    pub task_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+impl Entity for FiledIssue {
+    const KIND: &'static str = "filed_issue";
+
+    fn key(&self) -> Key {
+        keys::filed_issue_key(self.tenant_id, self.repository_id, self.number)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .n("repository_id", self.repository_id)
+            .n("number", self.number)
+            .uuid("task_id", self.task_id)
+            .time("created_at", self.created_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            repository_id: r.n("repository_id")?,
+            number: r.n("number")?,
+            task_id: r.uuid("task_id")?,
             created_at: r.time("created_at")?,
         })
     }

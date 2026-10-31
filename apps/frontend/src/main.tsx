@@ -126,9 +126,9 @@ const chatRoute = createRoute({
   path: "/chat",
   component: ChatPage,
 })
-const chatTaskRoute = createRoute({
+const conversationRoute = createRoute({
   getParentRoute: () => appRoute,
-  path: "/chat/$task",
+  path: "/chat/$conversation",
   component: ChatPage,
 })
 const tasksRoute = createRoute({
@@ -200,7 +200,7 @@ const routeTree = rootRoute.addChildren([
     skillsRoute,
     skillRoute,
     chatRoute,
-    chatTaskRoute,
+    conversationRoute,
     tasksRoute,
     taskRoute,
     runRoute,

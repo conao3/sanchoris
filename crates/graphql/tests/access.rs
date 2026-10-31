@@ -17,6 +17,7 @@ struct Victim {
     trigger: Uuid,
     task: Uuid,
     run: Uuid,
+    conversation: Uuid,
     credential: Uuid,
     invitation: Uuid,
     member: Uuid,
@@ -30,6 +31,7 @@ fn acme(w: &World) -> Victim {
         trigger: w.labeled_trigger,
         task: w.issue_task,
         run: w.issue_run,
+        conversation: w.chat_conversation,
         credential: w.org_credential,
         invitation: w.invitation,
         member: w.ken.member_id.unwrap(),
@@ -44,6 +46,7 @@ fn globex(w: &World) -> Victim {
         trigger: w.globex_trigger,
         task: w.globex_task,
         run: w.globex_run,
+        conversation: w.globex_conversation,
         credential: w.globex_credential,
         invitation: w.globex_invitation,
         member: w.hana.member_id.unwrap(),
@@ -76,11 +79,11 @@ fn foreign_mutations(victim: &Victim, own_tenant: Uuid) -> Vec<(&'static str, Va
         ("StopRun", json!({ "runId": victim.run })),
         (
             "SendChatMessage",
-            json!({ "input": { "tenantId": victim.tenant, "scope": "all", "text": "hi" } }),
+            json!({ "input": { "tenantId": victim.tenant, "sessionName": "all", "text": "hi" } }),
         ),
         (
             "SendChatMessage",
-            json!({ "input": { "tenantId": own_tenant, "taskId": victim.task, "text": "hi" } }),
+            json!({ "input": { "tenantId": own_tenant, "conversationId": victim.conversation, "text": "hi" } }),
         ),
         (
             "SetTriggerState",
@@ -167,10 +170,10 @@ async fn assert_isolated(w: &World, attacker: &Person, own_tenant: Uuid, victim:
         .ok(
             attacker,
             "Chat",
-            json!({ "tenant": own_slug, "task": victim.task, "withTask": true }),
+            json!({ "tenant": own_slug, "conversation": victim.conversation, "withConversation": true }),
         )
         .await;
-    assert_eq!(chat["tenant"]["task"], Value::Null);
+    assert_eq!(chat["tenant"]["conversation"], Value::Null);
 
     for (operation, variables) in foreign_mutations(victim, own_tenant) {
         assert_eq!(
@@ -252,15 +255,15 @@ async fn members_of_one_tenant_cannot_read_or_change_another() {
         .ok(
             &w.mika,
             "Chat",
-            json!({ "tenant": "acme", "task": w.chat_task, "withTask": false }),
+            json!({ "tenant": "acme", "conversation": "", "withConversation": false }),
         )
         .await;
     assert!(
-        chats["tenant"]["chats"]
+        chats["tenant"]["conversations"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|task| task["id"] != w.globex_task.to_string())
+            .all(|conversation| conversation["id"] != w.globex_conversation.to_string())
     );
     let members = w.ok(&w.mika, "Members", json!({ "tenant": "acme" })).await;
     assert_eq!(members["tenant"]["members"].as_array().unwrap().len(), 3);

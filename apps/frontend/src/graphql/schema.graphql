@@ -101,7 +101,7 @@ type ChangeRequest {
 	changes: [ConfigObjectRef!]!
 	validation: Validation!
 	"""
-	The chat task that opened it. Null when a member opened it.
+	The task that opened it. Null when a member opened it.
 	"""
 	openedFromTask: Task
 	openedBy: Member
@@ -112,21 +112,6 @@ enum ChangeRequestState {
 	OPEN
 	MERGED
 	CLOSED
-}
-
-type Channel {
-	kind: ChannelKind!
-	threadId: String!
-	"""
-	all or a project name.
-	"""
-	scope: String!
-	slackChannel: String
-}
-
-enum ChannelKind {
-	WEB
-	SLACK
 }
 
 enum ChatAuthorKind {
@@ -141,7 +126,11 @@ type ChatMessage {
 	text: String!
 	at: DateTime!
 	"""
-	Issues the agent filed in this message.
+	The task the message went to or came from.
+	"""
+	task: Task
+	"""
+	Issues the agent filed with file-issue during the turn this reply ends.
 	"""
 	issues: [IssueRef!]!
 }
@@ -206,6 +195,51 @@ enum ConfigStatus {
 	The repository was removed from the GitHub App installation or deleted. The config no longer syncs or starts tasks.
 	"""
 	DISABLED
+}
+
+type Conversation {
+	id: ID!
+	kind: ConversationKind!
+	"""
+	The first line of the first message.
+	"""
+	title: String!
+	sessionName: String!
+	"""
+	The session in the config's active revision. Null when the config no longer has it.
+	"""
+	session: Session
+	"""
+	The Slack thread, for a Slack conversation.
+	"""
+	slackThreadTs: String
+	"""
+	The member who started the conversation; its tasks run with this member as the requester.
+	"""
+	createdBy: Member
+	createdAt: DateTime!
+	updatedAt: DateTime!
+	"""
+	Members' messages and the agent's replies, oldest first.
+	"""
+	messages: [ChatMessage!]!
+	"""
+	The conversation's tasks, one per session, in order.
+	"""
+	tasks: [Task!]!
+	"""
+	The task the next message goes to, unless it has finished.
+	"""
+	latestTask: Task
+	"""
+	Tasks started from issues that the conversation's tasks filed with file-issue, with their descendants.
+	"""
+	filedTasks: [Task!]!
+}
+
+enum ConversationKind {
+	WEB
+	SLACK
 }
 
 input CreateTenantInput {
@@ -280,8 +314,6 @@ scalar DateTime
 
 enum EventSource {
 	GITHUB
-	SLACK
-	WEB
 	SCHEDULE
 }
 
@@ -483,8 +515,8 @@ type Mutation {
 	"""
 	stopRun(runId: ID!): Run!
 	"""
-	Sends a chat message. With taskId, the message goes to that task's agent session.
-	Without taskId, a new chat starts in the given scope ("all" or a project name).
+	Sends a chat message. With conversationId, the message goes to that conversation: to its running session, to the start of its pending task, as the reply of a task that needs you, or into a new task when the last one finished.
+	Without conversationId, a new conversation starts in the session sessionName.
 	"""
 	sendChatMessage(input: SendChatMessageInput!): SendChatMessagePayload!
 	setTriggerState(triggerId: ID!, state: TriggerState!): Trigger!
@@ -571,6 +603,7 @@ type Output {
 enum OutputKind {
 	PULL_REQUEST
 	COMMENT
+	ISSUE
 }
 
 enum OutputState {
@@ -610,6 +643,10 @@ type Plan {
 	inboundEventsPerMinute: Int!
 	retentionDays: Int!
 	auditRetentionDays: Int!
+	"""
+	The limits of each task a conversation starts.
+	"""
+	chatLimits: TaskLimits!
 	requiresPayment: Boolean!
 	"""
 	The plan of tenants created by a verified @sancode.dev email. It has no price, and its tenants do not change plans or open Stripe.
@@ -693,21 +730,17 @@ type Requester {
 	"""
 	member: Member
 	"""
-	The GitHub user id of the sender of the event that started the task. Null for tasks asked from the screen or a chat.
+	The GitHub user id of the sender of the event that started the task. Null for a conversation's task.
 	"""
 	githubUserId: ID
 	"""
-	The GitHub login of the sender of the event that started the task, as of the event. Null for tasks asked from the screen or a chat.
+	The GitHub login of the sender of the event that started the task, as of the event. Null for a conversation's task.
 	"""
 	githubLogin: String
 	"""
 	The task whose agent filed the issue.
 	"""
 	task: Task
-	"""
-	True when the member asked in a chat.
-	"""
-	viaChat: Boolean!
 }
 
 enum RequesterKind {
@@ -783,15 +816,26 @@ enum RunStatus {
 
 input SendChatMessageInput {
 	tenantId: ID!
-	taskId: ID
 	"""
-	all or a project name. Required when taskId is not given.
+	The conversation to continue. Without it, a new conversation starts in sessionName.
 	"""
-	scope: String
+	conversationId: ID
+	"""
+	The session of a new conversation. Required when conversationId is not given.
+	"""
+	sessionName: String
+	"""
+	The config of sessionName. Required only when several active configs have a session of that name.
+	"""
+	configId: ID
 	text: String!
 }
 
 type SendChatMessagePayload {
+	conversation: Conversation!
+	"""
+	The task the message started or went to.
+	"""
 	task: Task!
 	message: ChatMessage!
 }
@@ -799,6 +843,7 @@ type SendChatMessagePayload {
 type Session {
 	id: ID!
 	name: String!
+	config: Config!
 	agent: Provider!
 	model: String!
 	"""
@@ -819,6 +864,10 @@ type Session {
 	architecture: WorkspaceArchitecture!
 	idleSeconds: Int!
 	usageLimitResume: UsageLimitResume!
+	"""
+	The skills a chat in this session can run: the config skills whose GitHub resources fit the session's GitHub.Repos and Permissions, and the built-in file-issue.
+	"""
+	callableSkills: [Skill!]!
 }
 
 """
@@ -1040,7 +1089,18 @@ type Task {
 	startedAt: DateTime
 	endedAt: DateTime
 	updatedAt: DateTime!
-	trigger: Trigger!
+	"""
+	The trigger that started the task. Null for a conversation's task.
+	"""
+	trigger: Trigger
+	"""
+	The conversation whose session the task is. Null for a trigger's task.
+	"""
+	conversation: Conversation
+	"""
+	The task's place in its conversation, from 1. Null for a trigger's task.
+	"""
+	conversationSequence: Int
 	triggerEvent: TriggerEvent
 	requester: Requester
 	session: Session!
@@ -1049,7 +1109,6 @@ type Task {
 	"""
 	configRevision: Int!
 	issue: IssueRef
-	channel: Channel
 	parent: Task
 	children: [Task!]!
 	blockedBy: [Task!]!
@@ -1062,7 +1121,6 @@ type Task {
 	runs: [Run!]!
 	run(number: Int!): Run
 	outputs: [Output!]!
-	messages: [ChatMessage!]!
 	limits: TaskLimits!
 	turns: Int!
 	costUsd: Float!
@@ -1138,9 +1196,10 @@ type Tenant {
 	tasks(filter: TaskFilter): [Task!]!
 	task(id: ID!): Task
 	"""
-	The latest 200 chat tasks (threads), newest first.
+	The latest 200 conversations, most recently updated first.
 	"""
-	chats: [Task!]!
+	conversations: [Conversation!]!
+	conversation(id: ID!): Conversation
 	"""
 	Audit events, newest first.
 	"""
@@ -1235,7 +1294,6 @@ enum TriggerEventKind {
 	ISSUE_LABELED
 	ISSUE_COMMENT_CREATED
 	CHECK_RUN_COMPLETED
-	MESSAGE
 	SCHEDULE
 }
 
@@ -1276,11 +1334,6 @@ type TriggerMatch {
 	detail.sender.login values. Empty when the pattern uses author_association.
 	"""
 	senders: [String!]!
-	"""
-	The chat scope: all or a project name.
-	"""
-	chatScope: String
-	slackChannel: String
 	scheduleExpression: String
 	nextRunAt: DateTime
 }
@@ -1357,7 +1410,10 @@ type Viewer {
 enum WaitReason {
 	SKILL
 	USAGE_LIMIT
-	CHAT
+	"""
+	The conversation task finished its turn and waits for the next message.
+	"""
+	MESSAGE
 }
 
 type WarmBuild {

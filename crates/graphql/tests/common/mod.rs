@@ -8,16 +8,17 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, DurationRound, Utc};
 use sanchoris_config::{Skill, builtin_skill, parse_config_yaml};
 use sanchoris_core::db::{
-    self, DbError, NewTask, REF_CONFIG_REVISION, REF_RUN, REF_SKILL_RUN, REF_TRIGGER,
-    REF_TRIGGER_EVENT, Store, TenantTx, insert_ref,
+    REF_CONFIG_REVISION, REF_RUN, REF_SKILL_RUN, REF_TRIGGER, REF_TRIGGER_EVENT, Store, TenantTx,
+    insert_ref,
 };
 use sanchoris_core::item::{Entity, Key, Table};
 use sanchoris_core::items::{
-    AuditEvent, CONFIG_ACTIVE, ChangeRequest, ChatMessage, Config, ConfigRevision, Credential,
-    GitHubRepository, Guard, InboundEvent, Integration, Invitation, InvitationEmail, Member,
-    Membership, OutboxItem, Output, Pending, Project, Repository, Run, RunChannel, RunEventItem,
-    SessionDef, SkillDef, SkillRunItem, StateEntryItem, Task, TaskName, Tenant, Trigger,
-    TriggerEvent, UsageRecord, UsageSnapshot, User, Workspace, uniq,
+    AUTHOR_AGENT, AUTHOR_MEMBER, AuditEvent, CONFIG_ACTIVE, CONVERSATION_WEB, ChangeRequest,
+    ChatMessage, Config, ConfigRevision, Conversation, ConversationTask, Credential,
+    GitHubRepository, Guard, Integration, Invitation, InvitationEmail, Member, Membership,
+    OutboxItem, Output, Project, Repository, Run, RunChannel, RunEventItem, SessionDef, SkillDef,
+    SkillRunItem, StateEntryItem, Task, TaskName, TaskOrigin, Tenant, Trigger, TriggerEvent,
+    UsageRecord, UsageSnapshot, User, Workspace, uniq,
 };
 use sanchoris_core::jobs::Relayed;
 use sanchoris_core::keys;
@@ -29,10 +30,10 @@ use sanchoris_core::store::{Relay, relayed_from_item};
 use sanchoris_core::tenants::{NewTenant, PendingSession, create_tenant, free_tenant_key};
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_graphql::{
-    AesGcmEncryptor, AuditExportPort, AuthUser, ChatDispatcher, CheckoutPort, Clock, ConfigCheck,
-    ConfigLocation, ConfigProblem, ConfigRepositoryPort, ConfigSyncTrigger, GithubConnectUrl,
-    GithubRedirect, GraphqlDeps, PlanChange, PortError, SanchorisSchema, SlackConnectUrl,
-    TenantCheckout, TriggerProposal, build_schema,
+    AesGcmEncryptor, AuditExportPort, AuthUser, CheckoutPort, Clock, ConfigCheck, ConfigLocation,
+    ConfigProblem, ConfigRepositoryPort, ConfigSyncTrigger, GithubConnectUrl, GithubRedirect,
+    GraphqlDeps, PlanChange, PortError, SanchorisSchema, SlackConnectUrl, TenantCheckout,
+    TriggerProposal, build_schema,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -83,20 +84,6 @@ Triggers:
       RequiredSkills: [open-pr-green-ci]
       MaxNudges: 2
       Limits: { Turns: 60, CostUsd: 20, TimeoutSeconds: 14400, HeartbeatSeconds: 900, Children: { MaxDepth: 1, MaxCount: 5 } }
-  chat-all:
-    State: ENABLED
-    EventPattern:
-      source: [web]
-      detail-type: [Message]
-      detail:
-        scope: [all]
-    Start:
-      Session: all
-      Instruction: '<text>'
-      Skills: []
-      RequiredSkills: []
-      MaxNudges: 0
-      Limits: { Turns: 60, CostUsd: 10, TimeoutSeconds: 86400, HeartbeatSeconds: 900, Children: { MaxDepth: 1, MaxCount: 5 } }
   nightly:
     State: DISABLED
     ScheduleExpression: cron(0 3 * * ? *)
@@ -386,10 +373,11 @@ fn trigger_definition(name: &str) -> Value {
 pub fn issue_definition() -> TaskDefinition {
     let config = config();
     TaskDefinition {
-        trigger: NamedDefinition {
+        trigger: Some(NamedDefinition {
             name: "labeled-issue".into(),
             definition: trigger_definition("labeled-issue"),
-        },
+        }),
+        start: config.triggers["labeled-issue"].start.clone(),
         session: NamedDefinition {
             name: "shop".into(),
             definition: serde_json::to_value(&config.sessions["shop"]).unwrap(),
@@ -403,16 +391,23 @@ pub fn issue_definition() -> TaskDefinition {
 
 pub fn chat_definition() -> TaskDefinition {
     let config = config();
+    let file_issue = builtin_skill("file-issue").unwrap();
     TaskDefinition {
-        trigger: NamedDefinition {
-            name: "chat-all".into(),
-            definition: trigger_definition("chat-all"),
-        },
+        trigger: None,
+        start: serde_json::from_value(json!({
+            "Session": "all", "Instruction": "Which issues are open?", "Skills": ["file-issue"],
+            "RequiredSkills": [], "MaxNudges": 0,
+            "Limits": { "Turns": 60, "CostUsd": 10, "TimeoutSeconds": 86400, "HeartbeatSeconds": 900, "Children": { "MaxDepth": 1, "MaxCount": 5 } },
+        }))
+        .unwrap(),
         session: NamedDefinition {
             name: "all".into(),
             definition: serde_json::to_value(&config.sessions["all"]).unwrap(),
         },
-        skills: Vec::new(),
+        skills: vec![NamedDefinition {
+            name: "file-issue".into(),
+            definition: serde_json::to_value(file_issue).unwrap(),
+        }],
     }
 }
 
@@ -435,106 +430,6 @@ impl Person {
     }
 }
 
-#[async_trait]
-impl ChatDispatcher for Fakes {
-    async fn dispatch(&self, tenant_id: Uuid, source: &str, key: &str) -> Result<(), PortError> {
-        dispatch_chat(&self.store, tenant_id, source, key, self.clock.now())
-            .await
-            .map_err(|e| PortError::Failed(e.to_string()))
-    }
-}
-
-async fn dispatch_chat(
-    store: &Store,
-    tenant_id: Uuid,
-    source: &str,
-    key: &str,
-    now: DateTime<Utc>,
-) -> Result<(), DbError> {
-    let mut tx = store.tx(tenant_id);
-    let markers = tx
-        .query::<Pending>(&keys::inbound_pk(tenant_id), "PEND#")
-        .await?;
-    let target = keys::inbound_event_key(tenant_id, source, key);
-    for marker in markers.into_iter().filter(|m| m.target == target) {
-        let mut inbound = tx.require::<InboundEvent>(&marker.target).await?;
-        tx.delete(&marker.key)?;
-        inbound.processed_at = Some(now);
-        tx.put(&inbound)?;
-        if inbound.source != "web" {
-            continue;
-        }
-        let detail = inbound.event["detail"].clone();
-        let thread = detail["thread"].as_str().unwrap().to_string();
-        let scope = detail["scope"].as_str().unwrap().to_string();
-        let mut found = None;
-        for config in tx
-            .query::<Config>(&keys::tenant_pk(tenant_id), "CONFIG#")
-            .await?
-        {
-            for trigger in tx
-                .query::<Trigger>(&keys::config_pk(tenant_id, config.id), "TRIGGER#")
-                .await?
-            {
-                let accepts = trigger
-                    .event_pattern
-                    .as_ref()
-                    .and_then(|pattern| pattern["detail"]["scope"].as_array().cloned())
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|candidate| candidate == scope.as_str());
-                if trigger.is_active() && accepts {
-                    found = Some(trigger);
-                }
-            }
-        }
-        let Some(trigger) = found else {
-            continue;
-        };
-        let existing = tx
-            .query::<TaskName>(
-                &keys::trigger_pk(tenant_id, trigger.id),
-                &format!("TASK#{thread}/"),
-            )
-            .await?;
-        if !existing.is_empty() {
-            continue;
-        }
-        let recorded = db::record_trigger_event(
-            &mut tx,
-            &db::NewTriggerEvent {
-                trigger_id: trigger.id,
-                key: &inbound.key,
-                event: &inbound.event,
-            },
-        )
-        .await?;
-        db::set_trigger_event_outcome(&mut tx, recorded.id(), &db::TriggerEventOutcome::Started)
-            .await?;
-        let definition = chat_definition();
-        let member = detail["member_id"].as_str().map(|id| id.parse().unwrap());
-        db::create_task(
-            &mut tx,
-            &NewTask {
-                trigger_id: trigger.id,
-                trigger_event_id: Some(recorded.id()),
-                config_revision_id: trigger.config_revision_id,
-                name: &format!("{thread}/1"),
-                title: detail["text"].as_str().unwrap(),
-                definition: &definition,
-                parent_task_id: None,
-                channel: Some(&json!({ "source": "web", "thread": thread, "channel": null })),
-                requested_by_member_id: member,
-                requested_by_github_user_id: None,
-                requested_by_github_login: None,
-                blocked_by: &[],
-            },
-        )
-        .await?;
-    }
-    tx.commit().await
-}
-
 pub struct World {
     pub dynamo: TestDynamo,
     pub store: Store,
@@ -548,7 +443,8 @@ pub struct World {
     pub config_id: Uuid,
     pub revision_id: Uuid,
     pub labeled_trigger: Uuid,
-    pub chat_trigger: Uuid,
+    pub chat_conversation: Uuid,
+    pub globex_conversation: Uuid,
     pub nightly_trigger: Uuid,
     pub issue_task: Uuid,
     pub chat_task: Uuid,
@@ -728,7 +624,15 @@ fn config_item(
         status: CONFIG_ACTIVE.into(),
         active_revision_id: revision_id,
         revisions: 1,
-        repositories: BTreeMap::new(),
+        repositories: BTreeMap::from(["acme/idea", "acme/shop-web", "acme/shop-api"].map(|name| {
+            (
+                name.to_string(),
+                GitHubRepository {
+                    id: repository_id(name),
+                    full_name: name.to_string(),
+                },
+            )
+        })),
         synced_at,
         sync_error: None,
         created_at: now,
@@ -807,14 +711,12 @@ fn trigger_event(
 
 pub struct NewTaskItem<'a> {
     pub id: Uuid,
-    pub trigger_id: Uuid,
-    pub trigger_event_id: Option<Uuid>,
+    pub origin: TaskOrigin,
     pub revision_id: Uuid,
     pub name: &'a str,
     pub title: &'a str,
     pub status: TaskStatus,
     pub definition: Value,
-    pub channel: Option<Value>,
     pub requested_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -825,8 +727,7 @@ fn task_item(tx: &mut TenantTx, task: NewTaskItem<'_>) -> Task {
     let item = Task {
         id: task.id,
         tenant_id,
-        trigger_id: task.trigger_id,
-        trigger_event_id: task.trigger_event_id,
+        origin: task.origin,
         config_revision_id: task.revision_id,
         name: task.name.into(),
         title: task.title.into(),
@@ -837,7 +738,6 @@ fn task_item(tx: &mut TenantTx, task: NewTaskItem<'_>) -> Task {
         nudges: 0,
         definition: task.definition,
         parent_task_id: None,
-        channel: task.channel,
         start_payload: None,
         requested_by_member_id: task.requested_by,
         requested_by_github_user_id: None,
@@ -851,14 +751,29 @@ fn task_item(tx: &mut TenantTx, task: NewTaskItem<'_>) -> Task {
         finished_at: None,
         updated_at: task.updated_at,
     };
-    tx.insert(&TaskName {
-        tenant_id,
-        trigger_id: task.trigger_id,
-        name: task.name.into(),
-        task_id: task.id,
-        created_at: task.created_at,
-    })
-    .unwrap();
+    match task.origin {
+        TaskOrigin::Trigger { trigger_id, .. } => tx
+            .insert(&TaskName {
+                tenant_id,
+                trigger_id,
+                name: task.name.into(),
+                task_id: task.id,
+                created_at: task.created_at,
+            })
+            .unwrap(),
+        TaskOrigin::Conversation {
+            conversation_id,
+            sequence,
+        } => tx
+            .insert(&ConversationTask {
+                tenant_id,
+                conversation_id,
+                sequence,
+                task_id: task.id,
+                created_at: task.created_at,
+            })
+            .unwrap(),
+    }
     item
 }
 
@@ -1123,6 +1038,10 @@ impl World {
             })
             .unwrap();
         }
+        let repository = sanchoris_config::parse_repository(&sanchoris_config::ConfigFiles::from(
+            [("sanchoris.yaml".to_string(), CONFIG_YAML.to_string())],
+        ))
+        .unwrap();
         for (name, session) in &config.sessions {
             tx.insert(&SessionDef {
                 id: keys::config_entity_id(config_id, "session", name),
@@ -1131,25 +1050,29 @@ impl World {
                 config_revision_id: revision_id,
                 name: name.clone(),
                 definition: serde_json::to_value(session).unwrap(),
+                chat_skills: sanchoris_config::chat_skills(&repository, name),
             })
             .unwrap();
         }
-        tx.insert(&SkillDef {
-            id: keys::config_entity_id(config_id, "skill", &skill.name),
-            tenant_id: acme,
-            config_id,
-            config_revision_id: revision_id,
-            name: skill.name.clone(),
-            kind: "reliable".into(),
-            description: skill.description.clone(),
-            skill_md: skill.skill_md.clone(),
-            skill_yaml: skill.skill_yaml.clone(),
-            definition: Some(serde_json::to_value(skill.definition.as_ref().unwrap()).unwrap()),
-            layout: Some(
-                serde_json::to_value(skill.definition.as_ref().unwrap().layout.as_ref()).unwrap(),
-            ),
-        })
-        .unwrap();
+        for skill in sanchoris_config::builtin_skills() {
+            tx.insert(&SkillDef {
+                id: keys::config_entity_id(config_id, "skill", &skill.name),
+                tenant_id: acme,
+                config_id,
+                config_revision_id: revision_id,
+                name: skill.name.clone(),
+                kind: "reliable".into(),
+                description: skill.description.clone(),
+                skill_md: skill.skill_md.clone(),
+                skill_yaml: skill.skill_yaml.clone(),
+                definition: Some(serde_json::to_value(skill.definition.as_ref().unwrap()).unwrap()),
+                layout: Some(
+                    serde_json::to_value(skill.definition.as_ref().unwrap().layout.as_ref())
+                        .unwrap(),
+                ),
+            })
+            .unwrap();
+        }
         let mut trigger_ids = std::collections::BTreeMap::new();
         for (name, trigger) in &config.triggers {
             let (pattern, schedule) = match &trigger.source {
@@ -1179,7 +1102,6 @@ impl World {
         }
         tx.commit().await.unwrap();
         let labeled_trigger = trigger_ids["labeled-issue"];
-        let chat_trigger = trigger_ids["chat-all"];
         let nightly_trigger = trigger_ids["nightly"];
 
         let mut tx = store.tx(acme);
@@ -1296,8 +1218,10 @@ impl World {
             &mut tx,
             NewTaskItem {
                 id: issue_task,
-                trigger_id: labeled_trigger,
-                trigger_event_id: Some(issue_event_id),
+                origin: TaskOrigin::Trigger {
+                    trigger_id: labeled_trigger,
+                    trigger_event_id: Some(issue_event_id),
+                },
                 revision_id,
                 name: &sanchoris_core::items::github_task_name(
                     repository_id("acme/shop-web"),
@@ -1306,9 +1230,6 @@ impl World {
                 title: "Fix flaky checkout test (acme/shop-web#35)",
                 status: TaskStatus::NeedsYou,
                 definition: serde_json::to_value(issue_definition()).unwrap(),
-                channel: Some(
-                    json!({ "source": "github", "repository": "acme/shop-web", "repository_id": repository_id("acme/shop-web") }),
-                ),
                 requested_by: None,
                 created_at: now - Duration::hours(2),
                 updated_at: now - Duration::minutes(5),
@@ -1484,6 +1405,7 @@ impl World {
             repository_id: repository_id("acme/shop-web"),
             number: 52,
             url: "https://github.com/acme/shop-web/pull/52".into(),
+            title: None,
             state: Some("open".into()),
             created_at: now,
             updated_at: now,
@@ -1493,50 +1415,40 @@ impl World {
 
         let mut tx = store.tx(acme);
         let chat_task = Uuid::new_v4();
-        let chat_event = json!({
-            "source": "web",
-            "detail-type": "Message",
-            "detail": { "scope": "all", "thread": "thread-1", "user": "Mika", "member_id": mika_member, "text": "What is failing?" },
-        });
-        tx.insert(&InboundEvent {
-            id: Uuid::new_v4(),
+        let chat_conversation = Uuid::new_v4();
+        tx.insert(&Conversation {
+            id: chat_conversation,
             tenant_id: acme,
-            source: "web".into(),
-            key: "chat-1".into(),
-            event: chat_event.clone(),
-            received_at: now - Duration::minutes(20),
-            processed_at: Some(now - Duration::minutes(20)),
-            error: None,
+            kind: CONVERSATION_WEB.into(),
+            config_id,
+            session_name: "all".into(),
+            slack_thread_ts: None,
+            created_by_member_id: mika_member,
+            title: "What is failing?".into(),
+            tasks: 1,
+            created_at: now - Duration::minutes(20),
+            updated_at: now - Duration::minutes(15),
         })
         .unwrap();
-        let chat_event_id = trigger_event(
-            &mut tx,
-            chat_trigger,
-            "chat-1",
-            &chat_event,
-            now - Duration::minutes(20),
-            TriggerEventResult::Started,
-            None,
-            Some(chat_task),
-        );
         let mut task = task_item(
             &mut tx,
             NewTaskItem {
                 id: chat_task,
-                trigger_id: chat_trigger,
-                trigger_event_id: Some(chat_event_id),
+                origin: TaskOrigin::Conversation {
+                    conversation_id: chat_conversation,
+                    sequence: 1,
+                },
                 revision_id,
-                name: "thread-1/1",
+                name: "1",
                 title: "What is failing?",
                 status: TaskStatus::Waiting,
                 definition: serde_json::to_value(chat_definition()).unwrap(),
-                channel: Some(json!({ "source": "web", "thread": "thread-1", "channel": null })),
                 requested_by: Some(mika_member),
                 created_at: now - Duration::minutes(20),
-                updated_at: now - Duration::minutes(20),
+                updated_at: now - Duration::minutes(15),
             },
         );
-        task.wait_reason = Some(WaitReason::Chat);
+        task.wait_reason = Some(WaitReason::Message);
         task.runs = 1;
         tx.insert(&task).unwrap();
         let chat_run = run_item(
@@ -1546,26 +1458,33 @@ impl World {
             now - Duration::minutes(19),
             |_| {},
         );
-        outbox(
-            &mut tx,
-            chat_run,
-            1,
-            "chat_post",
-            json!({ "text": "The checkout spec is flaky.", "channel": { "source": "web", "thread": "thread-1" } }),
-            now - Duration::minutes(15),
-        );
-        tx.insert(&ChatMessage {
-            id: Uuid::new_v4(),
-            tenant_id: acme,
-            task_id: chat_task,
-            run_id: Some(chat_run),
-            outbox_id: None,
-            channel: Some(json!({ "source": "web", "thread": "thread-1" })),
-            author_kind: "agent".into(),
-            text: "The checkout spec is flaky.".into(),
-            created_at: now - Duration::minutes(15),
-        })
-        .unwrap();
+        for (author, member, text, at) in [
+            (
+                AUTHOR_MEMBER,
+                Some(mika_member),
+                "What is failing?",
+                now - Duration::minutes(20),
+            ),
+            (
+                AUTHOR_AGENT,
+                None,
+                "The checkout spec is flaky.",
+                now - Duration::minutes(15),
+            ),
+        ] {
+            tx.insert(&ChatMessage {
+                id: Uuid::new_v4(),
+                tenant_id: acme,
+                conversation_id: chat_conversation,
+                task_id: Some(chat_task),
+                run_id: member.is_none().then_some(chat_run),
+                author_kind: author.into(),
+                member_id: member,
+                text: text.into(),
+                created_at: at,
+            })
+            .unwrap();
+        }
         let change_request = Uuid::new_v4();
         tx.insert(&ChangeRequest {
             id: change_request,
@@ -1604,17 +1523,18 @@ impl World {
             config_revision_id: globex_revision,
             name: "all".into(),
             definition: serde_json::to_value(&config.sessions["all"]).unwrap(),
+            chat_skills: Vec::new(),
         })
         .unwrap();
         let globex_trigger = trigger_item(
             &mut tx,
             globex_config,
             globex_revision,
-            "chat-all",
-            "ENABLED",
-            Some(chat_definition().trigger.definition["EventPattern"].clone()),
+            "nightly",
+            "DISABLED",
             None,
-            chat_definition().trigger.definition["Start"].clone(),
+            Some("cron(0 3 * * ? *)".into()),
+            serde_json::to_value(&config.triggers["nightly"].start).unwrap(),
             None,
         );
         let globex_task = Uuid::new_v4();
@@ -1622,14 +1542,15 @@ impl World {
             &mut tx,
             NewTaskItem {
                 id: globex_task,
-                trigger_id: globex_trigger,
-                trigger_event_id: None,
+                origin: TaskOrigin::Trigger {
+                    trigger_id: globex_trigger,
+                    trigger_event_id: None,
+                },
                 revision_id: globex_revision,
                 name: "secret",
                 title: "Globex secret task",
                 status: TaskStatus::NeedsYou,
                 definition: serde_json::to_value(chat_definition()).unwrap(),
-                channel: Some(json!({ "source": "web", "thread": "secret", "channel": null })),
                 requested_by: Some(hana_member),
                 created_at: now,
                 updated_at: now,
@@ -1637,6 +1558,21 @@ impl World {
         );
         tx.insert(&task).unwrap();
         let globex_run = run_item(&mut tx, globex_task, "all", now, |_| {});
+        let globex_conversation = Uuid::new_v4();
+        tx.insert(&Conversation {
+            id: globex_conversation,
+            tenant_id: globex,
+            kind: CONVERSATION_WEB.into(),
+            config_id: globex_config,
+            session_name: "all".into(),
+            slack_thread_ts: None,
+            created_by_member_id: hana_member,
+            title: "Globex secret chat".into(),
+            tasks: 0,
+            created_at: now,
+            updated_at: now,
+        })
+        .unwrap();
         let globex_credential = credential(&mut tx, "globex-key", |_| {}, now);
         let globex_invitation = invitation(&mut tx, "zed@globex.dev", hana_member, now);
         tx.commit().await.unwrap();
@@ -1657,7 +1593,6 @@ impl World {
                 slack: fakes.clone(),
                 config_sync: fakes.clone(),
                 config_repository: fakes.clone(),
-                chat: fakes.clone(),
                 audit_export: fakes.clone(),
                 encryptor: encryptor.clone(),
                 clock: clock.clone(),
@@ -1692,7 +1627,8 @@ impl World {
             config_id,
             revision_id,
             labeled_trigger,
-            chat_trigger,
+            chat_conversation,
+            globex_conversation,
             nightly_trigger,
             issue_task,
             chat_task,

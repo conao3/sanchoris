@@ -341,6 +341,10 @@ impl World {
         task_view(&self.store, self.tenant(), name).await
     }
 
+    pub async fn task_of(&self, id: Uuid) -> TaskView {
+        task_view_of(&self.store, self.tenant(), id).await
+    }
+
     pub async fn outbox(&self, run_id: Uuid, kind: &str) -> Vec<Value> {
         self.store
             .query::<OutboxItem>(&keys::run_pk(self.tenant(), run_id), "OUT#")
@@ -502,6 +506,10 @@ pub async fn task_view(store: &Store, tenant_id: Uuid, name: &str) -> TaskView {
     let id = task_id_by_name(store, tenant_id, name)
         .await
         .unwrap_or_else(|| panic!("task {name} exists"));
+    task_view_of(store, tenant_id, id).await
+}
+
+pub async fn task_view_of(store: &Store, tenant_id: Uuid, id: Uuid) -> TaskView {
     let task = store
         .get::<Task>(&keys::task_key(tenant_id, id))
         .await

@@ -10,10 +10,9 @@ use sanchoris_core::channel::{
     OutboxRow, RunEventType, mark_outbox_delivered, record_run_event, undelivered_outbox,
 };
 use sanchoris_core::db::{DbError, Store, TenantTx, tenant_plan};
-use sanchoris_core::item::Entity;
 use sanchoris_core::items::{
-    BootstrapRedemption, ChannelInstance, ChatMessage, OutboxItem, RunChannel, RunEventItem,
-    RunLogEntry, Workspace,
+    BootstrapRedemption, ChannelInstance, OutboxItem, RunChannel, RunEventItem, RunLogEntry,
+    Workspace,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
@@ -885,46 +884,6 @@ impl Channel {
         })
     }
 
-    async fn relay_chat_posts(&self, tenant_id: Uuid, run_id: Uuid) -> Result<(), ChannelError> {
-        retrying(|| async {
-            let mut tx = self.store.tx(tenant_id);
-            let posts = undelivered_outbox(&mut tx, run_id)
-                .await?
-                .into_iter()
-                .filter(|row| row.kind == "chat_post")
-                .collect::<Vec<_>>();
-            if posts.is_empty() {
-                return Ok(());
-            }
-            let channel = channel_item(&mut tx, run_id).await?;
-            let now = Utc::now();
-            for post in &posts {
-                let message = ChatMessage {
-                    id: post.id,
-                    tenant_id,
-                    task_id: channel.task_id,
-                    run_id: Some(run_id),
-                    outbox_id: Some(post.id),
-                    channel: Some(post.payload["channel"].clone()),
-                    author_kind: "agent".into(),
-                    text: post.payload["text"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    created_at: post.created_at,
-                };
-                if tx.get::<ChatMessage>(&message.key()).await?.is_none() {
-                    tx.insert(&message)?;
-                }
-            }
-            let seqs = posts.iter().map(|post| post.seq).collect::<Vec<_>>();
-            mark_outbox_delivered(&mut tx, run_id, &seqs, now).await?;
-            tx.commit().await?;
-            Ok(())
-        })
-        .await
-    }
-
     async fn plan(
         &self,
         tx: &mut TenantTx,
@@ -932,11 +891,7 @@ impl Channel {
         started: bool,
         instance: &ChannelInstance,
     ) -> Result<Option<Plan>, ChannelError> {
-        let rows = undelivered_outbox(tx, run_id)
-            .await?
-            .into_iter()
-            .filter(|row| row.kind != "chat_post")
-            .collect::<Vec<_>>();
+        let rows = undelivered_outbox(tx, run_id).await?;
         let starts = rows
             .iter()
             .filter(|row| row.kind == "start")
@@ -990,7 +945,6 @@ impl Channel {
     }
 
     pub async fn deliver(&self, tenant_id: Uuid, run_id: Uuid) -> Result<(), ChannelError> {
-        self.relay_chat_posts(tenant_id, run_id).await?;
         let mut tx = self.store.tx(tenant_id);
         let Some(channel) = tx
             .get::<RunChannel>(&keys::run_channel_key(tenant_id, run_id))

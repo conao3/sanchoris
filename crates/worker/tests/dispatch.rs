@@ -2,12 +2,11 @@ use crate::common;
 
 use common::{REPO, World};
 use sanchoris_core::items::{
-    ConfigRevision, Credential, HeldMessage, InboundEvent, Pending, SessionDef, SkillDef, Task,
-    Tenant, Trigger, TriggerEvent, TriggerRate,
+    ConfigRevision, Credential, InboundEvent, Pending, SessionDef, SkillDef, Task, Trigger,
+    TriggerEvent, TriggerRate,
 };
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
-use sanchoris_core::model::TaskStatus;
 use sanchoris_core::store::retry;
 use sanchoris_worker::ports::GitHubError;
 use sanchoris_worker::usage::credential_of;
@@ -72,7 +71,31 @@ async fn config_sync_resolves_project_repository_keys() {
         .map(|s| (s.name, s.kind))
         .collect::<Vec<_>>();
     skills.sort();
-    assert_eq!(skills, vec![("open-pr-green-ci".into(), "reliable".into())]);
+    assert_eq!(
+        skills,
+        vec![
+            ("file-issue".into(), "reliable".into()),
+            ("open-pr-green-ci".into(), "reliable".into())
+        ]
+    );
+    let mut chat_skills = world
+        .dynamo
+        .all::<SessionDef>()
+        .await
+        .into_iter()
+        .map(|s| (s.name, s.chat_skills))
+        .collect::<Vec<_>>();
+    chat_skills.sort();
+    assert_eq!(
+        chat_skills,
+        vec![
+            ("all".into(), vec!["file-issue".to_string()]),
+            (
+                "shop".into(),
+                vec!["file-issue".to_string(), "open-pr-green-ci".to_string()]
+            ),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -278,102 +301,6 @@ async fn children_count_is_limited() {
 }
 
 #[tokio::test]
-async fn chat_messages_go_to_the_active_task_of_their_thread() {
-    let world = World::new("pro").await;
-    let message = |key: &str, text: &str| json!({ "source": "web", "detail-type": "Message", "detail": { "scope": "all", "thread": "thread-1", "user": "Mika", "text": text, "key": key } });
-    let send = |key: &'static str, text: &'static str| {
-        let store = world.store.clone();
-        let tenant = world.tenant();
-        let event = message(key, text);
-        async move {
-            retry(20, || async {
-                let mut tx = store.tx(tenant);
-                sanchoris_core::channel::record_inbound_event(&mut tx, "web", key, &event).await?;
-                tx.commit().await
-            })
-            .await
-            .unwrap();
-        }
-    };
-    send("m1", "Plan the next release").await;
-    world.worker.settle().await.unwrap();
-    let first = world.task("thread-1/1").await;
-    assert_eq!(first.status, "RUNNING");
-    assert_eq!(first.title, "Plan the next release");
-    send("m2", "Also check the changelog").await;
-    world.worker.settle().await.unwrap();
-    assert_eq!(
-        world.messages(first.run_id.unwrap()).await,
-        vec!["[sanchoris] Message from Mika:\nAlso check the changelog".to_string()]
-    );
-    assert_eq!(
-        world.trigger_event("m2").await,
-        (
-            Some("discarded".into()),
-            Some("delivered to the active task thread-1/1 as a message".into())
-        )
-    );
-    world
-        .dynamo
-        .modify::<Task>(&keys::task_key(world.tenant(), first.id), |task| {
-            task.status = TaskStatus::Succeeded;
-            task.finished_at = Some(chrono::Utc::now());
-        })
-        .await;
-    send("m3", "One more thing").await;
-    world.worker.settle().await.unwrap();
-    let second = world.task("thread-1/2").await;
-    assert_eq!(second.status, "RUNNING");
-}
-
-#[tokio::test]
-async fn a_chat_message_resumes_a_task_that_needs_you_with_its_held_messages() {
-    let world = World::new("pro").await;
-    record_message(
-        &world,
-        "web",
-        "h1",
-        web_message("thread-h", "Plan the next release"),
-    )
-    .await;
-    world.worker.settle().await.unwrap();
-    let task = world.task("thread-h/1").await;
-    world
-        .dynamo
-        .modify::<Task>(&keys::task_key(world.tenant(), task.id), |task| {
-            task.status = TaskStatus::NeedsYou;
-            task.error = Some("Task.NudgesExhausted".into());
-            task.cause = Some("stuck".into());
-            task.nudges = 2;
-        })
-        .await;
-    world
-        .dynamo
-        .put(&HeldMessage {
-            tenant_id: world.tenant(),
-            task_id: task.id,
-            created_at: world.clock_now(),
-            dedupe_key: "skill:1:2:succeeded".into(),
-            text: "[sanchoris] The skill succeeded.".into(),
-        })
-        .await;
-    record_message(&world, "web", "h2", web_message("thread-h", "Go on")).await;
-    world.worker.settle().await.unwrap();
-    let resumed = world.task("thread-h/1").await;
-    assert_eq!(resumed.status, "RUNNING");
-    assert_eq!(resumed.nudges, 0);
-    assert_eq!(resumed.error, None);
-    assert_eq!(
-        world.messages(task.run_id.unwrap()).await,
-        vec![
-            "[sanchoris] The skill succeeded.".to_string(),
-            "[sanchoris] Message from Mika:\nGo on".to_string(),
-        ]
-    );
-    assert!(world.dynamo.all::<HeldMessage>().await.is_empty());
-}
-
-#[tokio::test]
 async fn schedules_emit_events_at_due_times() {
     let world = World::new("pro").await;
     {
@@ -475,10 +402,6 @@ async fn record_message(world: &World, source: &str, key: &str, event: serde_jso
     })
     .await
     .unwrap();
-}
-
-fn web_message(thread: &str, text: &str) -> serde_json::Value {
-    json!({ "source": "web", "detail-type": "Message", "detail": { "scope": "all", "thread": thread, "user": "Mika", "text": text } })
 }
 
 #[tokio::test]
@@ -605,13 +528,9 @@ async fn a_failing_trigger_is_discarded_without_blocking_the_queue() {
     world
         .label_issue("delivery-60", 60, "Broken trigger", "mika-dev")
         .await;
-    record_message(
-        &world,
-        "web",
-        "after-poison",
-        web_message("thread-9", "Still there?"),
-    )
-    .await;
+    world
+        .label_issue("delivery-61", 61, "Another issue", "mika-dev")
+        .await;
     world.worker.settle().await.unwrap();
     let (result, reason) = world.trigger_event("delivery-60").await;
     assert_eq!(result.as_deref(), Some("discarded"));
@@ -622,7 +541,10 @@ async fn a_failing_trigger_is_discarded_without_blocking_the_queue() {
             .starts_with("the trigger failed on this event: "),
         "{reason:?}"
     );
-    assert_eq!(world.task("thread-9/1").await.status, "RUNNING");
+    assert_eq!(
+        world.trigger_event("delivery-61").await.0.as_deref(),
+        Some("discarded")
+    );
     assert_eq!(pending_markers(&world).await, 0);
     assert!(
         world
@@ -644,7 +566,9 @@ async fn an_unreadable_inbound_event_is_recorded_with_its_error() {
         json!({ "source": "schedule", "detail-type": "Scheduled Event", "detail": {} }),
     )
     .await;
-    record_message(&world, "web", "after", web_message("thread-8", "Hello")).await;
+    world
+        .label_issue("delivery-after", 62, "After the broken event", "mika-dev")
+        .await;
     world.worker.settle().await.unwrap();
     let inbound = world
         .dynamo
@@ -658,7 +582,7 @@ async fn an_unreadable_inbound_event_is_recorded_with_its_error() {
         inbound.error.as_deref(),
         Some("a schedule event needs detail.trigger_id")
     );
-    assert_eq!(world.task("thread-8/1").await.status, "RUNNING");
+    assert_eq!(world.task(&format!("{REPO}#62")).await.status, "RUNNING");
     assert_eq!(pending_markers(&world).await, 0);
 }
 
@@ -749,53 +673,6 @@ async fn starts_beyond_the_hourly_limit_are_discarded() {
     assert_eq!(
         world.trigger_event("delivery-73").await,
         (Some("started".into()), None)
-    );
-}
-
-#[tokio::test]
-async fn chat_messages_to_a_pending_task_join_its_start_instruction() {
-    let world = World::new("pro").await;
-    let tenant_key = keys::tenant_key(world.tenant());
-    world
-        .dynamo
-        .modify::<Tenant>(&tenant_key, |tenant| tenant.live_workspaces = 1000)
-        .await;
-    for (key, text) in [
-        ("p1", "Plan the next release"),
-        ("p2", "Also check the changelog"),
-    ] {
-        record_message(&world, "web", key, web_message("thread-p", text)).await;
-        world.worker.settle().await.unwrap();
-    }
-    assert_eq!(world.task("thread-p/1").await.status, "PENDING");
-    assert_eq!(
-        world.trigger_event("p2").await,
-        (
-            Some("discarded".into()),
-            Some("added to the start instruction of the pending task thread-p/1".into())
-        )
-    );
-    world
-        .dynamo
-        .modify::<Tenant>(&tenant_key, |tenant| tenant.live_workspaces = 0)
-        .await;
-    retry(20, || async {
-        let mut tx = world.store.tx(world.tenant());
-        tx.emit(Job::Dispatch {
-            tenant_id: world.tenant(),
-        });
-        tx.commit().await
-    })
-    .await
-    .unwrap();
-    world.worker.settle().await.unwrap();
-    let task = world.task("thread-p/1").await;
-    assert_eq!(task.status, "RUNNING");
-    let starts = world.outbox(task.run_id.unwrap(), "start").await;
-    let instruction = starts[0]["instruction"].as_str().unwrap();
-    assert!(
-        instruction.ends_with("\n\n[sanchoris] Message from Mika:\nAlso check the changelog"),
-        "{instruction}"
     );
 }
 

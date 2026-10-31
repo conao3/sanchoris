@@ -1,6 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use sanchoris_config::{Session, Start};
 use sanchoris_core::channel::{OutboxType, RunEventType, SEQ_STRIDE, enqueue_outbox, outbox};
+use sanchoris_core::conversations::post_agent_message;
 use sanchoris_core::db::{self, TenantTx};
 use sanchoris_core::items::{
     OutboxItem, Pending, Run, RunEventItem, SkillRunItem, Task, UsageRecord, Workspace,
@@ -44,9 +45,7 @@ fn definition_of(task: &Task) -> Result<TaskDefinition> {
 }
 
 fn start_of(task: &Task) -> Result<Start> {
-    Ok(serde_json::from_value(
-        task.definition["Trigger"]["Definition"]["Start"].clone(),
-    )?)
+    Ok(definition_of(task)?.start)
 }
 
 fn session_of(task: &Task) -> Result<Session> {
@@ -278,6 +277,21 @@ async fn turn_end(
         recorded_at: now,
     })?;
     let task = load_task(tx, task_id).await?;
+    if let Some(summary) = payload["summary"]
+        .as_str()
+        .filter(|text| !text.trim().is_empty())
+    {
+        let id = Uuid::new_v5(&event.run_id, format!("turn:{turn}").as_bytes());
+        post_agent_message(
+            tx,
+            &task,
+            Some(event.run_id),
+            id,
+            summary,
+            event.received_at,
+        )
+        .await?;
+    }
     if task.status != TaskStatus::Running || payload["result"] == "interrupted" {
         return Ok(());
     }
@@ -305,6 +319,7 @@ async fn turn_end(
         });
     }
     let mut decision = decide_turn_end(&TurnEnd {
+        conversation: task.origin.conversation_id().is_some(),
         required: &required,
         nudges: u32::try_from(task.nudges).expect("nudges are non-negative"),
         max_nudges: u32::try_from(start.max_nudges).expect("MaxNudges fits in u32"),
@@ -733,7 +748,10 @@ fn skills_payload(definition: &TaskDefinition, required: &[String]) -> Result<Ve
 fn wants_workspace(task: &Task) -> bool {
     task.status == TaskStatus::Running
         || (task.status == TaskStatus::Waiting
-            && matches!(task.wait_reason, Some(WaitReason::Skill | WaitReason::Chat)))
+            && matches!(
+                task.wait_reason,
+                Some(WaitReason::Skill | WaitReason::Message)
+            ))
 }
 
 fn wakes_the_session(item: &OutboxItem) -> bool {

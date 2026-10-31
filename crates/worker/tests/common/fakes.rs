@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use sanchoris_config::ConfigFiles;
 use sanchoris_worker::ports::{
-    CheckRun, ConfigSource, GitHubClient, GitHubError, GitHubReader, GitHubRepository,
-    IssueComment, IssueRelations, MergeResult, NewPullRequest, PullRequest, RunnerError,
+    CheckRun, ConfigSource, GitHubClient, GitHubError, GitHubReader, GitHubRepository, Issue,
+    IssueComment, IssueRelations, MergeResult, NewIssue, NewPullRequest, PullRequest, RunnerError,
     RunnerPort, RunningWorkspace, WorkspaceExit, WorkspaceHandle, WorkspaceSpec,
 };
 use uuid::Uuid;
@@ -57,6 +57,7 @@ pub struct GitHubState {
     pub relation_errors: HashMap<(String, i64), GitHubError>,
     pub created_pulls: Vec<(String, String)>,
     pub created_comments: Vec<(String, i64)>,
+    pub issues: BTreeMap<String, Vec<(Issue, Vec<String>)>>,
     pub updated_comments: Vec<i64>,
     pub merges: Vec<(String, i64)>,
     pub repositories: Vec<GitHubRepository>,
@@ -247,6 +248,46 @@ impl GitHubClient for FakeGitHub {
             .comments
             .get(&(repo.to_string(), number))
             .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn create_issue(
+        &self,
+        _: i64,
+        repo: &str,
+        new_issue: &NewIssue<'_>,
+    ) -> Result<Issue, GitHubError> {
+        let mut state = self.state.lock().unwrap();
+        let number = state.next_number;
+        state.next_number += 1;
+        let issue = Issue {
+            number,
+            url: format!("https://github.com/{repo}/issues/{number}"),
+            title: new_issue.title.into(),
+            body: new_issue.body.into(),
+        };
+        state
+            .issues
+            .entry(repo.to_string())
+            .or_default()
+            .push((issue.clone(), new_issue.labels.to_vec()));
+        Ok(issue)
+    }
+
+    async fn recent_issues(&self, _: i64, repo: &str) -> Result<Vec<Issue>, GitHubError> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .issues
+            .get(repo)
+            .map(|issues| {
+                issues
+                    .iter()
+                    .rev()
+                    .map(|(issue, _)| issue.clone())
+                    .collect()
+            })
             .unwrap_or_default())
     }
 

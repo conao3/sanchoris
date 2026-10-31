@@ -1,5 +1,6 @@
 pub mod backfill;
 pub mod config_sync;
+pub mod conversation;
 pub mod deadline;
 pub mod dispatcher;
 pub mod driver;

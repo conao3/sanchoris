@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use sanchoris_config::{CONFIG_FILE, ConfigFiles, parse_repository, validate};
 use sanchoris_graphql::{
-    AuditExportPort, ChatDispatcher, ConfigCheck, ConfigLocation, ConfigProblem,
-    ConfigRepositoryPort, ConfigSyncTrigger, PortError, SlackConnectUrl, TriggerProposal,
+    AuditExportPort, ConfigCheck, ConfigLocation, ConfigProblem, ConfigRepositoryPort,
+    ConfigSyncTrigger, PortError, SlackConnectUrl, TriggerProposal,
 };
 use sanchoris_worker::config_sync::resolve_repository;
 use sanchoris_worker::error::WorkerError;
@@ -13,7 +13,7 @@ use sanchoris_worker::ports::{
     ConfigSource, GitHubClient, GitHubRepository, NewPullRequest, OutboxPusher, RunnerError,
     RunnerPort, RunningWorkspace, WorkspaceExit, WorkspaceHandle, WorkspaceSpec, installation_with,
 };
-use sanchoris_worker::{Worker, config_sync, dispatcher, installation_for_repo, installations};
+use sanchoris_worker::{Worker, config_sync, installation_for_repo, installations};
 use serde_yaml_ng::{Mapping, Value as Yaml};
 use uuid::Uuid;
 
@@ -50,29 +50,9 @@ impl ConfigSyncTrigger for InlineConfigSync {
     }
 }
 
-pub struct InlineChatDispatcher {
-    worker: Arc<Worker>,
-}
-
-impl InlineChatDispatcher {
-    pub fn new(worker: Arc<Worker>) -> Self {
-        Self { worker }
-    }
-}
-
-#[async_trait]
-impl ChatDispatcher for InlineChatDispatcher {
-    async fn dispatch(&self, tenant_id: Uuid, source: &str, key: &str) -> Result<(), PortError> {
-        dispatcher::dispatch_inbound(&self.worker, tenant_id, source, key)
-            .await
-            .map(|_| ())
-            .map_err(port_error)
-    }
-}
-
 pub struct ApiWorkspaces;
 
-const API_RUNS_NO_WORKSPACES: &str = "the api function runs config sync and chat dispatch inline; workspaces, the outbox and tenant deletion belong to the worker function";
+const API_RUNS_NO_WORKSPACES: &str = "the api function runs config sync inline; workspaces, the outbox and tenant deletion belong to the worker function";
 
 #[async_trait]
 impl RunnerPort for ApiWorkspaces {

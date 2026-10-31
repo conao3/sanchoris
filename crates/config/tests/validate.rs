@@ -1,7 +1,7 @@
 use sanchoris_config::{
     Architecture, Compute, ConfigFiles, PlanLimits, SkillOrigin, TriggerSource, ValidationContext,
-    ValidationErrors, builtin_skill, builtin_skills, load_repository, parse_repository,
-    read_config_dir,
+    ValidationErrors, builtin_skill, builtin_skills, chat_skills, load_repository,
+    parse_repository, read_config_dir,
 };
 use std::collections::BTreeSet;
 
@@ -88,7 +88,7 @@ const MINIMAL_SKILL: &str = "Inputs: {}\nStartAt: A\nTimeoutSeconds: 60\nStates:
 #[test]
 fn example_config_with_local_skill_is_valid() {
     let repo = load_repository(&example_files(EXAMPLE), &context()).unwrap();
-    assert_eq!(repo.config.triggers.len(), 3);
+    assert_eq!(repo.config.triggers.len(), 1);
     assert_eq!(repo.config.sessions.len(), 2);
     let skill = repo.skill("open-pr-green-ci").unwrap();
     assert_eq!(skill.origin, SkillOrigin::Repository);
@@ -126,7 +126,7 @@ fn config_round_trips_through_json() {
 #[test]
 fn builtin_skill_is_reliable_and_valid() {
     let skills = builtin_skills();
-    assert_eq!(skills.len(), 1);
+    assert_eq!(skills.len(), 2);
     let skill = builtin_skill("open-pr-green-ci").unwrap();
     assert!(skill.is_reliable());
     assert!(skill.body.contains("sanchoris skill run open-pr-green-ci"));
@@ -136,6 +136,28 @@ fn builtin_skill_is_reliable_and_valid() {
         sanchoris_config::validate_skill_definition(&definition, "Skills.open-pr-green-ci", 14_400);
     assert!(errors.is_empty(), "{errors:?}");
     assert!(!skill.skill_yaml.unwrap().contains("acme/shop-web"));
+    let file_issue = builtin_skill("file-issue").unwrap();
+    assert!(file_issue.is_reliable());
+    assert!(file_issue.body.contains("sanchoris skill run file-issue"));
+    let definition = file_issue.definition.unwrap();
+    assert_eq!(
+        definition.inputs.keys().collect::<Vec<_>>(),
+        ["Body", "Labels", "Repo", "Title"]
+    );
+    let errors =
+        sanchoris_config::validate_skill_definition(&definition, "Skills.file-issue", 14_400);
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn chat_skills_fit_the_session_and_always_include_file_issue() {
+    let repo = load_repository(&example_files(EXAMPLE), &context()).unwrap();
+    assert_eq!(
+        chat_skills(&repo, "shop"),
+        ["file-issue", "open-pr-green-ci"]
+    );
+    assert_eq!(chat_skills(&repo, "all"), ["file-issue"]);
+    assert!(chat_skills(&repo, "missing").is_empty());
 }
 
 #[test]
@@ -175,8 +197,8 @@ fn missing_trigger_field_fails() {
 fn missing_children_limit_fails() {
     config_error(
         &replaced(
-            "HeartbeatSeconds: 900, Children: { MaxDepth: 1, MaxCount: 5 } }\n  chat-all",
-            "HeartbeatSeconds: 900 }\n  chat-all",
+            "HeartbeatSeconds: 900, Children: { MaxDepth: 1, MaxCount: 5 } }",
+            "HeartbeatSeconds: 900 }",
         ),
         "Triggers.labeled-issue.Start.Limits.Children",
     );
@@ -260,10 +282,10 @@ fn unknown_session_fails() {
 fn unknown_skill_fails() {
     config_error(
         &replaced(
-            "      Skills: [open-pr-green-ci]\n      RequiredSkills: []",
+            "      Skills: [open-pr-green-ci]\n      RequiredSkills: [open-pr-green-ci]",
             "      Skills: [no-such-skill]\n      RequiredSkills: []",
         ),
-        "Triggers.chat-shop.Start.Skills[0]",
+        "Triggers.labeled-issue.Start.Skills[0]",
     );
 }
 
@@ -409,14 +431,24 @@ fn missing_github_repository_fails() {
 }
 
 #[test]
-fn web_trigger_needs_scope() {
-    config_error(
-        &replaced(
-            "      detail:\n        scope: [all]\n",
-            "      detail: {}\n",
-        ),
-        "Triggers.chat-all.EventPattern.detail.scope",
-    );
+fn chat_sources_are_not_trigger_sources() {
+    for source in ["web", "slack"] {
+        let errors = config_error(
+            &replaced(
+                "      source: [github]\n",
+                &format!("      source: [{source}]\n"),
+            ),
+            "Triggers.labeled-issue.EventPattern.source[0]",
+        );
+        assert!(
+            errors.to_string().contains("source must be github"),
+            "{errors}"
+        );
+        assert_error(
+            &errors,
+            "Triggers.labeled-issue.EventPattern.detail-type[0]",
+        );
+    }
 }
 
 #[test]
@@ -441,7 +473,6 @@ fn insufficient_permissions_fail() {
         messages.iter().any(|m| m.contains("checks: read")),
         "{messages:?}"
     );
-    assert_error(&errors, "Triggers.chat-shop.Start.Skills[0]");
 }
 
 #[test]
@@ -515,7 +546,6 @@ fn plan_limits_are_enforced() {
         "Triggers.labeled-issue.Start.Limits.TimeoutSeconds",
         "Triggers.labeled-issue.Start.Limits.Children.MaxDepth",
         "Triggers.labeled-issue.Start.Limits.Children.MaxCount",
-        "Triggers.chat-all.Start.Limits.TimeoutSeconds",
         "Sessions.shop.Workspace.Compute",
         "Sessions.all.Workspace.Compute",
         "Sessions.shop.Workspace.IdleSeconds",
@@ -523,7 +553,6 @@ fn plan_limits_are_enforced() {
     ] {
         assert_error(&errors, location);
     }
-    assert!(!errors.has("Triggers.chat-all.Start.Limits.CostUsd"));
 }
 
 #[test]

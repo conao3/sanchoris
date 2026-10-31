@@ -6,12 +6,12 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Duration;
 use sanchoris_core::billing::{ADMIN_PLAN, FREE_PLAN, PRIVILEGED_EMAIL_DOMAIN, stage_plan_change};
-use sanchoris_core::channel::{RunEventType, record_inbound_event, record_run_event};
+use sanchoris_core::channel::{RunEventType, record_run_event};
 use sanchoris_core::db::{self, REF_RUN, REF_TRIGGER, TenantTx};
 use sanchoris_core::item::format_time;
 use sanchoris_core::items::{
-    self, CONFIG_ACTIVE, Guard, InboundEvent, InvitationEmail, Membership as MembershipItem,
-    Task as TaskItem, Trigger as TriggerItem, TriggerEvent as EventItem, User, uniq,
+    self, CONFIG_ACTIVE, CONVERSATION_WEB, Guard, InvitationEmail, Membership as MembershipItem,
+    Task as TaskItem, Trigger as TriggerItem, User, uniq,
 };
 use sanchoris_core::jobs::{Deletion, Job};
 use sanchoris_core::keys;
@@ -26,7 +26,11 @@ use sanchoris_core::tenants::{
     NewTenant, TENANT_DELETING, TenantError, create_tenant, hold_free_tenant, is_deleting,
     pending_checkout, release_free_tenant,
 };
+use sanchoris_worker::conversation::{
+    ChatError, MemberMessage, NewConversation, post_member_message, start_conversation,
+};
 use sanchoris_worker::dispatcher::schedule_trigger;
+use sanchoris_worker::error::WorkerError;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
@@ -40,11 +44,12 @@ use crate::context::{
     being_deleted, is_operator, locate_item, locate_ref, member_scope, membership_in, memberships,
     now, scope_for_tenant, serialize_tenant, state, store, tx, user_tx, viewer_user, write,
 };
-use crate::enums::{ApiKeyProvider, CredentialScope, EventSource, InvitationState, TriggerState};
+use crate::conversation::{ChatMessage, Conversation};
+use crate::enums::{ApiKeyProvider, CredentialScope, InvitationState, TriggerState};
 use crate::error::{bad_input, conflict, forbidden, not_found, parse_id, port, rate_limited};
 use crate::ports::{ConfigCheck, ConfigLocation, PlanChange, TenantCheckout, TriggerProposal};
 use crate::scalars::Timestamp;
-use crate::task::{ChatMessage, Run, Task, waiting_approval};
+use crate::task::{Run, Task, waiting_approval};
 use crate::tenant::Tenant;
 use crate::trigger::{TRIGGER_TEMPLATES, Trigger};
 
@@ -90,15 +95,21 @@ pub(crate) struct ResumeTaskInput {
 pub(crate) struct SendChatMessageInput {
     #[graphql(name = "tenantId")]
     tenant_id: ID,
-    #[graphql(name = "taskId")]
-    task_id: Option<ID>,
-    /// all or a project name. Required when taskId is not given.
-    scope: Option<String>,
+    /// The conversation to continue. Without it, a new conversation starts in sessionName.
+    #[graphql(name = "conversationId")]
+    conversation_id: Option<ID>,
+    /// The session of a new conversation. Required when conversationId is not given.
+    session_name: Option<String>,
+    /// The config of sessionName. Required only when several active configs have a session of that name.
+    #[graphql(name = "configId")]
+    config_id: Option<ID>,
     text: String,
 }
 
 #[derive(SimpleObject)]
 pub(crate) struct SendChatMessagePayload {
+    conversation: Conversation,
+    /// The task the message started or went to.
     task: Task,
     message: ChatMessage,
 }
@@ -187,6 +198,43 @@ async fn admit(ctx: &Context<'_>, tenant_id: Uuid, source: &str, key: &str) -> R
     match admit_inbound(store(ctx), tenant_id, source, key, now(ctx)).await? {
         Admission::Admitted => Ok(()),
         Admission::Dropped(limited) => Err(rate_limited(&limited)),
+    }
+}
+
+fn chat_failure(error: ChatError) -> Failure {
+    match error {
+        ChatError::Rejected(message) => Failure::Api(bad_input(message)),
+        ChatError::Failed(WorkerError::Db(error)) => Failure::Db(error),
+        ChatError::Failed(error) => Failure::Api(Error::new(error.to_string())),
+    }
+}
+
+async fn chat_session(
+    ctx: &Context<'_>,
+    scope: Scope,
+    input: &SendChatMessageInput,
+) -> Result<(Uuid, String)> {
+    let name = input
+        .session_name
+        .clone()
+        .ok_or_else(|| bad_input("a new chat needs a sessionName"))?;
+    let config_id = input.config_id.as_ref().map(parse_id).transpose()?;
+    let matching = Session::all(ctx, scope)
+        .await?
+        .into_iter()
+        .filter(|session| {
+            session.name == name && config_id.is_none_or(|id| id == session.config_id)
+        })
+        .map(|session| session.config_id)
+        .collect::<Vec<_>>();
+    match matching.as_slice() {
+        [config_id] => Ok((*config_id, name)),
+        [] => Err(bad_input(format!(
+            "no active config of the tenant has the session {name}"
+        ))),
+        _ => Err(bad_input(format!(
+            "several configs have the session {name}; give configId"
+        ))),
     }
 }
 
@@ -977,8 +1025,8 @@ impl MutationRoot {
         Run::load(ctx, scope, run_id).await
     }
 
-    /// Sends a chat message. With taskId, the message goes to that task's agent session.
-    /// Without taskId, a new chat starts in the given scope ("all" or a project name).
+    /// Sends a chat message. With conversationId, the message goes to that conversation: to its running session, to the start of its pending task, as the reply of a task that needs you, or into a new task when the last one finished.
+    /// Without conversationId, a new conversation starts in the session sessionName.
     async fn send_chat_message(
         &self,
         ctx: &Context<'_>,
@@ -990,122 +1038,81 @@ impl MutationRoot {
         if text.is_empty() {
             return Err(bad_input("the message is empty"));
         }
-        let triggers = Trigger::all(ctx, scope).await?;
-        let (existing, thread, chat_scope) = match &input.task_id {
-            Some(task_id) => {
-                let task = Task::load(ctx, scope, parse_id(task_id)?).await?;
-                let Some((crate::enums::ChannelKind::Web, thread)) = task.chat_thread() else {
-                    return Err(bad_input("the task is not a web chat"));
-                };
-                let chat_scope = task.chat_scope(ctx).await?;
-                (Some(task.row.id), thread, chat_scope)
+        let existing = input.conversation_id.as_ref().map(parse_id).transpose()?;
+        let new_in = match existing {
+            Some(conversation_id) => {
+                Conversation::load(ctx, scope, conversation_id).await?;
+                None
             }
-            None => {
-                let chat_scope = input
-                    .scope
-                    .clone()
-                    .ok_or_else(|| bad_input("a new chat needs a scope"))?;
-                let accepts = triggers
-                    .iter()
-                    .filter(|trigger| trigger.row.state == "ENABLED")
-                    .map(Trigger::trigger_match)
-                    .collect::<Result<Vec<_>>>()?
-                    .iter()
-                    .any(|m| {
-                        m.event_source() == EventSource::Web
-                            && m.scope_name() == Some(chat_scope.as_str())
-                    });
-                if !accepts {
-                    return Err(bad_input(format!(
-                        "no enabled web chat trigger accepts the scope {chat_scope}"
-                    )));
-                }
-                (None, Uuid::new_v4().to_string(), chat_scope)
-            }
+            None => Some(chat_session(ctx, scope, &input).await?),
         };
-        let key = Uuid::new_v4().to_string();
-        admit(ctx, scope.tenant_id, SOURCE_CHAT, &key).await?;
-        let (inbound_id, received_at) = write(|| async {
+        let message_id = Uuid::new_v4();
+        admit(ctx, scope.tenant_id, SOURCE_CHAT, &message_id.to_string()).await?;
+        let delivered = write(|| async {
             let mut tx = tx(ctx, scope.tenant_id);
-            let user = member_name(ctx, &mut tx, member_id).await?;
-            let event = json!({
-                "source": "web",
-                "detail-type": "Message",
-                "detail": {
-                    "scope": chat_scope,
-                    "thread": thread,
-                    "user": user,
-                    "member_id": member_id,
-                    "text": text,
-                },
-            });
-            record_inbound_event(&mut tx, "web", &key, &event).await?;
-            let inbound = tx
-                .require::<InboundEvent>(&keys::inbound_event_key(scope.tenant_id, "web", &key))
-                .await?;
-            let audit_target = match existing {
-                Some(task_id) => target("task", task_id, thread.clone()),
-                None => AuditTarget {
-                    kind: "chat",
-                    id: thread.clone(),
-                    name: chat_scope.clone(),
-                },
+            let member_name = member_name(ctx, &mut tx, member_id).await?;
+            let message = MemberMessage {
+                id: message_id,
+                member_id,
+                member_name: &member_name,
+                text: &text,
+                at: now(ctx),
             };
+            let (delivered, action, summary) = match (existing, &new_in) {
+                (Some(conversation_id), _) => (
+                    post_member_message(&mut tx, conversation_id, &message)
+                        .await
+                        .map_err(chat_failure)?,
+                    "chat.message_send",
+                    "Sent a chat message".to_string(),
+                ),
+                (None, Some((config_id, session_name))) => (
+                    start_conversation(
+                        &mut tx,
+                        &NewConversation {
+                            kind: CONVERSATION_WEB,
+                            config_id: *config_id,
+                            session_name,
+                            slack_thread_ts: None,
+                        },
+                        &message,
+                    )
+                    .await
+                    .map_err(chat_failure)?,
+                    "chat.start",
+                    format!("Started a chat in session {session_name}"),
+                ),
+                (None, None) => unreachable!("a new conversation has a session"),
+            };
+            let conversation_id = delivered.message.conversation_id;
+            let title = tx
+                .require::<items::Conversation>(&keys::conversation_key(
+                    scope.tenant_id,
+                    conversation_id,
+                ))
+                .await?
+                .title;
             audit_member(
                 ctx,
                 &mut tx,
                 member_id,
-                "chat.message_send",
-                audit_target,
-                &format!("Sent a chat message in {chat_scope}"),
+                action,
+                target("conversation", conversation_id, title),
+                &summary,
             )
             .await?;
             tx.commit().await?;
-            Ok((inbound.id, inbound.received_at))
+            Ok(delivered)
         })
         .await?;
-        state(ctx)
-            .deps
-            .chat
-            .dispatch(scope.tenant_id, "web", &key)
-            .await
-            .map_err(port)?;
-        let task = match existing {
-            Some(task_id) => Task::load(ctx, scope, task_id).await?,
-            None => {
-                let mut tx = tx(ctx, scope.tenant_id);
-                let mut events = Vec::new();
-                for trigger in &triggers {
-                    if let Some(event) = tx
-                        .get::<EventItem>(&keys::trigger_event_key(
-                            scope.tenant_id,
-                            trigger.row.id,
-                            &key,
-                        ))
-                        .await?
-                    {
-                        events.push(event);
-                    }
-                }
-                match events.iter().find_map(|event| event.task_id) {
-                    Some(task_id) => Task::load(ctx, scope, task_id).await?,
-                    None => match events.into_iter().next() {
-                        Some(event) => {
-                            return Err(conflict(format!(
-                                "the chat trigger did not start a task: {}",
-                                event
-                                    .reason
-                                    .unwrap_or_else(|| "the event is not evaluated yet".into())
-                            )));
-                        }
-                        None => return Err(conflict("no chat trigger received the message")),
-                    },
-                }
-            }
-        };
         Ok(SendChatMessagePayload {
-            task,
-            message: ChatMessage::inbound(scope, inbound_id, member_id, text, received_at),
+            conversation: Conversation::load(ctx, scope, delivered.message.conversation_id).await?,
+            task: Task::load(ctx, scope, delivered.task_id).await?,
+            message: ChatMessage {
+                scope,
+                row: delivered.message,
+                issues: Vec::new(),
+            },
         })
     }
 

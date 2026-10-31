@@ -1,0 +1,18 @@
+Comment: Open a GitHub issue that another task works on, and record it as an output
+Inputs: { Repo: string, Title: string, Body: string, Labels: array }
+StartAt: CreateIssue
+TimeoutSeconds: 300
+States:
+  CreateIssue:
+    Type: Task
+    Resource: sanchoris:::github:createIssue
+    Parameters: { Repo.$: $.Repo, Title.$: $.Title, Body.$: $.Body, Labels.$: $.Labels }
+    TimeoutSeconds: 120
+    Retry:
+      - ErrorEquals: [GitHub.RequestFailed]
+        IntervalSeconds: 10
+        MaxAttempts: 3
+        BackoffRate: 2
+    End: true
+Layout:
+  CreateIssue: { x: 40, y: 120 }

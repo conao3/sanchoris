@@ -3,6 +3,7 @@ pub mod aws;
 pub mod billing;
 pub mod channel;
 pub mod clock;
+pub mod conversations;
 pub mod db;
 pub mod github;
 pub mod item;

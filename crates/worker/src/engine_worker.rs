@@ -1,11 +1,15 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
+use sanchoris_config::validate::covers;
+use sanchoris_config::{PermissionLevel, Session};
 use sanchoris_core::channel::{OutboxType, enqueue_outbox};
+use sanchoris_core::conversations::post_agent_message;
 use sanchoris_core::db::{REF_CHECK_WAIT, REF_INVOCATION, TenantTx, insert_ref, locate};
 use sanchoris_core::item::{Entity, Key, format_time};
 use sanchoris_core::items::{
-    ApprovalWait, CheckWait, CheckWaitMarker, Invocation as InvocationItem, Output, TimerItem,
+    ApprovalWait, CheckWait, CheckWaitMarker, FiledIssue, Invocation as InvocationItem,
+    OUTPUT_COMMENT, OUTPUT_ISSUE, OUTPUT_PULL_REQUEST, Output, TimerItem,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
@@ -23,6 +27,8 @@ use crate::resources::param_repos;
 use crate::{Worker, installation_for, installations};
 
 const LOG_LIMIT: usize = 4000;
+pub const ERROR_CHAT_UNAVAILABLE: &str = "Chat.Unavailable";
+pub const ERROR_FORBIDDEN: &str = "Resource.Forbidden";
 const PASSING: [&str; 3] = ["success", "neutral", "skipped"];
 
 pub async fn fire_timer(
@@ -174,20 +180,29 @@ async fn record_outputs(
                 prs.iter()
                     .map(|pr| {
                         (
-                            "pull_request",
+                            OUTPUT_PULL_REQUEST,
                             pr["Repo"].clone(),
                             pr["Number"].clone(),
                             pr["Url"].clone(),
+                            None,
                         )
                     })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default(),
         "github:commentOnIssue" => vec![(
-            "comment",
+            OUTPUT_COMMENT,
             output["Repo"].clone(),
             output["Number"].clone(),
             output["Url"].clone(),
+            None,
+        )],
+        "github:createIssue" => vec![(
+            OUTPUT_ISSUE,
+            output["Repo"].clone(),
+            output["Number"].clone(),
+            output["Url"].clone(),
+            output["Title"].as_str().map(str::to_string),
         )],
         _ => return Ok(()),
     };
@@ -195,7 +210,7 @@ async fn record_outputs(
         return Ok(());
     }
     let installations = installations(tx).await?;
-    for (kind, repo, number, url) in items {
+    for (kind, repo, number, url, title) in items {
         let (Some(repo), Some(number), Some(url)) = (repo.as_str(), number.as_i64(), url.as_str())
         else {
             continue;
@@ -219,12 +234,25 @@ async fn record_outputs(
             repository_id,
             number,
             url: url.to_string(),
-            state: (kind == "pull_request").then(|| "open".to_string()),
+            title,
+            state: (kind == OUTPUT_PULL_REQUEST).then(|| "open".to_string()),
             created_at: now,
             updated_at: now,
         };
         if tx.get::<Output>(&output.key()).await?.is_none() {
             tx.insert(&output)?;
+        }
+        if kind == OUTPUT_ISSUE {
+            let filed = FiledIssue {
+                tenant_id: tx.tenant_id(),
+                repository_id,
+                number,
+                task_id: item.task_id,
+                created_at: now,
+            };
+            if tx.get::<FiledIssue>(&filed.key()).await?.is_none() {
+                tx.insert(&filed)?;
+            }
         }
     }
     Ok(())
@@ -421,24 +449,49 @@ async fn invoke_resource(
                     "Text must be a string",
                 )));
             };
-            let Some(run_id) = run_of_skill(tx, item.skill_run_id).await? else {
+            let task = load_task(tx, context.task_id).await?;
+            if task.origin.conversation_id().is_none() {
                 return Ok(Some(failed(
-                    "Chat.Unavailable",
-                    "the skill run has no session",
+                    ERROR_CHAT_UNAVAILABLE,
+                    "the task has no conversation to post to",
                 )));
-            };
-            let channel = load_task(tx, context.task_id).await?.channel;
-            enqueue_outbox(
-                tx,
-                run_id,
-                OutboxType::ChatPost,
-                &json!({ "text": text, "channel": channel }),
-                &format!("chat:{}", invocation.idempotency_key),
-            )
-            .await?;
+            }
+            let run_id = run_of_skill(tx, item.skill_run_id).await?;
+            post_agent_message(tx, &task, run_id, item.id, text, item.created_at).await?;
             Ok(Some(ResourceOutcome::Succeeded {
                 output: json!({ "Posted": true }),
             }))
+        }
+        "github:createIssue" => {
+            let task = load_task(tx, context.task_id).await?;
+            let session: Session =
+                serde_json::from_value(task.definition["Session"]["Definition"].clone())?;
+            let Some(repo) = parameters.get("Repo").and_then(Value::as_str) else {
+                return Ok(Some(failed(
+                    "Resource.InvalidParameters",
+                    "Repo must be owner/name",
+                )));
+            };
+            if !covers(&session.github.repos, repo) {
+                return Ok(Some(failed(
+                    ERROR_FORBIDDEN,
+                    format!("{repo} is outside the session's GitHub.Repos"),
+                )));
+            }
+            if session
+                .github
+                .permissions
+                .get("issues")
+                .is_none_or(|level| *level < PermissionLevel::Write)
+            {
+                return Ok(Some(failed(
+                    ERROR_FORBIDDEN,
+                    "the session does not grant issues: write",
+                )));
+            }
+            Ok(Some(
+                worker.deps.resources.invoke(context, invocation).await,
+            ))
         }
         "approval:request" => {
             let Some(message) = parameters.get("Message").and_then(Value::as_str) else {

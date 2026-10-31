@@ -8,7 +8,7 @@ use base64::Engine;
 use chrono::{Duration, Utc};
 use reqwest::StatusCode;
 use sanchoris_api::signing::HmacKey;
-use sanchoris_core::channel::{OutboxType, enqueue_outbox};
+use sanchoris_core::conversations::post_agent_message;
 use sanchoris_core::items::{
     ApprovalWait, AuditEvent, ConfigRevision, Credential, Guard, Integration, Member, Run,
     SkillRunItem, Task, Tenant, User,
@@ -16,6 +16,7 @@ use sanchoris_core::items::{
 use sanchoris_core::keys;
 use sanchoris_core::model::{SkillRunStatus, TaskStatus};
 use sanchoris_core::skillrun::accept_skill_request;
+use sanchoris_core::tasks::load_task;
 use sanchoris_core::tenants::free_tenant_key;
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_graphql::AesGcmEncryptor;
@@ -27,22 +28,6 @@ use support::{
     github_signature, seed, start_api, task_with_run,
 };
 use uuid::Uuid;
-
-const CHAT_TRIGGER: &str = r#"  chat-all:
-    State: ENABLED
-    EventPattern:
-      source: [web]
-      detail-type: [Message]
-      detail:
-        scope: [all]
-    Start:
-      Session: shop
-      Instruction: 'Answer the question from the chat.'
-      Skills: []
-      RequiredSkills: []
-      MaxNudges: 0
-      Limits: { Turns: 60, CostUsd: 10, TimeoutSeconds: 86400, HeartbeatSeconds: 900, Children: { MaxDepth: 1, MaxCount: 5 } }
-"#;
 
 const SAFE_CODES: [&str; 4] = ["BAD_USER_INPUT", "CONFLICT", "NOT_FOUND", "FORBIDDEN"];
 const PAID_PLANS: [&str; 3] = ["starter", "pro", "max"];
@@ -140,7 +125,7 @@ impl World {
         let dir = tempfile::tempdir().unwrap();
         let git_root = dir.path().join("git");
         bare_repo(&git_root, "acme/ops");
-        let config = format!("{CONFIG_YAML}{CHAT_TRIGGER}");
+        let config = CONFIG_YAML.to_string();
         let github = FakeGitHub::new(
             &git_root,
             BTreeMap::from([("sanchoris.yaml".to_string(), config)]),
@@ -417,12 +402,12 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     let home = w.ok(owner, "Home", json!({ "tenant": slug })).await;
     assert_eq!(home["tenant"]["id"], tenant.to_string());
     let triggers = w.ok(owner, "Triggers", json!({ "tenant": slug })).await;
-    let chat_trigger = triggers["tenant"]["triggers"]
+    let labeled_trigger = triggers["tenant"]["triggers"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|trigger| trigger["name"] == "chat-all")
-        .expect("the synced config has the chat trigger")["id"]
+        .find(|trigger| trigger["name"] == "labeled-issue")
+        .expect("the synced config has the labeled-issue trigger")["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -439,9 +424,13 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .ok(
             owner,
             "SendChatMessage",
-            json!({ "input": { "tenantId": tenant, "scope": "all", "text": "Which issues are open?" } }),
+            json!({ "input": { "tenantId": tenant, "sessionName": "shop", "text": "Which issues are open?" } }),
         )
         .await;
+    let conversation_id = sent["sendChatMessage"]["conversation"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let task_id = sent["sendChatMessage"]["task"]["id"]
         .as_str()
         .unwrap()
@@ -454,7 +443,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     w.ok(
         owner,
         "SendChatMessage",
-        json!({ "input": { "tenantId": tenant, "taskId": task_id, "text": "Only the labeled ones." } }),
+        json!({ "input": { "tenantId": tenant, "conversationId": conversation_id, "text": "Only the labeled ones." } }),
     )
     .await;
     let tasks = w
@@ -475,7 +464,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .ok(
             owner,
             "Chat",
-            json!({ "tenant": slug, "task": task_id, "withTask": true }),
+            json!({ "tenant": slug, "conversation": conversation_id, "withConversation": true }),
         )
         .await;
     assert!(chat.to_string().contains("Which issues are open?"));
@@ -488,12 +477,14 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .expect("the chat task has a first run")
         .id;
     let mut tx = w.api.store.tx(tenant);
-    enqueue_outbox(
+    let chat_task = load_task(&mut tx, task_uuid).await.unwrap();
+    post_agent_message(
         &mut tx,
-        run_id,
-        OutboxType::ChatPost,
-        &json!({ "text": "Two issues are open.", "channel": { "source": "web", "scope": "all" } }),
-        "chat:agent-answer",
+        &chat_task,
+        Some(run_id),
+        Uuid::new_v4(),
+        "Two issues are open.",
+        Utc::now(),
     )
     .await
     .unwrap();
@@ -506,10 +497,10 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
                 .ok(
                     owner,
                     "Chat",
-                    json!({ "tenant": slug, "task": task_id, "withTask": true }),
+                    json!({ "tenant": slug, "conversation": conversation_id, "withConversation": true }),
                 )
                 .await;
-            chat["tenant"]["task"]["messages"]
+            chat["tenant"]["conversation"]["messages"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -586,14 +577,14 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .ok(
             owner,
             "SetTriggerState",
-            json!({ "triggerId": chat_trigger, "state": "DISABLED" }),
+            json!({ "triggerId": labeled_trigger, "state": "DISABLED" }),
         )
         .await;
     assert_eq!(disabled["setTriggerState"]["state"], "DISABLED");
     w.ok(
         owner,
         "SetTriggerState",
-        json!({ "triggerId": chat_trigger, "state": "ENABLED" }),
+        json!({ "triggerId": labeled_trigger, "state": "ENABLED" }),
     )
     .await;
 
@@ -622,7 +613,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     assert_eq!(update[0].branch, pull.head);
     assert!(update[0].previous_sha.is_some());
     let proposed_config: serde_yaml_ng::Value = serde_yaml_ng::from_str(&update[0].text).unwrap();
-    assert!(proposed_config["Triggers"]["chat-all"].is_mapping());
+    assert!(proposed_config["Triggers"]["labeled-issue"].is_mapping());
     assert!(
         proposed_config["Triggers"]
             .as_mapping()
@@ -1146,6 +1137,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     let actions = w.audit_actions(tenant).await;
     for action in [
         "config.sync",
+        "chat.start",
         "chat.message_send",
         "change_request.open",
         "config.add",

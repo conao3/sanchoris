@@ -6,9 +6,9 @@ Jobs are written as message items in the same DynamoDB transaction as the state 
 
 | Job | Emitted by | Does |
 |---|---|---|
-| `Inbound` | `record_inbound_event` (webhooks, chat, schedules) | Processes the tenant's pending inbound events in order: evaluates enabled triggers, records `trigger_events` with `started`/`skipped`/`discarded`, creates tasks, and dispatches pending tasks. `Check Run Completed` also wakes matching check waits. See "Trigger evaluation" |
+| `Inbound` | `record_inbound_event` (webhooks, schedules) | Processes the tenant's pending inbound events in order: evaluates enabled triggers, records `trigger_events` with `started`/`skipped`/`discarded`, creates tasks, and dispatches pending tasks. `Check Run Completed` also wakes matching check waits. See "Trigger evaluation" |
 | `Dispatch` | `create_task`, a finished task, a released workspace slot, a task that went back to `PENDING` for a slot, billing changes | Starts pending tasks while the plan's concurrency (live workspaces) and task limits allow: a new task gets a new run, a task that went back to `PENDING` restarts its open run; each takes a slot |
-| `RunEvents` | `record_run_event` | Processes the run's pending events in order: `ready`, `heartbeat`, `session_record`, `turn_end`, `rate_limit`, `exec_result`, `human_reply`. Every event from the agent (a `heartbeat` only while `busy`) sends `TaskHeartbeat` to the run's skill runs in `WAITING_AGENT`, so an `agent:handoff` stays alive while the agent works on it |
+| `RunEvents` | `record_run_event` | Processes the run's pending events in order: `ready`, `heartbeat`, `session_record`, `turn_end` (writes the turn's `summary` as the agent's message of the task's conversation), `rate_limit`, `exec_result`, `human_reply`. Every event from the agent (a `heartbeat` only while `busy`) sends `TaskHeartbeat` to the run's skill runs in `WAITING_AGENT`, so an `agent:handoff` stays alive while the agent works on it |
 | `Invoke` | the engine's `InvokeResource` effect | Runs the resource and feeds `ResourceResult` back, or sends an `exec` and waits for `exec_result` |
 | `EngineTimer` | the engine's `ScheduleTimer` effect, at the due time | Feeds `TimerDue` to the engine unless the timer was cancelled or re-armed or the task is finished; a timer that arrives before its due time keeps its item and is scheduled again |
 | `CheckPoll` | `github:checks`, check-run webhooks, `SweepChecks` | Reads the PR head and its check runs; completes the wait with `TaskSuccess` |
@@ -30,7 +30,12 @@ Jobs are written as message items in the same DynamoDB transaction as the state 
 - A GitHub event is relevant to a trigger when the pattern matches it without the actor conditions of its detail type (`validate::github_actor_conditions`: `sender.login` or `issue.author_association` for `Issue Labeled`, `sender.login` or `comment.author_association` for `Issue Comment Created`, `sender.login` for `Check Run Completed`). A relevant event is skipped when the trigger has no exact-value list at one of those paths or when the actor is not in the list.
 - An event whose sender is the App's bot (`GitHubReader::app_login`, sender type `Bot`) starts a task only when its issue is a sub-issue of a task's issue; otherwise it is skipped under the children limit. A failure to read the issue's parent and blockers also skips the event under the children limit. Pull request comments have no sub-issues and skip that read.
 - Each trigger starts at most `Settings::trigger_starts_per_hour` (60) tasks per clock hour (the `RATE#<hour>` item). Later events of the hour are discarded with the receive limit as the reason, and the first discard of the hour writes the audit event `trigger.receive_limit`.
-- A chat message to a thread whose task is still `PENDING` is appended to the task's start instruction; to a task with a run it is sent as a `user_message`.
+- An event whose issue has no parent issue but was opened by a task's `file-issue` (`FILED#` item) starts its task as a child of that task. The children limits are those of the root of the task tree: the Plan's `chatLimits.Children` when the root is a conversation's task, the trigger's `Start.Limits.Children` otherwise.
+- At the end of a turn, a task without required skills succeeds when a trigger started it, and waits (`WaitReason` `message`) for the next message when it is a conversation's task.
+
+## Conversations
+
+`conversation::start_conversation` and `conversation::post_member_message` run in the caller's `TenantTx` (`sendChatMessage` calls them inline). A member's message is written to the conversation, then goes to its latest task: a new task (sequence n + 1, definition = the Session, the Session's `chat_skills` (computed at config activation by `sanchoris_config::chat_skills`: the config skills whose GitHub resources fit the Session's `GitHub.Repos` and `Permissions`, and the built-in `file-issue`), no required skill, and the Plan's `chatLimits`) when there is none or it finished; appended to the start instruction while the task is `PENDING` without a run; the reply that resumes a task that is `NEEDS_YOU`; a `user_message` otherwise. The requester of every task of a conversation is the member who started it. The first instruction is `messages::chat_start_message` (session, callable skills and their inputs, how to run `file-issue`) followed by the member's message; a Project session also sends its `SystemPrompt` as `systemPrompt`.
 - An error that retrying cannot fix (anything but a conflict, DynamoDB or port failures, GitHub transport failures, 429, and 5xx) does not hold the queue: when it comes from one trigger, the event is evaluated again with that trigger's event recorded as `discarded` with the error; otherwise the inbound event is marked processed with the error in `error`. A schedule fires once for the occurrences it missed and schedules the next one after the current time.
 
 ## Contract with the api
@@ -39,7 +44,7 @@ The api writes inbound items and delivers outbox items; it never drives the engi
 
 ### Writes
 
-- GitHub webhooks: `sanchoris_core::channel::ingest_github_delivery(store, delivery_id, event_name, payload)`. Chat messages: `record_inbound_event(tx, "web" | "slack", key, event)` with `detail.thread`, `detail.user`, `detail.text`, and the scope fields the triggers match.
+- GitHub webhooks: `sanchoris_core::channel::ingest_github_delivery(store, delivery_id, event_name, payload)`. Chat messages: `conversation::start_conversation(tx, new, message)` or `conversation::post_member_message(tx, conversation_id, message)` ("Conversations").
 - Run channel messages from the workspace agent: `record_run_event(tx, run_id, Some(seq), type, payload)` with the message minus `type`, `runId`, and `seq`. Types: `ready`, `heartbeat`, `turn_end`, `rate_limit`, `session_record`, `exec_result`.
 - A member's reply on the Task screen: `record_run_event(tx, latest_run, None, human_reply, {"member", "text"})`.
 - `skill_request`: answer synchronously with `skillrun::accept_skill_request` (`run`), `continue_skill_run` (`continue`), or `skill_run_status` (`status`), and reply with `skill_response`. Errors carry `SkillRunError::code()`.
@@ -56,7 +61,6 @@ Outbox items per run, ordered by `seq`, with `delivered_at` set through `mark_ou
 | `exec` | `requestId`, `purpose` (`git_push` or `exec`), `commands` |
 | `interrupt` | `{}` |
 | `shutdown` | `reason` |
-| `chat_post` | `text`, `channel` (the task's channel). Post to the chat thread; do not send to the agent |
 
 ### `exec` and `exec_result`
 

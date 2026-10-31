@@ -3,9 +3,12 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::channel::{OutboxType, enqueue_outbox, enqueue_user_message};
-use crate::db::{DbError, REF_RUN, TenantTx, locate};
+use crate::db::{DbError, REF_RUN, REF_TRIGGER, TenantTx, locate};
 use crate::item::Entity;
-use crate::items::{Guard, HeldMessage, Membership, PendingTask, Plan, Run, Task, Tenant, uniq};
+use crate::items::{
+    Conversation, Guard, HeldMessage, Membership, PendingTask, Plan, Run, Task, TaskOrigin, Tenant,
+    uniq,
+};
 use crate::jobs::Job;
 use crate::keys;
 use crate::lifecycle::TaskDecision;
@@ -25,6 +28,21 @@ pub async fn load_task(tx: &mut TenantTx, task_id: Uuid) -> Result<Task, DbError
     tx.get::<Task>(&key)
         .await?
         .ok_or_else(|| DbError::Missing(format!("task {task_id}")))
+}
+
+pub async fn task_config_id(tx: &mut TenantTx, task: &Task) -> Result<Uuid, DbError> {
+    match task.origin {
+        TaskOrigin::Trigger { trigger_id, .. } => locate(tx, trigger_id, REF_TRIGGER)
+            .await?
+            .and_then(|location| location.parent_id)
+            .ok_or_else(|| DbError::Missing(format!("trigger {trigger_id}"))),
+        TaskOrigin::Conversation {
+            conversation_id, ..
+        } => Ok(tx
+            .require::<Conversation>(&keys::conversation_key(tx.tenant_id(), conversation_id))
+            .await?
+            .config_id),
+    }
 }
 
 pub async fn linked_member(
@@ -216,7 +234,7 @@ pub async fn wake_task(
         || (task.status == TaskStatus::Waiting
             && matches!(
                 task.wait_reason,
-                Some(WaitReason::Skill) | Some(WaitReason::Chat)
+                Some(WaitReason::Skill) | Some(WaitReason::Message)
             ));
     if !wakes {
         return Ok(());

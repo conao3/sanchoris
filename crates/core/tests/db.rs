@@ -9,7 +9,9 @@ use sanchoris_core::db::{
     self, DbError, NewTask, NewTriggerEvent, Recorded, Store, TriggerEventOutcome,
 };
 use sanchoris_core::item::{Entity, Key};
-use sanchoris_core::items::{AuditEvent, PendingTask, Plan, Run, Task, Tenant, TriggerEvent};
+use sanchoris_core::items::{
+    AuditEvent, PendingTask, Plan, Run, Task, TaskOrigin, Tenant, TriggerEvent,
+};
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin, NamedDefinition, TaskDefinition, TaskStatus};
@@ -20,10 +22,16 @@ use uuid::Uuid;
 
 fn definition() -> TaskDefinition {
     TaskDefinition {
-        trigger: NamedDefinition {
+        trigger: Some(NamedDefinition {
             name: "labeled-issue".into(),
             definition: json!({ "State": "ENABLED" }),
-        },
+        }),
+        start: serde_json::from_value(json!({
+            "Session": "shop", "Instruction": "Do it.", "Skills": ["open-pr-green-ci"],
+            "RequiredSkills": ["open-pr-green-ci"], "MaxNudges": 2,
+            "Limits": { "Turns": 60, "CostUsd": 20, "TimeoutSeconds": 14400, "HeartbeatSeconds": 900, "Children": { "MaxDepth": 1, "MaxCount": 5 } },
+        }))
+        .unwrap(),
         session: NamedDefinition {
             name: "shop".into(),
             definition: json!({ "Worker": { "Agent": "claude", "Model": "claude-sonnet-5-5", "Credential": "acme-claude-team" } }),
@@ -47,14 +55,15 @@ async fn create_task(
         let recorded = db::create_task(
             &mut tx,
             &NewTask {
-                trigger_id: seeded.trigger_id,
-                trigger_event_id: None,
+                origin: TaskOrigin::Trigger {
+                    trigger_id: seeded.trigger_id,
+                    trigger_event_id: None,
+                },
                 config_revision_id: seeded.config_revision_id,
                 name,
                 title: name,
                 definition: &definition,
                 parent_task_id: None,
-                channel: None,
                 requested_by_member_id: None,
                 requested_by_github_user_id: None,
                 requested_by_github_login: None,
@@ -525,14 +534,15 @@ async fn large_documents_are_stored_in_the_blob_store() {
     let recorded = db::create_task(
         &mut tx,
         &NewTask {
-            trigger_id: seeded.trigger_id,
-            trigger_event_id: None,
+            origin: TaskOrigin::Trigger {
+                trigger_id: seeded.trigger_id,
+                trigger_event_id: None,
+            },
             config_revision_id: seeded.config_revision_id,
             name: "big",
             title: "big",
             definition: &definition,
             parent_task_id: None,
-            channel: None,
             requested_by_member_id: None,
             requested_by_github_user_id: None,
             requested_by_github_login: None,

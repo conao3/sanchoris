@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use sanchoris_engine::{Invocation, ResourceOutcome};
 use serde_json::{Value, json};
 
-use crate::ports::{GitHubClient, GitHubError, InvocationContext, NewPullRequest, ResourceInvoker};
+use crate::ports::{
+    GitHubClient, GitHubError, InvocationContext, NewIssue, NewPullRequest, ResourceInvoker,
+};
 
 pub const ERROR_GITHUB: &str = "GitHub.RequestFailed";
 pub const ERROR_INVALID_PARAMETERS: &str = "Resource.InvalidParameters";
@@ -185,6 +187,54 @@ impl GitHubResources {
         Ok(json!({ "Repo": repo, "Number": number, "CommentId": comment.id, "Url": comment.url }))
     }
 
+    async fn create_issue(
+        &self,
+        context: &InvocationContext,
+        invocation: &Invocation,
+    ) -> Result<Value, Failure> {
+        let parameters = &invocation.parameters;
+        let repo = param_str(parameters, "Repo")?;
+        let title = param_str(parameters, "Title")?;
+        let text = param_str(parameters, "Body")?;
+        let labels = param(parameters, "Labels")?
+            .as_array()
+            .and_then(|labels| {
+                labels
+                    .iter()
+                    .map(|label| label.as_str().map(str::to_string))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .ok_or_else(|| Failure::Parameters("Labels must be an array of strings".into()))?;
+        let marker = format!(
+            "<!-- sanchoris:{}:{} -->",
+            context.skill_run_id, invocation.idempotency_key
+        );
+        let installation = self.installation(context, repo)?;
+        let existing = self
+            .client
+            .recent_issues(installation, repo)
+            .await?
+            .into_iter()
+            .find(|issue| issue.body.contains(&marker));
+        let issue = match existing {
+            Some(issue) => issue,
+            None => {
+                self.client
+                    .create_issue(
+                        installation,
+                        repo,
+                        &NewIssue {
+                            title,
+                            body: &format!("{text}\n\n{marker}"),
+                            labels: &labels,
+                        },
+                    )
+                    .await?
+            }
+        };
+        Ok(json!({ "Repo": repo, "Number": issue.number, "Url": issue.url, "Title": issue.title }))
+    }
+
     async fn merge_pull_request(
         &self,
         context: &InvocationContext,
@@ -223,6 +273,7 @@ impl ResourceInvoker for GitHubResources {
                     .await
             }
             "github:commentOnIssue" => self.comment_on_issue(context, invocation).await,
+            "github:createIssue" => self.create_issue(context, invocation).await,
             "github:mergePullRequest" => {
                 self.merge_pull_request(context, &invocation.parameters)
                     .await

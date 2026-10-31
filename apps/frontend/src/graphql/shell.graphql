@@ -43,9 +43,10 @@ fragment TaskRow on Task {
     number
     url
   }
-  channel {
-    kind
-    scope
+  conversation {
+    id
+    title
+    sessionName
   }
   trigger {
     id

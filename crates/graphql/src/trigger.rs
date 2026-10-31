@@ -99,7 +99,8 @@ impl Trigger {
         }
         let tasks = tx(ctx, self.scope.tenant_id)
             .list::<TaskItem>(&listing, |task| {
-                task.trigger_id == trigger_id && (!active_only || !task.status.is_terminal())
+                task.origin.trigger_id() == Some(trigger_id)
+                    && (!active_only || !task.status.is_terminal())
             })
             .await?;
         Ok(i32::try_from(tasks.len())?)
@@ -251,8 +252,6 @@ pub(crate) struct TriggerMatch {
     repositories: Vec<String>,
     labels: Vec<String>,
     senders: Vec<String>,
-    chat_scope: Option<String>,
-    slack_channel: Option<String>,
     schedule_expression: Option<String>,
     next_run_at: Option<DateTime<Utc>>,
 }
@@ -270,8 +269,6 @@ impl TriggerMatch {
                 repositories: Vec::new(),
                 labels: Vec::new(),
                 senders: Vec::new(),
-                chat_scope: None,
-                slack_channel: None,
                 schedule_expression: Some(expression.to_string()),
                 next_run_at,
             });
@@ -298,19 +295,9 @@ impl TriggerMatch {
             repositories: field(&["repository"]),
             labels: field(&["label"]),
             senders: field(&["sender", "login"]),
-            chat_scope: field(&["scope"]).into_iter().next(),
-            slack_channel: field(&["channel"]).into_iter().next(),
             schedule_expression: None,
             next_run_at: None,
         })
-    }
-
-    pub fn scope_name(&self) -> Option<&str> {
-        self.chat_scope.as_deref()
-    }
-
-    pub fn event_source(&self) -> EventSource {
-        self.source
     }
 }
 
@@ -336,15 +323,6 @@ impl TriggerMatch {
     /// detail.sender.login values. Empty when the pattern uses author_association.
     async fn senders(&self) -> &[String] {
         &self.senders
-    }
-
-    /// The chat scope: all or a project name.
-    async fn chat_scope(&self) -> Option<&str> {
-        self.chat_scope.as_deref()
-    }
-
-    async fn slack_channel(&self) -> Option<&str> {
-        self.slack_channel.as_deref()
     }
 
     async fn schedule_expression(&self) -> Option<&str> {
@@ -397,10 +375,6 @@ impl TriggerEvent {
 
     pub fn event(&self) -> &Value {
         &self.row.event
-    }
-
-    pub fn key(&self) -> &str {
-        &self.row.key
     }
 
     fn reason_kind(&self) -> Option<TriggerEventReason> {
@@ -504,11 +478,6 @@ pub(crate) const TRIGGER_TEMPLATES: &[TriggerTemplate] = &[
         description: "Labeled issue → agent → pull requests with green checks",
     },
     TriggerTemplate {
-        id: "chat-all",
-        name: "chat-all",
-        description: "Web chat across all projects",
-    },
-    TriggerTemplate {
         id: "weekly-deps",
         name: "weekly-deps",
         description: "Weekly dependency updates with green checks",
@@ -547,26 +516,6 @@ impl TriggerTemplate {
                     "Skills": ["open-pr-green-ci"],
                     "RequiredSkills": ["open-pr-green-ci"],
                     "MaxNudges": 2,
-                    "Limits": limits,
-                },
-            }),
-            "chat-all" => serde_json::json!({
-                "State": "ENABLED",
-                "EventPattern": {
-                    "source": ["web"],
-                    "detail-type": ["Message"],
-                    "detail": { "scope": ["all"] },
-                },
-                "InputTransformer": {
-                    "InputPathsMap": { "text": "$.detail.text" },
-                    "InputTemplate": "{ \"text\": <text> }",
-                },
-                "Start": {
-                    "Session": session,
-                    "Instruction": "<text>",
-                    "Skills": [],
-                    "RequiredSkills": [],
-                    "MaxNudges": 0,
                     "Limits": limits,
                 },
             }),

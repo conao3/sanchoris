@@ -50,37 +50,3 @@ Triggers:
       RequiredSkills: [open-pr-green-ci]
       MaxNudges: 2
       Limits: { Turns: 60, CostUsd: 20, TimeoutSeconds: 14400, HeartbeatSeconds: 900, Children: { MaxDepth: 1, MaxCount: 5 } }
-  chat-all:
-    State: ENABLED
-    EventPattern:
-      source: [web]
-      detail-type: [Message]
-      detail:
-        scope: [all]
-    InputTransformer:
-      InputPathsMap: { text: $.detail.text }
-      InputTemplate: '{ "text": <text> }'
-    Start:
-      Session: all
-      Instruction: '<text>'
-      Skills: []
-      RequiredSkills: []
-      MaxNudges: 0
-      Limits: { Turns: 60, CostUsd: 10, TimeoutSeconds: 86400, HeartbeatSeconds: 900, Children: { MaxDepth: 1, MaxCount: 5 } }
-  chat-shop:
-    State: ENABLED
-    EventPattern:
-      source: [web]
-      detail-type: [Message]
-      detail:
-        scope: [shop]
-    InputTransformer:
-      InputPathsMap: { text: $.detail.text }
-      InputTemplate: '{ "text": <text> }'
-    Start:
-      Session: shop
-      Instruction: '<text>'
-      Skills: [open-pr-green-ci]
-      RequiredSkills: []
-      MaxNudges: 0
-      Limits: { Turns: 60, CostUsd: 10, TimeoutSeconds: 86400, HeartbeatSeconds: 900, Children: { MaxDepth: 1, MaxCount: 5 } }

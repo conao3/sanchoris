@@ -3,6 +3,7 @@ use aws_sdk_dynamodb::types::{
     ProjectionType, ScalarAttributeType, StreamSpecification, StreamViewType,
     TimeToLiveSpecification,
 };
+use sanchoris_config::Limits;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -63,6 +64,7 @@ struct PlanSpec {
     max_idle_seconds: i64,
     max_children_depth: i64,
     max_children_count: i64,
+    chat_limits: Limits,
     computes: Vec<String>,
     workspace_cpu: i64,
     workspace_memory_mib: i64,
@@ -98,6 +100,7 @@ pub fn plans() -> Vec<Plan> {
             max_idle_seconds: p.max_idle_seconds,
             max_children_depth: p.max_children_depth,
             max_children_count: p.max_children_count,
+            chat_limits: p.chat_limits,
             computes: p.computes,
             workspace_cpu: p.workspace_cpu,
             workspace_memory_mib: p.workspace_memory_mib,
@@ -347,5 +350,18 @@ mod tests {
         free.as_object_mut().unwrap().remove("memberLimit");
         let error = serde_json::from_value::<PlanSpec>(free.clone()).unwrap_err();
         assert_eq!(error.to_string(), "missing field `memberLimit`");
+    }
+
+    #[test]
+    fn every_plan_has_chat_limits_within_its_task_limits() {
+        for plan in plans() {
+            let limits = &plan.chat_limits;
+            let within = i64::try_from(limits.turns).unwrap() <= plan.max_task_turns
+                && limits.cost_usd <= plan.max_task_cost_usd
+                && i64::try_from(limits.timeout_seconds).unwrap() <= plan.max_task_timeout_seconds
+                && i64::try_from(limits.children.max_depth).unwrap() <= plan.max_children_depth
+                && i64::try_from(limits.children.max_count).unwrap() <= plan.max_children_count;
+            assert!(within, "plan {} has chat limits {limits:?}", plan.id);
+        }
     }
 }

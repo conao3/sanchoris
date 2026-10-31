@@ -248,92 +248,123 @@ function createResolvers() {
       },
       sendChatMessage: (_: unknown, { input }: Obj) => {
         const tenant = tenantById(input.tenantId)
+        const stamp = new Date().toISOString()
         const message = {
           id: nextId("msg"),
           authorKind: "MEMBER",
           member: viewerMemberOf(tenant),
           text: input.text,
-          at: new Date().toISOString(),
+          at: stamp,
           issues: [],
         }
-        if (input.taskId) {
-          const task = taskById(input.taskId)
-          task.messages.push(message)
-          const run = task.runs[task.runs.length - 1]
+        const startTask = (conversation: Obj, sequence: number): Obj => {
+          const session = conversation.session
+          const task: Obj = {
+            id: nextId("task-chat"),
+            name: String(sequence),
+            title: input.text.length > 48 ? `${input.text.slice(0, 48)}…` : input.text,
+            status: "RUNNING",
+            waitReason: null,
+            pendingReason: null,
+            needsYouReason: null,
+            approval: null,
+            resumeAt: null,
+            autoResume: true,
+            snoozedUntil: null,
+            nudges: 0,
+            maxNudges: 0,
+            error: null,
+            cause: null,
+            createdAt: stamp,
+            startedAt: stamp,
+            endedAt: null,
+            updatedAt: stamp,
+            trigger: null,
+            triggerEvent: null,
+            conversation,
+            conversationSequence: sequence,
+            requester: {
+              kind: "MEMBER",
+              githubLogin: null,
+              member: conversation.createdBy,
+              task: null,
+            },
+            session,
+            configRevision: 41,
+            issue: null,
+            parent: null,
+            children: () => [],
+            blockedBy: [],
+            filedTasks: () => [],
+            requiredSkills: () => [],
+            skillRuns: () => [],
+            runs: [],
+            run: () => null,
+            outputs: [],
+            limits: {
+              turns: 60,
+              costUsd: 10,
+              timeoutSeconds: 86400,
+              heartbeatSeconds: 900,
+              childrenMaxDepth: 1,
+              childrenMaxCount: 5,
+            },
+            turns: 0,
+            costUsd: 0,
+          }
+          tenant.taskList.push(task)
+          return task
+        }
+        if (input.conversationId) {
+          const conversation = tenant.conversationList.find(
+            (item: Obj) => item.id === input.conversationId,
+          )
+          if (!conversation) {
+            throw new Error(`Conversation ${input.conversationId} was not found`)
+          }
+          conversation.messages.push(message)
+          conversation.updatedAt = stamp
+          const latest = conversation.latestTask()
+          if (!latest || ["SUCCEEDED", "FAILED", "ABORTED"].includes(latest.status)) {
+            const task = startTask(conversation, (latest?.conversationSequence ?? 0) + 1)
+            return { conversation, task, message }
+          }
+          const run = latest.runs[latest.runs.length - 1]
           if (run) {
             appendLog(run, "USER", input.text)
           }
-          if (task.status === "WAITING" && task.waitReason === "CHAT") {
-            task.status = "RUNNING"
-            task.waitReason = null
+          if (latest.status === "WAITING" && latest.waitReason === "MESSAGE") {
+            latest.status = "RUNNING"
+            latest.waitReason = null
           }
-          touch(task)
-          return { task, message }
+          touch(latest)
+          return { conversation, task: latest, message }
         }
-        const trigger = tenant.triggerList.find(
-          (item: Obj) =>
-            item.match.source === "WEB" &&
-            item.match.chatScope === input.scope &&
-            item.state === "ENABLED",
-        )
-        if (!trigger) {
-          throw new Error(`No enabled chat trigger has the scope ${input.scope}.`)
+        const session = tenant.sessions().find((item: Obj) => item.name === input.sessionName)
+        if (!session) {
+          throw new Error(`No active config of the tenant has the session ${input.sessionName}.`)
         }
-        const stamp = new Date().toISOString()
-        const task: Obj = {
-          id: nextId("task-chat"),
-          name: nextId("web-thread"),
+        const conversation: Obj = {
+          id: nextId("conv"),
           title: input.text.length > 48 ? `${input.text.slice(0, 48)}…` : input.text,
-          status: "RUNNING",
-          waitReason: null,
-          pendingReason: null,
-          needsYouReason: null,
-          approval: null,
-          resumeAt: null,
-          autoResume: true,
-          snoozedUntil: null,
-          nudges: 0,
-          maxNudges: trigger.maxNudges,
-          error: null,
-          cause: null,
+          kind: "WEB",
+          sessionName: session.name,
+          session,
+          slackThreadTs: null,
+          createdBy: viewerMemberOf(tenant),
           createdAt: stamp,
-          startedAt: stamp,
-          endedAt: null,
           updatedAt: stamp,
-          trigger,
-          triggerEvent: null,
-          requester: {
-            kind: "MEMBER",
-            githubLogin: null,
-            member: viewerMemberOf(tenant),
-            task: null,
-            viaChat: true,
-          },
-          session: trigger.session,
-          configRevision: 41,
-          issue: null,
-          channel: {
-            kind: "WEB",
-            threadId: nextId("web-thread"),
-            scope: input.scope,
-            slackChannel: null,
-          },
-          parent: null,
-          children: () => [],
-          blockedBy: [],
-          filedTasks: () => [],
-          requiredSkills: () => [],
-          skillRuns: () => [],
-          runs: [],
-          run: () => null,
-          outputs: [],
           messages: [message],
-          limits: trigger.limits,
-          turns: 0,
-          costUsd: 0,
+          tasks: () => tenant.taskList.filter((task: Obj) => task.conversation === conversation),
+          latestTask: () => {
+            const own = tenant.taskList.filter((task: Obj) => task.conversation === conversation)
+            return own[own.length - 1] ?? null
+          },
+          filedTasks: () => [],
         }
-        tenant.taskList.push(task)
-        return { task, message }
+        tenant.conversationList.push(conversation)
+        const task = startTask(conversation, 1)
+        return { conversation, task, message }
       },
       setTriggerState: (_: unknown, { triggerId, state }: Obj) => {
         const trigger = tenants

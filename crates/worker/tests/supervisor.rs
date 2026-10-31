@@ -58,6 +58,23 @@ async fn missing_required_skills_are_nudged_until_needs_you_and_a_reply_resumes(
 }
 
 #[tokio::test]
+async fn a_trigger_task_without_required_skills_succeeds_at_the_end_of_its_turn() {
+    let world = World::new("pro").await;
+    let task = world.started_task(35).await;
+    world
+        .dynamo
+        .modify::<Task>(&keys::task_key(world.tenant(), task.id), |task| {
+            task.definition["Start"]["RequiredSkills"] = json!([]);
+        })
+        .await;
+    world.turn_end(task.run_id.unwrap(), 1).await;
+    world.worker.settle().await.unwrap();
+    let done = world.task(&format!("{REPO}#35")).await;
+    assert_eq!(done.status, "SUCCEEDED");
+    assert!(world.messages(task.run_id.unwrap()).await.is_empty());
+}
+
+#[tokio::test]
 async fn usage_limits_wait_and_resume_automatically() {
     let world = World::new("pro").await;
     let task = world.started_task(35).await;

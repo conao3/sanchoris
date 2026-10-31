@@ -49,8 +49,12 @@ async fn every_screen_query_validates_and_executes() {
     assert_eq!(tasks[0]["limits"]["turns"], 60);
     assert_eq!(tasks[0]["requiredSkills"][0]["state"], "FAILED");
     assert_eq!(tasks[0]["requiredSkills"][0]["latestRun"]["handoffs"], 2);
-    assert_eq!(tasks[1]["channel"]["kind"], "WEB");
-    assert_eq!(tasks[1]["channel"]["scope"], "all");
+    assert_eq!(tasks[1]["trigger"], Value::Null);
+    assert_eq!(
+        tasks[1]["conversation"]["id"],
+        w.chat_conversation.to_string()
+    );
+    assert_eq!(tasks[1]["conversation"]["sessionName"], "all");
     assert_eq!(tasks.len(), 2);
     let credentials = home["credentials"].as_array().unwrap();
     assert_eq!(
@@ -70,7 +74,7 @@ async fn every_screen_query_validates_and_executes() {
     assert_eq!(home["integrations"][0]["status"], "CONNECTED");
     assert_eq!(home["integrations"][1]["kind"], "SLACK");
     assert_eq!(home["integrations"][1]["status"], "NOT_CONNECTED");
-    assert_eq!(home["triggers"].as_array().unwrap().len(), 3);
+    assert_eq!(home["triggers"].as_array().unwrap().len(), 2);
 
     let all = w
         .ok(
@@ -96,12 +100,12 @@ async fn every_screen_query_validates_and_executes() {
         .ok(
             &w.mika,
             "Tasks",
-            json!({ "tenant": "acme", "filter": { "triggerId": w.chat_trigger, "statuses": ["WAITING"] } }),
+            json!({ "tenant": "acme", "filter": { "triggerId": w.labeled_trigger, "statuses": ["NEEDS_YOU"] } }),
         )
         .await;
     assert_eq!(
         ids(&by_trigger["tenant"]["tasks"]),
-        vec![w.chat_task.to_string()]
+        vec![w.issue_task.to_string()]
     );
 
     let task = w
@@ -214,32 +218,62 @@ async fn every_screen_query_validates_and_executes() {
         .ok(
             &w.mika,
             "Chat",
-            json!({ "tenant": "acme", "task": w.chat_task, "withTask": true }),
+            json!({ "tenant": "acme", "conversation": w.chat_conversation, "withConversation": true }),
         )
         .await;
     let chat = &chat["tenant"];
-    assert_eq!(ids(&chat["chats"]), vec![w.chat_task.to_string()]);
-    let messages = chat["task"]["messages"].as_array().unwrap();
+    assert_eq!(
+        ids(&chat["conversations"]),
+        vec![w.chat_conversation.to_string()]
+    );
+    let sessions = chat["sessions"].as_array().unwrap();
+    let all = sessions.iter().find(|s| s["name"] == "all").unwrap();
+    assert_eq!(
+        all["callableSkills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|skill| skill["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["file-issue"]
+    );
+    let shop = sessions.iter().find(|s| s["name"] == "shop").unwrap();
+    assert_eq!(shop["callableSkills"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        chat["conversation"]["latestTask"]["id"],
+        w.chat_task.to_string()
+    );
+    assert_eq!(
+        chat["conversation"]["latestTask"]["conversationSequence"],
+        1
+    );
+    assert_eq!(chat["conversation"]["createdBy"]["user"]["name"], "Mika");
+    let messages = chat["conversation"]["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0]["authorKind"], "MEMBER");
     assert_eq!(messages[0]["member"]["user"]["name"], "Mika");
     assert_eq!(messages[1]["authorKind"], "AGENT");
     assert_eq!(messages[1]["text"], "The checkout spec is flaky.");
     assert_eq!(
-        chat["task"]["session"]["repositories"],
+        chat["conversation"]["session"]["repositories"],
         json!(["acme/idea"])
     );
     let without = w
         .ok(
             &w.mika,
             "Chat",
-            json!({ "tenant": "acme", "task": w.chat_task, "withTask": false }),
+            json!({ "tenant": "acme", "conversation": "", "withConversation": false }),
         )
         .await;
-    assert!(without["tenant"].get("task").is_none());
+    assert!(without["tenant"].get("conversation").is_none());
 
     let skills = w.ok(&w.mika, "Skills", tenant.clone()).await;
-    let skill = &skills["tenant"]["skills"][0];
+    let skill = skills["tenant"]["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|skill| skill["name"] == "open-pr-green-ci")
+        .unwrap();
     assert_eq!(skill["requiredBy"][0]["name"], "labeled-issue");
     assert_eq!(skill["stats"]["runs"], 1);
     assert_eq!(skill["stats"]["succeeded"], 0);
@@ -291,11 +325,11 @@ async fn every_screen_query_validates_and_executes() {
     assert_eq!(nightly["match"]["source"], "SCHEDULE");
     assert!(nightly["match"]["nextRunAt"].is_string());
     let events = triggers["tenant"]["triggerEvents"].as_array().unwrap();
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 2);
     let skipped = events.iter().find(|e| e["result"] == "SKIPPED").unwrap();
     assert_eq!(skipped["reason"], "SENDER_NOT_ALLOWED");
     assert_eq!(skipped["senderLogin"], "rin-dev");
-    assert_eq!(triggers["triggerTemplates"].as_array().unwrap().len(), 3);
+    assert_eq!(triggers["triggerTemplates"].as_array().unwrap().len(), 2);
 
     let integrations = w.ok(&w.mika, "Integrations", tenant.clone()).await;
     assert_eq!(
@@ -307,8 +341,8 @@ async fn every_screen_query_validates_and_executes() {
     let config = &configs["tenant"]["configs"][0];
     assert_eq!(config["revision"]["number"], 1);
     assert_eq!(config["revision"]["validation"]["valid"], true);
-    assert_eq!(config["triggerCount"], 3);
-    assert_eq!(config["skillCount"], 1);
+    assert_eq!(config["triggerCount"], 2);
+    assert_eq!(config["skillCount"], 2);
     let project = &configs["tenant"]["projects"][0];
     assert_eq!(project["repositories"].as_array().unwrap().len(), 2);
     assert_eq!(project["warmBuild"]["succeeded"], true);

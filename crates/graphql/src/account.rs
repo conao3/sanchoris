@@ -21,6 +21,7 @@ use crate::error::not_found;
 use crate::scalars::{Timestamp, ts, ts_opt};
 use crate::task::latest_tasks;
 use crate::tenant::Tenant;
+use crate::trigger::TaskLimits;
 
 pub(crate) struct User(pub UserItem);
 
@@ -210,6 +211,11 @@ impl Plan {
 
     async fn audit_retention_days(&self) -> Result<i32> {
         Ok(i32::try_from(self.0.audit_retention_days)?)
+    }
+
+    /// The limits of each task a conversation starts.
+    async fn chat_limits(&self) -> TaskLimits {
+        TaskLimits(self.0.chat_limits.clone())
     }
 
     async fn requires_payment(&self) -> bool {

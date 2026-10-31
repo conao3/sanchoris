@@ -51,15 +51,16 @@ pub struct RequiredSkill<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnEnd<'a> {
+    pub conversation: bool,
     pub required: &'a [RequiredSkill<'a>],
     pub nudges: u32,
     pub max_nudges: u32,
 }
 
 pub fn decide_turn_end(turn: &TurnEnd<'_>) -> TaskDecision {
-    if turn.required.is_empty() {
+    if turn.required.is_empty() && turn.conversation {
         return TaskDecision::Wait {
-            reason: WaitReason::Chat,
+            reason: WaitReason::Message,
             resume_at: None,
         };
     }
@@ -248,6 +249,7 @@ mod tests {
 
     fn turn_end(required: &[RequiredSkill<'_>], nudges: u32) -> TaskDecision {
         decide_turn_end(&TurnEnd {
+            conversation: false,
             required,
             nudges,
             max_nudges: 2,
@@ -327,6 +329,7 @@ mod tests {
     #[test]
     fn zero_max_nudges_goes_straight_to_needs_you() {
         let decision = decide_turn_end(&TurnEnd {
+            conversation: false,
             required: &required(None),
             nudges: 0,
             max_nudges: 0,
@@ -335,11 +338,21 @@ mod tests {
     }
 
     #[test]
-    fn tasks_without_required_skills_wait_for_chat() {
+    fn trigger_tasks_without_required_skills_succeed_at_the_turn_end() {
+        assert_eq!(turn_end(&[], 0), TaskDecision::Succeed);
+    }
+
+    #[test]
+    fn conversation_tasks_wait_for_the_next_message() {
         assert_eq!(
-            turn_end(&[], 0),
+            decide_turn_end(&TurnEnd {
+                conversation: true,
+                required: &[],
+                nudges: 0,
+                max_nudges: 0,
+            }),
             TaskDecision::Wait {
-                reason: WaitReason::Chat,
+                reason: WaitReason::Message,
                 resume_at: None
             }
         );

@@ -4,6 +4,9 @@ query Run($tenant: String!, $task: ID!, $number: Int!) {
     task(id: $task) {
       id
       title
+      conversation {
+        id
+      }
       issue {
         repository
         number
@@ -80,6 +83,10 @@ mutation StopRun($runId: ID!) {
 
 mutation SendChatMessage($input: SendChatMessageInput!) {
   sendChatMessage(input: $input) {
+    conversation {
+      id
+      updatedAt
+    }
     task {
       id
       status

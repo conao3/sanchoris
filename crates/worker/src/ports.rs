@@ -46,6 +46,21 @@ pub struct NewPullRequest<'a> {
     pub body: &'a str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewIssue<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    pub labels: &'a [String],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Issue {
+    pub number: i64,
+    pub url: String,
+    pub title: String,
+    pub body: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssueComment {
     pub id: i64,
@@ -132,6 +147,14 @@ pub trait GitHubClient: Send + Sync {
         repo: &str,
         number: i64,
     ) -> Result<MergeResult, GitHubError>;
+    async fn create_issue(
+        &self,
+        installation: i64,
+        repo: &str,
+        issue: &NewIssue<'_>,
+    ) -> Result<Issue, GitHubError>;
+    async fn recent_issues(&self, installation: i64, repo: &str)
+    -> Result<Vec<Issue>, GitHubError>;
     async fn list_issue_comments(
         &self,
         installation: i64,

@@ -55,7 +55,7 @@ import { between, clock, duration, usd, usdWhole } from "../lib/format.ts"
 import { useKeys } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
 import { LIVE_POLL, useData } from "../lib/query.ts"
-import { isActive, needsYouText, skillProgress } from "../lib/taskText.ts"
+import { isActive, needsYouText, originName, skillProgress } from "../lib/taskText.ts"
 import { useTenant } from "../lib/tenant.tsx"
 
 type Task = NonNullable<NonNullable<TaskQuery["tenant"]>["task"]>
@@ -131,7 +131,11 @@ function StepStrip({ task }: { task: Task }) {
   return (
     <div className="mb-1 mt-0.5 flex items-stretch max-md:flex-col">
       <Step
-        kind={t("task.stepTrigger", { name: task.trigger.name })}
+        kind={
+          task.trigger
+            ? t("task.stepTrigger", { name: task.trigger.name })
+            : t("task.stepChat", { session: task.conversation?.sessionName ?? "" })
+        }
         icon={Zap}
         tone="ok"
         stateIcon={CircleCheck}
@@ -299,7 +303,14 @@ export function TaskPage() {
     const stepCols = "28px 110px 64px 100px 56px 60px 1fr"
     const pr = task.outputs.filter((output) => output.kind === "PULL_REQUEST")
     const relations: [ReactNode, ReactNode][] = [
-      [t("col.trigger"), <Lk to="/triggers">{task.trigger.name}</Lk>],
+      task.conversation
+        ? [
+            t("task.conversation"),
+            <Lk to="/chat/$conversation" params={{ conversation: task.conversation.id }}>
+              {task.conversation.title}
+            </Lk>,
+          ]
+        : [t("col.trigger"), <Lk to="/triggers">{originName(task)}</Lk>],
     ]
     if (task.triggerEvent) {
       relations.push([
@@ -328,7 +339,7 @@ export function TaskPage() {
           ) : (
             (task.requester.githubLogin ?? "")
           )
-        ) : task.requester.viaChat ? (
+        ) : task.conversation ? (
           t("task.inChat", { name: task.requester.member?.user.name ?? "" })
         ) : (
           (task.requester.member?.user.name ?? "")
@@ -395,7 +406,14 @@ export function TaskPage() {
             : `${skillProgress(task)} · ${t("task.spent", { cost: usd(task.costUsd) })}`}
         </Sub>
         <ActionError error={stopState.error} className="-mt-3 mb-3.5" />
-        <Section count={t("task.fromTrigger", { name: task.trigger.name })} first>
+        <Section
+          count={
+            task.trigger
+              ? t("task.fromTrigger", { name: task.trigger.name })
+              : t("task.fromChat", { session: task.conversation?.sessionName ?? "" })
+          }
+          first
+        >
           {task.requiredSkills.length > 0 ? t("task.requiredSkill") : t("task.progress")}
         </Section>
         <StepStrip task={task} />

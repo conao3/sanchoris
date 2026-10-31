@@ -1,61 +1,62 @@
-query Chat($tenant: String!, $task: ID!, $withTask: Boolean!) {
+query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
   tenant(slug: $tenant) {
     id
     name
-    chats {
+    configs {
+      id
+      status
+    }
+    sessions {
+      id
+      name
+      config {
+        id
+      }
+      agent
+      model
+      repositories
+      githubRepositories
+      callableSkills {
+        id
+        name
+        description
+      }
+    }
+    conversations {
       id
       title
-      channel {
-        kind
-        scope
-      }
+      kind
+      sessionName
+      updatedAt
       filedTasks {
         id
       }
     }
-    triggers {
-      id
-      state
-      match {
-        source
-        kind
-        chatScope
-      }
-      session {
-        id
-        repositories
-      }
-    }
-    task(id: $task) @include(if: $withTask) {
+    conversation(id: $conversation) @include(if: $withConversation) {
       id
       title
-      status
-      waitReason
-      channel {
-        kind
-        scope
-      }
-      trigger {
+      kind
+      sessionName
+      createdBy {
         id
-        name
+        user {
+          id
+          name
+        }
       }
       session {
         id
         name
         repositories
       }
-      runs {
+      latestTask {
         id
-        number
-      }
-      requester {
-        kind
-        member {
+        status
+        waitReason
+        conversationSequence
+        runs {
           id
-          user {
-            id
-            name
-          }
+          number
         }
       }
       messages {

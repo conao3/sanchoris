@@ -19,6 +19,7 @@ use crate::enums::{
 };
 use crate::error::not_found;
 use crate::scalars::{Timestamp, ts, ts_opt};
+use crate::skill::Skill;
 use crate::task::Task;
 
 pub(crate) fn root_prefix(root: &str) -> String {
@@ -548,6 +549,7 @@ pub(crate) struct Session {
     pub config_id: Uuid,
     pub name: String,
     pub definition: Value,
+    pub chat_skills: Vec<String>,
 }
 
 impl Session {
@@ -558,6 +560,7 @@ impl Session {
             config_id: row.config_id,
             name: row.name,
             definition: row.definition,
+            chat_skills: row.chat_skills,
         }
     }
 
@@ -624,6 +627,10 @@ impl Session {
         &self.name
     }
 
+    async fn config(&self, ctx: &Context<'_>) -> Result<Config> {
+        Config::load(ctx, self.scope, self.config_id).await
+    }
+
     async fn agent(&self) -> Result<Provider> {
         Provider::from_db(match self.parsed()?.worker.agent {
             sanchoris_config::Agent::Claude => "claude",
@@ -684,6 +691,11 @@ impl Session {
             sanchoris_config::ResumeMode::Auto => UsageLimitResume::Auto,
             sanchoris_config::ResumeMode::Manual => UsageLimitResume::Manual,
         })
+    }
+
+    /// The skills a chat in this session can run: the config skills whose GitHub resources fit the session's GitHub.Repos and Permissions, and the built-in file-issue.
+    async fn callable_skills(&self, ctx: &Context<'_>) -> Result<Vec<Skill>> {
+        Skill::by_names(ctx, self.scope, self.config_id, &self.chat_skills).await
     }
 }
 
@@ -804,7 +816,7 @@ impl ChangeRequest {
         )
     }
 
-    /// The chat task that opened it. Null when a member opened it.
+    /// The task that opened it. Null when a member opened it.
     async fn opened_from_task(&self, ctx: &Context<'_>) -> Result<Option<Task>> {
         match self.row.requested_by_task_id {
             Some(task_id) => Task::find(ctx, self.scope, task_id).await,

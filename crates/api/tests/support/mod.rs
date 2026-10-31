@@ -28,7 +28,9 @@ use sanchoris_api::signing::HmacKey;
 use sanchoris_core::clock::{Clock, SystemClock};
 use sanchoris_core::db::{REF_RUN, Store, insert_ref};
 use sanchoris_core::item::Entity;
-use sanchoris_core::items::{Credential, Guard, Integration, Run, RunChannel, Task, User, uniq};
+use sanchoris_core::items::{
+    Credential, Guard, Integration, Run, RunChannel, Task, TaskOrigin, User, uniq,
+};
 use sanchoris_core::keys;
 use sanchoris_core::local::DirBlobStore;
 use sanchoris_core::model::TaskStatus;
@@ -554,8 +556,10 @@ pub async fn task_with_run(dynamo: &TestDynamo, seeded: &Seeded) -> (Uuid, Uuid)
     tx.insert(&Task {
         id: task_id,
         tenant_id,
-        trigger_id: seeded.tenant.trigger_id,
-        trigger_event_id: None,
+        origin: TaskOrigin::Trigger {
+            trigger_id: seeded.tenant.trigger_id,
+            trigger_event_id: None,
+        },
         config_revision_id: seeded.tenant.config_revision_id,
         name: "acme/shop-web#1".into(),
         title: "Task".into(),
@@ -566,11 +570,14 @@ pub async fn task_with_run(dynamo: &TestDynamo, seeded: &Seeded) -> (Uuid, Uuid)
         nudges: 0,
         definition: json!({
             "Trigger": { "Name": "labeled-issue", "Definition": {} },
+            "Start": {
+                "Session": "shop", "Instruction": "Do it.", "Skills": [], "RequiredSkills": [], "MaxNudges": 0,
+                "Limits": { "Turns": 60, "CostUsd": 20, "TimeoutSeconds": 14400, "HeartbeatSeconds": 900, "Children": { "MaxDepth": 1, "MaxCount": 5 } },
+            },
             "Session": { "Name": "shop", "Definition": {} },
             "Skills": [],
         }),
         parent_task_id: None,
-        channel: None,
         start_payload: None,
         requested_by_member_id: None,
         requested_by_github_user_id: None,

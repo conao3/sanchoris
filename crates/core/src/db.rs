@@ -4,8 +4,8 @@ use uuid::Uuid;
 
 use crate::item::{Entity, Key};
 use crate::items::{
-    Child, Dependency, PendingTask, Plan, Ref, Run, RunChannel, Task, TaskName, Tenant,
-    TriggerEvent,
+    Child, ConversationTask, Dependency, PendingTask, Plan, Ref, Run, RunChannel, Task, TaskName,
+    TaskOrigin, Tenant, TriggerEvent,
 };
 use crate::jobs::Job;
 use crate::keys;
@@ -156,14 +156,12 @@ pub async fn set_trigger_event_outcome(
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewTask<'a> {
-    pub trigger_id: Uuid,
-    pub trigger_event_id: Option<Uuid>,
+    pub origin: TaskOrigin,
     pub config_revision_id: Uuid,
     pub name: &'a str,
     pub title: &'a str,
     pub definition: &'a TaskDefinition,
     pub parent_task_id: Option<Uuid>,
-    pub channel: Option<&'a Value>,
     pub requested_by_member_id: Option<Uuid>,
     pub requested_by_github_user_id: Option<i64>,
     pub requested_by_github_login: Option<&'a str>,
@@ -172,25 +170,54 @@ pub struct NewTask<'a> {
 
 pub async fn create_task(tx: &mut TenantTx, task: &NewTask<'_>) -> Result<Recorded, DbError> {
     let tenant_id = tx.tenant_id();
-    let name_key = keys::task_name_key(tenant_id, task.trigger_id, task.name);
-    if let Some(existing) = tx.get::<TaskName>(&name_key).await? {
-        return Ok(Recorded::Duplicate(existing.task_id));
-    }
     let id = Uuid::new_v4();
     let now = Utc::now();
-    if let Some(trigger_event_id) = task.trigger_event_id {
-        let location = locate(tx, trigger_event_id, REF_TRIGGER_EVENT)
-            .await?
-            .ok_or_else(|| DbError::Missing(format!("trigger event {trigger_event_id}")))?;
-        let mut event = tx.require::<TriggerEvent>(&location.target).await?;
-        event.task_id = Some(id);
-        tx.put(&event)?;
+    match task.origin {
+        TaskOrigin::Trigger {
+            trigger_id,
+            trigger_event_id,
+        } => {
+            let name_key = keys::task_name_key(tenant_id, trigger_id, task.name);
+            if let Some(existing) = tx.get::<TaskName>(&name_key).await? {
+                return Ok(Recorded::Duplicate(existing.task_id));
+            }
+            if let Some(trigger_event_id) = trigger_event_id {
+                let location = locate(tx, trigger_event_id, REF_TRIGGER_EVENT)
+                    .await?
+                    .ok_or_else(|| DbError::Missing(format!("trigger event {trigger_event_id}")))?;
+                let mut event = tx.require::<TriggerEvent>(&location.target).await?;
+                event.task_id = Some(id);
+                tx.put(&event)?;
+            }
+            tx.insert(&TaskName {
+                tenant_id,
+                trigger_id,
+                name: task.name.to_string(),
+                task_id: id,
+                created_at: now,
+            })?;
+        }
+        TaskOrigin::Conversation {
+            conversation_id,
+            sequence,
+        } => {
+            let key = keys::conversation_task_key(tenant_id, conversation_id, sequence);
+            if let Some(existing) = tx.get::<ConversationTask>(&key).await? {
+                return Ok(Recorded::Duplicate(existing.task_id));
+            }
+            tx.insert(&ConversationTask {
+                tenant_id,
+                conversation_id,
+                sequence,
+                task_id: id,
+                created_at: now,
+            })?;
+        }
     }
     tx.insert(&Task {
         id,
         tenant_id,
-        trigger_id: task.trigger_id,
-        trigger_event_id: task.trigger_event_id,
+        origin: task.origin,
         config_revision_id: task.config_revision_id,
         name: task.name.to_string(),
         title: task.title.to_string(),
@@ -201,7 +228,6 @@ pub async fn create_task(tx: &mut TenantTx, task: &NewTask<'_>) -> Result<Record
         nudges: 0,
         definition: serde_json::to_value(task.definition)?,
         parent_task_id: task.parent_task_id,
-        channel: task.channel.cloned(),
         start_payload: None,
         requested_by_member_id: task.requested_by_member_id,
         requested_by_github_user_id: task.requested_by_github_user_id,
@@ -214,13 +240,6 @@ pub async fn create_task(tx: &mut TenantTx, task: &NewTask<'_>) -> Result<Record
         started_at: None,
         finished_at: None,
         updated_at: now,
-    })?;
-    tx.insert(&TaskName {
-        tenant_id,
-        trigger_id: task.trigger_id,
-        name: task.name.to_string(),
-        task_id: id,
-        created_at: now,
     })?;
     tx.insert(&PendingTask {
         tenant_id,
@@ -320,7 +339,7 @@ pub async fn dispatch_pending_tasks(
         let run_id = match open {
             Some(mut run) => {
                 task.status = match task.wait_reason {
-                    Some(WaitReason::Skill | WaitReason::Chat) => TaskStatus::Waiting,
+                    Some(WaitReason::Skill | WaitReason::Message) => TaskStatus::Waiting,
                     _ => TaskStatus::Running,
                 };
                 store_task(tx, &task, now).await?;

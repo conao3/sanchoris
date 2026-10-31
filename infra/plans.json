@@ -21,6 +21,16 @@
       "maxIdleSeconds": 1800,
       "maxChildrenDepth": 1,
       "maxChildrenCount": 5,
+      "chatLimits": {
+        "Turns": 60,
+        "CostUsd": 10,
+        "TimeoutSeconds": 86400,
+        "HeartbeatSeconds": 900,
+        "Children": {
+          "MaxDepth": 1,
+          "MaxCount": 5
+        }
+      },
       "computes": ["standard"],
       "workspaceCpu": 1024,
       "workspaceMemoryMib": 4096
@@ -46,6 +56,16 @@
       "maxIdleSeconds": 3600,
       "maxChildrenDepth": 2,
       "maxChildrenCount": 10,
+      "chatLimits": {
+        "Turns": 100,
+        "CostUsd": 20,
+        "TimeoutSeconds": 86400,
+        "HeartbeatSeconds": 900,
+        "Children": {
+          "MaxDepth": 1,
+          "MaxCount": 10
+        }
+      },
       "computes": ["standard"],
       "workspaceCpu": 1024,
       "workspaceMemoryMib": 4096
@@ -71,6 +91,16 @@
       "maxIdleSeconds": 3600,
       "maxChildrenDepth": 3,
       "maxChildrenCount": 20,
+      "chatLimits": {
+        "Turns": 100,
+        "CostUsd": 30,
+        "TimeoutSeconds": 86400,
+        "HeartbeatSeconds": 900,
+        "Children": {
+          "MaxDepth": 2,
+          "MaxCount": 20
+        }
+      },
       "computes": ["standard"],
       "workspaceCpu": 2048,
       "workspaceMemoryMib": 4096
@@ -96,6 +126,16 @@
       "maxIdleSeconds": 7200,
       "maxChildrenDepth": 3,
       "maxChildrenCount": 50,
+      "chatLimits": {
+        "Turns": 200,
+        "CostUsd": 50,
+        "TimeoutSeconds": 172800,
+        "HeartbeatSeconds": 900,
+        "Children": {
+          "MaxDepth": 2,
+          "MaxCount": 50
+        }
+      },
       "computes": ["standard"],
       "workspaceCpu": 2048,
       "workspaceMemoryMib": 4096
@@ -121,6 +161,16 @@
       "maxIdleSeconds": 7200,
       "maxChildrenDepth": 3,
       "maxChildrenCount": 50,
+      "chatLimits": {
+        "Turns": 200,
+        "CostUsd": 50,
+        "TimeoutSeconds": 172800,
+        "HeartbeatSeconds": 900,
+        "Children": {
+          "MaxDepth": 2,
+          "MaxCount": 50
+        }
+      },
       "computes": ["standard"],
       "workspaceCpu": 2048,
       "workspaceMemoryMib": 4096

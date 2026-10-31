@@ -22,7 +22,6 @@ pub enum OutboxType {
     Exec,
     Interrupt,
     Shutdown,
-    ChatPost,
 }
 
 impl OutboxType {
@@ -33,7 +32,6 @@ impl OutboxType {
             Self::Exec => "exec",
             Self::Interrupt => "interrupt",
             Self::Shutdown => "shutdown",
-            Self::ChatPost => "chat_post",
         }
     }
 }

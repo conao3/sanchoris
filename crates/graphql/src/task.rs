@@ -1,27 +1,28 @@
+use std::collections::{BTreeSet, VecDeque};
+
 use async_graphql::{Context, ID, InputObject, Object, Result};
 use chrono::{DateTime, Utc};
 use sanchoris_config::Start;
-use sanchoris_core::db::{self, REF_CONFIG_REVISION, REF_RUN, REF_TRIGGER};
-use sanchoris_core::item::format_time;
+use sanchoris_core::db::{self, REF_CONFIG_REVISION, REF_RUN};
 use sanchoris_core::items::{
-    ApprovalWait, ChatMessage as ChatMessageItem, Child, ConfigRevision as RevisionItem,
-    Dependency, InboundEvent, OutboxItem, Output as OutputItem, Run as RunItem, RunEventItem,
-    SkillRunItem, Task as TaskItem, TaskName, Workspace as WorkspaceItem,
+    ApprovalWait, Child, ConfigRevision as RevisionItem, Dependency, OUTPUT_ISSUE, OutboxItem,
+    Output as OutputItem, Run as RunItem, RunEventItem, SkillRunItem, Task as TaskItem, TaskName,
+    TaskOrigin, Workspace as WorkspaceItem, github_task_name,
 };
 use sanchoris_core::keys;
 use sanchoris_core::model::{TaskDefinition, TaskStatus as CoreStatus};
-use sanchoris_core::store::{Index, Listing, SortKey};
-use sanchoris_core::tasks::{linked_member, task_branch};
+use sanchoris_core::store::{Index, Listing};
+use sanchoris_core::tasks::{linked_member, task_branch, task_config_id};
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::account::Member;
 use crate::config::Session;
 use crate::context::{Scope, now, tx};
+use crate::conversation::Conversation;
 use crate::enums::{
-    ChannelKind, ChatAuthorKind, LogLineKind, NeedsYouReason, OutputKind, OutputState,
-    PendingReason, Provider, RequesterKind, RequiredSkillState, RunStatus, TaskStatus, WaitReason,
-    WorkspaceArchitecture, WorkspaceCompute,
+    LogLineKind, NeedsYouReason, OutputKind, OutputState, PendingReason, Provider, RequesterKind,
+    RequiredSkillState, RunStatus, TaskStatus, WaitReason, WorkspaceArchitecture, WorkspaceCompute,
 };
 use crate::error::{not_found, parse_id};
 use crate::scalars::{Timestamp, ts, ts_opt};
@@ -115,7 +116,7 @@ impl Task {
             statuses
                 .as_ref()
                 .is_none_or(|statuses| statuses.iter().any(|s| s == task.status.as_str()))
-                && trigger_id.is_none_or(|id| task.trigger_id == id)
+                && trigger_id.is_none_or(|id| task.origin.trigger_id() == Some(id))
                 && filter
                     .skill_name
                     .as_deref()
@@ -140,19 +141,11 @@ impl Task {
         Ok(tasks)
     }
 
-    pub async fn chats(ctx: &Context<'_>, scope: Scope) -> Result<Vec<Self>> {
-        let mut tasks = Self::listed(ctx, scope, |task| {
-            task.channel
-                .as_ref()
-                .and_then(|channel| channel["source"].as_str())
-                .is_some_and(|source| matches!(source, "web" | "slack"))
-        })
-        .await?;
-        tasks.sort_by(|a, b| (b.row.created_at, a.row.id).cmp(&(a.row.created_at, b.row.id)));
-        Ok(tasks)
-    }
-
-    async fn found(ctx: &Context<'_>, scope: Scope, ids: Vec<Uuid>) -> Result<Vec<Self>> {
+    pub(crate) async fn found(
+        ctx: &Context<'_>,
+        scope: Scope,
+        ids: Vec<Uuid>,
+    ) -> Result<Vec<Self>> {
         let mut tasks = Vec::new();
         for id in ids {
             tasks.push(Self::load(ctx, scope, id).await?);
@@ -175,10 +168,7 @@ impl Task {
     }
 
     pub fn start(&self) -> Result<Start> {
-        let definition = self.definition()?;
-        serde_json::from_value(definition.trigger.definition["Start"].clone()).map_err(|e| {
-            async_graphql::Error::new(format!("task {} has an invalid Start: {e}", self.row.id))
-        })
+        Ok(self.definition()?.start)
     }
 
     pub fn status_value(&self) -> Result<TaskStatus> {
@@ -187,51 +177,28 @@ impl Task {
 
     pub async fn config_id(&self, ctx: &Context<'_>) -> Result<Uuid> {
         let mut tx = tx(ctx, self.scope.tenant_id);
-        db::locate(&mut tx, self.row.trigger_id, REF_TRIGGER)
-            .await?
-            .and_then(|location| location.parent_id)
-            .ok_or_else(|| not_found(format!("trigger {}", self.row.trigger_id)))
+        Ok(task_config_id(&mut tx, &self.row).await?)
     }
 
     pub async fn session_data(&self, ctx: &Context<'_>) -> Result<Session> {
         let definition = self.definition()?;
         let config_id = self.config_id(ctx).await?;
         let name = definition.session.name;
-        let id = Session::by_name(ctx, self.scope, config_id, &name)
-            .await?
-            .map(|session| session.id);
+        let current = Session::by_name(ctx, self.scope, config_id, &name).await?;
         Ok(Session {
             scope: self.scope,
-            id: id.unwrap_or_else(|| format!("{}/session", self.row.id)),
+            id: current
+                .as_ref()
+                .map_or_else(|| format!("{}/session", self.row.id), |s| s.id.clone()),
             config_id,
             name,
             definition: definition.session.definition,
+            chat_skills: current.map(|s| s.chat_skills).unwrap_or_default(),
         })
     }
 
-    pub fn chat_thread(&self) -> Option<(ChannelKind, String)> {
-        let channel = self.row.channel.as_ref()?;
-        let kind = ChannelKind::from_db(channel["source"].as_str()?).ok()?;
-        Some((kind, channel["thread"].as_str()?.to_string()))
-    }
-
-    pub async fn chat_scope(&self, ctx: &Context<'_>) -> Result<String> {
-        if let Some(event) = self.trigger_event(ctx).await?
-            && let Some(scope) = event.event()["detail"]["scope"].as_str()
-        {
-            return Ok(scope.to_string());
-        }
-        let session = self.session_data(ctx).await?;
-        Ok(session
-            .definition
-            .get("Project")
-            .and_then(Value::as_str)
-            .unwrap_or("all")
-            .to_string())
-    }
-
     async fn trigger_event(&self, ctx: &Context<'_>) -> Result<Option<TriggerEvent>> {
-        match self.row.trigger_event_id {
+        match self.row.origin.trigger_event_id() {
             Some(id) => TriggerEvent::find(ctx, self.scope, id).await,
             None => Ok(None),
         }
@@ -399,8 +366,28 @@ impl Task {
         ts(self.row.updated_at)
     }
 
-    async fn trigger(&self, ctx: &Context<'_>) -> Result<Trigger> {
-        Trigger::load(ctx, self.scope, self.row.trigger_id).await
+    /// The trigger that started the task. Null for a conversation's task.
+    async fn trigger(&self, ctx: &Context<'_>) -> Result<Option<Trigger>> {
+        match self.row.origin.trigger_id() {
+            Some(trigger_id) => Ok(Some(Trigger::load(ctx, self.scope, trigger_id).await?)),
+            None => Ok(None),
+        }
+    }
+
+    /// The conversation whose session the task is. Null for a trigger's task.
+    async fn conversation(&self, ctx: &Context<'_>) -> Result<Option<Conversation>> {
+        match self.row.origin.conversation_id() {
+            Some(id) => Ok(Some(Conversation::load(ctx, self.scope, id).await?)),
+            None => Ok(None),
+        }
+    }
+
+    /// The task's place in its conversation, from 1. Null for a trigger's task.
+    async fn conversation_sequence(&self) -> Result<Option<i32>> {
+        match self.row.origin {
+            TaskOrigin::Conversation { sequence, .. } => Ok(Some(i32::try_from(sequence)?)),
+            TaskOrigin::Trigger { .. } => Ok(None),
+        }
     }
 
     #[graphql(name = "triggerEvent")]
@@ -416,7 +403,6 @@ impl Task {
                 github_user_id: None,
                 github_login: None,
                 task: None,
-                via_chat: self.chat_thread().is_some(),
             }));
         }
         let (Some(github_user_id), Some(github_login)) = (
@@ -436,7 +422,6 @@ impl Task {
                 github_user_id: Some(github_user_id),
                 github_login: Some(github_login),
                 task,
-                via_chat: false,
             }));
         }
         let member = match linked_member(&mut tx(ctx, self.scope.tenant_id), github_user_id).await?
@@ -450,7 +435,6 @@ impl Task {
             github_user_id: Some(github_user_id),
             github_login: Some(github_login),
             task: None,
-            via_chat: false,
         }))
     }
 
@@ -480,24 +464,6 @@ impl Task {
             &event.event()["detail"],
             &repositories,
         ))
-    }
-
-    async fn channel(&self, ctx: &Context<'_>) -> Result<Option<Channel>> {
-        let Some((kind, thread_id)) = self.chat_thread() else {
-            return Ok(None);
-        };
-        let slack_channel = self
-            .row
-            .channel
-            .as_ref()
-            .and_then(|channel| channel["channel"].as_str())
-            .map(str::to_string);
-        Ok(Some(Channel {
-            kind,
-            thread_id,
-            scope: self.chat_scope(ctx).await?,
-            slack_channel,
-        }))
     }
 
     async fn parent(&self, ctx: &Context<'_>) -> Result<Option<Task>> {
@@ -535,8 +501,8 @@ impl Task {
     }
 
     /// Tasks started from issues this task filed, with their descendants.
-    async fn filed_tasks(&self) -> Vec<Task> {
-        Vec::new()
+    async fn filed_tasks(&self, ctx: &Context<'_>) -> Result<Vec<Task>> {
+        filed_tasks_of(ctx, self.scope, &[self.row.id]).await
     }
 
     async fn required_skills(&self, ctx: &Context<'_>) -> Result<Vec<RequiredSkillStatus>> {
@@ -607,10 +573,6 @@ impl Task {
         Output::of_task(ctx, self.scope, self.row.id, |_| true).await
     }
 
-    async fn messages(&self, ctx: &Context<'_>) -> Result<Vec<ChatMessage>> {
-        ChatMessage::for_task(ctx, self).await
-    }
-
     async fn limits(&self) -> Result<TaskLimits> {
         Ok(TaskLimits(self.start()?.limits))
     }
@@ -660,33 +622,6 @@ impl Approval {
     }
 }
 
-pub(crate) struct Channel {
-    kind: ChannelKind,
-    thread_id: String,
-    scope: String,
-    slack_channel: Option<String>,
-}
-
-#[Object]
-impl Channel {
-    async fn kind(&self) -> ChannelKind {
-        self.kind
-    }
-
-    async fn thread_id(&self) -> &str {
-        &self.thread_id
-    }
-
-    /// all or a project name.
-    async fn scope(&self) -> &str {
-        &self.scope
-    }
-
-    async fn slack_channel(&self) -> Option<&str> {
-        self.slack_channel.as_deref()
-    }
-}
-
 pub(crate) struct IssueRef {
     scope: Scope,
     repository: String,
@@ -713,6 +648,72 @@ impl IssueRef {
             url: issue["url"].as_str()?.to_string(),
         })
     }
+
+    pub(crate) fn from_output(
+        scope: Scope,
+        output: &OutputItem,
+        repositories: &[sanchoris_core::items::GitHubRepository],
+    ) -> Result<Self> {
+        Ok(Self {
+            scope,
+            repository: current_name(repositories, output.repository_id, &output.repository),
+            repository_id: output.repository_id,
+            number: i32::try_from(output.number)?,
+            title: output.title.clone().ok_or_else(|| {
+                async_graphql::Error::new(format!("issue output {} has no title", output.id))
+            })?,
+            url: output.url.clone(),
+        })
+    }
+}
+
+pub(crate) async fn issue_outputs(
+    ctx: &Context<'_>,
+    scope: Scope,
+    task_id: Uuid,
+) -> Result<Vec<OutputItem>> {
+    let mut rows = tx(ctx, scope.tenant_id)
+        .query::<OutputItem>(&keys::task_pk(scope.tenant_id, task_id), "SR#")
+        .await?
+        .into_iter()
+        .filter(|output| output.kind == OUTPUT_ISSUE)
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|a| (a.created_at, a.id));
+    Ok(rows)
+}
+
+pub(crate) async fn filed_tasks_of(
+    ctx: &Context<'_>,
+    scope: Scope,
+    task_ids: &[Uuid],
+) -> Result<Vec<Task>> {
+    let mut found = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut queue = VecDeque::new();
+    for task_id in task_ids {
+        for output in issue_outputs(ctx, scope, *task_id).await? {
+            let name = github_task_name(output.repository_id, &format!("#{}", output.number));
+            if let Some(task) = Task::by_name(ctx, scope, &name).await?
+                && seen.insert(task.row.id)
+            {
+                queue.push_back(task.row.id);
+                found.push(task);
+            }
+        }
+    }
+    while let Some(parent) = queue.pop_front() {
+        let children = tx(ctx, scope.tenant_id)
+            .query::<Child>(&keys::task_pk(scope.tenant_id, parent), "CHILD#")
+            .await?;
+        for child in children {
+            if seen.insert(child.task_id) {
+                queue.push_back(child.task_id);
+                found.push(Task::load(ctx, scope, child.task_id).await?);
+            }
+        }
+    }
+    found.sort_by_key(|a| (a.row.created_at, a.row.id));
+    Ok(found)
 }
 
 #[Object]
@@ -754,7 +755,6 @@ pub(crate) struct Requester {
     github_user_id: Option<i64>,
     github_login: Option<String>,
     task: Option<Task>,
-    via_chat: bool,
 }
 
 #[Object]
@@ -768,12 +768,12 @@ impl Requester {
         self.member.as_ref()
     }
 
-    /// The GitHub user id of the sender of the event that started the task. Null for tasks asked from the screen or a chat.
+    /// The GitHub user id of the sender of the event that started the task. Null for a conversation's task.
     async fn github_user_id(&self) -> Option<ID> {
         self.github_user_id.map(|id| ID(id.to_string()))
     }
 
-    /// The GitHub login of the sender of the event that started the task, as of the event. Null for tasks asked from the screen or a chat.
+    /// The GitHub login of the sender of the event that started the task, as of the event. Null for a conversation's task.
     async fn github_login(&self) -> Option<&str> {
         self.github_login.as_deref()
     }
@@ -781,11 +781,6 @@ impl Requester {
     /// The task whose agent filed the issue.
     async fn task(&self) -> Option<&Task> {
         self.task.as_ref()
-    }
-
-    /// True when the member asked in a chat.
-    async fn via_chat(&self) -> bool {
-        self.via_chat
     }
 }
 
@@ -903,7 +898,6 @@ impl Run {
                     LogLineKind::System,
                     format!("session stopped: {}", text("reason")),
                 ),
-                "chat_post" => (LogLineKind::Agent, text("text")),
                 other => (LogLineKind::System, other.to_string()),
             };
             entries.push((outbox.created_at, 1, line.0, line.1, None));
@@ -1291,134 +1285,5 @@ impl Output {
 
     async fn created_at(&self) -> Timestamp {
         ts(self.row.created_at)
-    }
-}
-
-pub(crate) struct ChatMessage {
-    scope: Scope,
-    id: Uuid,
-    author_kind: ChatAuthorKind,
-    member_id: Option<Uuid>,
-    text: String,
-    at: DateTime<Utc>,
-}
-
-impl ChatMessage {
-    pub async fn for_task(ctx: &Context<'_>, task: &Task) -> Result<Vec<Self>> {
-        let Some((kind, thread)) = task.chat_thread() else {
-            return Ok(Vec::new());
-        };
-        let tenant_id = task.scope.tenant_id;
-        let mut tx = tx(ctx, tenant_id);
-        let started = match task.trigger_event(ctx).await? {
-            Some(event) => tx
-                .get::<InboundEvent>(&keys::inbound_event_key(
-                    tenant_id,
-                    kind.as_db(),
-                    event.key(),
-                ))
-                .await?
-                .map_or(task.row.created_at, |inbound| inbound.received_at),
-            None => task.row.created_at,
-        };
-        let next = tx
-            .query::<TaskName>(
-                &keys::trigger_pk(tenant_id, task.row.trigger_id),
-                &format!("TASK#{thread}/"),
-            )
-            .await?
-            .into_iter()
-            .map(|name| name.created_at)
-            .filter(|created| *created > task.row.created_at)
-            .min();
-        let inbound = tx
-            .list::<InboundEvent>(
-                &Listing::index(
-                    Index::Gsi1,
-                    keys::thread_index(tenant_id, kind.as_db(), &thread),
-                )
-                .sort(SortKey::AtLeast(format_time(started))),
-                |event| {
-                    event.received_at >= started && next.is_none_or(|next| event.received_at < next)
-                },
-            )
-            .await?;
-        let posts = tx
-            .query::<ChatMessageItem>(&keys::task_pk(tenant_id, task.row.id), "CHAT#")
-            .await?;
-        let mut messages = inbound
-            .into_iter()
-            .map(|event| ChatMessage {
-                scope: task.scope,
-                id: event.id,
-                author_kind: ChatAuthorKind::Member,
-                member_id: event.event["detail"]["member_id"]
-                    .as_str()
-                    .and_then(|id| id.parse().ok()),
-                text: event.event["detail"]["text"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string(),
-                at: event.received_at,
-            })
-            .chain(posts.into_iter().map(|post| ChatMessage {
-                scope: task.scope,
-                id: post.id,
-                author_kind: ChatAuthorKind::Agent,
-                member_id: None,
-                text: post.text,
-                at: post.created_at,
-            }))
-            .collect::<Vec<_>>();
-        messages.sort_by(|a, b| a.at.cmp(&b.at).then(a.id.cmp(&b.id)));
-        Ok(messages)
-    }
-
-    pub fn inbound(
-        scope: Scope,
-        id: Uuid,
-        member_id: Uuid,
-        text: String,
-        at: DateTime<Utc>,
-    ) -> Self {
-        Self {
-            scope,
-            id,
-            author_kind: ChatAuthorKind::Member,
-            member_id: Some(member_id),
-            text,
-            at,
-        }
-    }
-}
-
-#[Object]
-impl ChatMessage {
-    async fn id(&self) -> ID {
-        ID(self.id.to_string())
-    }
-
-    async fn author_kind(&self) -> ChatAuthorKind {
-        self.author_kind
-    }
-
-    async fn member(&self, ctx: &Context<'_>) -> Result<Option<Member>> {
-        match self.member_id {
-            Some(member_id) => Member::find(ctx, self.scope, member_id).await,
-            None => Ok(None),
-        }
-    }
-
-    async fn text(&self) -> &str {
-        &self.text
-    }
-
-    async fn at(&self) -> Timestamp {
-        ts(self.at)
-    }
-
-    /// Issues the agent filed in this message.
-    async fn issues(&self) -> Vec<IssueRef> {
-        Vec::new()
     }
 }

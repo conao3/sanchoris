@@ -1,4 +1,5 @@
 mod common;
+mod conversation;
 mod dispatch;
 mod engine;
 mod github_http;

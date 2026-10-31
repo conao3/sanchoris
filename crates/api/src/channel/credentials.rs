@@ -6,10 +6,10 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, Utc};
 use sanchoris_config::{PermissionLevel, Session};
-use sanchoris_core::db::{DbError, REF_TRIGGER, Store, TenantTx, locate};
+use sanchoris_core::db::{DbError, Store, TenantTx};
 use sanchoris_core::items::{Config, Task};
 use sanchoris_core::keys;
-use sanchoris_core::tasks::{load_run, load_task};
+use sanchoris_core::tasks::{load_run, load_task, task_config_id};
 use sanchoris_core::tokens::RunClaims;
 use sanchoris_graphql::AesGcmEncryptor;
 use sanchoris_worker::error::WorkerError;
@@ -86,12 +86,11 @@ async fn running_task(tx: &mut TenantTx, claims: RunClaims) -> Result<Task, Cred
 }
 
 async fn config_of(tx: &mut TenantTx, task: &Task) -> Result<Config, CredentialError> {
-    let location = locate(tx, task.trigger_id, REF_TRIGGER)
-        .await?
-        .ok_or_else(|| unavailable(format!("trigger {} does not exist", task.trigger_id)))?;
-    let config_id = location
-        .parent_id
-        .ok_or_else(|| unavailable("a trigger reference has no config"))?;
+    let config_id = match task_config_id(tx, task).await {
+        Ok(config_id) => config_id,
+        Err(DbError::Missing(what)) => return Err(unavailable(format!("{what} does not exist"))),
+        Err(error) => return Err(error.into()),
+    };
     Ok(tx
         .require::<Config>(&keys::config_key(tx.tenant_id(), config_id))
         .await?)

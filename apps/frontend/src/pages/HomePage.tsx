@@ -36,7 +36,7 @@ import { useListNav } from "../lib/keys.ts"
 import { countOf, hoursOf, usedShare } from "../lib/plan.ts"
 import { useAction } from "../lib/mutation.ts"
 import { IDLE_POLL, LIVE_POLL, useData } from "../lib/query.ts"
-import { limitedText, needsYouText, skillStep } from "../lib/taskText.ts"
+import { limitedText, needsYouText, originName, skillStep } from "../lib/taskText.ts"
 import { useTenant } from "../lib/tenant.tsx"
 import { HomeSetup } from "./HomeSetup.tsx"
 
@@ -161,7 +161,7 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
   const running = tasks.filter((task) => task.status === "RUNNING")
   const waiting = tasks.filter(
     (task) =>
-      task.status === "PENDING" || (task.status === "WAITING" && task.waitReason !== "CHAT"),
+      task.status === "PENDING" || (task.status === "WAITING" && task.waitReason !== "MESSAGE"),
   )
 
   function openAttention(item: Attention) {
@@ -314,7 +314,7 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
                   {run ? <span className="text-muted">{skillStep(run)}</span> : null}
                 </div>
                 <Meter value={task.turns / task.limits.turns} />
-                <span className="text-muted">{task.trigger.name}</span>
+                <span className="text-muted">{originName(task)}</span>
                 <span className="text-right font-mono text-sm">{usd(task.costUsd)}</span>
               </Row>
             )

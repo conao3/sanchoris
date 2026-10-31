@@ -368,15 +368,37 @@ pub fn usage_key(tenant_id: Uuid, task_id: Uuid, recorded_at: DateTime<Utc>, id:
     )
 }
 
+pub fn conversation_pk(tenant_id: Uuid, conversation_id: Uuid) -> String {
+    format!("T#{tenant_id}#CONV#{conversation_id}")
+}
+
+pub fn conversation_key(tenant_id: Uuid, conversation_id: Uuid) -> Key {
+    Key::main(conversation_pk(tenant_id, conversation_id), "#CONV")
+}
+
+pub fn conversation_task_key(tenant_id: Uuid, conversation_id: Uuid, sequence: i64) -> Key {
+    Key::main(
+        conversation_pk(tenant_id, conversation_id),
+        format!("TASK#{}", padded(sequence)),
+    )
+}
+
 pub fn chat_message_key(
     tenant_id: Uuid,
-    task_id: Uuid,
+    conversation_id: Uuid,
     created_at: DateTime<Utc>,
     id: Uuid,
 ) -> Key {
     Key::main(
-        task_pk(tenant_id, task_id),
-        format!("CHAT#{}#{id}", format_time(created_at)),
+        conversation_pk(tenant_id, conversation_id),
+        format!("MSG#{}#{id}", format_time(created_at)),
+    )
+}
+
+pub fn filed_issue_key(tenant_id: Uuid, repository_id: i64, number: i64) -> Key {
+    Key::main(
+        tenant_pk(tenant_id),
+        format!("FILED#{repository_id}#{}", padded(number)),
     )
 }
 
@@ -478,12 +500,12 @@ pub fn outputs_index(tenant_id: Uuid) -> String {
     format!("T#{tenant_id}#OUTPUTS")
 }
 
-pub fn usage_index(tenant_id: Uuid) -> String {
-    format!("T#{tenant_id}#USAGE")
+pub fn conversations_index(tenant_id: Uuid) -> String {
+    format!("T#{tenant_id}#CONVERSATIONS")
 }
 
-pub fn thread_index(tenant_id: Uuid, source: &str, thread: &str) -> String {
-    format!("T#{tenant_id}#THREAD#{source}#{thread}")
+pub fn usage_index(tenant_id: Uuid) -> String {
+    format!("T#{tenant_id}#USAGE")
 }
 
 pub fn time_id(at: DateTime<Utc>, id: Uuid) -> String {

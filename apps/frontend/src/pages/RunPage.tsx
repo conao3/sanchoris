@@ -155,10 +155,11 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
   function submit(event?: FormEvent) {
     event?.preventDefault()
     const tenantId = data?.tenant?.id
-    if (!task || !tenantId || !text.trim()) {
+    const conversationId = task?.conversation?.id
+    if (!conversationId || !tenantId || !text.trim()) {
       return
     }
-    void send({ input: { tenantId, taskId: task.id, text: text.trim() } }).then((done) => {
+    void send({ input: { tenantId, conversationId, text: text.trim() } }).then((done) => {
       if (!done) {
         return
       }
@@ -262,7 +263,7 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
               onChange={(event) => setText(event.target.value)}
               placeholder={t("run.messagePlaceholder")}
               aria-label={t("run.messagePlaceholder")}
-              disabled={!live || sendState.loading}
+              disabled={!live || !task?.conversation || sendState.loading}
               className="min-w-0 flex-1 bg-transparent text-term-fg outline-none placeholder:text-muted"
             />
             <span>{t("run.enterSend")}</span>

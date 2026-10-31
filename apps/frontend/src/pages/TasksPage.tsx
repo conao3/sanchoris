@@ -27,7 +27,7 @@ import { t } from "../i18n/index.ts"
 import { age, issueLabel, usd } from "../lib/format.ts"
 import { useListNav } from "../lib/keys.ts"
 import { IDLE_POLL, LIVE_POLL, useData } from "../lib/query.ts"
-import { isActive, skillProgress } from "../lib/taskText.ts"
+import { isActive, originName, skillProgress } from "../lib/taskText.ts"
 import { useTenant } from "../lib/tenant.tsx"
 
 const TASK_LIST_LIMIT = 200
@@ -201,7 +201,7 @@ export function TasksPage() {
                         : null}
                     </Id>
                   </div>
-                  <span className="text-muted">{task.trigger.name}</span>
+                  <span className="text-muted">{originName(task)}</span>
                   <span className="text-muted">{skillProgress(task)}</span>
                   <span className="text-right font-mono text-sm">
                     {task.costUsd > 0 ? usd(task.costUsd) : "—"}

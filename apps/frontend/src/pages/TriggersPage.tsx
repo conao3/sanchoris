@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react"
-import { CircleDot, GitPullRequest, MessageSquare, Plus, Timer } from "lucide-react"
+import { CircleDot, GitPullRequest, Plus, Timer } from "lucide-react"
 import { type FormEvent, useState } from "react"
 import { Button } from "../components/Button.tsx"
 import { Page, Pg } from "../components/Shell.tsx"
@@ -46,10 +46,6 @@ function shortRepo(repository: string): string {
   return repository.split("/").pop() ?? repository
 }
 
-function scopeLabel(scope: string): string {
-  return scope === "all" ? t("chat.allProjects") : t("chat.project", { name: scope })
-}
-
 function startsWhen(trigger: Trigger): { icon: LucideIcon; text: string } {
   const { match, limits } = trigger
   const children = t("triggers.children", {
@@ -71,17 +67,6 @@ function startsWhen(trigger: Trigger): { icon: LucideIcon; text: string } {
       return {
         icon: CircleDot,
         text: t("triggers.checkRun", { repos: andList.format(match.repositories.map(shortRepo)) }),
-      }
-    case "MESSAGE":
-      if (match.source === "SLACK") {
-        return {
-          icon: MessageSquare,
-          text: t("triggers.slackMessage", { channel: match.slackChannel ?? "" }),
-        }
-      }
-      return {
-        icon: MessageSquare,
-        text: t("triggers.webMessage", { scope: scopeLabel(match.chatScope ?? "all") }),
       }
     case "SCHEDULE":
       return {
@@ -329,8 +314,6 @@ export function TriggersPage() {
               </Th>
               {triggers.map((trigger, index) => {
                 const starts = startsWhen(trigger)
-                const showRepos =
-                  trigger.match.kind === "MESSAGE" && trigger.session.repositories.length > 0
                 return (
                   <Row
                     key={trigger.id}
@@ -356,9 +339,6 @@ export function TriggersPage() {
                     <span>
                       <span className="font-mono text-sm">{trigger.session.name}</span> ·{" "}
                       {t(trigger.session.agent === "CODEX" ? "provider.codex" : "provider.claude")}
-                      {showRepos
-                        ? ` · ${trigger.session.repositories.map(shortRepo).join(", ")}`
-                        : null}
                     </span>
                     {trigger.requiredSkills.length > 0 ? (
                       <span className="font-mono text-sm">

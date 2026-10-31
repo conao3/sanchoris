@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use reqwest::StatusCode;
 use sanchoris_core::items::{
-    CheckWait, ConfigRevision, Output, Run, RunEventItem, RunLogEntry, SkillRunItem, Task,
-    Workspace,
+    CheckWait, ConfigRevision, GitHubRepository, Output, Run, RunEventItem, RunLogEntry,
+    SkillRunItem, Task, Workspace,
 };
 use sanchoris_core::testing::TestDynamo;
 use serde_json::{Value, json};
@@ -132,12 +132,12 @@ impl World {
 
     async fn task(&self, number: i64) -> Option<TaskRow> {
         let name = format!("{REPO}#{number}");
-        let task = self
-            .dynamo
-            .all::<Task>()
-            .await
-            .into_iter()
-            .find(|task| task.display_name(&[]) == name)?;
+        let task = self.dynamo.all::<Task>().await.into_iter().find(|task| {
+            task.display_name(&[GitHubRepository {
+                id: SHOP_WEB_ID,
+                full_name: REPO.to_string(),
+            }]) == name
+        })?;
         let run_id = self
             .dynamo
             .all::<Run>()

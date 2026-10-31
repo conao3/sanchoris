@@ -10,7 +10,7 @@ pub mod skill;
 pub mod skill_md;
 pub mod validate;
 
-pub use builtin::{builtin_skill, builtin_skills};
+pub use builtin::{FILE_ISSUE_SKILL, builtin_skill, builtin_skills};
 pub use config::{
     Agent, Architecture, CONFIG_FILE, Checkout, ChildLimits, Compute, Config, GitHubAccess, Hook,
     InputTransformer, Limits, Network, PermissionLevel, Project, ProjectRepo, REQUESTER,
@@ -24,5 +24,6 @@ pub use repository::{
 pub use resource::{IntegrationPattern, Resource, parse_resource};
 pub use skill_md::{SkillDocument, parse_skill_md};
 pub use validate::{
-    PlanLimits, ValidationContext, load_repository, validate, validate_skill_definition,
+    PlanLimits, ValidationContext, chat_skills, load_repository, validate,
+    validate_skill_definition,
 };

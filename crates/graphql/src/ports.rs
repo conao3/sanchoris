@@ -101,11 +101,6 @@ pub trait ConfigRepositoryPort: Send + Sync {
 }
 
 #[async_trait]
-pub trait ChatDispatcher: Send + Sync {
-    async fn dispatch(&self, tenant_id: Uuid, source: &str, key: &str) -> Result<(), PortError>;
-}
-
-#[async_trait]
 pub trait AuditExportPort: Send + Sync {
     async fn publish(
         &self,
@@ -146,7 +141,6 @@ pub struct GraphqlDeps {
     pub slack: Arc<dyn SlackConnectUrl>,
     pub config_sync: Arc<dyn ConfigSyncTrigger>,
     pub config_repository: Arc<dyn ConfigRepositoryPort>,
-    pub chat: Arc<dyn ChatDispatcher>,
     pub audit_export: Arc<dyn AuditExportPort>,
     pub encryptor: Arc<dyn Encryptor>,
     pub clock: Arc<dyn Clock>,

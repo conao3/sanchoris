@@ -12,8 +12,8 @@ use sanchoris_api::signing::HmacKey;
 use sanchoris_core::audit::audit_events;
 use sanchoris_core::billing::PAYMENT_PENDING;
 use sanchoris_core::items::{
-    ApprovalWait, AuditEvent, ChatMessage, Config, InboundEvent, Integration, Member, Membership,
-    OutboxItem, ReceiveRate, RunEventItem, RunLogEntry, Task, Tenant, User, Workspace,
+    ApprovalWait, AuditEvent, Config, InboundEvent, Integration, Member, Membership, OutboxItem,
+    ReceiveRate, RunEventItem, RunLogEntry, Task, Tenant, User, Workspace,
 };
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
@@ -1209,7 +1209,7 @@ async fn a_bootstrap_token_connects_once_and_the_delivered_run_token_reconnects(
 #[tokio::test]
 async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     let server = Server::start().await;
-    let (task_id, run_id) = server.task_with_run().await;
+    let (_, run_id) = server.task_with_run().await;
     let tenant = server.tenant();
     let signer = RunTokenSigner::new(Signer::new(RUN_KEY).unwrap());
     let token = signer.sign(tenant, run_id, Utc::now() + chrono::Duration::hours(1));
@@ -1235,11 +1235,6 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
             }),
         ),
         (2, "user_message", json!({ "text": "Hello." })),
-        (
-            3,
-            "chat_post",
-            json!({ "text": "Posted.", "channel": null }),
-        ),
     ] {
         server
             .dynamo
@@ -1383,15 +1378,9 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
         .all::<OutboxItem>()
         .await
         .into_iter()
-        .filter(|item| item.seq <= 3 && item.delivered_at.is_none())
+        .filter(|item| item.seq <= 2 && item.delivered_at.is_none())
         .collect::<Vec<_>>();
     assert_eq!(undelivered, vec![]);
-    let chat = server.dynamo.all::<ChatMessage>().await;
-    assert_eq!(chat.len(), 1);
-    assert_eq!(
-        (chat[0].text.as_str(), chat[0].task_id),
-        ("Posted.", task_id)
-    );
 
     let mut second = connect(&server, &token).await.unwrap();
     let next = Uuid::new_v4().to_string();

@@ -13,8 +13,6 @@ query Triggers($tenant: String!) {
         repositories
         labels
         senders
-        chatScope
-        slackChannel
         scheduleExpression
         nextRunAt
       }
