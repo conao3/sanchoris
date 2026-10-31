@@ -154,7 +154,7 @@ function periodUsage(
   }
 }
 
-function buildAcme(): Obj {
+function buildAcme(viewerRole: string): Obj {
   const tenant: Obj = {
     id: "tenant-acme",
     slug: "acme",
@@ -193,8 +193,8 @@ function buildAcme(): Obj {
     members.push(item)
     return item
   }
-  const mika = member(users.mika, "OWNER", 31, 0)
-  const sota = member(users.sota, "ADMIN", 12, 120)
+  const mika = member(users.mika, viewerRole, 31, 0)
+  const sota = member(users.sota, viewerRole === "OWNER" ? "ADMIN" : "OWNER", 12, 120)
   member(users.ken, "MEMBER", 6, 60 * 26)
   const aya = member(users.aya, "MEMBER", 9, 180)
   member(users.rin, "MEMBER", 2, 60 * 24 * 3)
@@ -1959,7 +1959,7 @@ function operatorOnly(
 }
 
 export function buildFixtures() {
-  const acme = buildAcme()
+  const acme = buildAcme(localStorage.getItem("sanchoris_mock_role") ?? "OWNER")
   const northwind = buildSetupTenant({
     slug: "northwind",
     name: "northwind",
