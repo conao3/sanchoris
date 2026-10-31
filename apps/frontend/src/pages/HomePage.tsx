@@ -444,18 +444,17 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
                   : t("home.idle")}
             </span>
           </span>
-          {isAdmin ? (
-            <Toggle
-              on={trigger.state === "ENABLED"}
-              onToggle={() =>
-                void setTriggerState({
-                  triggerId: trigger.id,
-                  state: trigger.state === "ENABLED" ? "DISABLED" : "ENABLED",
-                })
-              }
-              isDisabled={triggerState.loading}
-            />
-          ) : null}
+          <Toggle
+            on={trigger.state === "ENABLED"}
+            onToggle={() =>
+              void setTriggerState({
+                triggerId: trigger.id,
+                state: trigger.state === "ENABLED" ? "DISABLED" : "ENABLED",
+              })
+            }
+            isDisabled={triggerState.loading}
+            reason={isAdmin ? undefined : t("reason.adminTriggers")}
+          />
         </Row>
       ))}
       <ActionError error={triggerState.error} className="mt-1.5" />

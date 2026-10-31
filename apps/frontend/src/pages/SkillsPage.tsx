@@ -47,11 +47,17 @@ export function SkillsPage() {
     <Page
       crumbs={[{ label: t("nav.skills") }]}
       actions={
-        newSkillUrl ? (
-          <Button variant="primary" icon={Plus} kbd="n" href={newSkillUrl}>
-            {t("skills.add")}
-          </Button>
-        ) : null
+        <Button
+          variant="primary"
+          icon={Plus}
+          kbd="n"
+          href={newSkillUrl}
+          isDisabled={!data}
+          reason={data && !newSkillUrl ? t("reason.noConfig") : undefined}
+          reasonAlign="right"
+        >
+          {t("skills.add")}
+        </Button>
       }
       keys={[
         ...listKeys(skills.length, "keys.open"),

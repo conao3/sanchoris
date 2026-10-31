@@ -217,11 +217,13 @@ export function IntegrationsPage() {
                 <Button icon={ExternalLink} href={github.manageUrl}>
                   {t("integrations.manageOnGitHub")}
                 </Button>
-              ) : isAdmin ? (
+              ) : (
                 <Button
                   variant="primary"
                   icon={Plus}
                   isDisabled={installState.loading}
+                  reason={isAdmin ? undefined : t("reason.adminInstall")}
+                  reasonAlign="right"
                   onPress={() =>
                     void installGitHubApp({ tenantId: tenant.id }).then((result) => {
                       if (result) {
@@ -232,7 +234,7 @@ export function IntegrationsPage() {
                 >
                   {t("integrations.installApp")}
                 </Button>
-              ) : null}
+              )}
             </span>
           </Row>
           <Row cols={cols} tall>
@@ -264,11 +266,16 @@ export function IntegrationsPage() {
                     {t("integrations.manageInSlack")}
                   </Button>
                 ) : null
-              ) : isAdmin ? (
-                <Button icon={Plus} onPress={() => toast(t("common.notImplemented"))}>
+              ) : (
+                <Button
+                  icon={Plus}
+                  reason={isAdmin ? undefined : t("reason.adminSlack")}
+                  reasonAlign="right"
+                  onPress={() => toast(t("common.notImplemented"))}
+                >
                   {t("integrations.addSlack")}
                 </Button>
-              ) : null}
+              )}
             </span>
           </Row>
         </Table>

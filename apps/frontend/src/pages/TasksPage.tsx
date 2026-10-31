@@ -127,32 +127,30 @@ export function TasksPage() {
         <Title>{t("nav.tasks")}</Title>
         <Sub>{t("tasks.intro", { n: rows.length })}</Sub>
         <div className="mb-3.5 flex flex-wrap gap-2">
-          {triggers.length > 0 ? (
-            <Menu
-              icon={Zap}
-              open={filterOpen}
-              onOpenChange={setFilterOpen}
-              label={triggerName ?? t("tasks.allTriggers")}
-              value={triggerId}
-              onChange={setTriggerId}
-              options={[
-                { value: "", label: t("tasks.allTriggers") },
-                ...triggers.map((trigger) => ({ value: trigger.id, label: trigger.name })),
-              ]}
-            />
-          ) : null}
-          {skills.length > 0 ? (
-            <Menu
-              icon={Puzzle}
-              label={skillName || t("tasks.allSkills")}
-              value={skillName}
-              onChange={setSkillName}
-              options={[
-                { value: "", label: t("tasks.allSkills") },
-                ...skills.map((skill) => ({ value: skill.name, label: skill.name })),
-              ]}
-            />
-          ) : null}
+          <Menu
+            icon={Zap}
+            open={filterOpen}
+            onOpenChange={setFilterOpen}
+            label={triggerName ?? t("tasks.allTriggers")}
+            value={triggerId}
+            onChange={setTriggerId}
+            reason={tenant && triggers.length === 0 ? t("reason.noTriggers") : undefined}
+            options={[
+              { value: "", label: t("tasks.allTriggers") },
+              ...triggers.map((trigger) => ({ value: trigger.id, label: trigger.name })),
+            ]}
+          />
+          <Menu
+            icon={Puzzle}
+            label={skillName || t("tasks.allSkills")}
+            value={skillName}
+            onChange={setSkillName}
+            reason={tenant && skills.length === 0 ? t("reason.noSkills") : undefined}
+            options={[
+              { value: "", label: t("tasks.allSkills") },
+              ...skills.map((skill) => ({ value: skill.name, label: skill.name })),
+            ]}
+          />
           <Menu
             label={t("tasks.stateLabel", { state: t(stateLabels[state]) })}
             value={state}

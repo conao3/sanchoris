@@ -4,6 +4,7 @@ import { MessageSquare, Square } from "lucide-react"
 import { type FormEvent, useEffect, useRef, useState } from "react"
 import { Button } from "../components/Button.tsx"
 import { ConfirmDialog } from "../components/ConfirmDialog.tsx"
+import { Reason } from "../components/Reason.tsx"
 import { Cols, Page } from "../components/Shell.tsx"
 import { RunState, SkillRunState } from "../components/status.tsx"
 import {
@@ -145,6 +146,11 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
   const run = task?.run
   const live = isLive(run?.status)
   const messaging = live && !!task?.conversation
+  const messageReason = !live
+    ? t("reason.runNotRunning")
+    : task?.conversation
+      ? undefined
+      : t("reason.runNotChat")
   const log = useRunLog(variables, live)
 
   useEffect(() => {
@@ -254,23 +260,23 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
               )
             })}
           </div>
-          {messaging ? (
-            <form
-              onSubmit={submit}
-              className="mt-2.5 flex items-center justify-between gap-3 border-t border-term-line px-4 pt-2.5 text-muted"
-            >
+          <form
+            onSubmit={submit}
+            className="mt-2.5 flex items-center justify-between gap-3 border-t border-term-line px-4 pt-2.5 text-muted"
+          >
+            <Reason reason={messageReason} className="min-w-0 flex-1">
               <input
                 ref={input}
                 value={text}
                 onChange={(event) => setText(event.target.value)}
                 placeholder={t("run.messagePlaceholder")}
                 aria-label={t("run.messagePlaceholder")}
-                disabled={sendState.loading}
+                disabled={!messaging || sendState.loading}
                 className="min-w-0 flex-1 bg-transparent text-term-fg outline-none placeholder:text-muted"
               />
-              <span>{t("run.enterSend")}</span>
-            </form>
-          ) : null}
+            </Reason>
+            {messaging ? <span>{t("run.enterSend")}</span> : null}
+          </form>
         </div>
         <ActionError error={sendState.error} className="mt-2" />
       </div>
@@ -364,23 +370,29 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
       ]}
       actions={
         <>
-          {live ? (
-            <Button
-              variant="danger"
-              icon={Square}
-              kbd="s"
-              compact
-              isDisabled={stopState.loading}
-              onPress={askStop}
-            >
-              {t("run.stop")}
-            </Button>
-          ) : null}
-          {messaging ? (
-            <Button icon={MessageSquare} kbd="m" compact onPress={() => input.current?.focus()}>
-              {t("run.sendMessage")}
-            </Button>
-          ) : null}
+          <Button
+            variant="danger"
+            icon={Square}
+            kbd="s"
+            compact
+            isDisabled={stopState.loading || !run}
+            reason={run && !live ? t("reason.runNotRunning") : undefined}
+            reasonAlign="right"
+            onPress={askStop}
+          >
+            {t("run.stop")}
+          </Button>
+          <Button
+            icon={MessageSquare}
+            kbd="m"
+            compact
+            isDisabled={!run}
+            reason={run ? messageReason : undefined}
+            reasonAlign="right"
+            onPress={() => input.current?.focus()}
+          >
+            {t("run.sendMessage")}
+          </Button>
         </>
       }
       keys={keys}

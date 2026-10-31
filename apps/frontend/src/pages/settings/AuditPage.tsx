@@ -60,6 +60,7 @@ const periods: { value: string; label: MessageKey; days: number }[] = [
 export function AuditPage() {
   const { slug } = useTenant()
   const { isAdmin } = useRole()
+  const denied = isAdmin ? undefined : t("reason.adminAudit")
   const [actor, setActor] = useState("")
   const [action, setAction] = useState("")
   const [period, setPeriod] = useState("7")
@@ -97,15 +98,15 @@ export function AuditPage() {
     <SettingsPage
       tab="audit"
       actions={
-        isAdmin ? (
-          <Button
-            icon={ExternalLink}
-            onPress={doExport}
-            isDisabled={exportState.loading || !tenant}
-          >
-            {t("audit.export")}
-          </Button>
-        ) : null
+        <Button
+          icon={ExternalLink}
+          onPress={doExport}
+          isDisabled={exportState.loading || !tenant}
+          reason={denied}
+          reasonAlign="right"
+        >
+          {t("audit.export")}
+        </Button>
       }
       keys={
         isAdmin ? [...listKeys(events.length), ["/", "keys.filter"], ["e", "audit.exportKey"]] : []
@@ -113,45 +114,47 @@ export function AuditPage() {
     >
       <Title>{t("settings.audit")}</Title>
       <Sub>{t("audit.intro", { tenant: tenant?.name ?? "" })}</Sub>
-      {isAdmin ? (
-        <div className="mb-3 flex flex-wrap gap-2">
-          <Menu
-            icon={Users}
-            label={actorName ?? t("audit.allActors")}
-            value={actor}
-            open={filterOpen}
-            onOpenChange={setFilterOpen}
-            onChange={setActor}
-            options={[
-              { value: "", label: t("audit.allActors") },
-              ...(tenant?.members ?? []).map((member) => ({
-                value: member.id,
-                label: member.user.name,
-              })),
-            ]}
-          />
-          {actions.length > 0 || action ? (
-            <Menu
-              label={action || t("audit.allActions")}
-              value={action}
-              onChange={setAction}
-              options={[
-                { value: "", label: t("audit.allActions") },
-                ...actions.map((item) => ({
-                  value: item,
-                  label: <span className="font-mono text-sm">{item}</span>,
-                })),
-              ]}
-            />
-          ) : null}
-          <Menu
-            label={t(periods.find((item) => item.value === period)?.label ?? "audit.last7")}
-            value={period}
-            onChange={setPeriod}
-            options={periods.map((item) => ({ value: item.value, label: t(item.label) }))}
-          />
-        </div>
-      ) : null}
+      <div className="mb-3 flex flex-wrap gap-2">
+        <Menu
+          reason={denied}
+          icon={Users}
+          label={actorName ?? t("audit.allActors")}
+          value={actor}
+          open={filterOpen}
+          onOpenChange={setFilterOpen}
+          onChange={setActor}
+          options={[
+            { value: "", label: t("audit.allActors") },
+            ...(tenant?.members ?? []).map((member) => ({
+              value: member.id,
+              label: member.user.name,
+            })),
+          ]}
+        />
+        <Menu
+          label={action || t("audit.allActions")}
+          value={action}
+          onChange={setAction}
+          reason={
+            denied ??
+            (tenant && actions.length === 0 && !action ? t("reason.noActions") : undefined)
+          }
+          options={[
+            { value: "", label: t("audit.allActions") },
+            ...actions.map((item) => ({
+              value: item,
+              label: <span className="font-mono text-sm">{item}</span>,
+            })),
+          ]}
+        />
+        <Menu
+          reason={denied}
+          label={t(periods.find((item) => item.value === period)?.label ?? "audit.last7")}
+          value={period}
+          onChange={setPeriod}
+          options={periods.map((item) => ({ value: item.value, label: t(item.label) }))}
+        />
+      </div>
       <ActionError error={exportState.error} className="mb-3" />
       {exportState.data && !exportState.loading ? (
         <div className="mb-3">

@@ -144,7 +144,8 @@ export function OperatorTenantsPage() {
                             small
                             variant="danger"
                             onPress={() => setSuspending(tenant.id)}
-                            isDisabled={suspending === tenant.id}
+                            reason={suspending === tenant.id ? t("reason.suspendOpen") : undefined}
+                            reasonAlign="right"
                           >
                             {t("operator.suspend")}
                           </Button>
@@ -180,7 +181,8 @@ export function OperatorTenantsPage() {
                       <Button
                         type="submit"
                         variant="danger"
-                        isDisabled={suspendState.loading || !reason.trim()}
+                        isDisabled={suspendState.loading}
+                        reason={reason.trim() ? undefined : t("reason.typeSuspendReason")}
                       >
                         {t("operator.suspend")}
                       </Button>

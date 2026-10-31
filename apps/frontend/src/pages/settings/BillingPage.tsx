@@ -37,6 +37,7 @@ import { useTenant } from "../../lib/tenant.tsx"
 
 export function BillingPage() {
   const { slug, membership } = useTenant()
+  const owner = membership.role === "OWNER"
   const { data, error, refetch } = useData(BillingDocument, { tenant: slug })
   const [changePlan, changeState] = useAction(ChangePlanDocument)
   const [openPortal, portalState] = useAction(OpenBillingPortalDocument)
@@ -155,30 +156,31 @@ export function BillingPage() {
                     <State tone="ok" icon={ShieldCheck}>
                       {t("billing.current")}
                     </State>
-                  ) : membership.role === "OWNER" ? (
+                  ) : (
                     <span className="justify-self-end">
                       <Button
                         small
                         isDisabled={changeState.loading}
+                        reason={owner ? undefined : t("reason.ownerPlan")}
+                        reasonAlign="right"
                         onPress={() => change(item.id)}
                       >
                         {t("billing.change")}
                       </Button>
                     </span>
-                  ) : null}
+                  )}
                 </Row>
               ))}
             </Table>
             <Dim className="mt-3">{t("billing.footer")}</Dim>
           </>
         )}
-        {membership.role === "OWNER" ? (
-          <DeleteTenant
-            tenantId={tenant.id}
-            name={tenant.name}
-            free={!admin && plan.priceUsd === 0}
-          />
-        ) : null}
+        <DeleteTenant
+          tenantId={tenant.id}
+          name={tenant.name}
+          free={!admin && plan.priceUsd === 0}
+          reason={owner ? undefined : t("reason.ownerDelete")}
+        />
       </>
     )
   }
@@ -187,8 +189,14 @@ export function BillingPage() {
     <SettingsPage
       tab="billing"
       actions={
-        admin || membership.role !== "OWNER" ? undefined : (
-          <Button icon={ExternalLink} onPress={portal} isDisabled={!tenant}>
+        admin ? undefined : (
+          <Button
+            icon={ExternalLink}
+            onPress={portal}
+            isDisabled={!tenant}
+            reason={owner ? undefined : t("reason.ownerPortal")}
+            reasonAlign="right"
+          >
             {t("billing.manageInStripe")}
           </Button>
         )
@@ -211,7 +219,17 @@ export function BillingPage() {
   )
 }
 
-function DeleteTenant({ tenantId, name, free }: { tenantId: string; name: string; free: boolean }) {
+function DeleteTenant({
+  tenantId,
+  name,
+  free,
+  reason,
+}: {
+  tenantId: string
+  name: string
+  free: boolean
+  reason?: string
+}) {
   const { viewer, slug, switchTenant } = useTenant()
   const client = useApolloClient()
   const navigate = useNavigate()
@@ -247,7 +265,13 @@ function DeleteTenant({ tenantId, name, free }: { tenantId: string; name: string
       <Section>{t("billing.deleteTenant")}</Section>
       <div className="flex items-center justify-between gap-6 max-md:flex-col max-md:items-start max-md:gap-2.5">
         <Dim>{t("billing.deleteTenantNote")}</Dim>
-        <Button variant="danger" icon={Trash2} onPress={() => setOpen(true)}>
+        <Button
+          variant="danger"
+          icon={Trash2}
+          reason={reason}
+          reasonAlign="right"
+          onPress={() => setOpen(true)}
+        >
           {t("billing.deleteTenant")}
         </Button>
       </div>
@@ -258,7 +282,8 @@ function DeleteTenant({ tenantId, name, free }: { tenantId: string; name: string
         confirmLabel={t("billing.deleteTenant")}
         confirmIcon={Trash2}
         onConfirm={confirm}
-        isConfirmDisabled={typed.trim() !== slug || removeState.loading}
+        isConfirmDisabled={removeState.loading}
+        confirmReason={typed.trim() === slug ? undefined : t("reason.typeSlug")}
         focusConfirm={false}
         error={removeState.error}
       >

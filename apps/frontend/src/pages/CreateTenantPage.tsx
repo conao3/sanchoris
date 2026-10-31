@@ -201,7 +201,8 @@ export function CreateTenantPage() {
               type="submit"
               variant="primary"
               icon={selected?.requiresPayment ? ExternalLink : Check}
-              isDisabled={createState.loading || !name.trim()}
+              isDisabled={createState.loading}
+              reason={name.trim() ? undefined : t("reason.typeName")}
             >
               {selected?.requiresPayment ? t("tenantNew.createAndPay") : t("tenantNew.create")}
             </Button>

@@ -287,11 +287,17 @@ export function TriggersPage() {
     <Page
       crumbs={[{ label: t("nav.triggers") }]}
       actions={
-        canPropose ? (
-          <Button variant="primary" icon={Plus} kbd="n" onPress={() => setPanel(!panel)}>
-            {t("triggers.newFromTemplate")}
-          </Button>
-        ) : null
+        <Button
+          variant="primary"
+          icon={Plus}
+          kbd="n"
+          isDisabled={!tenant}
+          reason={tenant && !canPropose ? t("reason.proposeNeeds") : undefined}
+          reasonAlign="right"
+          onPress={() => setPanel(!panel)}
+        >
+          {t("triggers.newFromTemplate")}
+        </Button>
       }
       keys={[
         ...listKeys(triggers.length, "keys.openOnGitHub"),
@@ -365,17 +371,12 @@ export function TriggersPage() {
                       {shortRepo(trigger.config.repository)}
                     </span>
                     <span className="text-right">
-                      {isAdmin ? (
-                        <Toggle
-                          on={trigger.state === "ENABLED"}
-                          onToggle={() => toggle(trigger)}
-                          isDisabled={triggerState.loading}
-                        />
-                      ) : (
-                        <span className="text-sm text-muted">
-                          {trigger.state === "ENABLED" ? t("common.on") : t("common.off")}
-                        </span>
-                      )}
+                      <Toggle
+                        on={trigger.state === "ENABLED"}
+                        onToggle={() => toggle(trigger)}
+                        isDisabled={triggerState.loading}
+                        reason={isAdmin ? undefined : t("reason.adminTriggers")}
+                      />
                     </span>
                   </Row>
                 )

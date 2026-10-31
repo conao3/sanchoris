@@ -157,14 +157,10 @@ export function HomeSetup({ tenant }: { tenant: Tenant }) {
 
   const aside = (
     <>
-      {isAdmin ? (
-        <>
-          <Section first>{t("setup.orApiKey")}</Section>
-          <Dim>{t("setup.apiKeyProviders")}</Dim>
-          <ApiKeyForm tenantId={tenant.id} />
-        </>
-      ) : null}
-      <Section first={!isAdmin}>{t("setup.usedBySession")}</Section>
+      <Section first>{t("setup.orApiKey")}</Section>
+      <Dim>{t("setup.apiKeyProviders")}</Dim>
+      <ApiKeyForm tenantId={tenant.id} reason={isAdmin ? undefined : t("reason.adminOrgKey")} />
+      <Section>{t("setup.usedBySession")}</Section>
       <Dim>{t("setup.usedBySessionDetail")}</Dim>
     </>
   )

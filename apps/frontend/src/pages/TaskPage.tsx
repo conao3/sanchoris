@@ -427,25 +427,23 @@ export function TaskPage() {
             <Dim className="mt-1">{t("task.approvalNote")}</Dim>
             <ActionError error={approvalState.error} className="mt-2" />
             <div className="mt-2.5 flex gap-2">
-              {canResolve ? (
-                <>
-                  <Button
-                    variant="primary"
-                    icon={Check}
-                    onPress={() => doResolve(true)}
-                    isDisabled={approvalState.loading}
-                  >
-                    {t("task.approve")}
-                  </Button>
-                  <Button
-                    icon={X}
-                    onPress={() => doResolve(false)}
-                    isDisabled={approvalState.loading}
-                  >
-                    {t("task.reject")}
-                  </Button>
-                </>
-              ) : null}
+              <Button
+                variant="primary"
+                icon={Check}
+                onPress={() => doResolve(true)}
+                isDisabled={approvalState.loading}
+                reason={canResolve ? undefined : t("reason.approval")}
+              >
+                {t("task.approve")}
+              </Button>
+              <Button
+                icon={X}
+                onPress={() => doResolve(false)}
+                isDisabled={approvalState.loading}
+                reason={canResolve ? undefined : t("reason.approval")}
+              >
+                {t("task.reject")}
+              </Button>
               <Button
                 variant="danger"
                 icon={Square}
@@ -482,7 +480,8 @@ export function TaskPage() {
                 icon={Play}
                 kbd="⌘↵"
                 onPress={doResume}
-                isDisabled={!message.trim() || resumeState.loading}
+                isDisabled={resumeState.loading}
+                reason={message.trim() ? undefined : t("reason.typeMessage")}
               >
                 {t("task.resume")}
               </Button>
@@ -652,7 +651,7 @@ export function TaskPage() {
                 {t("task.stop")}
               </Button>
             ) : null}
-            {resumable && message.trim() ? (
+            {resumable ? (
               <Button
                 variant="primary"
                 icon={Play}
@@ -660,6 +659,8 @@ export function TaskPage() {
                 compact
                 onPress={doResume}
                 isDisabled={resumeState.loading}
+                reason={message.trim() ? undefined : t("reason.typeMessage")}
+                reasonAlign="right"
               >
                 {t("task.resume")}
               </Button>

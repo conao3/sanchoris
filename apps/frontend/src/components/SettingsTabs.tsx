@@ -4,6 +4,7 @@ import { CreditCard, FolderGit2, GitBranch, KeyRound, ListChecks, Users } from "
 import { type ReactNode, useLayoutEffect, useRef } from "react"
 import { type MessageKey, t } from "../i18n/index.ts"
 import { useRole } from "../lib/tenant.tsx"
+import { Reason } from "./Reason.tsx"
 import { Page, Pg } from "./Shell.tsx"
 import { Icon } from "./ui.tsx"
 
@@ -59,30 +60,38 @@ export function SettingsPage({
       <Pg>
         <div ref={strip} data-scroll-x className="relative mb-4 overflow-x-auto">
           <div className="flex h-[34px] w-max min-w-full items-end gap-[18px] border-b border-line">
-            {tabs
-              .filter((item) => isAdmin || item.id !== "audit")
-              .map((item) =>
-                item.id === tab ? (
+            {tabs.map((item) =>
+              item.id === tab ? (
+                <span
+                  key={item.id}
+                  ref={active}
+                  aria-current="page"
+                  className="-mb-px flex items-center gap-1.5 whitespace-nowrap border-b-2 border-ink pb-2 font-medium text-ink"
+                >
+                  <Icon icon={item.icon} />
+                  {t(item.label)}
+                </span>
+              ) : item.id === "audit" && !isAdmin ? (
+                <Reason key={item.id} reason={t("reason.adminAudit")}>
                   <span
-                    key={item.id}
-                    ref={active}
-                    aria-current="page"
-                    className="-mb-px flex items-center gap-1.5 whitespace-nowrap border-b-2 border-ink pb-2 font-medium text-ink"
+                    aria-disabled="true"
+                    className="flex items-center gap-1.5 whitespace-nowrap pb-2 text-faint"
                   >
                     <Icon icon={item.icon} />
                     {t(item.label)}
                   </span>
-                ) : (
-                  <Link
-                    key={item.id}
-                    to={item.to}
-                    className="flex items-center gap-1.5 whitespace-nowrap pb-2 text-muted hover:text-ink"
-                  >
-                    <Icon icon={item.icon} />
-                    {t(item.label)}
-                  </Link>
-                ),
-              )}
+                </Reason>
+              ) : (
+                <Link
+                  key={item.id}
+                  to={item.to}
+                  className="flex items-center gap-1.5 whitespace-nowrap pb-2 text-muted hover:text-ink"
+                >
+                  <Icon icon={item.icon} />
+                  {t(item.label)}
+                </Link>
+              ),
+            )}
           </div>
         </div>
         {children}

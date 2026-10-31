@@ -2,6 +2,7 @@ import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import { CircleDot, Plus } from "lucide-react"
 import { type KeyboardEvent, useState } from "react"
 import { Button } from "../components/Button.tsx"
+import { Reason } from "../components/Reason.tsx"
 import { Page } from "../components/Shell.tsx"
 import { TaskState } from "../components/status.tsx"
 import {
@@ -59,10 +60,10 @@ function sessionSkills(session: ChatSession): string {
 }
 
 function Composer({
-  disabled,
+  reason,
   onSend,
 }: {
-  disabled?: boolean
+  reason?: string
   onSend: (text: string) => Promise<boolean>
 }) {
   const [text, setText] = useState("")
@@ -70,7 +71,7 @@ function Composer({
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()
-      if (text.trim() && !disabled) {
+      if (text.trim() && !reason) {
         void onSend(text.trim()).then((sent) => {
           if (sent) {
             setText("")
@@ -82,17 +83,19 @@ function Composer({
 
   return (
     <div className="mt-3.5 flex items-start justify-between gap-3 rounded-ui border border-line2 px-2.5 py-2">
-      <textarea
-        rows={1}
-        value={text}
-        disabled={disabled}
-        onChange={(event) => setText(event.target.value)}
-        onKeyDown={onKeyDown}
-        placeholder={t("chat.placeholder")}
-        aria-label={t("chat.placeholder")}
-        className="min-h-5 flex-1 resize-none bg-transparent outline-none placeholder:text-faint"
-      />
-      <Kbd>{t("chat.enterSend")}</Kbd>
+      <Reason reason={reason} className="min-w-0 flex-1">
+        <textarea
+          rows={1}
+          value={text}
+          disabled={!!reason}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder={t("chat.placeholder")}
+          aria-label={t("chat.placeholder")}
+          className="min-h-5 flex-1 resize-none bg-transparent outline-none placeholder:text-faint"
+        />
+      </Reason>
+      {reason ? null : <Kbd>{t("chat.enterSend")}</Kbd>}
     </div>
   )
 }
@@ -163,23 +166,20 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
           })}
         </div>
       ))}
-      {conversation.kind === "WEB" ? (
-        <>
-          {finished && task ? (
-            <Dim className="mt-2.5">
-              {t("chat.continueHint", { n: (task.conversationSequence ?? 1) + 1 })}
-            </Dim>
-          ) : null}
-          <Composer
-            onSend={(text) =>
-              send({
-                input: { tenantId: tenant.id, conversationId: conversation.id, text },
-              }).then(Boolean)
-            }
-          />
-          <ActionError error={error} className="mt-2" />
-        </>
+      {finished && task && conversation.kind === "WEB" ? (
+        <Dim className="mt-2.5">
+          {t("chat.continueHint", { n: (task.conversationSequence ?? 1) + 1 })}
+        </Dim>
       ) : null}
+      <Composer
+        reason={conversation.kind === "SLACK" ? t("reason.slackThread") : undefined}
+        onSend={(text) =>
+          send({
+            input: { tenantId: tenant.id, conversationId: conversation.id, text },
+          }).then(Boolean)
+        }
+      />
+      <ActionError error={error} className="mt-2" />
     </>
   )
 }
@@ -254,30 +254,34 @@ function NewChat({
         <SessionPicker sessions={tenant.sessions} selected={session} onSelect={onSelect} />
       ) : null}
       {session ? <Dim className="mt-2.5">{sessionSkills(session)}</Dim> : null}
-      {hasConfig && tenant.sessions.length > 0 ? (
-        <Composer
-          disabled={!session}
-          onSend={(text) =>
-            send({
-              input: {
-                tenantId: tenant.id,
-                sessionName: session?.name,
-                configId: session?.config.id,
-                text,
-              },
-            }).then((result) => {
-              const conversation = result?.sendChatMessage.conversation
-              if (conversation) {
-                void navigate({
-                  to: "/chat/$conversation",
-                  params: { conversation: conversation.id },
-                })
-              }
-              return !!result
-            })
-          }
-        />
-      ) : null}
+      <Composer
+        reason={
+          !hasConfig || tenant.sessions.length === 0
+            ? t("reason.noSession")
+            : session
+              ? undefined
+              : t("reason.pickSession")
+        }
+        onSend={(text) =>
+          send({
+            input: {
+              tenantId: tenant.id,
+              sessionName: session?.name,
+              configId: session?.config.id,
+              text,
+            },
+          }).then((result) => {
+            const conversation = result?.sendChatMessage.conversation
+            if (conversation) {
+              void navigate({
+                to: "/chat/$conversation",
+                params: { conversation: conversation.id },
+              })
+            }
+            return !!result
+          })
+        }
+      />
       <ActionError error={error} className="mt-2" />
     </>
   )

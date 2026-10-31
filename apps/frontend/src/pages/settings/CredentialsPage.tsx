@@ -54,6 +54,8 @@ export function CredentialsPage() {
     refetchQueries: [CredentialsDocument],
   })
   const [connect, setConnect] = useState(false)
+  const manageable = (credential: { owner?: { id: string } | null }) =>
+    isAdmin || credential.owner?.id === membership.id
   const tenant = data?.tenant
   const credentials = tenant?.credentials ?? []
   const nav = useListNav(credentials.length, () => undefined)
@@ -80,13 +82,14 @@ export function CredentialsPage() {
             <Dim className="mb-2">{t("setup.connectSubscriptionDetail")}</Dim>
             <SubscriptionCommands tenantName={tenant.name} />
           </div>
-          {isAdmin ? (
-            <div>
-              <Section first>{t("setup.orApiKey")}</Section>
-              <Dim>{t("setup.apiKeyProviders")}</Dim>
-              <ApiKeyForm tenantId={tenant.id} />
-            </div>
-          ) : null}
+          <div>
+            <Section first>{t("setup.orApiKey")}</Section>
+            <Dim>{t("setup.apiKeyProviders")}</Dim>
+            <ApiKeyForm
+              tenantId={tenant.id}
+              reason={isAdmin ? undefined : t("reason.adminOrgKey")}
+            />
+          </div>
         </div>
       ) : null}
       {tenant && credentials.length === 0 ? <Empty>{t("credentials.empty")}</Empty> : null}
@@ -165,13 +168,20 @@ export function CredentialsPage() {
                         ? ago(credential.lastUsedAt)
                         : t("credentials.never")}
                   </span>
-                  {!(isAdmin || credential.owner?.id === membership.id) ||
-                  (reconnect && connect) ? null : reconnect ? (
+                  {reconnect ? (
                     <Button
                       variant="primary"
                       small
                       icon={RefreshCw}
                       onPress={() => setConnect(true)}
+                      reason={
+                        !manageable(credential)
+                          ? t("reason.adminCredential")
+                          : connect
+                            ? t("reason.connectOpen")
+                            : undefined
+                      }
+                      reasonAlign="right"
                     >
                       {t("credentials.reconnect")}
                     </Button>
@@ -181,6 +191,8 @@ export function CredentialsPage() {
                       icon={credential.kind === "SUBSCRIPTION" ? LogOut : Ban}
                       onPress={() => void remove({ credentialId: credential.id })}
                       isDisabled={removeState.loading}
+                      reason={manageable(credential) ? undefined : t("reason.adminCredential")}
+                      reasonAlign="right"
                     >
                       {credential.kind === "SUBSCRIPTION"
                         ? t("credentials.disconnect")

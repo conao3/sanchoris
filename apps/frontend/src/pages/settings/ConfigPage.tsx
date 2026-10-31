@@ -69,7 +69,15 @@ function Errors({ errors }: { errors: ValidationError[] }) {
   )
 }
 
-function AddConfigForm({ tenantId, repositories }: { tenantId: string; repositories: string[] }) {
+function AddConfigForm({
+  tenantId,
+  repositories,
+  reason,
+}: {
+  tenantId: string
+  repositories: string[]
+  reason?: string
+}) {
   const [repository, setRepository] = useState(repositories[0] ?? "")
   const [root, setRoot] = useState("/")
   const [branch, setBranch] = useState("main")
@@ -84,34 +92,36 @@ function AddConfigForm({ tenantId, repositories }: { tenantId: string; repositor
 
   return (
     <>
-      <form onSubmit={submit} className="mt-3 flex flex-wrap items-center gap-2">
-        <span className="text-muted">{t("config.addConfig")}</span>
-        <select
-          aria-label={t("col.repository")}
-          className={`${fieldClass} w-60`}
-          value={repository}
-          onChange={(event) => setRepository(event.target.value)}
-        >
-          {repositories.map((item) => (
-            <option key={item}>{item}</option>
-          ))}
-        </select>
-        <input
-          aria-label={t("col.root")}
-          className={`${fieldClass} w-[150px]`}
-          value={root}
-          onChange={(event) => setRoot(event.target.value)}
-        />
-        <input
-          aria-label={t("config.branch")}
-          className={`${fieldClass} w-[90px]`}
-          value={branch}
-          onChange={(event) => setBranch(event.target.value)}
-        />
-        <Button type="submit" icon={Plus} isDisabled={loading || !repository}>
-          {t("config.addConfigButton")}
-        </Button>
-        <span className="text-muted">{t("config.checksFirst")}</span>
+      <form onSubmit={submit} className="mt-3">
+        <fieldset disabled={!!reason} className="flex flex-wrap items-center gap-2">
+          <span className="text-muted">{t("config.addConfig")}</span>
+          <select
+            aria-label={t("col.repository")}
+            className={`${fieldClass} w-60`}
+            value={repository}
+            onChange={(event) => setRepository(event.target.value)}
+          >
+            {repositories.map((item) => (
+              <option key={item}>{item}</option>
+            ))}
+          </select>
+          <input
+            aria-label={t("col.root")}
+            className={`${fieldClass} w-[150px]`}
+            value={root}
+            onChange={(event) => setRoot(event.target.value)}
+          />
+          <input
+            aria-label={t("config.branch")}
+            className={`${fieldClass} w-[90px]`}
+            value={branch}
+            onChange={(event) => setBranch(event.target.value)}
+          />
+          <Button type="submit" icon={Plus} isDisabled={loading} reason={reason}>
+            {t("config.addConfigButton")}
+          </Button>
+          <span className="text-muted">{t("config.checksFirst")}</span>
+        </fieldset>
       </form>
       <Dim className="mt-1.5">{t("config.removeHint")}</Dim>
       <ActionError error={error} className="mt-2" />
@@ -219,15 +229,14 @@ export function ConfigPage() {
                               ? t("config.lastSynced", { at: ago(config.syncedAt) })
                               : null}
                           </span>
-                          {isAdmin ? (
-                            <Button
-                              small
-                              isDisabled={syncState.loading}
-                              onPress={() => void syncConfig({ configId: config.id })}
-                            >
-                              {t("common.retry")}
-                            </Button>
-                          ) : null}
+                          <Button
+                            small
+                            isDisabled={syncState.loading}
+                            reason={isAdmin ? undefined : t("reason.adminConfigs")}
+                            onPress={() => void syncConfig({ configId: config.id })}
+                          >
+                            {t("common.retry")}
+                          </Button>
                           <ActionError error={syncState.error} />
                         </>
                       )}
@@ -238,9 +247,17 @@ export function ConfigPage() {
               )
             })}
           </Table>
-          {isAdmin && repositories.length > 0 ? (
-            <AddConfigForm tenantId={tenant.id} repositories={repositories} />
-          ) : null}
+          <AddConfigForm
+            tenantId={tenant.id}
+            repositories={repositories}
+            reason={
+              !isAdmin
+                ? t("reason.adminConfigs")
+                : repositories.length === 0
+                  ? t("reason.noRepository")
+                  : undefined
+            }
+          />
 
           <Section count={t("config.projectsCount", { n: tenant.projects.length })}>
             {t("config.projects")}

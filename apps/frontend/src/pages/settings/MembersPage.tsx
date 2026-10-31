@@ -1,6 +1,7 @@
 import { Ban, Plus, Send, ShieldCheck, TriangleAlert } from "lucide-react"
 import { type FormEvent, type RefObject, useRef, useState } from "react"
 import { Button } from "../../components/Button.tsx"
+import { Reason } from "../../components/Reason.tsx"
 import { SettingsPage } from "../../components/SettingsTabs.tsx"
 import {
   ActionError,
@@ -102,17 +103,18 @@ function InviteForm({
         value={email}
         onChange={(event) => setEmail(event.target.value)}
       />
-      {isOwner ? (
+      <Reason reason={isOwner ? undefined : t("reason.ownerInviteAdmin")}>
         <select
           aria-label={t("col.role")}
           className={fieldClass}
           value={role}
+          disabled={!isOwner}
           onChange={(event) => setRole(event.target.value as Role)}
         >
           <option value="MEMBER">{t("role.member")}</option>
           <option value="ADMIN">{t("role.admin")}</option>
         </select>
-      ) : null}
+      </Reason>
       <Button type="submit" variant="primary" icon={Send} isDisabled={loading}>
         {t("members.sendInvitation")}
       </Button>
@@ -158,11 +160,17 @@ export function MembersPage() {
         ...(canManage ? [["i", "members.invite"] as [string, MessageKey]] : []),
       ]}
       actions={
-        canManage ? (
-          <Button variant="primary" icon={Plus} kbd="i" onPress={() => setInviting(!inviting)}>
-            {t("members.invite")}
-          </Button>
-        ) : null
+        <Button
+          variant="primary"
+          icon={Plus}
+          kbd="i"
+          isDisabled={!tenant}
+          reason={tenant && !canManage ? t("reason.adminMembers") : undefined}
+          reasonAlign="right"
+          onPress={() => setInviting(!inviting)}
+        >
+          {t("members.invite")}
+        </Button>
       }
     >
       <Title>{t("settings.members")}</Title>
@@ -205,20 +213,22 @@ export function MembersPage() {
                   <span className="font-medium">{member.user.name}</span>{" "}
                   <Id>{member.user.githubLogin ?? t("members.githubNotLinked")}</Id>
                 </div>
-                {viewerRole === "OWNER" && member.role !== "OWNER" ? (
-                  <select
-                    aria-label={t("col.role")}
-                    className="h-7 rounded-ui border border-line2 bg-bg px-1 text-sm"
-                    value={member.role}
-                    onClick={(event) => event.stopPropagation()}
-                    disabled={roleState.loading}
-                    onChange={(event) =>
-                      void changeRole({ memberId: member.id, role: event.target.value as Role })
-                    }
-                  >
-                    <option value="ADMIN">{t("role.admin")}</option>
-                    <option value="MEMBER">{t("role.member")}</option>
-                  </select>
+                {canManage && member.role !== "OWNER" ? (
+                  <Reason reason={viewerRole === "OWNER" ? undefined : t("reason.ownerRoles")}>
+                    <select
+                      aria-label={t("col.role")}
+                      className="h-7 rounded-ui border border-line2 bg-bg px-1 text-sm"
+                      value={member.role}
+                      onClick={(event) => event.stopPropagation()}
+                      disabled={roleState.loading || viewerRole !== "OWNER"}
+                      onChange={(event) =>
+                        void changeRole({ memberId: member.id, role: event.target.value as Role })
+                      }
+                    >
+                      <option value="ADMIN">{t("role.admin")}</option>
+                      <option value="MEMBER">{t("role.member")}</option>
+                    </select>
+                  </Reason>
                 ) : (
                   <span>
                     {member.role === "MEMBER" ? null : <Icon icon={ShieldCheck} />}{" "}
@@ -253,16 +263,16 @@ export function MembersPage() {
                   <span>{invitation.invitedBy.user.name}</span>
                   <span className="text-muted">{until(invitation.expiresAt)}</span>
                   <span className="justify-self-end">
-                    {canManage ? (
-                      <Button
-                        small
-                        icon={Ban}
-                        onPress={() => void revoke({ invitationId: invitation.id })}
-                        isDisabled={revokeState.loading}
-                      >
-                        {t("members.revoke")}
-                      </Button>
-                    ) : null}
+                    <Button
+                      small
+                      icon={Ban}
+                      onPress={() => void revoke({ invitationId: invitation.id })}
+                      isDisabled={revokeState.loading}
+                      reason={canManage ? undefined : t("reason.adminMembers")}
+                      reasonAlign="right"
+                    >
+                      {t("members.revoke")}
+                    </Button>
                   </span>
                 </Row>
               ))}
