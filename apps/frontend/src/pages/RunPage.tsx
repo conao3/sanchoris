@@ -144,6 +144,7 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
   const task = data?.tenant?.task
   const run = task?.run
   const live = isLive(run?.status)
+  const messaging = live && !!task?.conversation
   const log = useRunLog(variables, live)
 
   useEffect(() => {
@@ -253,21 +254,23 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
               )
             })}
           </div>
-          <form
-            onSubmit={submit}
-            className="mt-2.5 flex items-center justify-between gap-3 border-t border-term-line px-4 pt-2.5 text-muted"
-          >
-            <input
-              ref={input}
-              value={text}
-              onChange={(event) => setText(event.target.value)}
-              placeholder={t("run.messagePlaceholder")}
-              aria-label={t("run.messagePlaceholder")}
-              disabled={!live || !task?.conversation || sendState.loading}
-              className="min-w-0 flex-1 bg-transparent text-term-fg outline-none placeholder:text-muted"
-            />
-            <span>{t("run.enterSend")}</span>
-          </form>
+          {messaging ? (
+            <form
+              onSubmit={submit}
+              className="mt-2.5 flex items-center justify-between gap-3 border-t border-term-line px-4 pt-2.5 text-muted"
+            >
+              <input
+                ref={input}
+                value={text}
+                onChange={(event) => setText(event.target.value)}
+                placeholder={t("run.messagePlaceholder")}
+                aria-label={t("run.messagePlaceholder")}
+                disabled={sendState.loading}
+                className="min-w-0 flex-1 bg-transparent text-term-fg outline-none placeholder:text-muted"
+              />
+              <span>{t("run.enterSend")}</span>
+            </form>
+          ) : null}
         </div>
         <ActionError error={sendState.error} className="mt-2" />
       </div>
@@ -344,8 +347,10 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
   const keys: [string, MessageKey][] = [
     ["Esc", "keys.back"],
     ["f", follow ? "run.followOff" : "run.follow"],
-    ["m", "run.sendMessage"],
   ]
+  if (messaging) {
+    keys.push(["m", "run.sendMessage"])
+  }
   if (live) {
     keys.push(["s", "run.stop"])
   }
@@ -359,25 +364,23 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
       ]}
       actions={
         <>
-          <Button
-            variant="danger"
-            icon={Square}
-            kbd="s"
-            compact
-            isDisabled={!live || stopState.loading}
-            onPress={askStop}
-          >
-            {t("run.stop")}
-          </Button>
-          <Button
-            icon={MessageSquare}
-            kbd="m"
-            compact
-            isDisabled={!live}
-            onPress={() => input.current?.focus()}
-          >
-            {t("run.sendMessage")}
-          </Button>
+          {live ? (
+            <Button
+              variant="danger"
+              icon={Square}
+              kbd="s"
+              compact
+              isDisabled={stopState.loading}
+              onPress={askStop}
+            >
+              {t("run.stop")}
+            </Button>
+          ) : null}
+          {messaging ? (
+            <Button icon={MessageSquare} kbd="m" compact onPress={() => input.current?.focus()}>
+              {t("run.sendMessage")}
+            </Button>
+          ) : null}
         </>
       }
       keys={keys}
