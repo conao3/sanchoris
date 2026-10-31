@@ -263,6 +263,60 @@ describe("workspace agent with a fake worker", () => {
     expect(control.received.filter((message) => message.type === "turn_end")).toHaveLength(0)
   })
 
+  it("asks the control plane a question and continues the turn with the answer", async () => {
+    const { control, exitCode } = await setup(async (_text, { ask }) => {
+      const answers = await ask([
+        {
+          id: "Which label?",
+          header: "Label",
+          question: "Which label?",
+          multiSelect: false,
+          options: [{ label: "bug", description: "Bugs only" }],
+        },
+      ])
+      return `picked ${answers["Which label?"]?.join(", ") ?? ""}`
+    })
+    await control.waitFor("hello")
+    control.send(startMessage())
+    await control.waitFor("ready")
+    control.send({ type: "user_message", messageId: "m-1", text: "label it" })
+    const request = await control.waitFor("user_input_request")
+    expect(request.turn).toBe(1)
+    expect(request.questions[0]?.options).toEqual([{ label: "bug", description: "Bugs only" }])
+    control.send({ type: "user_input_response", requestId: "unknown", answers: {} })
+    control.send({
+      type: "user_input_response",
+      requestId: request.requestId,
+      answers: { "Which label?": ["bug"] },
+    })
+    const end = await control.waitFor("turn_end")
+    expect(end.summary).toBe("picked bug")
+    control.send({ type: "shutdown", reason: "done" })
+    expect(await exitCode).toBe(0)
+  })
+
+  it("cancels an open question when the turn is interrupted", async () => {
+    const { control, exitCode } = await setup(async (_text, { ask }) => {
+      await ask([{ id: "q", header: "", question: "Continue?", multiSelect: false, options: [] }])
+      return "answered"
+    })
+    await control.waitFor("hello")
+    control.send(startMessage())
+    await control.waitFor("ready")
+    control.send({ type: "user_message", messageId: "m-1", text: "go" })
+    const request = await control.waitFor("user_input_request")
+    control.send({ type: "interrupt" })
+    const end = await control.waitFor("turn_end")
+    expect(end.result).toBe("interrupted")
+    control.send({
+      type: "user_input_response",
+      requestId: request.requestId,
+      answers: { q: ["yes"] },
+    })
+    control.send({ type: "shutdown", reason: "done" })
+    expect(await exitCode).toBe(0)
+  })
+
   it("ignores a repeated user_message with the same messageId", async () => {
     const { control, exitCode } = await setup(async (text) => `echo ${text}`)
     await control.waitFor("hello")

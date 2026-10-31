@@ -13,7 +13,7 @@ use sanchoris_core::audit::audit_events;
 use sanchoris_core::billing::PAYMENT_PENDING;
 use sanchoris_core::items::{
     ApprovalWait, AuditEvent, Config, InboundEvent, Integration, Member, Membership, OutboxItem,
-    ReceiveRate, RunEventItem, RunLogEntry, Task, Tenant, User, Workspace,
+    ReceiveRate, RunEventItem, RunLogEntry, RunQuestion, Task, Tenant, User, Workspace,
 };
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
@@ -1343,12 +1343,24 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     receive(&mut socket).await;
     send(
         &mut socket,
+        json!({ "type": "user_input_request", "runId": run, "seq": 5, "requestId": "q-1", "turn": 1, "questions": [{
+            "id": "Which label?", "header": "Label", "question": "Which label?", "multiSelect": false,
+            "options": [{ "label": "bug", "description": "Bugs only" }],
+        }] }),
+    )
+    .await;
+    assert_eq!(
+        receive(&mut socket).await,
+        json!({ "type": "ack", "runId": run, "seq": 5 })
+    );
+    send(
+        &mut socket,
         json!({ "type": "turn_end", "runId": run, "seq": 9, "turn": 1 }),
     )
     .await;
     assert_eq!(
         receive(&mut socket).await,
-        json!({ "type": "close", "runId": run, "code": CLOSE_PROTOCOL_ERROR, "reason": "expected seq 5, received 9" })
+        json!({ "type": "close", "runId": run, "code": CLOSE_PROTOCOL_ERROR, "reason": "expected seq 6, received 9" })
     );
     assert_eq!(
         receive(&mut socket).await,
@@ -1364,6 +1376,14 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
         .map(|event| (event.seq, event.kind))
         .collect::<Vec<_>>();
     assert_eq!(events, vec![(Some(1), "ready".to_string())]);
+    let questions = server.dynamo.all::<RunQuestion>().await;
+    assert_eq!(questions.len(), 1);
+    assert_eq!(
+        (questions[0].request_id.as_str(), questions[0].turn),
+        ("q-1", 1)
+    );
+    assert_eq!(questions[0].questions[0]["options"][0]["label"], "bug");
+    assert_eq!(questions[0].answers, None);
     let logs = server.dynamo.all::<RunLogEntry>().await;
     assert_eq!(logs.len(), 1);
     assert_eq!(

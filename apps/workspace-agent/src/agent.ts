@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { unlink } from "node:fs/promises"
 import type { Server } from "node:net"
 
@@ -18,6 +19,8 @@ import type {
   SocketRequest,
   SocketResponse,
   StartMessage,
+  UserInputAnswers,
+  UserInputQuestion,
 } from "./protocol.ts"
 import { downloadRecord, redactTokens, sha256, uploadRecord } from "./session-record.ts"
 import { validateSkillRun } from "./skills.ts"
@@ -63,6 +66,7 @@ export class WorkspaceAgent {
   private execChain: Promise<void> = Promise.resolve()
   private readonly seenMessageIds = new Set<string>()
   private readonly seenExecRequestIds = new Set<string>()
+  private readonly questions = new Map<string, (answers: UserInputAnswers) => void>()
   private finished = false
   private stopping = false
   private turnEnded: (() => void) | null = null
@@ -143,6 +147,18 @@ export class WorkspaceAgent {
       case "interrupt":
         void this.whenReady(() => this.requireWorker().interrupt())
         return
+      case "user_input_response": {
+        const resolve = this.questions.get(message.requestId)
+        if (!resolve) {
+          this.config.logger("info", "answer ignored for a question that is not open", {
+            requestId: message.requestId,
+          })
+          return
+        }
+        this.questions.delete(message.requestId)
+        resolve(message.answers)
+        return
+      }
       case "exec":
         if (this.stopping) {
           this.config.logger("info", "command ignored while stopping", {
@@ -238,6 +254,7 @@ export class WorkspaceAgent {
         onRateLimit: (rateLimit) => {
           this.channel.send({ type: "rate_limit", ...rateLimit })
         },
+        onUserInput: (questions, signal) => this.ask(questions, signal),
         onFatal: (error) => void this.fail(error),
       },
     })
@@ -252,6 +269,31 @@ export class WorkspaceAgent {
     })
     this.channel.startHeartbeat(start.heartbeatSeconds, () => this.busy)
     if (start.instruction !== null) this.deliver(start.instruction)
+  }
+
+  private ask(questions: UserInputQuestion[], signal: AbortSignal): Promise<UserInputAnswers> {
+    const requestId = randomUUID()
+    return new Promise((resolve, reject) => {
+      const cancel = () => {
+        this.questions.delete(requestId)
+        reject(new Error("The question was cancelled before anyone answered it."))
+      }
+      if (signal.aborted) {
+        cancel()
+        return
+      }
+      signal.addEventListener("abort", cancel, { once: true })
+      this.questions.set(requestId, (answers) => {
+        signal.removeEventListener("abort", cancel)
+        resolve(answers)
+      })
+      this.channel.send({
+        type: "user_input_request",
+        requestId,
+        turn: this.lastTurn + 1,
+        questions,
+      })
+    })
   }
 
   private async workerCredential(): Promise<Record<string, string>> {

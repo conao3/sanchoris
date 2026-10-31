@@ -49,6 +49,15 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
         name
         repositories
       }
+      working {
+        startedAt
+        work {
+          ...ChatWorkFields
+        }
+        question {
+          ...ChatQuestionFields
+        }
+      }
       latestTask {
         id
         status
@@ -64,6 +73,9 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
         authorKind
         text
         at
+        work {
+          ...ChatWorkFields
+        }
         member {
           id
           user {
@@ -123,5 +135,51 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
         }
       }
     }
+  }
+}
+
+fragment ChatQuestionFields on ChatQuestion {
+  id
+  askedAt
+  items {
+    id
+    header
+    question
+    multiSelect
+    options {
+      label
+      description
+    }
+  }
+  answers {
+    questionId
+    answers
+  }
+}
+
+fragment ChatWorkFields on ChatWork {
+  kind
+  at
+  text
+  tool {
+    name
+    input
+    output
+    isError
+  }
+  question {
+    ...ChatQuestionFields
+  }
+}
+
+mutation AnswerChatQuestion($input: AnswerChatQuestionInput!) {
+  answerChatQuestion(input: $input) {
+    id
+  }
+}
+
+mutation InterruptChat($tenantId: ID!, $conversationId: ID!) {
+  interruptChat(tenantId: $tenantId, conversationId: $conversationId) {
+    id
   }
 }

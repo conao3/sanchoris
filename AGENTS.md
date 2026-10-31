@@ -34,7 +34,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs `nix develop --command make che
 | `crates/worker` | Job handlers: config sync (`config_sync.rs`), trigger dispatch (`dispatcher.rs`), chat conversations (`conversation.rs`), engine worker (`engine_worker.rs`), task supervisor (`supervisor.rs`), Resources (`resources.rs`), local runner (`runner.rs`); api contract in `README.md` |
 | `crates/graphql` | Resolvers for `apps/frontend/src/graphql/schema.graphql` (`query.rs`, `mutation.rs`, `task.rs`, `conversation.rs`, `config.rs`, `tenant.rs`, `skill.rs`) |
 | `crates/api` | HTTP API and webhooks (`app.rs`, `webhooks.rs`, `stripe.rs`, `github_oauth.rs`), Run channel (`channel/`), Lambda handlers (`lambda.rs`, `bin/{api,channel,channel_authorizer,worker,relay}.rs`), ECS Workspaces and relay lease (`ecs.rs`), `sanchoris all` (`bin/sanchoris.rs`, `server.rs`), embedded frontend (`frontend.rs`) |
-| `apps/frontend` | React + Apollo + TanStack Router; screens in `src/pages`, GraphQL documents and codegen output in `src/graphql`, strings in `src/i18n` |
+| `apps/frontend` | React + Apollo + TanStack Router; screens in `src/pages`, GraphQL documents and codegen output in `src/graphql`, strings in `src/i18n`; the chat timeline adapted from T3 Code in `src/components/chat` (`VENDORED.md`) |
 | `apps/workspace-agent` | Agent inside a Workspace (`src/agent.ts`, `src/channel.ts`, workers in `src/workers`) and the `sanchoris` command (`src/cli.ts`); protocol in `PROTOCOL.md` |
 | `apps/egress-relay` | Workspace egress `CONNECT` proxy (`src/relay.ts`) |
 | `infra/` | `tables.json`, `plans.json`, the Workspace and relay Dockerfiles |

@@ -1,5 +1,6 @@
 mod account;
 mod audit;
+mod chat_work;
 mod config;
 mod context;
 mod conversation;

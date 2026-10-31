@@ -1,9 +1,12 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use serde_json::{Value, json};
+
+use crate::channel::{OutboxType, enqueue_outbox};
 use crate::db::{DbError, TenantTx};
 use crate::item::Entity;
-use crate::items::{AUTHOR_AGENT, ChatMessage, Conversation, ConversationTask, Task};
+use crate::items::{AUTHOR_AGENT, ChatMessage, Conversation, ConversationTask, RunQuestion, Task};
 use crate::keys;
 use crate::tasks::load_task;
 
@@ -48,6 +51,7 @@ pub async fn post_agent_message(
     tx: &mut TenantTx,
     task: &Task,
     run_id: Option<Uuid>,
+    turn: Option<i64>,
     id: Uuid,
     text: &str,
     at: DateTime<Utc>,
@@ -63,6 +67,7 @@ pub async fn post_agent_message(
             conversation_id,
             task_id: Some(task.id),
             run_id,
+            turn,
             author_kind: AUTHOR_AGENT.to_string(),
             member_id: None,
             text: text.to_string(),
@@ -70,4 +75,35 @@ pub async fn post_agent_message(
         },
     )
     .await
+}
+
+pub async fn answer_question(
+    tx: &mut TenantTx,
+    run_id: Uuid,
+    request_id: &str,
+    answers: &Value,
+    member_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<RunQuestion, DbError> {
+    let key = keys::run_question_key(tx.tenant_id(), run_id, request_id);
+    let mut question = tx
+        .get::<RunQuestion>(&key)
+        .await?
+        .ok_or_else(|| DbError::Missing(format!("question {request_id} of run {run_id}")))?;
+    if question.answers.is_some() {
+        return Err(DbError::Conflict);
+    }
+    question.answers = Some(answers.clone());
+    question.answered_by_member_id = Some(member_id);
+    question.answered_at = Some(now);
+    tx.put(&question)?;
+    enqueue_outbox(
+        tx,
+        run_id,
+        OutboxType::UserInputResponse,
+        &json!({ "requestId": request_id, "answers": answers }),
+        &format!("answer:{request_id}"),
+    )
+    .await?;
+    Ok(question)
 }

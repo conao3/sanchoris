@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
+import type { UserInputAnswers, UserInputQuestion } from "../protocol.ts"
 import {
   emptyUsage,
   requireEnv,
@@ -27,6 +28,7 @@ export interface CommandResult {
 interface FakeTurnContext {
   history: readonly TranscriptLine[]
   exec: (command: string, args: string[]) => Promise<CommandResult>
+  ask: (questions: UserInputQuestion[]) => Promise<UserInputAnswers>
 }
 
 export type FakeScript = (text: string, context: FakeTurnContext) => Promise<string>
@@ -98,13 +100,18 @@ class FakeWorker implements Worker {
   private async turn(text: string): Promise<void> {
     const started = Date.now()
     await this.append({ role: "user", text })
+    const questions = new AbortController()
     const interrupted = new Promise<null>((resolve) => {
-      this.interruptTurn = () => resolve(null)
+      this.interruptTurn = () => {
+        questions.abort()
+        resolve(null)
+      }
     })
     const reply = await Promise.race([
       this.script(text, {
         history: this.history,
         exec: (command, args) => this.exec(command, args),
+        ask: (asked) => this.context.handlers.onUserInput(asked, questions.signal),
       }),
       interrupted,
     ])

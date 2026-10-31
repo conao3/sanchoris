@@ -46,6 +46,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
 | `start` | `agent`, `model`, `systemPrompt`, `skills`, `instruction`, `resume`, `heartbeatSeconds` | Start (or restore) the agent session. Sent once per agent process, after `hello` with `started: false` |
 | `user_message` | `messageId`, `text` | A user turn: `[sanchoris]` notifications, a person's reply, "Continue where you left off.", chat messages |
 | `interrupt` | | Interrupt the current turn. The turn ends with `turn_end` `result: "interrupted"` |
+| `user_input_response` | `requestId`, `answers` | The answers to `user_input_request`: question `id` to the answer strings (the picked option labels, or a person's own words). The agent drops an answer to a question that is no longer open (the turn was interrupted, or the agent restarted) |
 | `shutdown` | `reason` | Finish: the agent waits for the in-flight record upload and commands, stops the worker, waits up to 10 s for all `ack`s, closes with code 1000, and exits 0 |
 | `exec` | `requestId`, `purpose`, `commands` | Run shell commands in the workspace for a skill (`purpose`: `git_push` for `git:push`, `exec` for `workspace:exec`). The agent runs them after the session of `start` is ready and answers with `exec_result` |
 | `skill_response` | `requestId`, `ok`, `result` or `error` | Reply to `skill_request` |
@@ -165,13 +166,15 @@ The worker and `exec` commands run with the agent's environment, which holds non
 | `exec_result` | yes | `requestId`, `ok`, `results` | The outcome of `exec` |
 | `git_token_request` | yes | `requestId` | Asks for a GitHub token for `git` (`channel` source only) |
 | `worker_credential_request` | yes | `requestId` | Asks for the worker credential before the session starts (`channel` source only) |
+| `user_input_request` | yes | `requestId`, `turn`, `questions` | The worker asks the people in the conversation (Claude `AskUserQuestion`, Codex `item/tool/requestUserInput`). The turn waits for `user_input_response`; interrupting the turn cancels the question |
 
 Field details:
 
 - `turn`: 1-based number of the turn within the Run (continues from `resume.lastTurn`). `event.turn` is the turn in progress.
 - `event.kind` and `data`:
+  - `thinking`: `{ "text": string }` summarized reasoning: a Claude `thinking` block (the session runs with `thinking: { type: "adaptive", display: "summarized" }`), or the `summary` of a Codex `reasoning` item (its `content` when it has no summary).
   - `text`: `{ "text": string }` assistant text.
-  - `tool_use`: `{ "id": string | null, "name": string, "input": object }`.
+  - `tool_use`: `{ "id": string | null, "name": string, "input": object }`. Codex items become tool calls too: `commandExecution` (`input.command`), `fileChange` (`input.changes`: `path` and `kind`), `mcp__<server>__<tool>` (the arguments), and `webSearch` (`input.query`).
   - `tool_result`: `{ "toolUseId": string | null, "isError": boolean, "content": string }` (content truncated to 4000 characters).
   - `item`: `{ "itemType": string, "id": string | null }` another Codex item.
   - `system`: `{ "subtype": string }` worker system message.
@@ -180,6 +183,7 @@ Field details:
 - `turn_end.result`: `completed`, `failed`, or `interrupted`. `summary` is the final assistant text (or the error text). `error` is `null` unless `failed`: `{ code: "Worker.UsageLimit" | "Worker.Error", message, resetAt }`; `resetAt` (Unix seconds) is set for `Worker.UsageLimit` when the provider reported it.
 - `turn_end.usage`: tokens of this turn's main loop: `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheCreationInputTokens`. `totalCostUsd` is Claude's cumulative estimated cost reported by the SDK since this agent process opened the session; `null` for Codex. A restored session starts again from 0 (observed with Claude Code 2.1.310), so the Run's cost is the sum over `instanceId`s of the last `totalCostUsd` of each.
 - `skill_request.output` is the parsed `--output` JSON, or `null` when the option was omitted.
+- `user_input_request.questions`: each has `id` (the question text for Claude, Codex's question id), `header`, `question`, `multiSelect` (always `false` for Codex), and `options` (`label`, `description`). Claude receives the answers as `AskUserQuestion`'s `answers` (question text to the labels joined with ", "), Codex as `{ answers: { <id>: { answers: [...] } } }`.
 
 ```json
 { "type": "hello", "runId": "42", "protocolVersion": 2, "instanceId": "0d6f1c3a-8b2e-4f57-a1c9-5e7b2d4f6a80", "started": false, "sessionId": null }

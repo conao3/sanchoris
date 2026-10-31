@@ -457,7 +457,7 @@ async fn invoke_resource(
                 )));
             }
             let run_id = run_of_skill(tx, item.skill_run_id).await?;
-            post_agent_message(tx, &task, run_id, item.id, text, item.created_at).await?;
+            post_agent_message(tx, &task, run_id, None, item.id, text, item.created_at).await?;
             Ok(Some(ResourceOutcome::Succeeded {
                 output: json!({ "Posted": true }),
             }))

@@ -2645,6 +2645,56 @@ impl Entity for RunLogEntry {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RunQuestion {
+    pub tenant_id: Uuid,
+    pub run_id: Uuid,
+    pub task_id: Uuid,
+    pub request_id: String,
+    pub turn: i64,
+    pub questions: Value,
+    pub answers: Option<Value>,
+    pub answered_by_member_id: Option<Uuid>,
+    pub asked_at: DateTime<Utc>,
+    pub answered_at: Option<DateTime<Utc>>,
+}
+
+impl Entity for RunQuestion {
+    const KIND: &'static str = "run_question";
+
+    fn key(&self) -> Key {
+        keys::run_question_key(self.tenant_id, self.run_id, &self.request_id)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .uuid("run_id", self.run_id)
+            .uuid("task_id", self.task_id)
+            .s("request_id", &self.request_id)
+            .n("turn", self.turn)
+            .json("questions", &self.questions)
+            .opt_json("answers", self.answers.as_ref())
+            .opt_uuid("answered_by_member_id", self.answered_by_member_id)
+            .time("asked_at", self.asked_at)
+            .opt_time("answered_at", self.answered_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            run_id: r.uuid("run_id")?,
+            task_id: r.uuid("task_id")?,
+            request_id: r.s("request_id")?,
+            turn: r.n("turn")?,
+            questions: r.json("questions")?,
+            answers: r.opt_json("answers")?,
+            answered_by_member_id: r.opt_uuid("answered_by_member_id")?,
+            asked_at: r.time("asked_at")?,
+            answered_at: r.opt_time("answered_at")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReceiveRate {
     pub tenant_id: Uuid,
     pub window_start: DateTime<Utc>,
@@ -2822,6 +2872,7 @@ pub struct ChatMessage {
     pub conversation_id: Uuid,
     pub task_id: Option<Uuid>,
     pub run_id: Option<Uuid>,
+    pub turn: Option<i64>,
     pub author_kind: String,
     pub member_id: Option<Uuid>,
     pub text: String,
@@ -2846,6 +2897,7 @@ impl Entity for ChatMessage {
             .uuid("conversation_id", self.conversation_id)
             .opt_uuid("task_id", self.task_id)
             .opt_uuid("run_id", self.run_id)
+            .opt_n("turn", self.turn)
             .s("author_kind", &self.author_kind)
             .opt_uuid("member_id", self.member_id)
             .s("text", &self.text)
@@ -2859,6 +2911,7 @@ impl Entity for ChatMessage {
             conversation_id: r.uuid("conversation_id")?,
             task_id: r.opt_uuid("task_id")?,
             run_id: r.opt_uuid("run_id")?,
+            turn: r.opt_n("turn")?,
             author_kind: r.s("author_kind")?,
             member_id: r.opt_uuid("member_id")?,
             text: r.s("text")?,

@@ -1,7 +1,9 @@
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
-import { CircleDot, Plus } from "lucide-react"
-import { type KeyboardEvent, useState } from "react"
+import { CircleDot, Plus, Square } from "lucide-react"
+import { type KeyboardEvent, useEffect, useRef, useState } from "react"
 import { Button } from "../components/Button.tsx"
+import { QuestionComposer } from "../components/chat/QuestionComposer.tsx"
+import { AgentMessage, MemberMessage, Working } from "../components/chat/Timeline.tsx"
 import { Reason } from "../components/Reason.tsx"
 import { Page } from "../components/Shell.tsx"
 import { TaskState } from "../components/status.tsx"
@@ -24,11 +26,12 @@ import {
 } from "../components/ui.tsx"
 import {
   type ChatQuery,
+  AnswerChatQuestionDocument,
   ChatDocument,
+  InterruptChatDocument,
   SendChatMessageDocument,
 } from "../graphql/generated/graphql.ts"
 import { t, tx } from "../i18n/index.ts"
-import { clock } from "../lib/format.ts"
 import { useKeys } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
 import { IDLE_POLL, LIVE_POLL, useData } from "../lib/query.ts"
@@ -62,9 +65,11 @@ function sessionSkills(session: ChatSession): string {
 function Composer({
   reason,
   onSend,
+  onStop,
 }: {
   reason?: string
   onSend: (text: string) => Promise<boolean>
+  onStop?: () => void
 }) {
   const [text, setText] = useState("")
 
@@ -95,13 +100,31 @@ function Composer({
           className="min-h-5 flex-1 resize-none bg-transparent outline-none placeholder:text-faint"
         />
       </Reason>
-      {reason ? null : <Kbd>{t("chat.enterSend")}</Kbd>}
+      {onStop ? (
+        <Button small icon={Square} onPress={onStop}>
+          {t("chat.stop")}
+        </Button>
+      ) : reason ? null : (
+        <Kbd>{t("chat.enterSend")}</Kbd>
+      )}
     </div>
   )
 }
 
 function Thread({ conversation, tenant }: { conversation: ChatConversation; tenant: Tenant }) {
   const [send, { error }] = useAction(SendChatMessageDocument, { refetchQueries: [ChatDocument] })
+  const [answer, { error: answerError }] = useAction(AnswerChatQuestionDocument, {
+    refetchQueries: [ChatDocument],
+  })
+  const [interrupt, { error: interruptError }] = useAction(InterruptChatDocument, {
+    refetchQueries: [ChatDocument],
+  })
+  const working = conversation.working
+  const end = useRef<HTMLDivElement>(null)
+  const follow = `${conversation.id}:${conversation.messages.length}:${working?.work.length ?? -1}:${working?.question?.id ?? ""}`
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "nearest" })
+  }, [follow])
   const task = conversation.latestTask
   const run = task?.runs[task.runs.length - 1]
   const repos = conversation.session?.repositories.join(", ") ?? ""
@@ -130,56 +153,105 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
             : null}
         </span>
       </Sub>
-      {conversation.messages.map((message) => (
-        <div key={message.id} className="border-b border-line py-2.5">
-          <div className="mb-0.5 text-sm font-semibold">
-            {message.authorKind === "AGENT" ? "sanchoris" : (message.member?.user.name ?? "")}
-            <span className="ml-1.5 font-normal text-faint">{clock(message.at)}</span>
-          </div>
-          <div className="whitespace-pre-wrap">{message.text}</div>
-          {message.issues.map((issue) => {
-            const blockers = issue.task?.blockedBy ?? []
+      <div className="mt-4 space-y-5">
+        {conversation.messages.map((message, position) => {
+          if (message.authorKind !== "AGENT") {
             return (
-              <div
-                key={`${issue.repository}#${issue.number}`}
-                className="mt-1.5 grid grid-cols-[18px_auto_1fr_auto] items-center gap-2 border-t border-line py-1.5"
-              >
-                <Icon icon={CircleDot} />
-                <span>
-                  <Chip>{shortRepo(issue.repository)}</Chip>
-                </span>
-                {issue.task ? (
-                  <Link to="/tasks/$task" params={{ task: issue.task.id }} className="font-medium">
-                    {issue.title}
-                  </Link>
-                ) : (
-                  <span className="font-medium">{issue.title}</span>
-                )}
-                <Id>
-                  #{issue.number}
-                  {blockers.length > 0
-                    ? ` · ${t("tasks.blockedBy", { ids: blockers.map((blocker) => `#${blocker.issue?.number ?? ""}`).join(", ") })}`
-                    : null}
-                </Id>
-              </div>
+              <MemberMessage
+                key={message.id}
+                name={message.member?.user.name ?? ""}
+                text={message.text}
+                at={message.at}
+              />
             )
-          })}
-        </div>
-      ))}
+          }
+          const asked = conversation.messages
+            .slice(0, position)
+            .findLast((earlier) => earlier.authorKind !== "AGENT")
+          return (
+            <AgentMessage
+              key={message.id}
+              text={message.text}
+              at={message.at}
+              work={message.work}
+              startedAt={asked?.at}
+            >
+              {message.issues.map((issue) => {
+                const blockers = issue.task?.blockedBy ?? []
+                return (
+                  <div
+                    key={`${issue.repository}#${issue.number}`}
+                    className="mt-1.5 grid grid-cols-[18px_auto_1fr_auto] items-center gap-2 border-t border-line py-1.5"
+                  >
+                    <Icon icon={CircleDot} />
+                    <span>
+                      <Chip>{shortRepo(issue.repository)}</Chip>
+                    </span>
+                    {issue.task ? (
+                      <Link
+                        to="/tasks/$task"
+                        params={{ task: issue.task.id }}
+                        className="font-medium"
+                      >
+                        {issue.title}
+                      </Link>
+                    ) : (
+                      <span className="font-medium">{issue.title}</span>
+                    )}
+                    <Id>
+                      #{issue.number}
+                      {blockers.length > 0
+                        ? ` · ${t("tasks.blockedBy", { ids: blockers.map((blocker) => `#${blocker.issue?.number ?? ""}`).join(", ") })}`
+                        : null}
+                    </Id>
+                  </div>
+                )
+              })}
+            </AgentMessage>
+          )
+        })}
+        {working ? (
+          <Working startedAt={working.startedAt} work={working.work} waiting={!!working.question} />
+        ) : null}
+      </div>
       {finished && task && conversation.kind === "WEB" ? (
         <Dim className="mt-2.5">
           {t("chat.continueHint", { n: (task.conversationSequence ?? 1) + 1 })}
         </Dim>
       ) : null}
-      <Composer
-        reason={conversation.kind === "SLACK" ? t("reason.slackThread") : undefined}
-        onSend={(text) =>
-          send({
-            input: { tenantId: tenant.id, conversationId: conversation.id, text },
-          }).then(Boolean)
-        }
-      />
-      <ActionError error={error} className="mt-2" />
+      {working?.question ? (
+        <QuestionComposer
+          key={working.question.id}
+          question={working.question}
+          onStop={() => void interrupt({ tenantId: tenant.id, conversationId: conversation.id })}
+          onSubmit={(answers) =>
+            answer({
+              input: {
+                tenantId: tenant.id,
+                conversationId: conversation.id,
+                questionId: working.question?.id ?? "",
+                answers,
+              },
+            }).then(Boolean)
+          }
+        />
+      ) : (
+        <Composer
+          reason={conversation.kind === "SLACK" ? t("reason.slackThread") : undefined}
+          onStop={
+            working && run
+              ? () => void interrupt({ tenantId: tenant.id, conversationId: conversation.id })
+              : undefined
+          }
+          onSend={(text) =>
+            send({
+              input: { tenantId: tenant.id, conversationId: conversation.id, text },
+            }).then(Boolean)
+          }
+        />
+      )}
+      <ActionError error={error ?? answerError ?? interruptError} className="mt-2" />
+      <div ref={end} />
     </>
   )
 }

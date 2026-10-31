@@ -21,6 +21,7 @@ pub enum OutboxType {
     UserMessage,
     Exec,
     Interrupt,
+    UserInputResponse,
     Shutdown,
 }
 
@@ -31,6 +32,7 @@ impl OutboxType {
             Self::UserMessage => "user_message",
             Self::Exec => "exec",
             Self::Interrupt => "interrupt",
+            Self::UserInputResponse => "user_input_response",
             Self::Shutdown => "shutdown",
         }
     }

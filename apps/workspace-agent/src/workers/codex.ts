@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative } from "node:path"
 
-import type { RateLimitWindow } from "../protocol.ts"
+import type { RateLimitWindow, UserInputQuestion } from "../protocol.ts"
 import {
   emptyUsage,
   requireEnv,
@@ -60,6 +60,47 @@ interface CodexItem {
   command?: string
   exitCode?: number | null
   aggregatedOutput?: string | null
+  summary?: string[]
+  content?: string[]
+  changes?: { path: string; kind: string | { type: string } }[]
+  server?: string
+  tool?: string
+  arguments?: unknown
+  result?: { content: unknown[] } | null
+  error?: { message: string } | null
+  query?: string
+}
+
+interface CodexQuestion {
+  id: string
+  header: string
+  question: string
+  options?: { label: string; description: string }[] | null
+}
+
+export function codexQuestions(params: unknown): UserInputQuestion[] {
+  const questions = (params as { questions?: CodexQuestion[] }).questions
+  if (!Array.isArray(questions) || questions.length === 0)
+    throw new Error("item/tool/requestUserInput has no questions")
+  return questions.map((question) => ({
+    id: question.id,
+    header: question.header,
+    question: question.question,
+    multiSelect: false,
+    options: (question.options ?? []).map((option) => ({
+      label: option.label,
+      description: option.description,
+    })),
+  }))
+}
+
+function mcpResultText(result: CodexItem["result"]): string {
+  return (result?.content ?? [])
+    .map((block) => {
+      const text = (block as { type?: string; text?: string }).text
+      return typeof text === "string" ? text : JSON.stringify(block)
+    })
+    .join("\n")
 }
 
 function windowName(window: CodexRateLimitWindow, fallbackMinutes: number): string {
@@ -135,6 +176,7 @@ export class CodexWorker implements Worker {
   private lastText = ""
   private lastUsage: CodexTokenUsage | null = null
   private rateLimits: CodexRateLimitSnapshot | null = null
+  private questions: AbortController | null = null
 
   constructor(context: WorkerContext) {
     this.context = context
@@ -172,7 +214,8 @@ export class CodexWorker implements Worker {
     })
     const client = new CodexAppServerClient(child, {
       onNotification: (method, params) => this.handleNotification(method, params),
-      onRequest: async (method) => {
+      onRequest: async (method, params) => {
+        if (method === "item/tool/requestUserInput") return this.answer(params)
         this.context.handlers.onEvent("log", { line: `Codex request ${method} was declined` })
         throw new Error(`sanchoris does not handle ${method}`)
       },
@@ -212,6 +255,7 @@ export class CodexWorker implements Worker {
   }
 
   async interrupt(): Promise<void> {
+    this.questions?.abort()
     if (!this.client || !this.threadId || !this.activeTurnId) return
     await this.client.request("turn/interrupt", {
       threadId: this.threadId,
@@ -230,6 +274,17 @@ export class CodexWorker implements Worker {
   async close(): Promise<void> {
     this.closing = true
     this.child?.kill("SIGTERM")
+  }
+
+  private async answer(params: unknown): Promise<unknown> {
+    const questions = codexQuestions(params)
+    this.questions ??= new AbortController()
+    const answers = await this.context.handlers.onUserInput(questions, this.questions.signal)
+    return {
+      answers: Object.fromEntries(
+        questions.map((question) => [question.id, { answers: answers[question.id] ?? [] }]),
+      ),
+    }
   }
 
   private startNextTurn(): void {
@@ -280,6 +335,39 @@ export class CodexWorker implements Worker {
             isError: (item.exitCode ?? 0) !== 0,
             content: (item.aggregatedOutput ?? "").slice(0, 4000),
           })
+        } else if (item.type === "reasoning") {
+          const text = (item.summary?.length ? item.summary : (item.content ?? []))
+            .join("\n\n")
+            .trim()
+          if (text !== "") onEvent("thinking", { text })
+        } else if (item.type === "fileChange") {
+          const changes = (item.changes ?? []).map((change) => ({
+            path: change.path,
+            kind: typeof change.kind === "string" ? change.kind : change.kind.type,
+          }))
+          onEvent("tool_use", { id: item.id ?? null, name: "fileChange", input: { changes } })
+          onEvent("tool_result", {
+            toolUseId: item.id ?? null,
+            isError: false,
+            content: changes.map((change) => `${change.kind} ${change.path}`).join("\n"),
+          })
+        } else if (item.type === "mcpToolCall") {
+          onEvent("tool_use", {
+            id: item.id ?? null,
+            name: `mcp__${item.server ?? ""}__${item.tool ?? ""}`,
+            input: (item.arguments ?? {}) as Record<string, unknown>,
+          })
+          onEvent("tool_result", {
+            toolUseId: item.id ?? null,
+            isError: Boolean(item.error),
+            content: (item.error ? item.error.message : mcpResultText(item.result)).slice(0, 4000),
+          })
+        } else if (item.type === "webSearch") {
+          onEvent("tool_use", {
+            id: item.id ?? null,
+            name: "webSearch",
+            input: { query: item.query ?? "" },
+          })
         } else {
           onEvent("item", { itemType: item.type, id: item.id ?? null })
         }
@@ -307,6 +395,8 @@ export class CodexWorker implements Worker {
   }
 
   private completeTurn(turn: CodexTurn): void {
+    this.questions?.abort()
+    this.questions = null
     this.activeTurnId = null
     this.completedTurnIds.add(turn.id)
     const usage = this.lastUsage

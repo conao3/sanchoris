@@ -61,6 +61,16 @@ export const InterruptMessage = z.strictObject({
   runId: RunId,
 })
 
+export const UserInputAnswers = z.record(z.string().min(1), z.array(z.string()))
+export type UserInputAnswers = z.infer<typeof UserInputAnswers>
+
+export const UserInputResponseMessage = z.strictObject({
+  type: z.literal("user_input_response"),
+  runId: RunId,
+  requestId: RequestId,
+  answers: UserInputAnswers,
+})
+
 export const ShutdownMessage = z.strictObject({
   type: z.literal("shutdown"),
   runId: RunId,
@@ -176,6 +186,7 @@ export const InboundMessage = z.union([
   StartMessage,
   UserMessage,
   InterruptMessage,
+  UserInputResponseMessage,
   ShutdownMessage,
   ExecMessage,
   SkillResponseMessage,
@@ -210,7 +221,15 @@ export const RateLimitWindow = z.strictObject({
 })
 export type RateLimitWindow = z.infer<typeof RateLimitWindow>
 
-export const EventKind = z.enum(["text", "tool_use", "tool_result", "item", "system", "log"])
+export const EventKind = z.enum([
+  "thinking",
+  "text",
+  "tool_use",
+  "tool_result",
+  "item",
+  "system",
+  "log",
+])
 export type EventKind = z.infer<typeof EventKind>
 
 export const HelloMessage = z.strictObject({
@@ -339,6 +358,23 @@ export const WorkerCredentialRequestMessage = z.strictObject({
   requestId: RequestId,
 })
 
+export const UserInputQuestion = z.strictObject({
+  id: z.string().min(1),
+  header: z.string(),
+  question: z.string().min(1),
+  multiSelect: z.boolean(),
+  options: z.array(z.strictObject({ label: z.string().min(1), description: z.string() })),
+})
+export type UserInputQuestion = z.infer<typeof UserInputQuestion>
+
+export const UserInputRequestMessage = z.strictObject({
+  type: z.literal("user_input_request"),
+  ...sequenced,
+  requestId: RequestId,
+  turn: z.number().int().positive(),
+  questions: z.array(UserInputQuestion).min(1),
+})
+
 export const ExecCommandResult = z.strictObject({
   command: z.string(),
   exitCode: z.number().int(),
@@ -369,6 +405,7 @@ export const OutboundMessage = z.union([
   ExecResultMessage,
   GitTokenRequestMessage,
   WorkerCredentialRequestMessage,
+  UserInputRequestMessage,
 ])
 export type OutboundMessage = z.infer<typeof OutboundMessage>
 

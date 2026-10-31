@@ -277,15 +277,13 @@ async fn turn_end(
         recorded_at: now,
     })?;
     let task = load_task(tx, task_id).await?;
-    if let Some(summary) = payload["summary"]
-        .as_str()
-        .filter(|text| !text.trim().is_empty())
-    {
+    if let Some(summary) = payload["summary"].as_str() {
         let id = Uuid::new_v5(&event.run_id, format!("turn:{turn}").as_bytes());
         post_agent_message(
             tx,
             &task,
             Some(event.run_id),
+            Some(turn),
             id,
             summary,
             event.received_at,

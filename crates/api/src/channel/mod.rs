@@ -12,7 +12,7 @@ use sanchoris_core::channel::{
 use sanchoris_core::db::{DbError, Store, TenantTx, tenant_plan};
 use sanchoris_core::items::{
     BootstrapRedemption, ChannelInstance, OutboxItem, RunChannel, RunEventItem, RunLogEntry,
-    Workspace,
+    RunQuestion, Workspace,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
@@ -368,9 +368,8 @@ impl Channel {
             | "stopping"
             | "exec_result"
             | "git_token_request"
-            | "worker_credential_request" => {
-                self.sequenced(claims, connection_id, &kind, message).await
-            }
+            | "worker_credential_request"
+            | "user_input_request" => self.sequenced(claims, connection_id, &kind, message).await,
             other => Err(protocol(format!("unknown message type {other}"))),
         }
     }
@@ -514,6 +513,10 @@ impl Channel {
                     self.log(&mut tx, claims, global, &payload).await?;
                     None
                 }
+                "user_input_request" => {
+                    self.question(&mut tx, claims, &payload).await?;
+                    None
+                }
                 "skill_request" => Some(self.skill(&mut tx, claims, &payload).await?),
                 "record_upload_request" => Some(self.upload(&mut tx, claims, &payload).await?),
                 "git_token_request" => Some(self.git_token(claims, &payload).await?),
@@ -591,6 +594,46 @@ impl Channel {
             data: redact_tokens_in(&payload["data"]),
             at,
             expires_at: Utc::now() + Duration::days(plan.retention_days),
+        })?;
+        Ok(())
+    }
+
+    async fn question(
+        &self,
+        tx: &mut TenantTx,
+        claims: RunClaims,
+        payload: &Value,
+    ) -> Result<(), ChannelError> {
+        let request_id = payload["requestId"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| protocol("user_input_request needs requestId"))?;
+        let turn = payload["turn"]
+            .as_i64()
+            .filter(|turn| *turn > 0)
+            .ok_or_else(|| protocol("user_input_request needs a positive turn"))?;
+        let questions = payload["questions"]
+            .as_array()
+            .filter(|questions| !questions.is_empty())
+            .ok_or_else(|| protocol("user_input_request needs questions"))?;
+        let key = keys::run_question_key(claims.tenant_id, claims.run_id, request_id);
+        if tx.get::<RunQuestion>(&key).await?.is_some() {
+            return Ok(());
+        }
+        let run = load_run(tx, claims.run_id)
+            .await?
+            .ok_or_else(|| ChannelError::Internal(format!("run {} is missing", claims.run_id)))?;
+        tx.insert(&RunQuestion {
+            tenant_id: claims.tenant_id,
+            run_id: claims.run_id,
+            task_id: run.task_id,
+            request_id: request_id.to_string(),
+            turn,
+            questions: Value::Array(questions.clone()),
+            answers: None,
+            answered_by_member_id: None,
+            asked_at: Utc::now(),
+            answered_at: None,
         })?;
         Ok(())
     }
@@ -873,6 +916,10 @@ impl Channel {
                 "purpose": payload["purpose"], "commands": payload["commands"],
             }),
             "interrupt" => json!({ "type": "interrupt", "runId": run_id }),
+            "user_input_response" => json!({
+                "type": "user_input_response", "runId": run_id,
+                "requestId": payload["requestId"], "answers": payload["answers"],
+            }),
             "shutdown" => {
                 json!({ "type": "shutdown", "runId": run_id, "reason": payload["reason"] })
             }

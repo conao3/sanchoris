@@ -37,6 +37,19 @@ input AddCredentialInput {
 	scope: CredentialScope!
 }
 
+input AnswerChatQuestionInput {
+	tenantId: ID!
+	conversationId: ID!
+	"""
+	The id of the question the agent waits on.
+	"""
+	questionId: ID!
+	"""
+	One answer per item of the question.
+	"""
+	answers: [ChatAnswerInput!]!
+}
+
 enum ApiKeyProvider {
 	ANTHROPIC
 	OPENAI
@@ -114,6 +127,19 @@ enum ChangeRequestState {
 	CLOSED
 }
 
+type ChatAnswer {
+	questionId: String!
+	answers: [String!]!
+}
+
+input ChatAnswerInput {
+	questionId: String!
+	"""
+	The labels of the picked options, or the member's own words.
+	"""
+	answers: [String!]!
+}
+
 enum ChatAuthorKind {
 	MEMBER
 	AGENT
@@ -130,9 +156,97 @@ type ChatMessage {
 	"""
 	task: Task
 	"""
+	The thinking, text and tool calls of the turn that this reply ends, oldest first. Empty for members' messages.
+	"""
+	work: [ChatWork!]!
+	"""
 	Issues the agent filed with file-issue during the turn this reply ends.
 	"""
 	issues: [IssueRef!]!
+}
+
+type ChatQuestion {
+	id: ID!
+	items: [ChatQuestionItem!]!
+	"""
+	Null until someone answers.
+	"""
+	answers: [ChatAnswer!]
+	askedAt: DateTime!
+}
+
+type ChatQuestionItem {
+	id: String!
+	header: String!
+	question: String!
+	multiSelect: Boolean!
+	options: [ChatQuestionOption!]!
+}
+
+type ChatQuestionOption {
+	label: String!
+	description: String!
+}
+
+type ChatTool {
+	"""
+	The tool name as the agent reports it, such as Bash, Read, commandExecution or mcp__server__tool.
+	"""
+	name: String!
+	"""
+	The tool input as JSON.
+	"""
+	input: String!
+	"""
+	The output, truncated to 4000 characters. Null while the tool runs or when it reported nothing.
+	"""
+	output: String
+	isError: Boolean!
+}
+
+type ChatWork {
+	kind: ChatWorkKind!
+	at: DateTime!
+	"""
+	Set for THINKING and TEXT.
+	"""
+	text: String
+	"""
+	Set for TOOL.
+	"""
+	tool: ChatTool
+	"""
+	Set for QUESTION.
+	"""
+	question: ChatQuestion
+}
+
+enum ChatWorkKind {
+	"""
+	The agent's summarized reasoning.
+	"""
+	THINKING
+	"""
+	Text the agent wrote between tool calls.
+	"""
+	TEXT
+	TOOL
+	"""
+	A question the agent asked, with the answer.
+	"""
+	QUESTION
+}
+
+"""
+The turn in progress of the conversation's task.
+"""
+type ChatWorking {
+	startedAt: DateTime!
+	work: [ChatWork!]!
+	"""
+	The question the agent waits on.
+	"""
+	question: ChatQuestion
 }
 
 type Config {
@@ -223,6 +337,10 @@ type Conversation {
 	Members' messages and the agent's replies, oldest first.
 	"""
 	messages: [ChatMessage!]!
+	"""
+	The turn the agent is working on, while the latest task runs one or waits on a question.
+	"""
+	working: ChatWorking
 	"""
 	The conversation's tasks, one per session, in order.
 	"""
@@ -514,6 +632,14 @@ type Mutation {
 	Stops the agent session of a run.
 	"""
 	stopRun(runId: ID!): Run!
+	"""
+	Answers the question that the agent of the conversation's running task waits on.
+	"""
+	answerChatQuestion(input: AnswerChatQuestionInput!): Conversation!
+	"""
+	Interrupts the turn that the agent of the conversation's running task is working on. The session stays open for the next message.
+	"""
+	interruptChat(tenantId: ID!, conversationId: ID!): Conversation!
 	"""
 	Sends a chat message. With conversationId, the message goes to that conversation: to its running session, to the start of its pending task, as the reply of a task that needs you, or into a new task when the last one finished.
 	Without conversationId, a new conversation starts in the session sessionName.

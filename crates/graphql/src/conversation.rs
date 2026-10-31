@@ -1,13 +1,20 @@
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
+
 use async_graphql::{Context, ID, Object, Result};
+use sanchoris_core::conversations::latest_task;
 use sanchoris_core::items::{
     AUTHOR_AGENT, AUTHOR_MEMBER, ChatMessage as ChatMessageItem, Conversation as ConversationItem,
     ConversationTask, Output as OutputItem,
 };
 use sanchoris_core::keys;
+use sanchoris_core::model::TaskStatus;
 use sanchoris_core::store::{Index, Listing};
+use sanchoris_core::tasks::runs_of;
 use uuid::Uuid;
 
 use crate::account::Member;
+use crate::chat_work::{ChatWork, ChatWorking, RunWork};
 use crate::config::Session;
 use crate::context::{Scope, tx};
 use crate::enums::{ChatAuthorKind, ConversationKind};
@@ -112,14 +119,27 @@ impl Conversation {
             .query::<ChatMessageItem>(&self.pk(), "MSG#")
             .await?;
         rows.sort_by_key(|row| (row.created_at, row.id));
-        let mut messages = rows
-            .into_iter()
-            .map(|row| ChatMessage {
+        let mut runs: BTreeMap<Uuid, RunWork> = BTreeMap::new();
+        let mut messages = Vec::with_capacity(rows.len());
+        for row in rows {
+            let work = match (row.author_kind.as_str(), row.run_id, row.turn) {
+                (AUTHOR_AGENT, Some(run_id), Some(turn)) => {
+                    if let Entry::Vacant(entry) = runs.entry(run_id) {
+                        entry.insert(
+                            RunWork::load(&mut tx(ctx, self.scope.tenant_id), run_id).await?,
+                        );
+                    }
+                    runs[&run_id].turn(turn, Some(&row.text))?
+                }
+                _ => Vec::new(),
+            };
+            messages.push(ChatMessage {
                 scope: self.scope,
                 row,
                 issues: Vec::new(),
-            })
-            .collect::<Vec<_>>();
+                work,
+            });
+        }
         for task_id in self.task_ids(ctx).await? {
             for output in issue_outputs(ctx, self.scope, task_id).await? {
                 if let Some(message) = messages.iter_mut().find(|message| {
@@ -132,6 +152,60 @@ impl Conversation {
             }
         }
         Ok(messages)
+    }
+
+    /// The turn the agent is working on, while the latest task runs one or waits on a question.
+    async fn working(&self, ctx: &Context<'_>) -> Result<Option<ChatWorking>> {
+        let mut tx = tx(ctx, self.scope.tenant_id);
+        let Some(task) = latest_task(&mut tx, &self.row).await? else {
+            return Ok(None);
+        };
+        if task.status != TaskStatus::Running && task.status != TaskStatus::Pending {
+            return Ok(None);
+        }
+        let mut last_member_at = None;
+        for message in tx
+            .query::<ChatMessageItem>(&self.pk(), "MSG#")
+            .await?
+            .into_iter()
+            .filter(|message| message.task_id == Some(task.id))
+        {
+            if message.author_kind == AUTHOR_MEMBER {
+                last_member_at = last_member_at.max(Some(message.created_at));
+            } else {
+                last_member_at = last_member_at.filter(|at| *at > message.created_at);
+            }
+        }
+        let run = runs_of(&mut tx, task.id)
+            .await?
+            .into_iter()
+            .rev()
+            .find(|run| !run.is_finished());
+        let Some(run) = run else {
+            return Ok(last_member_at.map(|at| ChatWorking {
+                started_at: ts(at),
+                work: Vec::new(),
+                question: None,
+            }));
+        };
+        let turn = run.turns + 1;
+        let work = RunWork::load(&mut tx, run.id).await?;
+        let question = work.open_question(turn)?;
+        let entries = work.turn(turn, None)?;
+        let Some(started_at) = last_member_at
+            .or_else(|| work.first_at(turn))
+            .or_else(|| question.as_ref().map(|question| question.asked_at.0))
+        else {
+            return Ok(None);
+        };
+        if entries.is_empty() && question.is_none() && last_member_at.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(ChatWorking {
+            started_at: ts(started_at),
+            work: entries,
+            question,
+        }))
     }
 
     /// The conversation's tasks, one per session, in order.
@@ -161,6 +235,7 @@ pub(crate) struct ChatMessage {
     pub scope: Scope,
     pub row: ChatMessageItem,
     pub issues: Vec<OutputItem>,
+    pub work: Vec<ChatWork>,
 }
 
 #[Object]
@@ -201,6 +276,11 @@ impl ChatMessage {
             Some(task_id) => Task::find(ctx, self.scope, task_id).await,
             None => Ok(None),
         }
+    }
+
+    /// The thinking, text and tool calls of the turn that this reply ends, oldest first. Empty for members' messages.
+    async fn work(&self) -> &[ChatWork] {
+        &self.work
     }
 
     /// Issues the agent filed with file-issue during the turn this reply ends.

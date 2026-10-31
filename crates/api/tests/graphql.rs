@@ -11,7 +11,7 @@ use sanchoris_api::signing::HmacKey;
 use sanchoris_core::conversations::post_agent_message;
 use sanchoris_core::items::{
     ApprovalWait, AuditEvent, ConfigRevision, Credential, Guard, Integration, Member, Run,
-    SkillRunItem, Task, Tenant, User,
+    RunQuestion, SkillRunItem, Task, Tenant, User,
 };
 use sanchoris_core::keys;
 use sanchoris_core::model::{SkillRunStatus, TaskStatus};
@@ -482,6 +482,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         &mut tx,
         &chat_task,
         Some(run_id),
+        Some(1),
         Uuid::new_v4(),
         "Two issues are open.",
         Utc::now(),
@@ -510,6 +511,83 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     )
     .await;
     assert_eq!(posted["authorKind"], "AGENT");
+    w.dynamo
+        .modify::<Task>(&keys::task_key(tenant, task_uuid), |task| {
+            task.status = TaskStatus::Running;
+            task.wait_reason = None;
+        })
+        .await;
+    w.dynamo
+        .modify::<Run>(&keys::run_key(tenant, task_uuid, run_id), |run| {
+            run.status = "running".into();
+        })
+        .await;
+    let turn = w
+        .dynamo
+        .all::<Run>()
+        .await
+        .into_iter()
+        .find(|run| run.id == run_id)
+        .unwrap()
+        .turns
+        + 1;
+    let mut tx = w.api.store.tx(tenant);
+    tx.insert(&RunQuestion {
+        tenant_id: tenant,
+        run_id,
+        task_id: task_uuid,
+        request_id: "question-1".into(),
+        turn,
+        questions: json!([{
+            "id": "Which label?",
+            "header": "Label",
+            "question": "Which label?",
+            "multiSelect": false,
+            "options": [{ "label": "bug", "description": "Bugs only" }],
+        }]),
+        answers: None,
+        answered_by_member_id: None,
+        asked_at: Utc::now(),
+        answered_at: None,
+    })
+    .unwrap();
+    tx.commit().await.unwrap();
+    let asked = w
+        .ok(
+            owner,
+            "Chat",
+            json!({ "tenant": slug, "conversation": conversation_id, "withConversation": true }),
+        )
+        .await;
+    assert_eq!(
+        asked["tenant"]["conversation"]["working"]["question"]["id"],
+        "question-1"
+    );
+    w.ok(
+        owner,
+        "AnswerChatQuestion",
+        json!({ "input": {
+            "tenantId": tenant,
+            "conversationId": conversation_id,
+            "questionId": "question-1",
+            "answers": [{ "questionId": "Which label?", "answers": ["bug"] }],
+        } }),
+    )
+    .await;
+    let answered = w
+        .dynamo
+        .all::<RunQuestion>()
+        .await
+        .into_iter()
+        .find(|question| question.request_id == "question-1")
+        .unwrap();
+    assert_eq!(answered.answers, Some(json!({ "Which label?": ["bug"] })));
+    w.ok(
+        owner,
+        "InterruptChat",
+        json!({ "tenantId": tenant, "conversationId": conversation_id }),
+    )
+    .await;
     let run = w
         .ok(
             owner,

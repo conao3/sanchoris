@@ -13,6 +13,62 @@ import {
 
 type Obj = Record<string, any>
 
+function mockWorking(stamp: string): Obj {
+  const at = (seconds: number) => new Date(new Date(stamp).getTime() + seconds * 1000).toISOString()
+  return {
+    startedAt: stamp,
+    work: [
+      {
+        kind: "THINKING",
+        at: at(2),
+        text: "**Checking the current setup**\n\nI should look at the repository before choosing an approach.",
+        tool: null,
+        question: null,
+      },
+      {
+        kind: "TOOL",
+        at: at(4),
+        text: null,
+        tool: {
+          name: "Bash",
+          input: JSON.stringify({ command: "ls /workspace/shop-web" }),
+          output: "package.json\nsrc\ntest",
+          isError: false,
+        },
+        question: null,
+      },
+    ],
+    question: {
+      id: `q-${stamp}`,
+      askedAt: at(6),
+      items: [
+        {
+          id: "Which approach should I take?",
+          header: "Approach",
+          question: "Which approach should I take?",
+          multiSelect: false,
+          options: [
+            { label: "Small fix", description: "Change only what the request needs" },
+            { label: "Refactor", description: "Clean up the module while I am there" },
+          ],
+        },
+        {
+          id: "Which checks should I run?",
+          header: "Checks",
+          question: "Which checks should I run?",
+          multiSelect: true,
+          options: [
+            { label: "Unit tests", description: "pnpm test" },
+            { label: "Lint", description: "pnpm lint" },
+            { label: "E2E", description: "pnpm e2e" },
+          ],
+        },
+      ],
+      answers: null,
+    },
+  }
+}
+
 function createResolvers() {
   const fixtures = buildFixtures()
   const { tenants, memberships, viewerInvitations, operator } = fixtures
@@ -246,16 +302,63 @@ function createResolvers() {
         appendLog(run, "EVENT", "session stopped by a member")
         return run
       },
+      answerChatQuestion: (_: unknown, { input }: Obj) => {
+        const tenant = tenantById(input.tenantId)
+        const conversation = tenant.conversationList.find(
+          (item: Obj) => item.id === input.conversationId,
+        )
+        const working = conversation?.working
+        if (!working?.question || working.question.id !== input.questionId) {
+          throw new Error("The agent is not waiting on this question")
+        }
+        const stamp = new Date().toISOString()
+        const question = { ...working.question, answers: input.answers }
+        conversation.messages.push({
+          id: nextId("msg-live"),
+          authorKind: "AGENT",
+          member: null,
+          text: `Going with **${input.answers[0]?.answers.join(", ") ?? ""}**. I will start on it now.`,
+          at: stamp,
+          issues: [],
+          work: [
+            ...working.work,
+            { kind: "QUESTION", at: question.askedAt, text: null, tool: null, question },
+          ],
+        })
+        conversation.working = null
+        conversation.updatedAt = stamp
+        return conversation
+      },
+      interruptChat: (_: unknown, { tenantId, conversationId }: Obj) => {
+        const tenant = tenantById(tenantId)
+        const conversation = tenant.conversationList.find((item: Obj) => item.id === conversationId)
+        if (!conversation?.working) {
+          throw new Error("The conversation's agent is not working")
+        }
+        const stamp = new Date().toISOString()
+        conversation.messages.push({
+          id: nextId("msg-live"),
+          authorKind: "AGENT",
+          member: null,
+          text: "",
+          at: stamp,
+          issues: [],
+          work: conversation.working.work,
+        })
+        conversation.working = null
+        return conversation
+      },
       sendChatMessage: (_: unknown, { input }: Obj) => {
         const tenant = tenantById(input.tenantId)
         const stamp = new Date().toISOString()
         const message = {
-          id: nextId("msg"),
+          id: nextId("msg-live"),
           authorKind: "MEMBER",
           member: viewerMemberOf(tenant),
           text: input.text,
           at: stamp,
           issues: [],
+          work: [],
         }
         const startTask = (conversation: Obj, sequence: number): Obj => {
           const session = conversation.session
@@ -324,6 +427,7 @@ function createResolvers() {
           }
           conversation.messages.push(message)
           conversation.updatedAt = stamp
+          conversation.working = mockWorking(stamp)
           const latest = conversation.latestTask()
           if (!latest || ["SUCCEEDED", "FAILED", "ABORTED"].includes(latest.status)) {
             const task = startTask(conversation, (latest?.conversationSequence ?? 0) + 1)
@@ -354,6 +458,7 @@ function createResolvers() {
           createdBy: viewerMemberOf(tenant),
           createdAt: stamp,
           updatedAt: stamp,
+          working: mockWorking(stamp),
           messages: [message],
           tasks: () => tenant.taskList.filter((task: Obj) => task.conversation === conversation),
           latestTask: () => {

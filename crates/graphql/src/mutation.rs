@@ -6,7 +6,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Duration;
 use sanchoris_core::billing::{ADMIN_PLAN, FREE_PLAN, PRIVILEGED_EMAIL_DOMAIN, stage_plan_change};
-use sanchoris_core::channel::{RunEventType, record_run_event};
+use sanchoris_core::channel::{OutboxType, RunEventType, enqueue_outbox, record_run_event};
+use sanchoris_core::conversations::{answer_question, latest_task};
 use sanchoris_core::db::{self, REF_RUN, REF_TRIGGER, TenantTx};
 use sanchoris_core::item::format_time;
 use sanchoris_core::items::{
@@ -20,7 +21,7 @@ use sanchoris_core::receive::{Admission, SOURCE_CHAT, SOURCE_REPLY, admit_inboun
 use sanchoris_core::skillrun::{SkillRunError, resolve_waiting_approval};
 use sanchoris_core::store::{Index, SortKey, Update};
 use sanchoris_core::tasks::{
-    abort_task, latest_run, load_task, requester_member, snoozable, snooze, stop_run,
+    abort_task, latest_run, load_task, requester_member, runs_of, snoozable, snooze, stop_run,
 };
 use sanchoris_core::tenants::{
     NewTenant, TENANT_DELETING, TenantError, create_tenant, hold_free_tenant, is_deleting,
@@ -104,6 +105,27 @@ pub(crate) struct SendChatMessageInput {
     #[graphql(name = "configId")]
     config_id: Option<ID>,
     text: String,
+}
+
+#[derive(SimpleObject, InputObject)]
+pub(crate) struct ChatAnswerInput {
+    #[graphql(name = "questionId")]
+    question_id: String,
+    /// The labels of the picked options, or the member's own words.
+    answers: Vec<String>,
+}
+
+#[derive(InputObject)]
+pub(crate) struct AnswerChatQuestionInput {
+    #[graphql(name = "tenantId")]
+    tenant_id: ID,
+    #[graphql(name = "conversationId")]
+    conversation_id: ID,
+    /// The id of the question the agent waits on.
+    #[graphql(name = "questionId")]
+    question_id: ID,
+    /// One answer per item of the question.
+    answers: Vec<ChatAnswerInput>,
 }
 
 #[derive(SimpleObject)]
@@ -236,6 +258,22 @@ async fn chat_session(
             "several configs have the session {name}; give configId"
         ))),
     }
+}
+
+async fn open_chat_run(
+    tx: &mut TenantTx,
+    conversation: &items::Conversation,
+) -> Result<items::Run> {
+    let task = latest_task(tx, conversation)
+        .await?
+        .filter(|task| task.status == CoreStatus::Running)
+        .ok_or_else(|| conflict("the conversation's agent is not working"))?;
+    runs_of(tx, task.id)
+        .await?
+        .into_iter()
+        .rev()
+        .find(|run| !run.is_finished())
+        .ok_or_else(|| conflict("the conversation's agent is not working"))
 }
 
 async fn tenant_scope(ctx: &Context<'_>, tenant_id: &ID) -> Result<Scope> {
@@ -1025,6 +1063,132 @@ impl MutationRoot {
         Run::load(ctx, scope, run_id).await
     }
 
+    /// Answers the question that the agent of the conversation's running task waits on.
+    async fn answer_chat_question(
+        &self,
+        ctx: &Context<'_>,
+        input: AnswerChatQuestionInput,
+    ) -> Result<Conversation> {
+        let scope = tenant_scope(ctx, &input.tenant_id).await?;
+        let (member_id, _) = scope.member()?;
+        let conversation_id = parse_id(&input.conversation_id)?;
+        let conversation = Conversation::load(ctx, scope, conversation_id).await?;
+        let answers = input
+            .answers
+            .iter()
+            .map(|answer| {
+                let values: Vec<String> = answer
+                    .answers
+                    .iter()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .collect();
+                if values.is_empty() {
+                    return Err(bad_input(format!(
+                        "question {} has no answer",
+                        answer.question_id
+                    )));
+                }
+                Ok((answer.question_id.clone(), json!(values)))
+            })
+            .collect::<Result<Map<String, Value>>>()?;
+        let request_id = input.question_id.to_string();
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let run = open_chat_run(&mut tx, &conversation.row).await?;
+            let question = tx
+                .get::<items::RunQuestion>(&keys::run_question_key(
+                    scope.tenant_id,
+                    run.id,
+                    &request_id,
+                ))
+                .await?
+                .ok_or_else(|| not_found(format!("question {request_id}")))?;
+            if question.answers.is_some() {
+                return Err(conflict("the question has already been answered").into());
+            }
+            let asked: Vec<&str> = question
+                .questions
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|item| item["id"].as_str())
+                .collect();
+            if asked.len() != answers.len() || asked.iter().any(|id| !answers.contains_key(*id)) {
+                return Err(bad_input("answer every item of the question, and only those").into());
+            }
+            answer_question(
+                &mut tx,
+                run.id,
+                &request_id,
+                &Value::Object(answers.clone()),
+                member_id,
+                now(ctx),
+            )
+            .await?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "chat.question_answer",
+                target(
+                    "conversation",
+                    conversation_id,
+                    conversation.row.title.clone(),
+                ),
+                "Answered the agent's question",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
+        Conversation::load(ctx, scope, conversation_id).await
+    }
+
+    /// Interrupts the turn that the agent of the conversation's running task is working on. The session stays open for the next message.
+    async fn interrupt_chat(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(name = "tenantId")] tenant_id: ID,
+        #[graphql(name = "conversationId")] conversation_id: ID,
+    ) -> Result<Conversation> {
+        let scope = tenant_scope(ctx, &tenant_id).await?;
+        let (member_id, _) = scope.member()?;
+        let conversation_id = parse_id(&conversation_id)?;
+        let conversation = Conversation::load(ctx, scope, conversation_id).await?;
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let run = open_chat_run(&mut tx, &conversation.row).await?;
+            enqueue_outbox(
+                &mut tx,
+                run.id,
+                OutboxType::Interrupt,
+                &json!({}),
+                &format!("interrupt:turn:{}", run.turns + 1),
+            )
+            .await?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "chat.interrupt",
+                target(
+                    "conversation",
+                    conversation_id,
+                    conversation.row.title.clone(),
+                ),
+                "Interrupted the agent",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
+        Conversation::load(ctx, scope, conversation_id).await
+    }
+
     /// Sends a chat message. With conversationId, the message goes to that conversation: to its running session, to the start of its pending task, as the reply of a task that needs you, or into a new task when the last one finished.
     /// Without conversationId, a new conversation starts in the session sessionName.
     async fn send_chat_message(
@@ -1112,6 +1276,7 @@ impl MutationRoot {
                 scope,
                 row: delivered.message,
                 issues: Vec::new(),
+                work: Vec::new(),
             },
         })
     }

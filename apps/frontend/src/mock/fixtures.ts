@@ -1478,7 +1478,74 @@ function buildAcme(viewerRole: string): Obj {
     minutes: number,
     text: string,
     issues: Obj[] = [],
-  ): Obj => ({ id, authorKind, member, at: ago(minutes), text, issues })
+    work: Obj[] = [],
+  ): Obj => ({ id, authorKind, member, at: ago(minutes), text, issues, work })
+  const work = (minutes: number, kind: string, fields: Obj): Obj => ({
+    kind,
+    at: ago(minutes),
+    text: null,
+    tool: null,
+    question: null,
+    ...fields,
+  })
+  const tool = (name: string, input: Obj, output: string | null, isError = false): Obj => ({
+    tool: { name, input: JSON.stringify(input), output, isError },
+  })
+  const exportWork = [
+    work(29.9, "THINKING", {
+      text: "**Splitting the export work**\n\nThe API and the UI live in different repositories, so each needs its own issue. The UI depends on the endpoint's shape.",
+    }),
+    work(
+      29.8,
+      "TOOL",
+      tool(
+        "Read",
+        { file_path: "/workspace/shop-api/src/orders/routes.ts" },
+        'export const ordersRouter = Router()\nordersRouter.get("/", listOrders)',
+      ),
+    ),
+    work(
+      29.7,
+      "TOOL",
+      tool("Grep", { pattern: "csv", path: "/workspace/shop-web/src" }, "No matches found"),
+    ),
+    work(
+      29.6,
+      "TOOL",
+      tool(
+        "Bash",
+        { command: "git -C shop-api log --oneline -5" },
+        "a1b2c3d Add order filters\n9f8e7d6 Paginate orders",
+      ),
+    ),
+    work(29.4, "TEXT", {
+      text: "The orders router has no export route yet, and the web app has no CSV code.",
+    }),
+    work(29.3, "QUESTION", {
+      question: {
+        id: "q-export-format",
+        askedAt: ago(29.3),
+        items: [
+          {
+            id: "Which format should the export use?",
+            header: "Format",
+            question: "Which format should the export use?",
+            multiSelect: false,
+            options: [
+              { label: "CSV", description: "One row per order, comma separated" },
+              { label: "XLSX", description: "An Excel workbook" },
+            ],
+          },
+        ],
+        answers: [{ questionId: "Which format should the export use?", answers: ["CSV"] }],
+      },
+    }),
+    work(
+      29.2,
+      "TOOL",
+      tool("Bash", { command: "pnpm test --filter shop-api" }, "1 failed: orders.spec.ts", true),
+    ),
+  ]
   const exportMessages = [
     message(
       "msg-1",
@@ -1498,6 +1565,7 @@ function buildAcme(viewerRole: string): Obj {
         issue("acme/shop-web", 42, "Export button and CSV download", () => t42),
         issue("acme/shop-api", 43, "Docs for the export API", () => t43),
       ],
+      exportWork,
     ),
     message("msg-3", "MEMBER", mika, 27, "Looks right. Go."),
     message(
@@ -1545,6 +1613,7 @@ function buildAcme(viewerRole: string): Obj {
       createdBy,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
+      working: null,
       messages,
       tasks: () => tasks.filter((candidate) => candidate.conversation === item),
       latestTask: () => {

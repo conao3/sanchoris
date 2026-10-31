@@ -4,6 +4,7 @@ import { join, relative } from "node:path"
 
 import {
   query,
+  type PermissionResult,
   type Query,
   type SDKMessage,
   type SDKRateLimitInfo,
@@ -12,7 +13,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk"
 
 import { AsyncQueue } from "../async-queue.ts"
-import type { RateLimitWindow } from "../protocol.ts"
+import type { RateLimitWindow, UserInputAnswers, UserInputQuestion } from "../protocol.ts"
 import {
   requireEnv,
   type RestoredRecord,
@@ -56,6 +57,48 @@ export function claudeRateLimit(info: RateLimitInfoWithWindows): WorkerRateLimit
     rateLimitType: info.rateLimitType ?? null,
     windows,
   }
+}
+
+interface ClaudeQuestion {
+  question?: unknown
+  header?: unknown
+  multiSelect?: unknown
+  options?: { label?: unknown; description?: unknown }[]
+}
+
+export function claudeQuestions(input: Record<string, unknown>): UserInputQuestion[] {
+  const questions = input.questions
+  if (!Array.isArray(questions) || questions.length === 0)
+    throw new Error("AskUserQuestion has no questions")
+  return (questions as ClaudeQuestion[]).map((question, index) => {
+    if (typeof question.question !== "string" || question.question === "")
+      throw new Error(`AskUserQuestion question ${index + 1} has no text`)
+    return {
+      id: question.question,
+      header: typeof question.header === "string" ? question.header : "",
+      question: question.question,
+      multiSelect: question.multiSelect === true,
+      options: (question.options ?? []).flatMap((option) =>
+        typeof option.label === "string" && option.label !== ""
+          ? [
+              {
+                label: option.label,
+                description: typeof option.description === "string" ? option.description : "",
+              },
+            ]
+          : [],
+      ),
+    }
+  })
+}
+
+export function claudeAnswers(
+  questions: UserInputQuestion[],
+  answers: UserInputAnswers,
+): Record<string, string> {
+  return Object.fromEntries(
+    questions.map((question) => [question.id, (answers[question.id] ?? []).join(", ")]),
+  )
 }
 
 function textOf(content: unknown): string {
@@ -105,6 +148,9 @@ export class ClaudeWorker implements Worker {
         ...(restore ? { resume: sessionId } : { sessionId }),
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
+        canUseTool: (toolName, input, { signal }) => this.canUseTool(toolName, input, signal),
+        thinking: { type: "adaptive", display: "summarized" },
+        settings: { showThinkingSummaries: true },
         settingSources: ["user", "project", "local"],
         systemPrompt:
           this.context.systemPrompt === null
@@ -156,6 +202,24 @@ export class ClaudeWorker implements Worker {
     this.session?.close()
   }
 
+  private async canUseTool(
+    toolName: string,
+    input: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<PermissionResult> {
+    if (toolName !== "AskUserQuestion") return { behavior: "allow", updatedInput: input }
+    const questions = claudeQuestions(input)
+    try {
+      const answers = await this.context.handlers.onUserInput(questions, signal)
+      return {
+        behavior: "allow",
+        updatedInput: { ...input, answers: claudeAnswers(questions, answers) },
+      }
+    } catch (error) {
+      return { behavior: "deny", message: (error as Error).message }
+    }
+  }
+
   private async consume(session: Query): Promise<void> {
     try {
       for await (const message of session) this.handle(message)
@@ -175,7 +239,9 @@ export class ClaudeWorker implements Worker {
       case "assistant":
         if (message.parent_tool_use_id !== null) return
         for (const block of message.message.content) {
-          if (block.type === "text") {
+          if (block.type === "thinking") {
+            if (block.thinking !== "") onEvent("thinking", { text: block.thinking })
+          } else if (block.type === "text") {
             onEvent("text", { text: block.text })
           } else if (block.type === "tool_use") {
             onEvent("tool_use", { id: block.id, name: block.name, input: block.input })

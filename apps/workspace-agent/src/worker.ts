@@ -1,4 +1,11 @@
-import type { EventKind, RateLimitWindow, TurnError, TurnUsage } from "./protocol.ts"
+import type {
+  EventKind,
+  RateLimitWindow,
+  TurnError,
+  TurnUsage,
+  UserInputAnswers,
+  UserInputQuestion,
+} from "./protocol.ts"
 
 export interface WorkerTurnResult {
   result: "completed" | "failed" | "interrupted"
@@ -20,6 +27,7 @@ interface WorkerHandlers {
   onEvent: (kind: EventKind, data: Record<string, unknown>) => void
   onTurnEnd: (result: WorkerTurnResult) => void
   onRateLimit: (rateLimit: WorkerRateLimit) => void
+  onUserInput: (questions: UserInputQuestion[], signal: AbortSignal) => Promise<UserInputAnswers>
   onFatal: (error: Error) => void
 }
 
