@@ -23,6 +23,7 @@ import { signOut } from "../lib/cognito.ts"
 import { useKeys } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
 import { useTenant } from "../lib/tenant.tsx"
+import { ToastProvider } from "./Toast.tsx"
 import { Icon, Kbd } from "./ui.tsx"
 
 type MenuItem = {
@@ -247,14 +248,16 @@ export function AppFrame({ children }: { children: ReactNode }) {
   })
   return (
     <NavDrawerContext.Provider value={() => setDrawerKey(locationKey)}>
-      <div className="grid h-screen grid-cols-1 overflow-hidden lg:grid-cols-[232px_1fr]">
-        <Sidebar className="max-lg:hidden" />
-        {children}
-      </div>
-      <NavDrawer
-        isOpen={drawerOpen}
-        onOpenChange={(open) => setDrawerKey(open ? locationKey : undefined)}
-      />
+      <ToastProvider>
+        <div className="grid h-screen grid-cols-1 overflow-hidden lg:grid-cols-[232px_1fr]">
+          <Sidebar className="max-lg:hidden" />
+          {children}
+        </div>
+        <NavDrawer
+          isOpen={drawerOpen}
+          onOpenChange={(open) => setDrawerKey(open ? locationKey : undefined)}
+        />
+      </ToastProvider>
     </NavDrawerContext.Provider>
   )
 }

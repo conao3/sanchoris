@@ -33,6 +33,7 @@
   "common.loadFailed": "Could not load this data.",
   "common.reviewOnGitHub": "Review on GitHub",
   "common.editOnGitHub": "Edit on GitHub",
+  "common.notImplemented": "Not implemented yet.",
 
   "keys.move": "Move",
   "keys.open": "Open",
@@ -463,6 +464,7 @@
   "integrations.installApp": "Install the App",
   "integrations.slack": "Slack",
   "integrations.slackDetail": "Ask for work from a channel or DM. Optional.",
+  "integrations.addSlack": "Add Slack",
   "integrations.slackConnected": "Connected to the workspace {workspace}.",
   "integrations.manageInSlack": "Manage in Slack",
   "integrations.slackLater": "Slack comes later; it is not available yet.",

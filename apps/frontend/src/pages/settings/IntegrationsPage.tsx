@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 import { Button } from "../../components/Button.tsx"
 import { SettingsPage } from "../../components/SettingsTabs.tsx"
+import { useToast } from "../../components/Toast.tsx"
 import {
   ActionError,
   Chip,
@@ -41,7 +42,7 @@ import { type MessageKey, t, tx } from "../../i18n/index.ts"
 import { ago } from "../../lib/format.ts"
 import { useAction } from "../../lib/mutation.ts"
 import { useData } from "../../lib/query.ts"
-import { useTenant } from "../../lib/tenant.tsx"
+import { useRole, useTenant } from "../../lib/tenant.tsx"
 
 type Outcome = { row: "account" | "installation" | "either"; tone: Tone; text: MessageKey }
 
@@ -78,6 +79,8 @@ function OutcomeNote({ outcome }: { outcome: Outcome }) {
 
 export function IntegrationsPage() {
   const { slug } = useTenant()
+  const { isAdmin } = useRole()
+  const toast = useToast()
   const navigate = useNavigate()
   const search = useSearch({ from: "/app/settings" })
   const [returned] = useState(search.github)
@@ -214,7 +217,7 @@ export function IntegrationsPage() {
                 <Button icon={ExternalLink} href={github.manageUrl}>
                   {t("integrations.manageOnGitHub")}
                 </Button>
-              ) : (
+              ) : isAdmin ? (
                 <Button
                   variant="primary"
                   icon={Plus}
@@ -229,7 +232,7 @@ export function IntegrationsPage() {
                 >
                   {t("integrations.installApp")}
                 </Button>
-              )}
+              ) : null}
             </span>
           </Row>
           <Row cols={cols} tall>
@@ -255,9 +258,15 @@ export function IntegrationsPage() {
               </State>
             )}
             <span className="justify-self-end">
-              {slack?.status === "CONNECTED" && slack.manageUrl ? (
-                <Button icon={ExternalLink} href={slack.manageUrl}>
-                  {t("integrations.manageInSlack")}
+              {slack?.status === "CONNECTED" ? (
+                slack.manageUrl ? (
+                  <Button icon={ExternalLink} href={slack.manageUrl}>
+                    {t("integrations.manageInSlack")}
+                  </Button>
+                ) : null
+              ) : isAdmin ? (
+                <Button icon={Plus} onPress={() => toast(t("common.notImplemented"))}>
+                  {t("integrations.addSlack")}
                 </Button>
               ) : null}
             </span>

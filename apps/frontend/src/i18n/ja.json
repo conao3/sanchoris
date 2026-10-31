@@ -33,6 +33,7 @@
   "common.loadFailed": "データを読み込めませんでした。",
   "common.reviewOnGitHub": "GitHub でレビュー",
   "common.editOnGitHub": "GitHub で編集",
+  "common.notImplemented": "まだ実装していません。",
 
   "keys.move": "移動",
   "keys.open": "開く",
@@ -463,6 +464,7 @@
   "integrations.installApp": "App をインストール",
   "integrations.slack": "Slack",
   "integrations.slackDetail": "チャンネルや DM から作業を頼みます。任意。",
+  "integrations.addSlack": "Slack を追加",
   "integrations.slackConnected": "ワークスペース {workspace} に接続済み。",
   "integrations.manageInSlack": "Slack で管理",
   "integrations.slackLater": "Slack はあとで使えるようになります。いまは使えません。",
