@@ -613,7 +613,7 @@ export function TaskPage() {
   }
 
   const keys: [string, MessageKey][] = []
-  if (resumable) {
+  if (resumable && message.trim()) {
     keys.push(["⌘↵", "task.resume"])
   }
   if (active) {
@@ -642,14 +642,14 @@ export function TaskPage() {
                 {t("task.stop")}
               </Button>
             ) : null}
-            {resumable ? (
+            {resumable && message.trim() ? (
               <Button
                 variant="primary"
                 icon={Play}
                 kbd="⌘↵"
                 compact
                 onPress={doResume}
-                isDisabled={!message.trim()}
+                isDisabled={resumeState.loading}
               >
                 {t("task.resume")}
               </Button>
