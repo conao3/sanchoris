@@ -1,5 +1,4 @@
 import { Link } from "@tanstack/react-router"
-import clsx from "clsx"
 import type { LucideIcon } from "lucide-react"
 import { CreditCard, FolderGit2, GitBranch, KeyRound, ListChecks, Users } from "lucide-react"
 import { type ReactNode, useLayoutEffect, useRef } from "react"
@@ -37,7 +36,7 @@ export function SettingsPage({
 }) {
   const current = tabs.find((item) => item.id === tab) ?? tabs[0]
   const strip = useRef<HTMLDivElement>(null)
-  const active = useRef<HTMLAnchorElement>(null)
+  const active = useRef<HTMLSpanElement>(null)
 
   useLayoutEffect(() => {
     if (strip.current && active.current) {
@@ -48,29 +47,38 @@ export function SettingsPage({
 
   return (
     <Page
-      crumbs={[{ label: t("nav.settings"), to: "/settings" }, { label: t(current.label) }]}
+      crumbs={[
+        { label: t("nav.settings"), to: tab === "integrations" ? undefined : "/settings" },
+        { label: t(current.label) },
+      ]}
       actions={actions}
       keys={keys}
     >
       <Pg>
         <div ref={strip} data-scroll-x className="relative mb-4 overflow-x-auto">
           <div className="flex h-[34px] w-max min-w-full items-end gap-[18px] border-b border-line">
-            {tabs.map((item) => (
-              <Link
-                key={item.id}
-                ref={item.id === tab ? active : undefined}
-                to={item.to}
-                className={clsx(
-                  "flex items-center gap-1.5 whitespace-nowrap pb-2",
-                  item.id === tab
-                    ? "-mb-px border-b-2 border-ink font-medium text-ink"
-                    : "text-muted hover:text-ink",
-                )}
-              >
-                <Icon icon={item.icon} />
-                {t(item.label)}
-              </Link>
-            ))}
+            {tabs.map((item) =>
+              item.id === tab ? (
+                <span
+                  key={item.id}
+                  ref={active}
+                  aria-current="page"
+                  className="-mb-px flex items-center gap-1.5 whitespace-nowrap border-b-2 border-ink pb-2 font-medium text-ink"
+                >
+                  <Icon icon={item.icon} />
+                  {t(item.label)}
+                </span>
+              ) : (
+                <Link
+                  key={item.id}
+                  to={item.to}
+                  className="flex items-center gap-1.5 whitespace-nowrap pb-2 text-muted hover:text-ink"
+                >
+                  <Icon icon={item.icon} />
+                  {t(item.label)}
+                </Link>
+              ),
+            )}
           </div>
         </div>
         {children}

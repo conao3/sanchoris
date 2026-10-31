@@ -467,7 +467,6 @@
   "integrations.slackDetail": "チャンネルや DM から作業を頼みます。任意。",
   "integrations.slackConnected": "ワークスペース {workspace} に接続済み。",
   "integrations.manageInSlack": "Slack で管理",
-  "integrations.addSlack": "Slack を追加",
   "integrations.slackLater": "Slack はあとで使えるようになります。いまは使えません。",
   "integrations.outcome.linked": "GitHub のアカウントを連携しました。",
   "integrations.outcome.inUse": "この GitHub のアカウントは別のユーザーに連携されています。",

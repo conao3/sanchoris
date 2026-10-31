@@ -103,7 +103,7 @@ export function IntegrationsPage() {
     known?.row === "either" ? { ...known, row: login ? "installation" : "account" } : known
 
   return (
-    <SettingsPage tab="integrations">
+    <SettingsPage tab="integrations" keys={[]}>
       <Title>{t("settings.integrations")}</Title>
       <Sub>{t("integrations.intro")}</Sub>
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
@@ -255,17 +255,11 @@ export function IntegrationsPage() {
               </State>
             )}
             <span className="justify-self-end">
-              {slack?.status === "CONNECTED" ? (
-                slack.manageUrl ? (
-                  <Button icon={ExternalLink} href={slack.manageUrl}>
-                    {t("integrations.manageInSlack")}
-                  </Button>
-                ) : null
-              ) : (
-                <Button icon={Plus} isDisabled>
-                  {t("integrations.addSlack")}
+              {slack?.status === "CONNECTED" && slack.manageUrl ? (
+                <Button icon={ExternalLink} href={slack.manageUrl}>
+                  {t("integrations.manageInSlack")}
                 </Button>
-              )}
+              ) : null}
             </span>
           </Row>
         </Table>

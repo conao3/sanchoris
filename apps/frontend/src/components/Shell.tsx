@@ -77,16 +77,26 @@ const roleLabels: Record<Role, MessageKey> = {
 
 function MenuLink({ item, path }: { item: MenuItem; path: string }) {
   const active = item.match(path)
-  return (
-    <Link
-      to={item.to}
-      className={clsx(
-        "flex items-center gap-[9px] rounded-ui px-2 py-[5px] max-lg:min-h-10",
-        active ? "bg-hover font-medium text-ink" : "text-body hover:bg-hover",
-      )}
-    >
+  const className = clsx(
+    "flex items-center gap-[9px] rounded-ui px-2 py-[5px] max-lg:min-h-10",
+    active ? "bg-hover font-medium text-ink" : "text-body hover:bg-hover",
+  )
+  const content = (
+    <>
       <Icon icon={item.icon} />
       {t(item.label)}
+    </>
+  )
+  if (path === item.to) {
+    return (
+      <span aria-current="page" className={className}>
+        {content}
+      </span>
+    )
+  }
+  return (
+    <Link to={item.to} className={className}>
+      {content}
     </Link>
   )
 }
@@ -110,20 +120,30 @@ function TenantSwitcher() {
           <div className="px-3.5 pb-1 pt-1.5 text-xs font-semibold uppercase tracking-[.06em] text-faint">
             {t("shell.switchTenant")}
           </div>
-          {viewer.memberships.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => {
-                setOpen(false)
-                switchTenant(item.tenant.slug)
-              }}
-              className="flex w-full items-center gap-2 px-3.5 py-[7px] text-left hover:bg-hover"
-            >
-              {item.tenant.name}
-              {item.id === membership.id ? <Icon icon={Check} className="ml-auto" /> : null}
-            </button>
-          ))}
+          {viewer.memberships.map((item) =>
+            item.id === membership.id ? (
+              <div
+                key={item.id}
+                aria-current="true"
+                className="flex w-full items-center gap-2 px-3.5 py-[7px]"
+              >
+                {item.tenant.name}
+                <Icon icon={Check} className="ml-auto" />
+              </div>
+            ) : (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  setOpen(false)
+                  switchTenant(item.tenant.slug)
+                }}
+                className="flex w-full items-center gap-2 px-3.5 py-[7px] text-left hover:bg-hover"
+              >
+                {item.tenant.name}
+              </button>
+            ),
+          )}
           <Link
             to="/tenants/new"
             className="flex items-center gap-2 border-t border-line px-3.5 py-[7px] text-muted hover:bg-hover"
