@@ -37,7 +37,7 @@ import { countOf, hoursOf, usedShare } from "../lib/plan.ts"
 import { useAction } from "../lib/mutation.ts"
 import { IDLE_POLL, LIVE_POLL, useData } from "../lib/query.ts"
 import { limitedText, needsYouText, originName, skillStep } from "../lib/taskText.ts"
-import { useTenant } from "../lib/tenant.tsx"
+import { useRole, useTenant } from "../lib/tenant.tsx"
 import { HomeSetup } from "./HomeSetup.tsx"
 
 type Tenant = NonNullable<HomeQuery["tenant"]>
@@ -147,6 +147,7 @@ function UsageMeter({
 function Dashboard({ tenant }: { tenant: Tenant }) {
   const navigate = useNavigate()
   const [setTriggerState, triggerState] = useAction(SetTriggerStateDocument)
+  const { isAdmin } = useRole()
   const tasks = tenant.tasks
   const viewerMemberId = tenant.viewerMember.id
   const attention: Attention[] = [
@@ -443,16 +444,18 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
                   : t("home.idle")}
             </span>
           </span>
-          <Toggle
-            on={trigger.state === "ENABLED"}
-            onToggle={() =>
-              void setTriggerState({
-                triggerId: trigger.id,
-                state: trigger.state === "ENABLED" ? "DISABLED" : "ENABLED",
-              })
-            }
-            isDisabled={triggerState.loading}
-          />
+          {isAdmin ? (
+            <Toggle
+              on={trigger.state === "ENABLED"}
+              onToggle={() =>
+                void setTriggerState({
+                  triggerId: trigger.id,
+                  state: trigger.state === "ENABLED" ? "DISABLED" : "ENABLED",
+                })
+              }
+              isDisabled={triggerState.loading}
+            />
+          ) : null}
         </Row>
       ))}
       <ActionError error={triggerState.error} className="mt-1.5" />

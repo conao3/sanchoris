@@ -32,7 +32,7 @@ import { dayTime } from "../../lib/format.ts"
 import { listKeys, useListNav } from "../../lib/keys.ts"
 import { useAction } from "../../lib/mutation.ts"
 import { useData } from "../../lib/query.ts"
-import { useTenant } from "../../lib/tenant.tsx"
+import { useRole, useTenant } from "../../lib/tenant.tsx"
 
 const AUDIT_LIST_LIMIT = 100
 
@@ -59,6 +59,7 @@ const periods: { value: string; label: MessageKey; days: number }[] = [
 
 export function AuditPage() {
   const { slug } = useTenant()
+  const { isAdmin } = useRole()
   const [actor, setActor] = useState("")
   const [action, setAction] = useState("")
   const [period, setPeriod] = useState("7")
@@ -84,10 +85,11 @@ export function AuditPage() {
     }
   }
 
-  const nav = useListNav(events.length, () => undefined, {
-    "/": () => setFilterOpen(true),
-    e: doExport,
-  })
+  const nav = useListNav(
+    events.length,
+    () => undefined,
+    isAdmin ? { "/": () => setFilterOpen(true), e: doExport } : {},
+  )
   const cols = "130px 160px 300px 1fr 150px"
   const actorName = tenant?.members.find((member) => member.id === actor)?.user.name
 
@@ -95,51 +97,61 @@ export function AuditPage() {
     <SettingsPage
       tab="audit"
       actions={
-        <Button icon={ExternalLink} onPress={doExport} isDisabled={exportState.loading || !tenant}>
-          {t("audit.export")}
-        </Button>
+        isAdmin ? (
+          <Button
+            icon={ExternalLink}
+            onPress={doExport}
+            isDisabled={exportState.loading || !tenant}
+          >
+            {t("audit.export")}
+          </Button>
+        ) : null
       }
-      keys={[...listKeys(events.length), ["/", "keys.filter"], ["e", "audit.exportKey"]]}
+      keys={
+        isAdmin ? [...listKeys(events.length), ["/", "keys.filter"], ["e", "audit.exportKey"]] : []
+      }
     >
       <Title>{t("settings.audit")}</Title>
       <Sub>{t("audit.intro", { tenant: tenant?.name ?? "" })}</Sub>
-      <div className="mb-3 flex flex-wrap gap-2">
-        <Menu
-          icon={Users}
-          label={actorName ?? t("audit.allActors")}
-          value={actor}
-          open={filterOpen}
-          onOpenChange={setFilterOpen}
-          onChange={setActor}
-          options={[
-            { value: "", label: t("audit.allActors") },
-            ...(tenant?.members ?? []).map((member) => ({
-              value: member.id,
-              label: member.user.name,
-            })),
-          ]}
-        />
-        {actions.length > 0 || action ? (
+      {isAdmin ? (
+        <div className="mb-3 flex flex-wrap gap-2">
           <Menu
-            label={action || t("audit.allActions")}
-            value={action}
-            onChange={setAction}
+            icon={Users}
+            label={actorName ?? t("audit.allActors")}
+            value={actor}
+            open={filterOpen}
+            onOpenChange={setFilterOpen}
+            onChange={setActor}
             options={[
-              { value: "", label: t("audit.allActions") },
-              ...actions.map((item) => ({
-                value: item,
-                label: <span className="font-mono text-sm">{item}</span>,
+              { value: "", label: t("audit.allActors") },
+              ...(tenant?.members ?? []).map((member) => ({
+                value: member.id,
+                label: member.user.name,
               })),
             ]}
           />
-        ) : null}
-        <Menu
-          label={t(periods.find((item) => item.value === period)?.label ?? "audit.last7")}
-          value={period}
-          onChange={setPeriod}
-          options={periods.map((item) => ({ value: item.value, label: t(item.label) }))}
-        />
-      </div>
+          {actions.length > 0 || action ? (
+            <Menu
+              label={action || t("audit.allActions")}
+              value={action}
+              onChange={setAction}
+              options={[
+                { value: "", label: t("audit.allActions") },
+                ...actions.map((item) => ({
+                  value: item,
+                  label: <span className="font-mono text-sm">{item}</span>,
+                })),
+              ]}
+            />
+          ) : null}
+          <Menu
+            label={t(periods.find((item) => item.value === period)?.label ?? "audit.last7")}
+            value={period}
+            onChange={setPeriod}
+            options={periods.map((item) => ({ value: item.value, label: t(item.label) }))}
+          />
+        </div>
+      ) : null}
       <ActionError error={exportState.error} className="mb-3" />
       {exportState.data && !exportState.loading ? (
         <div className="mb-3">

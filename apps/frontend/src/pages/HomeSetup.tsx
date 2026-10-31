@@ -7,7 +7,7 @@ import { Chip, Dim, Lk, Row, Section, State, Sub, Table, Th, Title } from "../co
 import type { HomeQuery } from "../graphql/generated/graphql.ts"
 import { type MessageKey, t, tx } from "../i18n/index.ts"
 import { useKeys } from "../lib/keys.ts"
-import { useTenant } from "../lib/tenant.tsx"
+import { useRole, useTenant } from "../lib/tenant.tsx"
 
 type Tenant = NonNullable<HomeQuery["tenant"]>
 
@@ -24,6 +24,7 @@ type Step = {
 export function HomeSetup({ tenant }: { tenant: Tenant }) {
   const navigate = useNavigate()
   const { viewer } = useTenant()
+  const { isAdmin } = useRole()
   const { setup } = tenant
   const github = tenant.integrations.find(
     (integration) => integration.kind === "GITHUB_INSTALLATION",
@@ -156,10 +157,14 @@ export function HomeSetup({ tenant }: { tenant: Tenant }) {
 
   const aside = (
     <>
-      <Section first>{t("setup.orApiKey")}</Section>
-      <Dim>{t("setup.apiKeyProviders")}</Dim>
-      <ApiKeyForm tenantId={tenant.id} />
-      <Section>{t("setup.usedBySession")}</Section>
+      {isAdmin ? (
+        <>
+          <Section first>{t("setup.orApiKey")}</Section>
+          <Dim>{t("setup.apiKeyProviders")}</Dim>
+          <ApiKeyForm tenantId={tenant.id} />
+        </>
+      ) : null}
+      <Section first={!isAdmin}>{t("setup.usedBySession")}</Section>
       <Dim>{t("setup.usedBySessionDetail")}</Dim>
     </>
   )

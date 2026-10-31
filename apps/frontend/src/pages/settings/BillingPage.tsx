@@ -155,7 +155,7 @@ export function BillingPage() {
                     <State tone="ok" icon={ShieldCheck}>
                       {t("billing.current")}
                     </State>
-                  ) : (
+                  ) : membership.role === "OWNER" ? (
                     <span className="justify-self-end">
                       <Button
                         small
@@ -165,7 +165,7 @@ export function BillingPage() {
                         {t("billing.change")}
                       </Button>
                     </span>
-                  )}
+                  ) : null}
                 </Row>
               ))}
             </Table>
@@ -187,7 +187,7 @@ export function BillingPage() {
     <SettingsPage
       tab="billing"
       actions={
-        admin ? undefined : (
+        admin || membership.role !== "OWNER" ? undefined : (
           <Button icon={ExternalLink} onPress={portal} isDisabled={!tenant}>
             {t("billing.manageInStripe")}
           </Button>

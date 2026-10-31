@@ -40,7 +40,7 @@ import { ago } from "../../lib/format.ts"
 import { listKeys, useListNav } from "../../lib/keys.ts"
 import { useAction } from "../../lib/mutation.ts"
 import { useData } from "../../lib/query.ts"
-import { useTenant } from "../../lib/tenant.tsx"
+import { useRole, useTenant } from "../../lib/tenant.tsx"
 
 type ValidationError = {
   path: string
@@ -122,6 +122,7 @@ function AddConfigForm({ tenantId, repositories }: { tenantId: string; repositor
 
 export function ConfigPage() {
   const { slug } = useTenant()
+  const { isAdmin } = useRole()
   const { data, error, refetch } = useData(ConfigsDocument, { tenant: slug })
   const [syncConfig, syncState] = useAction(SyncConfigDocument)
   const tenant = data?.tenant
@@ -218,13 +219,15 @@ export function ConfigPage() {
                               ? t("config.lastSynced", { at: ago(config.syncedAt) })
                               : null}
                           </span>
-                          <Button
-                            small
-                            isDisabled={syncState.loading}
-                            onPress={() => void syncConfig({ configId: config.id })}
-                          >
-                            {t("common.retry")}
-                          </Button>
+                          {isAdmin ? (
+                            <Button
+                              small
+                              isDisabled={syncState.loading}
+                              onPress={() => void syncConfig({ configId: config.id })}
+                            >
+                              {t("common.retry")}
+                            </Button>
+                          ) : null}
                           <ActionError error={syncState.error} />
                         </>
                       )}
@@ -235,7 +238,7 @@ export function ConfigPage() {
               )
             })}
           </Table>
-          {repositories.length > 0 ? (
+          {isAdmin && repositories.length > 0 ? (
             <AddConfigForm tenantId={tenant.id} repositories={repositories} />
           ) : null}
 

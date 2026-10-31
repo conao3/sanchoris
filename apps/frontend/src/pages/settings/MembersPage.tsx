@@ -30,7 +30,7 @@ import { ago, until } from "../../lib/format.ts"
 import { listKeys, useListNav } from "../../lib/keys.ts"
 import { useAction } from "../../lib/mutation.ts"
 import { useData } from "../../lib/query.ts"
-import { useTenant } from "../../lib/tenant.tsx"
+import { useRole, useTenant } from "../../lib/tenant.tsx"
 
 type Member = NonNullable<MembersQuery["tenant"]>["members"][number]
 
@@ -70,6 +70,7 @@ function InviteForm({
 }) {
   const [email, setEmail] = useState("")
   const [role, setRole] = useState<Role>("MEMBER")
+  const { isOwner } = useRole()
   const [invite, { loading, error }] = useAction(InviteMemberDocument, {
     refetchQueries: [MembersDocument],
   })
@@ -101,15 +102,17 @@ function InviteForm({
         value={email}
         onChange={(event) => setEmail(event.target.value)}
       />
-      <select
-        aria-label={t("col.role")}
-        className={fieldClass}
-        value={role}
-        onChange={(event) => setRole(event.target.value as Role)}
-      >
-        <option value="MEMBER">{t("role.member")}</option>
-        <option value="ADMIN">{t("role.admin")}</option>
-      </select>
+      {isOwner ? (
+        <select
+          aria-label={t("col.role")}
+          className={fieldClass}
+          value={role}
+          onChange={(event) => setRole(event.target.value as Role)}
+        >
+          <option value="MEMBER">{t("role.member")}</option>
+          <option value="ADMIN">{t("role.admin")}</option>
+        </select>
+      ) : null}
       <Button type="submit" variant="primary" icon={Send} isDisabled={loading}>
         {t("members.sendInvitation")}
       </Button>

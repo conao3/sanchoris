@@ -56,7 +56,7 @@ import { useKeys } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
 import { LIVE_POLL, useData } from "../lib/query.ts"
 import { isActive, needsYouText, originName, skillProgress } from "../lib/taskText.ts"
-import { useTenant } from "../lib/tenant.tsx"
+import { useRole, useTenant } from "../lib/tenant.tsx"
 
 type Task = NonNullable<NonNullable<TaskQuery["tenant"]>["task"]>
 
@@ -211,7 +211,8 @@ function StepStrip({ task }: { task: Task }) {
 
 export function TaskPage() {
   const { task: taskId } = useParams({ from: "/app/tasks/$task" })
-  const { slug } = useTenant()
+  const { slug, membership } = useTenant()
+  const { isAdmin } = useRole()
   const navigate = useNavigate()
   const { data, error, refetch } = useData(
     TaskDocument,
@@ -229,6 +230,7 @@ export function TaskPage() {
   const task = data?.tenant?.task
   const needsYou = task?.status === "NEEDS_YOU"
   const approval = task?.approval
+  const canResolve = isAdmin || task?.requester?.member?.id === membership.id
   const resumable = needsYou && !approval
   const active = task ? isActive(task.status) : false
 
@@ -425,17 +427,25 @@ export function TaskPage() {
             <Dim className="mt-1">{t("task.approvalNote")}</Dim>
             <ActionError error={approvalState.error} className="mt-2" />
             <div className="mt-2.5 flex gap-2">
-              <Button
-                variant="primary"
-                icon={Check}
-                onPress={() => doResolve(true)}
-                isDisabled={approvalState.loading}
-              >
-                {t("task.approve")}
-              </Button>
-              <Button icon={X} onPress={() => doResolve(false)} isDisabled={approvalState.loading}>
-                {t("task.reject")}
-              </Button>
+              {canResolve ? (
+                <>
+                  <Button
+                    variant="primary"
+                    icon={Check}
+                    onPress={() => doResolve(true)}
+                    isDisabled={approvalState.loading}
+                  >
+                    {t("task.approve")}
+                  </Button>
+                  <Button
+                    icon={X}
+                    onPress={() => doResolve(false)}
+                    isDisabled={approvalState.loading}
+                  >
+                    {t("task.reject")}
+                  </Button>
+                </>
+              ) : null}
               <Button
                 variant="danger"
                 icon={Square}

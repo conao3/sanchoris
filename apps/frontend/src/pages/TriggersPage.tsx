@@ -33,7 +33,7 @@ import { weekdayTime, when } from "../lib/format.ts"
 import { listKeys, useListNav } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
 import { useData } from "../lib/query.ts"
-import { useTenant } from "../lib/tenant.tsx"
+import { useRole, useTenant } from "../lib/tenant.tsx"
 
 type Tenant = NonNullable<TriggersQuery["tenant"]>
 type Trigger = Tenant["triggers"][number]
@@ -231,6 +231,7 @@ function TemplatePanel({
 
 export function TriggersPage() {
   const { slug } = useTenant()
+  const { isAdmin } = useRole()
   const { data, error, refetch } = useData(TriggersDocument, { tenant: slug })
   const [setTriggerState, triggerState] = useAction(SetTriggerStateDocument)
   const [panel, setPanel] = useState(false)
@@ -261,12 +262,16 @@ export function TriggersPage() {
     },
     {
       ...(canPropose ? { n: () => setPanel(!panel) } : {}),
-      t: () => {
-        const trigger = triggers[nav.selected]
-        if (trigger) {
-          toggle(trigger)
-        }
-      },
+      ...(isAdmin
+        ? {
+            t: () => {
+              const trigger = triggers[nav.selected]
+              if (trigger) {
+                toggle(trigger)
+              }
+            },
+          }
+        : {}),
       Escape: () => setPanel(false),
     },
   )
@@ -291,7 +296,7 @@ export function TriggersPage() {
       keys={[
         ...listKeys(triggers.length, "keys.openOnGitHub"),
         ...(canPropose ? [["n", "triggers.newFromTemplate"] as [string, MessageKey]] : []),
-        ...(triggers.length > 0 ? [["t", "keys.onOff"] as [string, MessageKey]] : []),
+        ...(isAdmin && triggers.length > 0 ? [["t", "keys.onOff"] as [string, MessageKey]] : []),
       ]}
     >
       <div className="relative min-h-0 flex-1">
@@ -360,11 +365,17 @@ export function TriggersPage() {
                       {shortRepo(trigger.config.repository)}
                     </span>
                     <span className="text-right">
-                      <Toggle
-                        on={trigger.state === "ENABLED"}
-                        onToggle={() => toggle(trigger)}
-                        isDisabled={triggerState.loading}
-                      />
+                      {isAdmin ? (
+                        <Toggle
+                          on={trigger.state === "ENABLED"}
+                          onToggle={() => toggle(trigger)}
+                          isDisabled={triggerState.loading}
+                        />
+                      ) : (
+                        <span className="text-sm text-muted">
+                          {trigger.state === "ENABLED" ? t("common.on") : t("common.off")}
+                        </span>
+                      )}
                     </span>
                   </Row>
                 )

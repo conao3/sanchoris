@@ -71,3 +71,8 @@ export function useTenant(): TenantContextValue {
   }
   return value
 }
+
+export function useRole(): { isAdmin: boolean; isOwner: boolean } {
+  const { role } = useTenant().membership
+  return { isAdmin: role === "OWNER" || role === "ADMIN", isOwner: role === "OWNER" }
+}

@@ -38,7 +38,7 @@ import { ago } from "../../lib/format.ts"
 import { listKeys, useListNav } from "../../lib/keys.ts"
 import { useAction } from "../../lib/mutation.ts"
 import { useData } from "../../lib/query.ts"
-import { useTenant } from "../../lib/tenant.tsx"
+import { useRole, useTenant } from "../../lib/tenant.tsx"
 
 const kindLabels: Record<CredentialKind, MessageKey> = {
   SUBSCRIPTION: "credentials.subscription",
@@ -47,7 +47,8 @@ const kindLabels: Record<CredentialKind, MessageKey> = {
 }
 
 export function CredentialsPage() {
-  const { slug } = useTenant()
+  const { slug, membership } = useTenant()
+  const { isAdmin } = useRole()
   const { data, error, refetch } = useData(CredentialsDocument, { tenant: slug })
   const [remove, removeState] = useAction(RemoveCredentialDocument, {
     refetchQueries: [CredentialsDocument],
@@ -79,11 +80,13 @@ export function CredentialsPage() {
             <Dim className="mb-2">{t("setup.connectSubscriptionDetail")}</Dim>
             <SubscriptionCommands tenantName={tenant.name} />
           </div>
-          <div>
-            <Section first>{t("setup.orApiKey")}</Section>
-            <Dim>{t("setup.apiKeyProviders")}</Dim>
-            <ApiKeyForm tenantId={tenant.id} />
-          </div>
+          {isAdmin ? (
+            <div>
+              <Section first>{t("setup.orApiKey")}</Section>
+              <Dim>{t("setup.apiKeyProviders")}</Dim>
+              <ApiKeyForm tenantId={tenant.id} />
+            </div>
+          ) : null}
         </div>
       ) : null}
       {tenant && credentials.length === 0 ? <Empty>{t("credentials.empty")}</Empty> : null}
@@ -162,7 +165,8 @@ export function CredentialsPage() {
                         ? ago(credential.lastUsedAt)
                         : t("credentials.never")}
                   </span>
-                  {reconnect && connect ? null : reconnect ? (
+                  {!(isAdmin || credential.owner?.id === membership.id) ||
+                  (reconnect && connect) ? null : reconnect ? (
                     <Button
                       variant="primary"
                       small
