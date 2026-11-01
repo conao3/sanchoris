@@ -7,8 +7,11 @@ use base64::engine::general_purpose::STANDARD;
 use chrono::Duration;
 use sanchoris_core::billing::{ADMIN_PLAN, FREE_PLAN, PRIVILEGED_EMAIL_DOMAIN, stage_plan_change};
 use sanchoris_core::channel::{OutboxType, RunEventType, enqueue_outbox, record_run_event};
-use sanchoris_core::conversations::{answer_question, decide_approval, latest_task};
+use sanchoris_core::conversations::{
+    answer_question, decide_approval, latest_task, queued_messages, turn_in_progress,
+};
 use sanchoris_core::db::{self, REF_RUN, REF_TRIGGER, TenantTx};
+use sanchoris_core::item::Entity;
 use sanchoris_core::item::format_time;
 use sanchoris_core::items::{
     self, CONFIG_ACTIVE, CONVERSATION_WEB, Guard, InvitationEmail, Membership as MembershipItem,
@@ -29,7 +32,8 @@ use sanchoris_core::tenants::{
     pending_checkout, release_free_tenant,
 };
 use sanchoris_worker::conversation::{
-    ChatError, MemberMessage, NewConversation, post_member_message, start_conversation,
+    ChatError, Delivery, MemberMessage, NewConversation, deliver_queued, post_member_message,
+    start_conversation,
 };
 use sanchoris_worker::dispatcher::schedule_trigger;
 use sanchoris_worker::error::WorkerError;
@@ -48,8 +52,8 @@ use crate::context::{
 };
 use crate::conversation::{ChatMessage, Conversation};
 use crate::enums::{
-    ApiKeyProvider, ChatApprovalDecision, ChatInteractionMode, ChatRuntimeMode, CredentialScope,
-    InvitationState, TriggerState,
+    ApiKeyProvider, ChatApprovalDecision, ChatDelivery, ChatInteractionMode, ChatRuntimeMode,
+    CredentialScope, InvitationState, TriggerState,
 };
 use crate::error::{bad_input, conflict, forbidden, not_found, parse_id, port, rate_limited};
 use crate::ports::{ConfigCheck, ConfigLocation, PlanChange, TenantCheckout, TriggerProposal};
@@ -113,6 +117,8 @@ pub(crate) struct SendChatMessageInput {
     interaction_mode: ChatInteractionMode,
     /// What the agent may do without asking.
     runtime_mode: ChatRuntimeMode,
+    /// What happens when the agent is working on a turn: QUEUE holds the message until the turn ends, STEER puts it into the turn. Otherwise the message goes to the agent at once.
+    delivery: ChatDelivery,
 }
 
 #[derive(SimpleObject, InputObject)]
@@ -294,6 +300,23 @@ async fn open_chat_run(
         .rev()
         .find(|run| !run.is_finished())
         .ok_or_else(|| conflict("the conversation's agent is not working"))
+}
+
+async fn queued_message(
+    tx: &mut TenantTx,
+    conversation: &items::Conversation,
+    message_id: Uuid,
+) -> Result<(items::Task, items::ChatMessage)> {
+    let task = latest_task(tx, conversation)
+        .await?
+        .filter(|task| !task.status.is_terminal())
+        .ok_or_else(|| not_found(format!("queued message {message_id}")))?;
+    let message = queued_messages(tx, conversation.id, task.id)
+        .await?
+        .into_iter()
+        .find(|message| message.id == message_id)
+        .ok_or_else(|| not_found(format!("queued message {message_id}")))?;
+    Ok((task, message))
 }
 
 async fn tenant_scope(ctx: &Context<'_>, tenant_id: &ID) -> Result<Scope> {
@@ -1225,6 +1248,88 @@ impl MutationRoot {
         Conversation::load(ctx, scope, conversation_id).await
     }
 
+    /// Sends a queued message now: into the agent's running turn, or as the next turn when the agent is not working.
+    async fn steer_chat_message(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(name = "tenantId")] tenant_id: ID,
+        #[graphql(name = "conversationId")] conversation_id: ID,
+        #[graphql(name = "messageId")] message_id: ID,
+    ) -> Result<Conversation> {
+        let scope = tenant_scope(ctx, &tenant_id).await?;
+        let (member_id, _) = scope.member()?;
+        let conversation_id = parse_id(&conversation_id)?;
+        let message_id = parse_id(&message_id)?;
+        let conversation = Conversation::load(ctx, scope, conversation_id).await?;
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let (task, queued) = queued_message(&mut tx, &conversation.row, message_id).await?;
+            let working = task.status == CoreStatus::Running
+                && turn_in_progress(&mut tx, conversation_id, task.id).await?;
+            let author = queued
+                .member_id
+                .ok_or_else(|| not_found(format!("the author of message {message_id}")))?;
+            let name = member_name(ctx, &mut tx, author).await?;
+            deliver_queued(&mut tx, conversation_id, &queued, &name, working, now(ctx))
+                .await
+                .map_err(chat_failure)?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "chat.message_steer",
+                target(
+                    "conversation",
+                    conversation_id,
+                    conversation.row.title.clone(),
+                ),
+                "Sent a queued chat message now",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
+        Conversation::load(ctx, scope, conversation_id).await
+    }
+
+    /// Removes a message from the queue before the agent gets it.
+    async fn remove_queued_chat_message(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(name = "tenantId")] tenant_id: ID,
+        #[graphql(name = "conversationId")] conversation_id: ID,
+        #[graphql(name = "messageId")] message_id: ID,
+    ) -> Result<Conversation> {
+        let scope = tenant_scope(ctx, &tenant_id).await?;
+        let (member_id, _) = scope.member()?;
+        let conversation_id = parse_id(&conversation_id)?;
+        let message_id = parse_id(&message_id)?;
+        let conversation = Conversation::load(ctx, scope, conversation_id).await?;
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let (_, queued) = queued_message(&mut tx, &conversation.row, message_id).await?;
+            tx.delete(&queued.key())?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "chat.message_unqueue",
+                target(
+                    "conversation",
+                    conversation_id,
+                    conversation.row.title.clone(),
+                ),
+                "Removed a queued chat message",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
+        Conversation::load(ctx, scope, conversation_id).await
+    }
+
     /// Interrupts the turn that the agent of the conversation's running task is working on. The session stays open for the next message.
     async fn interrupt_chat(
         &self,
@@ -1301,6 +1406,10 @@ impl MutationRoot {
                 modes: SessionModes {
                     interaction_mode: input.interaction_mode.into(),
                     runtime_mode: input.runtime_mode.into(),
+                },
+                delivery: match input.delivery {
+                    ChatDelivery::Queue => Delivery::Queue,
+                    ChatDelivery::Steer => Delivery::Steer,
                 },
                 at: now(ctx),
             };

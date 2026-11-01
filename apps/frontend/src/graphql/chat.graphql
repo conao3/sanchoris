@@ -80,6 +80,7 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
         id
         authorKind
         text
+        delivery
         outcome
         proposedPlan
         at
@@ -214,6 +215,22 @@ fragment ChatApprovalFields on ChatApproval {
   reason
   decision
   askedAt
+}
+
+mutation SteerChatMessage($tenantId: ID!, $conversationId: ID!, $messageId: ID!) {
+  steerChatMessage(tenantId: $tenantId, conversationId: $conversationId, messageId: $messageId) {
+    id
+  }
+}
+
+mutation RemoveQueuedChatMessage($tenantId: ID!, $conversationId: ID!, $messageId: ID!) {
+  removeQueuedChatMessage(
+    tenantId: $tenantId
+    conversationId: $conversationId
+    messageId: $messageId
+  ) {
+    id
+  }
 }
 
 mutation AnswerChatApproval($input: AnswerChatApprovalInput!) {

@@ -958,6 +958,7 @@ impl Channel {
         Ok(match row.kind.as_str() {
             "user_message" => json!({
                 "type": "user_message", "runId": run_id, "messageId": row.id.to_string(), "text": payload["text"],
+                "steer": payload["steer"].as_bool().unwrap_or(false),
             }),
             "exec" => json!({
                 "type": "exec", "runId": run_id, "requestId": payload["requestId"],

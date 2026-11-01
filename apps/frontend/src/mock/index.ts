@@ -72,7 +72,7 @@ function mockWorking(stamp: string, input: Obj): Obj {
       },
     ],
     question:
-      input.runtimeMode === "APPROVAL_REQUIRED"
+      input.runtimeMode === "APPROVAL_REQUIRED" || String(input.text ?? "").includes("long")
         ? null
         : {
             id: `q-${stamp}`,
@@ -136,6 +136,7 @@ function respond(conversation: Obj, stamp: string, input: Obj) {
     outcome: "COMPLETED",
     diff: null,
     proposedPlan: PROPOSED_PLAN,
+    delivery: null,
   })
 }
 
@@ -393,6 +394,7 @@ function createResolvers() {
           outcome: "COMPLETED",
           diff: null,
           proposedPlan: null,
+          delivery: null,
           work: [
             ...working.work,
             {
@@ -408,6 +410,33 @@ function createResolvers() {
         })
         conversation.working = null
         conversation.updatedAt = stamp
+        return conversation
+      },
+      steerChatMessage: (_: unknown, { tenantId, conversationId, messageId }: Obj) => {
+        const conversation = tenantById(tenantId).conversationList.find(
+          (item: Obj) => item.id === conversationId,
+        )
+        const index = conversation.messages.findIndex((item: Obj) => item.id === messageId)
+        const [message] = conversation.messages.splice(index, 1)
+        const stamp = new Date().toISOString()
+        conversation.messages.push({
+          ...message,
+          at: stamp,
+          delivery: conversation.working ? "STEERED" : null,
+        })
+        if (!conversation.working) {
+          respond(conversation, stamp, {
+            interactionMode: conversation.interactionMode,
+            runtimeMode: conversation.runtimeMode,
+          })
+        }
+        return conversation
+      },
+      removeQueuedChatMessage: (_: unknown, { tenantId, conversationId, messageId }: Obj) => {
+        const conversation = tenantById(tenantId).conversationList.find(
+          (item: Obj) => item.id === conversationId,
+        )
+        conversation.messages = conversation.messages.filter((item: Obj) => item.id !== messageId)
         return conversation
       },
       answerChatApproval: (_: unknown, { input }: Obj) => {
@@ -446,6 +475,7 @@ function createResolvers() {
           outcome: input.decision === "CANCEL" ? "INTERRUPTED" : "COMPLETED",
           diff: null,
           proposedPlan: null,
+          delivery: null,
         })
         conversation.working = null
         conversation.updatedAt = stamp
@@ -468,6 +498,7 @@ function createResolvers() {
           outcome: "INTERRUPTED",
           diff: null,
           proposedPlan: null,
+          delivery: null,
           work: conversation.working.work,
         })
         conversation.working = null
@@ -476,7 +507,7 @@ function createResolvers() {
       sendChatMessage: (_: unknown, { input }: Obj) => {
         const tenant = tenantById(input.tenantId)
         const stamp = new Date().toISOString()
-        const message = {
+        const message: Obj = {
           id: nextId("msg-live"),
           authorKind: "MEMBER",
           member: viewerMemberOf(tenant),
@@ -487,6 +518,7 @@ function createResolvers() {
           outcome: null,
           diff: null,
           proposedPlan: null,
+          delivery: null,
         }
         const startTask = (conversation: Obj, sequence: number): Obj => {
           const session = conversation.session
@@ -553,9 +585,14 @@ function createResolvers() {
           if (!conversation) {
             throw new Error(`Conversation ${input.conversationId} was not found`)
           }
-          conversation.messages.push(message)
           conversation.updatedAt = stamp
-          respond(conversation, stamp, input)
+          if (conversation.working) {
+            message.delivery = input.delivery === "STEER" ? "STEERED" : "QUEUED"
+            conversation.messages.push(message)
+          } else {
+            conversation.messages.push(message)
+            respond(conversation, stamp, input)
+          }
           const latest = conversation.latestTask()
           if (!latest || ["SUCCEEDED", "FAILED", "ABORTED"].includes(latest.status)) {
             const task = startTask(conversation, (latest?.conversationSequence ?? 0) + 1)

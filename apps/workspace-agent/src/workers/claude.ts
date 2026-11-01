@@ -230,11 +230,12 @@ export class ClaudeWorker implements Worker {
     return { sessionId }
   }
 
-  send(text: string): void {
+  send(text: string, steer: boolean): void {
     this.input.push({
       type: "user",
       message: { role: "user", content: text },
       parent_tool_use_id: null,
+      ...(steer ? { priority: "now" as const } : {}),
     })
   }
 

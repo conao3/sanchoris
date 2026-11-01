@@ -7,6 +7,7 @@ import { ApprovalComposer } from "../components/chat/ApprovalComposer.tsx"
 import { DEFAULT_MODES, ModeControls, type Modes } from "../components/chat/ModeControls.tsx"
 import { ProposedPlanCard, TasksBanner } from "../components/chat/Plan.tsx"
 import { QuestionComposer } from "../components/chat/QuestionComposer.tsx"
+import { QueuedBanner } from "../components/chat/QueuedBanner.tsx"
 import { AgentMessage, MemberMessage, Working } from "../components/chat/Timeline.tsx"
 import { Reason } from "../components/Reason.tsx"
 import { Page } from "../components/Shell.tsx"
@@ -29,7 +30,10 @@ import {
   Title,
 } from "../components/ui.tsx"
 import {
+  type ChatDelivery,
   type ChatQuery,
+  RemoveQueuedChatMessageDocument,
+  SteerChatMessageDocument,
   AnswerChatApprovalDocument,
   AnswerChatQuestionDocument,
   ChatDocument,
@@ -77,7 +81,7 @@ function Composer({
   reason?: string
   modes: Modes
   onModesChange: (modes: Modes) => void
-  onSend: (text: string) => Promise<boolean>
+  onSend: (text: string, delivery: ChatDelivery) => Promise<boolean>
   onStop?: () => void
 }) {
   const [text, setText] = useState("")
@@ -86,11 +90,13 @@ function Composer({
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()
       if (text.trim() && !reason) {
-        void onSend(text.trim()).then((sent) => {
-          if (sent) {
-            setText("")
-          }
-        })
+        void onSend(text.trim(), event.metaKey || event.ctrlKey ? "STEER" : "QUEUE").then(
+          (sent) => {
+            if (sent) {
+              setText("")
+            }
+          },
+        )
       }
     }
   }
@@ -114,9 +120,12 @@ function Composer({
       <div className="flex items-center justify-between gap-3 px-2 pt-1 pb-1.5">
         {reason ? <span /> : <ModeControls modes={modes} onChange={onModesChange} />}
         {onStop ? (
-          <Button small icon={Square} onPress={onStop}>
-            {t("chat.stop")}
-          </Button>
+          <span className="flex items-center gap-2">
+            <Kbd>{t("chat.enterQueue")}</Kbd>
+            <Button small icon={Square} onPress={onStop}>
+              {t("chat.stop")}
+            </Button>
+          </span>
         ) : reason ? null : (
           <Kbd>{t("chat.enterSend")}</Kbd>
         )}
@@ -136,6 +145,14 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
   const [decide, { error: decideError }] = useAction(AnswerChatApprovalDocument, {
     refetchQueries: [ChatDocument],
   })
+  const [steer, { error: steerError }] = useAction(SteerChatMessageDocument, {
+    refetchQueries: [ChatDocument],
+  })
+  const [unqueue, { error: unqueueError }] = useAction(RemoveQueuedChatMessageDocument, {
+    refetchQueries: [ChatDocument],
+  })
+  const queued = conversation.messages.filter((message) => message.delivery === "QUEUED")
+  const timeline = conversation.messages.filter((message) => message.delivery !== "QUEUED")
   const [modes, setModes] = useState<Modes>({
     interactionMode: conversation.interactionMode,
     runtimeMode: conversation.runtimeMode,
@@ -152,16 +169,16 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
   const starter = conversation.createdBy?.user.name
   const finished = task ? !isActive(task.status) : false
 
-  function sendText(text: string, using: Modes) {
+  function sendText(text: string, using: Modes, delivery: ChatDelivery) {
     return send({
-      input: { tenantId: tenant.id, conversationId: conversation.id, text, ...using },
+      input: { tenantId: tenant.id, conversationId: conversation.id, text, delivery, ...using },
     }).then(Boolean)
   }
 
   function implement(markdown: string) {
     const using: Modes = { ...modes, interactionMode: "DEFAULT" }
     setModes(using)
-    void sendText(`PLEASE IMPLEMENT THIS PLAN:\n${markdown}`, using)
+    void sendText(`PLEASE IMPLEMENT THIS PLAN:\n${markdown}`, using, "QUEUE")
   }
   return (
     <>
@@ -187,7 +204,7 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
         </span>
       </Sub>
       <div className="mt-4 space-y-5">
-        {conversation.messages.map((message, position) => {
+        {timeline.map((message, position) => {
           if (message.authorKind !== "AGENT") {
             return (
               <MemberMessage
@@ -195,10 +212,11 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
                 name={message.member?.user.name ?? ""}
                 text={message.text}
                 at={message.at}
+                steered={message.delivery === "STEERED"}
               />
             )
           }
-          const asked = conversation.messages
+          const asked = timeline
             .slice(0, position)
             .findLast((earlier) => earlier.authorKind !== "AGENT")
           return (
@@ -245,7 +263,7 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
                 <ProposedPlanCard
                   markdown={message.proposedPlan}
                   onImplement={
-                    position === conversation.messages.length - 1 && conversation.kind === "WEB"
+                    position === timeline.length - 1 && conversation.kind === "WEB"
                       ? () => implement(message.proposedPlan ?? "")
                       : undefined
                   }
@@ -268,6 +286,18 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
         <Dim className="mt-2.5">
           {t("chat.continueHint", { n: (task.conversationSequence ?? 1) + 1 })}
         </Dim>
+      ) : null}
+      {queued.length > 0 ? (
+        <QueuedBanner
+          messages={queued}
+          working={!!working}
+          onSteer={(messageId) =>
+            void steer({ tenantId: tenant.id, conversationId: conversation.id, messageId })
+          }
+          onRemove={(messageId) =>
+            void unqueue({ tenantId: tenant.id, conversationId: conversation.id, messageId })
+          }
+        />
       ) : null}
       {working?.plan && !working.question && !working.approval ? (
         <TasksBanner plan={working.plan} />
@@ -313,10 +343,13 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
               ? () => void interrupt({ tenantId: tenant.id, conversationId: conversation.id })
               : undefined
           }
-          onSend={(text) => sendText(text, modes)}
+          onSend={(text, delivery) => sendText(text, modes, delivery)}
         />
       )}
-      <ActionError error={error ?? answerError ?? interruptError ?? decideError} className="mt-2" />
+      <ActionError
+        error={error ?? answerError ?? interruptError ?? decideError ?? steerError ?? unqueueError}
+        className="mt-2"
+      />
       <div ref={end} />
     </>
   )
@@ -411,6 +444,7 @@ function NewChat({
               configId: session?.config.id,
               text,
               ...modes,
+              delivery: "QUEUE",
             },
           }).then((result) => {
             const conversation = result?.sendChatMessage.conversation

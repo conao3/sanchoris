@@ -149,7 +149,7 @@ export class WorkspaceAgent {
         if (this.seenMessageIds.has(message.messageId)) return
         this.seenMessageIds.add(message.messageId)
         this.deliveries = this.deliveries.then(() =>
-          this.whenReady(() => this.deliver(message.text)),
+          this.whenReady(() => this.deliver(message.text, message.steer)),
         )
         return
       case "session_mode":
@@ -295,7 +295,7 @@ export class WorkspaceAgent {
       resumed: restored !== null,
     })
     this.channel.startHeartbeat(start.heartbeatSeconds, () => this.busy)
-    if (start.instruction !== null) await this.deliver(start.instruction)
+    if (start.instruction !== null) await this.deliver(start.instruction, false)
   }
 
   private ask(questions: UserInputQuestion[], signal: AbortSignal): Promise<UserInputAnswers> {
@@ -402,13 +402,13 @@ export class WorkspaceAgent {
       .catch((error: Error) => this.fail(error))
   }
 
-  private async deliver(text: string): Promise<void> {
+  private async deliver(text: string, steer: boolean): Promise<void> {
     if (!this.busy) {
       this.busy = true
       this.baseline = this.checkpoint(checkpointRef(this.lastTurn + 1, "start"))
     }
     await this.baseline
-    this.requireWorker().send(text)
+    this.requireWorker().send(text, steer)
   }
 
   private async checkpoint(ref: string): Promise<{ dirs: string[]; ref: string }> {

@@ -131,6 +131,23 @@ pub async fn enqueue_outbox(
     Ok(true)
 }
 
+pub async fn enqueue_chat_message(
+    tx: &mut TenantTx,
+    run_id: Uuid,
+    text: &str,
+    steer: bool,
+    dedupe_key: &str,
+) -> Result<bool, DbError> {
+    enqueue_outbox(
+        tx,
+        run_id,
+        OutboxType::UserMessage,
+        &json!({ "text": text, "steer": steer }),
+        dedupe_key,
+    )
+    .await
+}
+
 pub async fn enqueue_session_mode(
     tx: &mut TenantTx,
     run_id: Uuid,

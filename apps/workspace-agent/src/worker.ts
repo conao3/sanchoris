@@ -48,7 +48,7 @@ export interface RestoredRecord {
 
 export interface Worker {
   start(restore: RestoredRecord | null): Promise<{ sessionId: string }>
-  send(text: string): void
+  send(text: string, steer: boolean): void
   setModes(modes: SessionModes): Promise<void>
   interrupt(): Promise<void>
   readRecord(): Promise<WorkerRecord>

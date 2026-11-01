@@ -2,7 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::channel::{OutboxType, enqueue_outbox, enqueue_user_message};
+use crate::channel::{OutboxType, enqueue_chat_message, enqueue_outbox, enqueue_user_message};
 use crate::db::{DbError, REF_RUN, REF_TRIGGER, TenantTx, locate};
 use crate::item::Entity;
 use crate::items::{
@@ -291,6 +291,21 @@ pub async fn send_to_task(
     now: DateTime<Utc>,
 ) -> Result<bool, DbError> {
     let inserted = enqueue_user_message(tx, run_id, text, dedupe_key).await?;
+    wake_task(tx, task_id, now).await?;
+    Ok(inserted)
+}
+
+/// Sends a chat message to the task's run; `steer` puts it into the turn the agent works on.
+pub async fn send_chat_to_task(
+    tx: &mut TenantTx,
+    task_id: Uuid,
+    run_id: Uuid,
+    text: &str,
+    steer: bool,
+    dedupe_key: &str,
+    now: DateTime<Utc>,
+) -> Result<bool, DbError> {
+    let inserted = enqueue_chat_message(tx, run_id, text, steer, dedupe_key).await?;
     wake_task(tx, task_id, now).await?;
     Ok(inserted)
 }

@@ -227,6 +227,17 @@ type ChatChangedFile {
 	deletions: Int
 }
 
+enum ChatDelivery {
+	"""
+	Hold the message until the agent's turn ends.
+	"""
+	QUEUE
+	"""
+	Put the message into the agent's running turn.
+	"""
+	STEER
+}
+
 """
 The files a turn changed in the session's repositories, from git checkpoints taken when the turn started and ended.
 """
@@ -256,6 +267,10 @@ type ChatMessage {
 	member: Member
 	text: String!
 	"""
+	For members' messages: QUEUED while it waits for the agent's turn to end, STEERED when it went into a running turn.
+	"""
+	delivery: ChatMessageDelivery
+	"""
 	How the turn this reply ends finished. Null for members' messages and posts outside a turn.
 	"""
 	outcome: ChatTurnOutcome
@@ -280,6 +295,17 @@ type ChatMessage {
 	Issues the agent filed with file-issue during the turn this reply ends.
 	"""
 	issues: [IssueRef!]!
+}
+
+enum ChatMessageDelivery {
+	"""
+	Held until the agent's turn ends.
+	"""
+	QUEUED
+	"""
+	Put into the turn the agent was working on.
+	"""
+	STEERED
 }
 
 type ChatPlan {
@@ -830,6 +856,14 @@ type Mutation {
 	"""
 	answerChatApproval(input: AnswerChatApprovalInput!): Conversation!
 	"""
+	Sends a queued message now: into the agent's running turn, or as the next turn when the agent is not working.
+	"""
+	steerChatMessage(tenantId: ID!, conversationId: ID!, messageId: ID!): Conversation!
+	"""
+	Removes a message from the queue before the agent gets it.
+	"""
+	removeQueuedChatMessage(tenantId: ID!, conversationId: ID!, messageId: ID!): Conversation!
+	"""
 	Interrupts the turn that the agent of the conversation's running task is working on. The session stays open for the next message.
 	"""
 	interruptChat(tenantId: ID!, conversationId: ID!): Conversation!
@@ -1156,6 +1190,10 @@ input SendChatMessageInput {
 	What the agent may do without asking.
 	"""
 	runtimeMode: ChatRuntimeMode!
+	"""
+	What happens when the agent is working on a turn: QUEUE holds the message until the turn ends, STEER puts it into the turn. Otherwise the message goes to the agent at once.
+	"""
+	delivery: ChatDelivery!
 }
 
 type SendChatMessagePayload {

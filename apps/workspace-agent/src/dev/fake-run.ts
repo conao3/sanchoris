@@ -57,6 +57,7 @@ const control = await FakeControl.listen({
         type: "user_message",
         messageId: `skill-${id}`,
         text: `[sanchoris] Skill ${request.name} (run ${id}) SUCCEEDED: {}`,
+        steer: false,
       })
     }, notifyAfterMs)
     return { ok: true, result: { RunId: id, Status: "RUNNING" } }

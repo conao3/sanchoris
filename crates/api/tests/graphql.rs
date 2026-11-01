@@ -424,7 +424,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .ok(
             owner,
             "SendChatMessage",
-            json!({ "input": { "tenantId": tenant, "sessionName": "shop", "text": "Which issues are open?", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS" } }),
+            json!({ "input": { "tenantId": tenant, "sessionName": "shop", "text": "Which issues are open?", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" } }),
         )
         .await;
     let conversation_id = sent["sendChatMessage"]["conversation"]["id"]
@@ -443,7 +443,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     w.ok(
         owner,
         "SendChatMessage",
-        json!({ "input": { "tenantId": tenant, "conversationId": conversation_id, "text": "Only the labeled ones.", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS" } }),
+        json!({ "input": { "tenantId": tenant, "conversationId": conversation_id, "text": "Only the labeled ones.", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" } }),
     )
     .await;
     let tasks = w
@@ -631,6 +631,66 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .find(|approval| approval.request_id == "approval-1")
         .unwrap();
     assert_eq!(decided.decision.as_deref(), Some("acceptForSession"));
+    for text in [
+        "Check the stale ones too.",
+        "And the closed ones.",
+        "Skip the docs.",
+    ] {
+        w.ok(
+            owner,
+            "SendChatMessage",
+            json!({ "input": { "tenantId": tenant, "conversationId": conversation_id, "text": text, "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" } }),
+        )
+        .await;
+    }
+    let queued = w
+        .ok(
+            owner,
+            "Chat",
+            json!({ "tenant": slug, "conversation": conversation_id, "withConversation": true }),
+        )
+        .await["tenant"]["conversation"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["delivery"] == "QUEUED")
+        .map(|message| message["id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(queued.len(), 3);
+    w.ok(
+        owner,
+        "RemoveQueuedChatMessage",
+        json!({ "tenantId": tenant, "conversationId": conversation_id, "messageId": queued[0] }),
+    )
+    .await;
+    let steered = w
+        .ok(
+            owner,
+            "SteerChatMessage",
+            json!({ "tenantId": tenant, "conversationId": conversation_id, "messageId": queued[1] }),
+        )
+        .await;
+    assert_eq!(steered["steerChatMessage"]["id"], conversation_id.as_str());
+    let deliveries = w
+        .ok(
+            owner,
+            "Chat",
+            json!({ "tenant": slug, "conversation": conversation_id, "withConversation": true }),
+        )
+        .await["tenant"]["conversation"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| {
+            (
+                message["id"].as_str().unwrap().to_string(),
+                message["delivery"].clone(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert!(!deliveries.contains_key(&queued[0]));
+    assert_eq!(deliveries[&queued[1]], json!("STEERED"));
+    assert_eq!(deliveries[&queued[2]], json!("QUEUED"));
     w.ok(
         owner,
         "InterruptChat",

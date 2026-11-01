@@ -44,7 +44,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
 | `type` | Fields | Meaning |
 |---|---|---|
 | `start` | `agent`, `model`, `systemPrompt`, `skills`, `instruction`, `modes`, `resume`, `heartbeatSeconds` | Start (or restore) the agent session. Sent once per agent process, after `hello` with `started: false` |
-| `user_message` | `messageId`, `text` | A user turn: `[sanchoris]` notifications, a person's reply, "Continue where you left off.", chat messages |
+| `user_message` | `messageId`, `text`, `steer` | A user turn: `[sanchoris]` notifications, a person's reply, "Continue where you left off.", chat messages. With `steer: true` (a chat message sent into a running turn) the worker gets it in that turn: Claude as a user message with `priority: "now"`, Codex with `turn/steer` (`expectedTurnId` = the running turn; when it fails, the message waits for the next turn). Otherwise it starts the next turn after the running one |
 | `session_mode` | `modes` | The modes for the messages after it (see `start` `modes`). The control plane sends one before every chat message; the agent applies it before delivering the next `user_message` |
 | `interrupt` | | Interrupt the current turn. The turn ends with `turn_end` `result: "interrupted"` |
 | `user_input_response` | `requestId`, `answers` | The answers to `user_input_request`: question `id` to the answer strings (the picked option labels, or a person's own words). The agent drops an answer to a question that is no longer open (the turn was interrupted, or the agent restarted) |
@@ -107,7 +107,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
 ```
 
 ```json
-{ "type": "user_message", "runId": "42", "messageId": "skill-1-succeeded", "text": "[sanchoris] Skill open-pr-green-ci (run 1) SUCCEEDED: {\"PullRequests\":[\"acme/shop-web#52\"]}" }
+{ "type": "user_message", "runId": "42", "messageId": "skill-1-succeeded", "text": "[sanchoris] Skill open-pr-green-ci (run 1) SUCCEEDED: {\"PullRequests\":[\"acme/shop-web#52\"]}", "steer": false }
 ```
 
 ```json

@@ -1,5 +1,11 @@
 import clsx from "clsx"
-import { ChevronRight, CircleStop, LoaderCircle, type LucideIcon } from "lucide-react"
+import {
+  ChevronRight,
+  CircleStop,
+  CornerDownLeft,
+  LoaderCircle,
+  type LucideIcon,
+} from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
 import type { ChatTurnOutcome } from "../../graphql/generated/graphql.ts"
 import { t } from "../../i18n/index.ts"
@@ -35,9 +41,28 @@ function Meta({ children, align }: { children: ReactNode; align: "left" | "right
   )
 }
 
-export function MemberMessage({ name, text, at }: { name: string; text: string; at: string }) {
+export function MemberMessage({
+  name,
+  text,
+  at,
+  steered,
+}: {
+  name: string
+  text: string
+  at: string
+  steered?: boolean
+}) {
   return (
     <div className="group flex flex-col items-end">
+      {steered ? (
+        <span
+          className="mb-0.5 flex items-center gap-1 text-xs text-muted"
+          title={t("chat.steeredHint")}
+        >
+          <CornerDownLeft className="size-3" aria-hidden />
+          {t("chat.steered")}
+        </span>
+      ) : null}
       <div className="max-w-[80%] rounded-bubble bg-hover px-3.5 py-2 break-words whitespace-pre-wrap text-ink">
         {text}
       </div>

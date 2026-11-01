@@ -1491,6 +1491,7 @@ function buildAcme(viewerRole: string): Obj {
     diff,
     outcome: authorKind === "AGENT" ? "COMPLETED" : null,
     proposedPlan: null,
+    delivery: null,
   })
   const work = (minutes: number, kind: string, fields: Obj): Obj => ({
     kind,

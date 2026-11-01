@@ -66,6 +66,7 @@ export const UserMessage = z.strictObject({
   runId: RunId,
   messageId: z.string().min(1),
   text: z.string().min(1),
+  steer: z.boolean(),
 })
 export type UserMessage = z.infer<typeof UserMessage>
 

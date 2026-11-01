@@ -10,7 +10,8 @@ use sanchoris_core::model::{TaskDefinition, TaskStatus};
 use sanchoris_core::modes::SessionModes;
 use sanchoris_core::store::retry;
 use sanchoris_worker::conversation::{
-    ChatError, Delivered, MemberMessage, NewConversation, post_member_message, start_conversation,
+    ChatError, Delivered, Delivery, MemberMessage, NewConversation, post_member_message,
+    start_conversation,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -38,6 +39,7 @@ async fn start(world: &World, session: &str, text: &str) -> Delivered {
                 member_name: "Mika",
                 text,
                 modes: SessionModes::DEFAULT,
+                delivery: Delivery::Queue,
                 at,
             },
         )
@@ -51,6 +53,15 @@ async fn start(world: &World, session: &str, text: &str) -> Delivered {
 }
 
 async fn post(world: &World, conversation_id: Uuid, text: &str) -> Delivered {
+    post_as(world, conversation_id, text, Delivery::Queue).await
+}
+
+async fn post_as(
+    world: &World,
+    conversation_id: Uuid,
+    text: &str,
+    delivery: Delivery,
+) -> Delivered {
     let member_id = world.seeded.member_id;
     let id = Uuid::new_v4();
     let at = world.clock_now();
@@ -65,6 +76,7 @@ async fn post(world: &World, conversation_id: Uuid, text: &str) -> Delivered {
                 member_name: "Mika",
                 text,
                 modes: SessionModes::DEFAULT,
+                delivery,
                 at,
             },
         )
@@ -210,6 +222,7 @@ async fn an_unknown_session_is_rejected() {
             member_name: "Mika",
             text: "hello",
             modes: SessionModes::DEFAULT,
+            delivery: Delivery::Queue,
             at: world.clock_now(),
         },
     )
@@ -231,13 +244,35 @@ async fn messages_go_to_the_running_task_and_a_finished_task_starts_the_next() {
     let second = post(&world, conversation_id, "Also check the changelog").await;
     world.worker.settle().await.unwrap();
     assert_eq!(second.task_id, first.task_id);
+    assert_eq!(second.message.delivery.as_deref(), Some("queued"));
+    assert!(world.messages(run_id).await.is_empty());
+    let steered = post_as(&world, conversation_id, "Skip the docs", Delivery::Steer).await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(steered.message.delivery.as_deref(), Some("steer"));
+    assert_eq!(
+        world.outbox(run_id, "user_message").await,
+        vec![json!({ "text": "[sanchoris] Message from Mika:\nSkip the docs", "steer": true })]
+    );
+    world.turn_end(run_id, 1).await;
+    world.worker.settle().await.unwrap();
     assert_eq!(
         world.messages(run_id).await,
-        vec!["[sanchoris] Message from Mika:\nAlso check the changelog".to_string()]
+        vec![
+            "[sanchoris] Message from Mika:\nSkip the docs".to_string(),
+            "[sanchoris] Message from Mika:\nAlso check the changelog".to_string(),
+        ]
     );
+    let delivered = messages(&world, conversation_id)
+        .await
+        .into_iter()
+        .find(|message| message.id == second.message.id)
+        .unwrap();
+    assert_eq!(delivered.delivery, None);
+    assert!(delivered.created_at >= second.message.created_at);
+    assert_eq!(world.task_of(first.task_id).await.status, "RUNNING");
     assert_eq!(
         world.outbox(run_id, "session_mode").await,
-        vec![json!({ "modes": { "interactionMode": "default", "runtimeMode": "full-access" } })]
+        vec![json!({ "modes": { "interactionMode": "default", "runtimeMode": "full-access" } }); 2]
     );
     world
         .dynamo

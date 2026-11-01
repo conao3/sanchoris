@@ -71,6 +71,7 @@ pub async fn post_agent_message(
             run_id,
             turn: turn.map(|(turn, _)| turn),
             outcome: turn.map(|(_, outcome)| outcome.to_string()),
+            delivery: None,
             author_kind: AUTHOR_AGENT.to_string(),
             member_id: None,
             text: text.to_string(),
@@ -140,4 +141,57 @@ pub async fn decide_approval(
     )
     .await?;
     Ok(approval)
+}
+
+/// A member's message held while the agent works on a turn, delivered when the turn ends.
+pub const DELIVERY_QUEUED: &str = "queued";
+/// A member's message delivered into the turn the agent was working on.
+pub const DELIVERY_STEER: &str = "steer";
+
+async fn task_messages(
+    tx: &mut TenantTx,
+    conversation_id: Uuid,
+    task_id: Uuid,
+) -> Result<Vec<ChatMessage>, DbError> {
+    let mut messages = tx
+        .query::<ChatMessage>(
+            &keys::conversation_pk(tx.tenant_id(), conversation_id),
+            "MSG#",
+        )
+        .await?
+        .into_iter()
+        .filter(|message| message.task_id == Some(task_id))
+        .collect::<Vec<_>>();
+    messages.sort_by_key(|message| (message.created_at, message.id));
+    Ok(messages)
+}
+
+/// Whether the agent works on a turn of the task: a member's delivered message came after its last reply.
+pub async fn turn_in_progress(
+    tx: &mut TenantTx,
+    conversation_id: Uuid,
+    task_id: Uuid,
+) -> Result<bool, DbError> {
+    let mut busy = false;
+    for message in task_messages(tx, conversation_id, task_id).await? {
+        if message.author_kind == AUTHOR_AGENT {
+            busy = false;
+        } else if message.delivery.as_deref() != Some(DELIVERY_QUEUED) {
+            busy = true;
+        }
+    }
+    Ok(busy)
+}
+
+/// The members' messages queued for the task, oldest first.
+pub async fn queued_messages(
+    tx: &mut TenantTx,
+    conversation_id: Uuid,
+    task_id: Uuid,
+) -> Result<Vec<ChatMessage>, DbError> {
+    Ok(task_messages(tx, conversation_id, task_id)
+        .await?
+        .into_iter()
+        .filter(|message| message.delivery.as_deref() == Some(DELIVERY_QUEUED))
+        .collect())
 }

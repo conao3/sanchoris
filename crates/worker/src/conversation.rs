@@ -1,17 +1,21 @@
 use chrono::{DateTime, Utc};
 use sanchoris_config::{Limits, Start};
 use sanchoris_core::channel::enqueue_session_mode;
-use sanchoris_core::conversations::{latest_task, load_conversation, post_message};
-use sanchoris_core::db::{self, DbError, NewTask, Recorded, TenantTx, tenant_plan};
+use sanchoris_core::conversations::{
+    DELIVERY_QUEUED, DELIVERY_STEER, latest_task, load_conversation, post_message, queued_messages,
+    turn_in_progress,
+};
+use sanchoris_core::db::{self, DbError, NewTask, Recorded, Store, TenantTx, tenant_plan};
+use sanchoris_core::item::Entity;
 use sanchoris_core::items::{
-    AUTHOR_MEMBER, ChatMessage, Config, Conversation, SessionDef, TaskOrigin,
+    AUTHOR_MEMBER, ChatMessage, Config, Conversation, Member, SessionDef, Task, TaskOrigin, User,
 };
 use sanchoris_core::keys;
 use sanchoris_core::lifecycle::TaskDecision;
 use sanchoris_core::messages::{self, ChatStartMessage};
 use sanchoris_core::model::{NamedDefinition, TaskDefinition, TaskStatus};
 use sanchoris_core::modes::SessionModes;
-use sanchoris_core::tasks::{apply_decision, latest_run, load_task, send_to_task};
+use sanchoris_core::tasks::{apply_decision, latest_run, load_task, send_chat_to_task};
 use serde_json::json;
 use thiserror::Error;
 use uuid::Uuid;
@@ -62,7 +66,17 @@ pub struct MemberMessage<'a> {
     pub member_name: &'a str,
     pub text: &'a str,
     pub modes: SessionModes,
+    pub delivery: Delivery,
     pub at: DateTime<Utc>,
+}
+
+/// What happens to a message sent while the agent works on a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// Hold it until the turn ends.
+    Queue,
+    /// Put it into the turn.
+    Steer,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,14 +149,31 @@ pub async fn post_member_message(
         run_id: None,
         turn: None,
         outcome: None,
+        delivery: None,
         author_kind: AUTHOR_MEMBER.to_string(),
         member_id: Some(message.member_id),
         text: message.text.to_string(),
         created_at: message.at,
     };
-    let task_id = deliver(tx, &conversation, message).await?;
+    let working = match latest_task(tx, &conversation).await? {
+        Some(task) if task.status == TaskStatus::Running => {
+            turn_in_progress(tx, conversation_id, task.id)
+                .await?
+                .then_some(task.id)
+        }
+        _ => None,
+    };
+    let (task_id, delivery) = match (working, message.delivery) {
+        (Some(task_id), Delivery::Queue) => (task_id, Some(DELIVERY_QUEUED)),
+        (Some(_), Delivery::Steer) => (
+            deliver(tx, &conversation, message, true).await?,
+            Some(DELIVERY_STEER),
+        ),
+        (None, _) => (deliver(tx, &conversation, message, false).await?, None),
+    };
     let item = ChatMessage {
         task_id: Some(task_id),
+        delivery: delivery.map(str::to_string),
         ..item
     };
     post_message(tx, &item).await?;
@@ -156,6 +187,7 @@ async fn deliver(
     tx: &mut TenantTx,
     conversation: &Conversation,
     message: &MemberMessage<'_>,
+    steer: bool,
 ) -> Result<Uuid> {
     let Some(mut task) = latest_task(tx, conversation)
         .await?
@@ -192,9 +224,47 @@ async fn deliver(
         };
         apply_decision(tx, task.id, run_id, &decision, &dedupe, message.at).await?;
     } else {
-        send_to_task(tx, task.id, run_id, &text, &dedupe, message.at).await?;
+        send_chat_to_task(tx, task.id, run_id, &text, steer, &dedupe, message.at).await?;
     }
     Ok(task.id)
+}
+
+/// Delivers a queued message now: when its turn comes, or into the running turn with `steer`. It moves to the end of the conversation.
+pub async fn deliver_queued(
+    tx: &mut TenantTx,
+    conversation_id: Uuid,
+    queued: &ChatMessage,
+    member_name: &str,
+    steer: bool,
+    at: DateTime<Utc>,
+) -> Result<ChatMessage> {
+    let conversation = load_conversation(tx, conversation_id).await?;
+    let member_id = queued.member_id.ok_or_else(|| {
+        WorkerError::Invalid(format!("the queued message {} has no member", queued.id))
+    })?;
+    let message = MemberMessage {
+        id: queued.id,
+        member_id,
+        member_name,
+        text: &queued.text,
+        modes: conversation.modes.unwrap_or(SessionModes::DEFAULT),
+        delivery: Delivery::Queue,
+        at,
+    };
+    let task_id = deliver(tx, &conversation, &message, steer).await?;
+    let item = ChatMessage {
+        task_id: Some(task_id),
+        delivery: steer.then(|| DELIVERY_STEER.to_string()),
+        created_at: at.max(queued.created_at),
+        ..queued.clone()
+    };
+    if item.key() == queued.key() {
+        tx.put(&item)?;
+    } else {
+        tx.delete(&queued.key())?;
+        post_message(tx, &item).await?;
+    }
+    Ok(item)
 }
 
 async fn start_task(
@@ -299,4 +369,35 @@ async fn start_task(
     conversation.updated_at = conversation.updated_at.max(message.at);
     tx.put(&conversation)?;
     Ok(task_id)
+}
+
+/// Delivers the oldest message queued for the task, if any, when its turn ends.
+pub async fn deliver_next_queued(
+    store: &Store,
+    tx: &mut TenantTx,
+    task: &Task,
+    at: DateTime<Utc>,
+) -> Result<()> {
+    let Some(conversation_id) = task.origin.conversation_id() else {
+        return Ok(());
+    };
+    let Some(next) = queued_messages(tx, conversation_id, task.id)
+        .await?
+        .into_iter()
+        .next()
+    else {
+        return Ok(());
+    };
+    let member_id = next.member_id.ok_or_else(|| {
+        WorkerError::Invalid(format!("the queued message {} has no member", next.id))
+    })?;
+    let member = tx
+        .require::<Member>(&keys::member_key(tx.tenant_id(), member_id))
+        .await?;
+    let user = store
+        .get::<User>(&keys::user_key(member.user_id))
+        .await?
+        .ok_or_else(|| WorkerError::Invalid(format!("user {} is missing", member.user_id)))?;
+    deliver_queued(tx, conversation_id, &next, &user.display_name, false, at).await?;
+    Ok(())
 }

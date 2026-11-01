@@ -420,3 +420,18 @@ db_enum!(ChatPlanStepStatus, "plan step status", {
     Running => "running",
     Completed => "completed",
 });
+
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatDelivery {
+    /// Hold the message until the agent's turn ends.
+    Queue,
+    /// Put the message into the agent's running turn.
+    Steer,
+}
+
+db_enum!(ChatMessageDelivery, "message delivery", {
+    /// Held until the agent's turn ends.
+    Queued => "queued",
+    /// Put into the turn the agent was working on.
+    Steered => "steer",
+});

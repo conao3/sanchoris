@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
 use async_graphql::{Context, ID, Object, Result};
-use sanchoris_core::conversations::latest_task;
+use sanchoris_core::conversations::{DELIVERY_QUEUED, latest_task};
 use sanchoris_core::items::{
     AUTHOR_AGENT, AUTHOR_MEMBER, ChatMessage as ChatMessageItem, Conversation as ConversationItem,
     ConversationTask, Output as OutputItem,
@@ -19,7 +19,8 @@ use crate::chat_work::{ChatDiff, ChatWork, ChatWorking, RunWork};
 use crate::config::Session;
 use crate::context::{Scope, tx};
 use crate::enums::{
-    ChatAuthorKind, ChatInteractionMode, ChatRuntimeMode, ChatTurnOutcome, ConversationKind,
+    ChatAuthorKind, ChatInteractionMode, ChatMessageDelivery, ChatRuntimeMode, ChatTurnOutcome,
+    ConversationKind,
 };
 use crate::error::not_found;
 use crate::scalars::{Timestamp, ts};
@@ -197,7 +198,10 @@ impl Conversation {
             .query::<ChatMessageItem>(&self.pk(), "MSG#")
             .await?
             .into_iter()
-            .filter(|message| message.task_id == Some(task.id))
+            .filter(|message| {
+                message.task_id == Some(task.id)
+                    && message.delivery.as_deref() != Some(DELIVERY_QUEUED)
+            })
         {
             if message.author_kind == AUTHOR_MEMBER {
                 last_member_at = last_member_at.max(Some(message.created_at));
@@ -306,6 +310,15 @@ impl ChatMessage {
 
     async fn text(&self) -> &str {
         &self.row.text
+    }
+
+    /// For members' messages: QUEUED while it waits for the agent's turn to end, STEERED when it went into a running turn.
+    async fn delivery(&self) -> Result<Option<ChatMessageDelivery>> {
+        self.row
+            .delivery
+            .as_deref()
+            .map(ChatMessageDelivery::from_db)
+            .transpose()
     }
 
     /// How the turn this reply ends finished. Null for members' messages and posts outside a turn.

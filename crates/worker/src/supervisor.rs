@@ -1,3 +1,4 @@
+use crate::conversation::{ChatError, deliver_next_queued};
 use chrono::{DateTime, Duration, Utc};
 use sanchoris_config::{Session, Start};
 use sanchoris_core::channel::{OutboxType, RunEventType, SEQ_STRIDE, enqueue_outbox, outbox};
@@ -337,6 +338,12 @@ async fn turn_end(
         decision = limited;
     }
     apply_decision(tx, task.id, event.run_id, &decision, &dedupe, now).await?;
+    deliver_next_queued(&worker.store, tx, &task, now)
+        .await
+        .map_err(|error| match error {
+            ChatError::Failed(error) => error,
+            ChatError::Rejected(message) => invalid(message),
+        })?;
     Ok(())
 }
 

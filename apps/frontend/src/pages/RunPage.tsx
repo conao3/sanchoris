@@ -173,6 +173,7 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
         text: text.trim(),
         interactionMode: conversation.interactionMode,
         runtimeMode: conversation.runtimeMode,
+        delivery: "QUEUE",
       },
     }).then((done) => {
       if (!done) {

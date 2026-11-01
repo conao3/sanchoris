@@ -330,7 +330,21 @@ export class CodexWorker implements Worker {
     this.modes = modes
   }
 
-  send(text: string): void {
+  send(text: string, steer: boolean): void {
+    if (steer && this.client && this.threadId && this.activeTurnId) {
+      this.client
+        .request("turn/steer", {
+          threadId: this.threadId,
+          expectedTurnId: this.activeTurnId,
+          input: [{ type: "text", text, text_elements: [] }],
+        })
+        .catch((error: Error) => {
+          this.context.handlers.onEvent("log", { line: `turn/steer failed: ${error.message}` })
+          this.queued.push(text)
+          this.startNextTurn()
+        })
+      return
+    }
     this.queued.push(text)
     this.startNextTurn()
   }
