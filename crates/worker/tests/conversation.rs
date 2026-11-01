@@ -3,7 +3,7 @@ use sanchoris_core::conversations::load_conversation;
 use sanchoris_core::db::tenant_plan;
 use sanchoris_core::items::{
     AUTHOR_AGENT, ChatMessage, Conversation, ConversationTask, FiledIssue, HeldMessage, Output,
-    Task, Tenant,
+    Run, Task, Tenant,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
@@ -11,8 +11,8 @@ use sanchoris_core::model::{TaskDefinition, TaskStatus};
 use sanchoris_core::modes::SessionModes;
 use sanchoris_core::store::retry;
 use sanchoris_worker::conversation::{
-    ChatError, Delivered, Delivery, MemberMessage, NewConversation, post_member_message,
-    start_conversation,
+    ChatError, Delivered, Delivery, MemberMessage, NewConversation, fork, post_member_message,
+    rewind, start_conversation,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -474,4 +474,98 @@ async fn file_issue_records_the_issue_and_its_task_becomes_a_child_of_the_conver
     world.worker.settle().await.unwrap();
     let child = world.task(&format!("{REPO}#{}", issue.number)).await;
     assert_eq!(child.parent_task_id, Some(first.task_id));
+}
+
+#[tokio::test]
+async fn a_rewind_drops_a_message_and_what_follows_and_a_fork_copies_up_to_a_reply() {
+    let world = World::new("pro").await;
+    let first = start(&world, "all", "Plan the release").await;
+    world.worker.settle().await.unwrap();
+    let conversation_id = first.message.conversation_id;
+    let run_id = world.task_of(first.task_id).await.run_id.unwrap();
+    world
+        .dynamo
+        .modify::<Run>(
+            &keys::run_key(world.tenant(), first.task_id, run_id),
+            |run| run.status = "running".into(),
+        )
+        .await;
+    let record = |turn: i64| {
+        json!({
+            "sessionId": "session-1",
+            "turn": turn,
+            "key": format!("t/{}/runs/{run_id}/turn-{turn}.jsonl", world.tenant()),
+            "relativePath": "session-1.jsonl",
+            "sha256": "0".repeat(64),
+            "contentLength": 2,
+        })
+    };
+    world.clock.advance(chrono::Duration::seconds(10));
+    world
+        .sequenced_event(run_id, 101, RunEventType::SessionRecord, record(1))
+        .await;
+    world.turn_end(run_id, 1).await;
+    world.worker.settle().await.unwrap();
+    world.clock.advance(chrono::Duration::seconds(10));
+    let second = post(&world, conversation_id, "Then tag it").await;
+    world.worker.settle().await.unwrap();
+    world.clock.advance(chrono::Duration::seconds(10));
+    world
+        .sequenced_event(run_id, 102, RunEventType::SessionRecord, record(2))
+        .await;
+    world.turn_end(run_id, 2).await;
+    world.worker.settle().await.unwrap();
+    let reply = messages(&world, conversation_id)
+        .await
+        .into_iter()
+        .find(|message| message.author_kind == AUTHOR_AGENT)
+        .unwrap();
+
+    let rewound = retry(20, || async {
+        let mut tx = world.store.tx(world.tenant());
+        let rewound = rewind(&mut tx, conversation_id, second.message.id, true)
+            .await
+            .map_err(db_error)?;
+        tx.commit().await?;
+        Ok(rewound)
+    })
+    .await
+    .unwrap();
+    assert_eq!(rewound.text, "Then tag it");
+    assert_eq!(
+        messages(&world, conversation_id)
+            .await
+            .into_iter()
+            .map(|message| message.text)
+            .collect::<Vec<_>>(),
+        ["Plan the release".to_string(), "done for now".to_string()]
+    );
+    let rewinds = world.outbox(run_id, "rewind").await;
+    assert_eq!(rewinds.len(), 1);
+    assert_eq!(rewinds[0]["resume"]["recordKey"], record(1)["key"]);
+    assert_eq!(rewinds[0]["restoreTurn"], 2);
+
+    let forked = retry(20, || async {
+        let mut tx = world.store.tx(world.tenant());
+        let forked = fork(
+            &mut tx,
+            conversation_id,
+            reply.id,
+            world.seeded.member_id,
+            world.clock_now(),
+        )
+        .await
+        .map_err(db_error)?;
+        tx.commit().await?;
+        Ok(forked)
+    })
+    .await
+    .unwrap();
+    assert_eq!(forked.title, "Plan the release fork");
+    assert_eq!(forked.resume.as_ref().unwrap()["lastTurn"], 0);
+    assert_eq!(
+        forked.resume.as_ref().unwrap()["recordKey"],
+        record(1)["key"]
+    );
+    assert_eq!(messages(&world, forked.id).await.len(), 2);
 }

@@ -32,8 +32,8 @@ use sanchoris_core::tenants::{
     pending_checkout, release_free_tenant,
 };
 use sanchoris_worker::conversation::{
-    ChatError, Delivery, MemberMessage, NewConversation, deliver_queued, post_member_message,
-    start_conversation,
+    ChatError, Delivery, MemberMessage, NewConversation, deliver_queued, fork, post_member_message,
+    rewind, start_conversation,
 };
 use sanchoris_worker::dispatcher::schedule_trigger;
 use sanchoris_worker::error::WorkerError;
@@ -125,6 +125,14 @@ pub(crate) struct SendChatMessageInput {
     /// Images uploaded with uploadChatAttachment, at most 10.
     #[graphql(name = "attachmentIds")]
     attachment_ids: Vec<ID>,
+}
+
+#[derive(SimpleObject)]
+pub(crate) struct RewindChatPayload {
+    conversation: Conversation,
+    /// The text of the message the rewind took back.
+    text: String,
+    attachments: Vec<ChatAttachment>,
 }
 
 #[derive(InputObject)]
@@ -1308,6 +1316,94 @@ impl MutationRoot {
         })
         .await?;
         Conversation::load(ctx, scope, conversation_id).await
+    }
+
+    /// Rewinds the conversation to before a member's message: the agent's session goes back to the turn before it, the message and everything after it leave the conversation, and with restoreFiles the running Workspace puts the repositories back as they were before that message. Returns the message, for the composer.
+    async fn rewind_chat(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(name = "tenantId")] tenant_id: ID,
+        #[graphql(name = "conversationId")] conversation_id: ID,
+        #[graphql(name = "messageId")] message_id: ID,
+        restore_files: bool,
+    ) -> Result<RewindChatPayload> {
+        let scope = tenant_scope(ctx, &tenant_id).await?;
+        let (member_id, _) = scope.member()?;
+        let conversation_id = parse_id(&conversation_id)?;
+        let message_id = parse_id(&message_id)?;
+        let conversation = Conversation::load(ctx, scope, conversation_id).await?;
+        let rewound = write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let rewound = rewind(&mut tx, conversation_id, message_id, restore_files)
+                .await
+                .map_err(chat_failure)?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "chat.rewind",
+                target(
+                    "conversation",
+                    conversation_id,
+                    conversation.row.title.clone(),
+                ),
+                if restore_files {
+                    "Rewound the chat and its files"
+                } else {
+                    "Rewound the chat"
+                },
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(rewound)
+        })
+        .await?;
+        Ok(RewindChatPayload {
+            conversation: Conversation::load(ctx, scope, conversation_id).await?,
+            text: rewound.text,
+            attachments: rewound
+                .attachments
+                .into_iter()
+                .map(|item| ChatAttachment {
+                    tenant_id: scope.tenant_id,
+                    item,
+                })
+                .collect(),
+        })
+    }
+
+    /// Starts a new conversation with the messages up to an agent's reply; its agent continues from the session as it was after that reply.
+    async fn fork_chat_conversation(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(name = "tenantId")] tenant_id: ID,
+        #[graphql(name = "conversationId")] conversation_id: ID,
+        #[graphql(name = "messageId")] message_id: ID,
+    ) -> Result<Conversation> {
+        let scope = tenant_scope(ctx, &tenant_id).await?;
+        let (member_id, _) = scope.member()?;
+        let conversation_id = parse_id(&conversation_id)?;
+        let message_id = parse_id(&message_id)?;
+        let conversation = Conversation::load(ctx, scope, conversation_id).await?;
+        let forked = write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let forked = fork(&mut tx, conversation_id, message_id, member_id, now(ctx))
+                .await
+                .map_err(chat_failure)?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "chat.fork",
+                target("conversation", forked.id, forked.title.clone()),
+                &format!("Forked the chat {}", conversation.row.title),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(forked.id)
+        })
+        .await?;
+        Conversation::load(ctx, scope, forked).await
     }
 
     /// Removes a message from the queue before the agent gets it.

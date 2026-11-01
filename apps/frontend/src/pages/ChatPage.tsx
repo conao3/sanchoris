@@ -17,6 +17,7 @@ import { DEFAULT_MODES, ModeControls, type Modes } from "../components/chat/Mode
 import { ProposedPlanCard, TasksBanner } from "../components/chat/Plan.tsx"
 import { QuestionComposer } from "../components/chat/QuestionComposer.tsx"
 import { QueuedBanner } from "../components/chat/QueuedBanner.tsx"
+import { RewindDialog } from "../components/chat/RewindDialog.tsx"
 import { AgentMessage, MemberMessage, Working } from "../components/chat/Timeline.tsx"
 import { Reason } from "../components/Reason.tsx"
 import { Page } from "../components/Shell.tsx"
@@ -42,12 +43,14 @@ import {
   type ChatDelivery,
   type ChatQuery,
   RemoveQueuedChatMessageDocument,
+  RewindChatDocument,
   SteerChatMessageDocument,
   UploadChatAttachmentDocument,
   AnswerChatApprovalDocument,
   AnswerChatQuestionDocument,
   ChatDocument,
   ChatLiveDocument,
+  ForkChatConversationDocument,
   InterruptChatDocument,
   SendChatMessageDocument,
 } from "../graphql/generated/graphql.ts"
@@ -84,6 +87,7 @@ function sessionSkills(session: ChatSession): string {
 
 function Composer({
   tenantId,
+  initial,
   reason,
   modes,
   onModesChange,
@@ -91,14 +95,22 @@ function Composer({
   onStop,
 }: {
   tenantId: string
+  initial?: { text: string; attachments: { id: string; name: string; url: string }[] }
   reason?: string
   modes: Modes
   onModesChange: (modes: Modes) => void
   onSend: (text: string, delivery: ChatDelivery, attachmentIds: string[]) => Promise<boolean>
   onStop?: () => void
 }) {
-  const [text, setText] = useState("")
-  const [drafts, setDrafts] = useState<Draft[]>([])
+  const [text, setText] = useState(initial?.text ?? "")
+  const [drafts, setDrafts] = useState<Draft[]>(
+    (initial?.attachments ?? []).map((attachment) => ({
+      key: attachment.id,
+      name: attachment.name,
+      preview: attachment.url,
+      id: attachment.id,
+    })),
+  )
   const [dragging, setDragging] = useState(false)
   const [sending, setSending] = useState(false)
   const [attachError, setAttachError] = useState<string>()
@@ -120,6 +132,7 @@ function Composer({
       ...drafts,
       ...images.map((file) => ({
         key: `${file.name}-${file.size}-${file.lastModified}-${Math.random()}`,
+        name: file.name,
         file,
         preview: URL.createObjectURL(file),
       })),
@@ -128,7 +141,7 @@ function Composer({
 
   function detach(key: string) {
     const draft = drafts.find((item) => item.key === key)
-    if (draft) {
+    if (draft?.file) {
       URL.revokeObjectURL(draft.preview)
     }
     setDrafts(drafts.filter((item) => item.key !== key))
@@ -139,6 +152,13 @@ function Composer({
     try {
       const ids: string[] = []
       for (const draft of drafts) {
+        if (draft.id) {
+          ids.push(draft.id)
+          continue
+        }
+        if (!draft.file) {
+          continue
+        }
         const { file, data } = await attachmentData(draft.file)
         const uploaded = await upload({
           input: { tenantId, name: file.name, mimeType: file.type, data },
@@ -151,7 +171,9 @@ function Composer({
       if (await onSend(text.trim(), delivery, ids)) {
         setText("")
         for (const draft of drafts) {
-          URL.revokeObjectURL(draft.preview)
+          if (draft.file) {
+            URL.revokeObjectURL(draft.preview)
+          }
         }
         setDrafts([])
       }
@@ -199,11 +221,11 @@ function Composer({
               key={draft.key}
               className="relative size-14 overflow-hidden rounded-ui border border-line"
             >
-              <img src={draft.preview} alt={draft.file.name} className="size-full object-cover" />
+              <img src={draft.preview} alt={draft.name} className="size-full object-cover" />
               <button
                 type="button"
-                aria-label={t("chat.removeAttachment", { name: draft.file.name })}
-                title={t("chat.removeAttachment", { name: draft.file.name })}
+                aria-label={t("chat.removeAttachment", { name: draft.name })}
+                title={t("chat.removeAttachment", { name: draft.name })}
                 onClick={() => detach(draft.key)}
                 className="absolute top-0.5 right-0.5 rounded-full bg-ink/70 p-0.5 text-white outline-none hover:bg-ink focus-visible:ring-2 focus-visible:ring-line2"
               >
@@ -294,6 +316,19 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
   const [unqueue, { error: unqueueError }] = useAction(RemoveQueuedChatMessageDocument, {
     refetchQueries: [ChatDocument],
   })
+  const [rewindChat, { error: rewindError, loading: rewinding }] = useAction(RewindChatDocument, {
+    refetchQueries: [ChatDocument],
+  })
+  const [forkChat, { error: forkError }] = useAction(ForkChatConversationDocument, {
+    refetchQueries: [ChatDocument],
+  })
+  const navigate = useNavigate()
+  const [rewindTarget, setRewindTarget] = useState<string>()
+  const [draft, setDraft] = useState<{
+    key: number
+    text: string
+    attachments: { id: string; name: string; url: string }[]
+  }>({ key: 0, text: "", attachments: [] })
   const queued = conversation.messages.filter((message) => message.delivery === "QUEUED")
   const timeline = conversation.messages.filter((message) => message.delivery !== "QUEUED")
   const [modes, setModes] = useState<Modes>({
@@ -344,6 +379,40 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
     }).then(Boolean)
   }
 
+  function rewindTo(restoreFiles: boolean) {
+    if (!rewindTarget) {
+      return
+    }
+    void rewindChat({
+      tenantId: tenant.id,
+      conversationId: conversation.id,
+      messageId: rewindTarget,
+      restoreFiles,
+    }).then((result) => {
+      if (result) {
+        setRewindTarget(undefined)
+        setDraft({
+          key: draft.key + 1,
+          text: result.rewindChat.text,
+          attachments: result.rewindChat.attachments,
+        })
+      }
+    })
+  }
+
+  function forkFrom(messageId: string) {
+    void forkChat({ tenantId: tenant.id, conversationId: conversation.id, messageId }).then(
+      (result) => {
+        if (result) {
+          void navigate({
+            to: "/chat/$conversation",
+            params: { conversation: result.forkChatConversation.id },
+          })
+        }
+      },
+    )
+  }
+
   function implement(markdown: string) {
     const using: Modes = { ...modes, interactionMode: "DEFAULT" }
     setModes(using)
@@ -383,6 +452,10 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
                 at={message.at}
                 steered={message.delivery === "STEERED"}
                 images={message.attachments}
+                onRewind={
+                  conversation.kind === "WEB" ? () => setRewindTarget(message.id) : undefined
+                }
+                rewindReason={working ? t("reason.rewindWhileWorking") : undefined}
               />
             )
           }
@@ -397,6 +470,11 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
               work={message.work}
               startedAt={asked?.at}
               outcome={message.outcome}
+              onFork={
+                message.outcome && conversation.kind === "WEB"
+                  ? () => forkFrom(message.id)
+                  : undefined
+              }
             >
               {message.issues.map((issue) => {
                 const blockers = issue.task?.blockedBy ?? []
@@ -506,6 +584,8 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
         />
       ) : (
         <Composer
+          key={draft.key}
+          initial={draft}
           tenantId={tenant.id}
           reason={conversation.kind === "SLACK" ? t("reason.slackThread") : undefined}
           modes={modes}
@@ -518,8 +598,27 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
           onSend={(text, delivery, attachmentIds) => sendText(text, modes, delivery, attachmentIds)}
         />
       )}
+      <RewindDialog
+        isOpen={!!rewindTarget}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRewindTarget(undefined)
+          }
+        }}
+        onRewind={rewindTo}
+        busy={rewinding}
+        error={rewindError}
+      />
       <ActionError
-        error={error ?? answerError ?? interruptError ?? decideError ?? steerError ?? unqueueError}
+        error={
+          error ??
+          answerError ??
+          interruptError ??
+          decideError ??
+          steerError ??
+          unqueueError ??
+          forkError
+        }
         className="mt-2"
       />
       <div ref={end} />

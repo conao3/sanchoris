@@ -237,6 +237,41 @@ mutation UploadChatAttachment($input: UploadChatAttachmentInput!) {
   }
 }
 
+mutation RewindChat(
+  $tenantId: ID!
+  $conversationId: ID!
+  $messageId: ID!
+  $restoreFiles: Boolean!
+) {
+  rewindChat(
+    tenantId: $tenantId
+    conversationId: $conversationId
+    messageId: $messageId
+    restoreFiles: $restoreFiles
+  ) {
+    conversation {
+      id
+    }
+    text
+    attachments {
+      id
+      name
+      mimeType
+      url
+    }
+  }
+}
+
+mutation ForkChatConversation($tenantId: ID!, $conversationId: ID!, $messageId: ID!) {
+  forkChatConversation(
+    tenantId: $tenantId
+    conversationId: $conversationId
+    messageId: $messageId
+  ) {
+    id
+  }
+}
+
 mutation SteerChatMessage($tenantId: ID!, $conversationId: ID!, $messageId: ID!) {
   steerChatMessage(tenantId: $tenantId, conversationId: $conversationId, messageId: $messageId) {
     id

@@ -4,7 +4,7 @@ import type { Server } from "node:net"
 
 import { downloadAttachments, workerMessage } from "./attachments.ts"
 import { RunChannel } from "./channel.ts"
-import { capture, checkpointRef, diff, repositories } from "./checkpoint.ts"
+import { capture, checkpointRef, diff, repositories, restore } from "./checkpoint.ts"
 import { type Checkout, checkout } from "./checkout.ts"
 import {
   type CredentialProxy,
@@ -20,6 +20,8 @@ import type {
   Attachment,
   CredentialsMessage,
   PartialKind,
+  RewindMessage,
+  SessionModes,
   ExecMessage,
   InboundMessage,
   SocketRequest,
@@ -31,7 +33,13 @@ import type {
 import { downloadRecord, redactTokens, sha256, uploadRecord } from "./session-record.ts"
 import { validateSkillRun } from "./skills.ts"
 import { listenSocket } from "./socket-server.ts"
-import type { RestoredRecord, Worker, WorkerFactory, WorkerTurnResult } from "./worker.ts"
+import type {
+  RestoredRecord,
+  Worker,
+  WorkerContext,
+  WorkerFactory,
+  WorkerTurnResult,
+} from "./worker.ts"
 
 export type CredentialSource = { kind: "environment" } | ({ kind: "channel" } & Checkout)
 
@@ -78,6 +86,8 @@ export class WorkspaceAgent {
   private readonly questions = new Map<string, (answers: UserInputAnswers) => void>()
   private readonly approvals = new Map<string, (decision: ApprovalDecision) => void>()
   private deliveries: Promise<void> = Promise.resolve()
+  private workerContext: WorkerContext | null = null
+  private modes: SessionModes | null = null
   private partial: { kind: PartialKind; text: string } | null = null
   private partialTimer: NodeJS.Timeout | null = null
   private partialSentAt = 0
@@ -162,8 +172,14 @@ export class WorkspaceAgent {
         return
       case "session_mode":
         this.deliveries = this.deliveries.then(() =>
-          this.whenReady(() => this.requireWorker().setModes(message.modes)),
+          this.whenReady(() => {
+            this.modes = message.modes
+            return this.requireWorker().setModes(message.modes)
+          }),
         )
+        return
+      case "rewind":
+        this.deliveries = this.deliveries.then(() => this.whenReady(() => this.rewind(message)))
         return
       case "interrupt":
         void this.whenReady(() => this.requireWorker().interrupt())
@@ -266,7 +282,8 @@ export class WorkspaceAgent {
       }
       this.lastTurn = start.resume.lastTurn
     }
-    this.worker = this.config.createWorker({
+    this.modes = start.modes
+    this.workerContext = {
       agent: start.agent,
       model: start.model,
       systemPrompt: start.systemPrompt,
@@ -295,7 +312,8 @@ export class WorkspaceAgent {
         onApproval: (request, signal) => this.approve(request, signal),
         onFatal: (error) => void this.fail(error),
       },
-    })
+    }
+    this.worker = this.config.createWorker(this.workerContext)
     const { sessionId } = await this.worker.start(restored)
     this.sessionId = sessionId
     this.channel.send({
@@ -425,6 +443,32 @@ export class WorkspaceAgent {
     }
     await this.baseline
     this.requireWorker().send(workerMessage(text, steer, images))
+  }
+
+  private async rewind(message: RewindMessage): Promise<void> {
+    if (this.busy) {
+      this.config.logger("info", "rewind ignored while a turn runs", {})
+      return
+    }
+    const context = this.workerContext
+    if (!context || !this.modes) throw new Error("Worker is not running")
+    if (message.restoreTurn !== null) {
+      const dirs = await repositories(this.config.workspaceDir, this.config.env)
+      await restore(dirs, checkpointRef(message.restoreTurn, "start"), this.config.env)
+    }
+    const restored: RestoredRecord | null = message.resume
+      ? {
+          sessionId: message.resume.sessionId,
+          relativePath: message.resume.relativePath,
+          bytes: await downloadRecord(message.resume.url, message.resume.sha256),
+        }
+      : null
+    await this.requireWorker().close()
+    this.baseline = null
+    this.worker = this.config.createWorker({ ...context, modes: this.modes })
+    const { sessionId } = await this.worker.start(restored)
+    this.sessionId = sessionId
+    this.config.logger("info", "session rewound", { sessionId, restoreTurn: message.restoreTurn })
   }
 
   private async checkpoint(ref: string): Promise<{ dirs: string[]; ref: string }> {

@@ -4,7 +4,7 @@ export const MAX_ATTACHMENTS = 10
 const MAX_SIDE = 2048
 const JPEG_QUALITY = 0.85
 
-export type Draft = { key: string; file: File; preview: string }
+export type Draft = { key: string; name: string; preview: string; file?: File; id?: string }
 
 function encode(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {

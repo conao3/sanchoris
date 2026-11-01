@@ -3,7 +3,9 @@ import {
   ChevronRight,
   CircleStop,
   CornerDownLeft,
+  GitFork,
   LoaderCircle,
+  Undo2,
   type LucideIcon,
 } from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
@@ -28,6 +30,38 @@ import {
 
 const TICK_MS = 1000
 
+function MetaAction({
+  icon: Icon,
+  label,
+  reason,
+  onPress,
+}: {
+  icon: LucideIcon
+  label: string
+  reason?: string
+  onPress: () => void
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={reason ?? label}
+      aria-disabled={!!reason}
+      onClick={() => {
+        if (!reason) {
+          onPress()
+        }
+      }}
+      className={clsx(
+        "rounded-kbd p-0.5 outline-none focus-visible:ring-2 focus-visible:ring-line2",
+        reason ? "cursor-not-allowed text-line2" : "text-faint hover:text-ink",
+      )}
+    >
+      <Icon className="size-3.5" aria-hidden />
+    </button>
+  )
+}
+
 function Meta({ children, align }: { children: ReactNode; align: "left" | "right" }) {
   return (
     <div
@@ -47,12 +81,16 @@ export function MemberMessage({
   at,
   steered,
   images = [],
+  onRewind,
+  rewindReason,
 }: {
   name: string
   text: string
   at: string
   steered?: boolean
   images?: { id: string; name: string; url: string }[]
+  onRewind?: () => void
+  rewindReason?: string
 }) {
   return (
     <div className="group flex flex-col items-end">
@@ -93,6 +131,14 @@ export function MemberMessage({
           {name} · {clock(at)}
         </span>
         <CopyButton text={text} />
+        {onRewind ? (
+          <MetaAction
+            icon={Undo2}
+            label={t("rewind.action")}
+            reason={rewindReason}
+            onPress={onRewind}
+          />
+        ) : null}
       </Meta>
     </div>
   )
@@ -104,6 +150,7 @@ export function AgentMessage({
   work,
   startedAt,
   outcome,
+  onFork,
   children,
 }: {
   text: string
@@ -111,6 +158,7 @@ export function AgentMessage({
   work: Work[]
   startedAt?: string
   outcome?: ChatTurnOutcome | null
+  onFork?: () => void
   children?: ReactNode
 }) {
   return (
@@ -143,6 +191,7 @@ export function AgentMessage({
       <Meta align="left">
         <span>sanchoris · {clock(at)}</span>
         {text.trim() ? <CopyButton text={text} /> : null}
+        {onFork ? <MetaAction icon={GitFork} label={t("fork.action")} onPress={onFork} /> : null}
       </Meta>
     </div>
   )

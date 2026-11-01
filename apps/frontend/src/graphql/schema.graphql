@@ -888,6 +888,14 @@ type Mutation {
 	"""
 	steerChatMessage(tenantId: ID!, conversationId: ID!, messageId: ID!): Conversation!
 	"""
+	Rewinds the conversation to before a member's message: the agent's session goes back to the turn before it, the message and everything after it leave the conversation, and with restoreFiles the running Workspace puts the repositories back as they were before that message. Returns the message, for the composer.
+	"""
+	rewindChat(tenantId: ID!, conversationId: ID!, messageId: ID!, restoreFiles: Boolean!): RewindChatPayload!
+	"""
+	Starts a new conversation with the messages up to an agent's reply; its agent continues from the session as it was after that reply.
+	"""
+	forkChatConversation(tenantId: ID!, conversationId: ID!, messageId: ID!): Conversation!
+	"""
 	Removes a message from the queue before the agent gets it.
 	"""
 	removeQueuedChatMessage(tenantId: ID!, conversationId: ID!, messageId: ID!): Conversation!
@@ -1159,6 +1167,15 @@ type RequiredSkillStatus {
 input ResumeTaskInput {
 	taskId: ID!
 	message: String!
+}
+
+type RewindChatPayload {
+	conversation: Conversation!
+	"""
+	The text of the message the rewind took back.
+	"""
+	text: String!
+	attachments: [ChatAttachment!]!
 }
 
 enum Role {

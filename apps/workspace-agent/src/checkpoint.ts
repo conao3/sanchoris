@@ -127,3 +127,28 @@ export async function diff(
   }
   return { files, patch, truncated }
 }
+
+export async function restore(
+  dirs: readonly string[],
+  ref: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  for (const dir of dirs) {
+    const current = await captureTree(dir, env)
+    const added = await git(
+      dir,
+      ["diff", "--name-only", "-z", "--no-renames", "--diff-filter=A", ref, current],
+      env,
+    )
+    for (const path of added.split("\0"))
+      if (path !== "") await rm(join(dir, path), { force: true })
+    const scratch = await mkdtemp(join(tmpdir(), "sanchoris-index-"))
+    const indexEnv = { ...env, GIT_INDEX_FILE: join(scratch, "index") }
+    try {
+      await git(dir, ["read-tree", ref], indexEnv)
+      await git(dir, ["checkout-index", "--all", "--force"], indexEnv)
+    } finally {
+      await rm(scratch, { recursive: true, force: true })
+    }
+  }
+}

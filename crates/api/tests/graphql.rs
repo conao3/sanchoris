@@ -710,6 +710,45 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     assert!(!deliveries.contains_key(&queued[0]));
     assert_eq!(deliveries[&queued[1]], json!("STEERED"));
     assert_eq!(deliveries[&queued[2]], json!("QUEUED"));
+    let history = w
+        .ok(
+            owner,
+            "Chat",
+            json!({ "tenant": slug, "conversation": conversation_id, "withConversation": true }),
+        )
+        .await["tenant"]["conversation"]["messages"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let member_message = history
+        .iter()
+        .find(|message| message["authorKind"] == "MEMBER")
+        .unwrap()["id"]
+        .clone();
+    let reply = history
+        .iter()
+        .find(|message| message["authorKind"] == "AGENT")
+        .unwrap()["id"]
+        .clone();
+    let refused = w
+        .run(
+            owner,
+            "RewindChat",
+            json!({ "tenantId": tenant, "conversationId": conversation_id, "messageId": member_message, "restoreFiles": false }),
+        )
+        .await;
+    assert_eq!(refused["errors"][0]["extensions"]["code"], "BAD_USER_INPUT");
+    let unforkable = w
+        .run(
+            owner,
+            "ForkChatConversation",
+            json!({ "tenantId": tenant, "conversationId": conversation_id, "messageId": reply }),
+        )
+        .await;
+    assert_eq!(
+        unforkable["errors"][0]["extensions"]["code"],
+        "BAD_USER_INPUT"
+    );
     w.ok(
         owner,
         "InterruptChat",

@@ -1,7 +1,9 @@
 use crate::conversation::{ChatError, deliver_next_queued};
 use chrono::{DateTime, Duration, Utc};
 use sanchoris_config::{Session, Start};
-use sanchoris_core::channel::{OutboxType, RunEventType, SEQ_STRIDE, enqueue_outbox, outbox};
+use sanchoris_core::channel::{
+    OutboxType, RunEventType, SEQ_STRIDE, enqueue_outbox, outbox, resume_from, session_records,
+};
 use sanchoris_core::conversations::post_agent_message;
 use sanchoris_core::db::{self, TenantTx};
 use sanchoris_core::items::{
@@ -287,7 +289,7 @@ async fn turn_end(
             payload["result"].as_str().map(|outcome| (turn, outcome)),
             id,
             summary,
-            event.received_at,
+            now,
         )
         .await?;
     }
@@ -881,11 +883,15 @@ async fn start_workspace(
         }
     }
     let resume = match (run.status.as_str(), &run.record_s3_key) {
-        ("idle", Some(key)) => json!({
-            "sessionId": run.agent_session_id,
-            "recordKey": key,
-            "lastTurn": run.turns,
-        }),
+        ("idle", Some(key)) => {
+            let record = session_records(&mut tx, run.id)
+                .await?
+                .into_iter()
+                .rfind(|event| event.payload["key"].as_str() == Some(key.as_str()))
+                .ok_or_else(|| invalid(format!("no session_record has key {key}")))?;
+            resume_from(&record, run.turns)
+        }
+        ("creating", _) => start_payload.get("resume").cloned().unwrap_or(Value::Null),
         _ => Value::Null,
     };
     let instructed = run.status == "creating" || (run.record_s3_key.is_none() && run.turns == 0);

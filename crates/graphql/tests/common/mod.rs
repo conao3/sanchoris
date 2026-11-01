@@ -1444,6 +1444,7 @@ impl World {
             title: "What is failing?".into(),
             tasks: 1,
             modes: None,
+            resume: None,
             created_at: now - Duration::minutes(20),
             updated_at: now - Duration::minutes(15),
         })
@@ -1598,6 +1599,7 @@ impl World {
             title: "Globex secret chat".into(),
             tasks: 0,
             modes: None,
+            resume: None,
             created_at: now,
             updated_at: now,
         })

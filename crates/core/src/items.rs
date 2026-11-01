@@ -2950,6 +2950,8 @@ pub struct Conversation {
     pub title: String,
     pub tasks: i64,
     pub modes: Option<SessionModes>,
+    /// For a fork: the `resume` its first task starts from.
+    pub resume: Option<Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -2980,6 +2982,7 @@ impl Entity for Conversation {
                     .map(|modes| serde_json::to_value(modes).expect("modes serialize"))
                     .as_ref(),
             )
+            .opt_json("resume", self.resume.as_ref())
             .time("created_at", self.created_at)
             .time("updated_at", self.updated_at)
             .s("gsi1pk", keys::conversations_index(self.tenant_id))
@@ -3002,6 +3005,7 @@ impl Entity for Conversation {
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(|e| DbError::Decode(format!("conversation modes: {e}")))?,
+            resume: r.opt_json("resume")?,
             created_at: r.time("created_at")?,
             updated_at: r.time("updated_at")?,
         })

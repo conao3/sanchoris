@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
 import { afterEach, describe, expect, it } from "vite-plus/test"
 
-import { capture, checkpointRef, diff, repositories } from "../src/checkpoint.ts"
+import { capture, checkpointRef, diff, repositories, restore } from "../src/checkpoint.ts"
 
 const run = promisify(execFile)
 
@@ -60,6 +60,9 @@ describe("checkpoints", () => {
     expect(changes.patch).toContain("+++ b/web/b.txt")
     expect(changes.truncated).toBe(false)
     expect(await git(web, "status", "--porcelain")).toBe(" M a.txt\n?? b.txt\n")
+    await restore([web], start, env)
+    expect(await readFile(join(web, "a.txt"), "utf8")).toBe("one\ntwo\n")
+    expect(await git(web, "status", "--porcelain")).toBe("")
   })
 
   it("treats a workspace that is itself a repository as the only one", async () => {

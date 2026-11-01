@@ -944,41 +944,9 @@ impl Channel {
         row: &OutboxRow,
     ) -> Result<Value, ChannelError> {
         let payload = &row.payload;
-        let resume = match &payload["resume"] {
-            Value::Null => Value::Null,
-            resume => {
-                let key = resume["recordKey"]
-                    .as_str()
-                    .ok_or_else(|| ChannelError::Internal("start.resume needs recordKey".into()))?;
-                let session_id = resume["sessionId"]
-                    .as_str()
-                    .ok_or_else(|| ChannelError::Internal("start.resume needs sessionId".into()))?;
-                let record = tx
-                    .query::<RunEventItem>(&keys::run_pk(tx.tenant_id(), run_id), "EVT#")
-                    .await?
-                    .into_iter()
-                    .filter(|event| {
-                        event.kind == RunEventType::SessionRecord.as_str()
-                            && event.payload["key"].as_str() == Some(key)
-                    })
-                    .max_by_key(|event| (event.received_at, event.seq))
-                    .ok_or_else(|| {
-                        ChannelError::Internal(format!("no session_record has key {key}"))
-                    })?;
-                let url = self
-                    .records
-                    .presign_get(tx.tenant_id(), key)
-                    .await
-                    .map_err(|error| ChannelError::Internal(error.to_string()))?;
-                json!({
-                    "sessionId": session_id,
-                    "url": url,
-                    "relativePath": record.payload["relativePath"],
-                    "sha256": record.payload["sha256"],
-                    "lastTurn": resume["lastTurn"],
-                })
-            }
-        };
+        let resume = self
+            .resume_record(tx.tenant_id(), &payload["resume"])
+            .await?;
         Ok(json!({
             "type": "start",
             "runId": run_id.to_string(),
@@ -991,6 +959,28 @@ impl Channel {
             "modes": payload["modes"],
             "resume": resume,
             "heartbeatSeconds": payload["heartbeatSeconds"],
+        }))
+    }
+
+    /// The `resume` an agent gets: the record named by `recordKey` behind a presigned GET.
+    async fn resume_record(&self, tenant_id: Uuid, resume: &Value) -> Result<Value, ChannelError> {
+        if resume.is_null() {
+            return Ok(Value::Null);
+        }
+        let key = resume["recordKey"]
+            .as_str()
+            .ok_or_else(|| ChannelError::Internal("resume needs recordKey".into()))?;
+        let url = self
+            .records
+            .presign_get(tenant_id, key)
+            .await
+            .map_err(|error| ChannelError::Internal(error.to_string()))?;
+        Ok(json!({
+            "sessionId": resume["sessionId"],
+            "url": url,
+            "relativePath": resume["relativePath"],
+            "sha256": resume["sha256"],
+            "lastTurn": resume["lastTurn"],
         }))
     }
 
@@ -1043,6 +1033,10 @@ impl Channel {
             "session_mode" => {
                 json!({ "type": "session_mode", "runId": run_id, "modes": payload["modes"] })
             }
+            "rewind" => json!({
+                "type": "rewind", "runId": run_id, "resume": Value::Null,
+                "restoreTurn": payload["restoreTurn"],
+            }),
             "shutdown" => {
                 json!({ "type": "shutdown", "runId": run_id, "reason": payload["reason"] })
             }

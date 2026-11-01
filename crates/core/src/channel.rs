@@ -26,6 +26,7 @@ pub enum OutboxType {
     UserInputResponse,
     ApprovalResponse,
     SessionMode,
+    Rewind,
     Shutdown,
 }
 
@@ -39,6 +40,7 @@ impl OutboxType {
             Self::UserInputResponse => "user_input_response",
             Self::ApprovalResponse => "approval_response",
             Self::SessionMode => "session_mode",
+            Self::Rewind => "rewind",
             Self::Shutdown => "shutdown",
         }
     }
@@ -395,4 +397,30 @@ pub async fn ingest_github_delivery(
     })
     .await?;
     Ok(Some(recorded))
+}
+
+/// The session records the run's agent uploaded, oldest first.
+pub async fn session_records(
+    tx: &mut TenantTx,
+    run_id: Uuid,
+) -> Result<Vec<RunEventItem>, DbError> {
+    let mut records = tx
+        .query::<RunEventItem>(&keys::run_pk(tx.tenant_id(), run_id), "EVT#")
+        .await?
+        .into_iter()
+        .filter(|event| event.kind == RunEventType::SessionRecord.as_str())
+        .collect::<Vec<_>>();
+    records.sort_by_key(|event| (event.received_at, event.seq));
+    Ok(records)
+}
+
+/// The `resume` of a `start` or `rewind` that restores `record`, numbering the next turn after `last_turn`.
+pub fn resume_from(record: &RunEventItem, last_turn: i64) -> Value {
+    json!({
+        "sessionId": record.payload["sessionId"],
+        "recordKey": record.payload["key"],
+        "relativePath": record.payload["relativePath"],
+        "sha256": record.payload["sha256"],
+        "lastTurn": last_turn,
+    })
 }

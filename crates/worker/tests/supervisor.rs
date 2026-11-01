@@ -230,7 +230,7 @@ async fn idle_workspaces_stop_and_restart_for_the_next_message() {
         .run_event(
             run_id,
             RunEventType::SessionRecord,
-            json!({ "sessionId": "session-1", "turn": 1, "key": "records/run/1.jsonl" }),
+            json!({ "sessionId": "session-1", "turn": 1, "key": "records/run/1.jsonl", "relativePath": "session-1.jsonl", "sha256": "ab" }),
         )
         .await;
     world.request_skill(run_id, common::skill_input(35)).await;
@@ -262,7 +262,7 @@ async fn idle_workspaces_stop_and_restart_for_the_next_message() {
     assert_eq!(starts[1]["instruction"], serde_json::Value::Null);
     assert_eq!(
         starts[1]["resume"],
-        json!({ "sessionId": "session-1", "recordKey": "records/run/1.jsonl", "lastTurn": 1 })
+        json!({ "sessionId": "session-1", "recordKey": "records/run/1.jsonl", "relativePath": "session-1.jsonl", "sha256": "ab", "lastTurn": 1 })
     );
 }
 
@@ -407,7 +407,7 @@ async fn a_spot_interruption_restores_the_session_in_a_new_workspace() {
         .run_event(
             run_id,
             RunEventType::SessionRecord,
-            json!({ "sessionId": "session-1", "turn": 1, "key": "records/run/1.jsonl" }),
+            json!({ "sessionId": "session-1", "turn": 1, "key": "records/run/1.jsonl", "relativePath": "session-1.jsonl", "sha256": "ab" }),
         )
         .await;
     world.worker.settle().await.unwrap();
@@ -441,7 +441,7 @@ async fn a_spot_interruption_restores_the_session_in_a_new_workspace() {
     assert_eq!(starts.len(), 2);
     assert_eq!(
         starts[1]["resume"],
-        json!({ "sessionId": "session-1", "recordKey": "records/run/1.jsonl", "lastTurn": 0 })
+        json!({ "sessionId": "session-1", "recordKey": "records/run/1.jsonl", "relativePath": "session-1.jsonl", "sha256": "ab", "lastTurn": 0 })
     );
     assert_eq!(
         world.messages(run_id).await.last().map(String::as_str),
@@ -939,7 +939,7 @@ async fn wait_for_checks(world: &World, number: i64) -> uuid::Uuid {
         .run_event(
             run_id,
             RunEventType::SessionRecord,
-            json!({ "sessionId": "session-1", "turn": 1, "key": format!("records/{number}/1.jsonl") }),
+            json!({ "sessionId": "session-1", "turn": 1, "key": format!("records/{number}/1.jsonl"), "relativePath": "session-1.jsonl", "sha256": "ab" }),
         )
         .await;
     world
@@ -1008,7 +1008,7 @@ async fn a_task_whose_workspace_stopped_waits_pending_for_a_slot_to_resume() {
     assert_eq!(starts[1]["instruction"], serde_json::Value::Null);
     assert_eq!(
         starts[1]["resume"],
-        json!({ "sessionId": "session-1", "recordKey": "records/1/1.jsonl", "lastTurn": 1 })
+        json!({ "sessionId": "session-1", "recordKey": "records/1/1.jsonl", "relativePath": "session-1.jsonl", "sha256": "ab", "lastTurn": 1 })
     );
     assert_eq!(tenant(&world).await.live_workspaces, 1);
     assert_eq!(world.tasks().await.iter().filter(|t| t.runs > 1).count(), 0);

@@ -1,6 +1,9 @@
 use chrono::{DateTime, Utc};
 use sanchoris_config::{Limits, Start};
-use sanchoris_core::channel::{ChatInput, enqueue_chat_message, enqueue_session_mode};
+use sanchoris_core::channel::{
+    ChatInput, OutboxType, enqueue_chat_message, enqueue_outbox, enqueue_session_mode, resume_from,
+    session_records,
+};
 use sanchoris_core::conversations::{
     DELIVERY_QUEUED, DELIVERY_STEER, latest_task, load_conversation, post_message, queued_messages,
     turn_in_progress,
@@ -8,18 +11,19 @@ use sanchoris_core::conversations::{
 use sanchoris_core::db::{self, DbError, NewTask, Recorded, Store, TenantTx, tenant_plan};
 use sanchoris_core::item::Entity;
 use sanchoris_core::items::{
-    AUTHOR_MEMBER, ChatAttachment, ChatMessage, Config, Conversation, Member, SessionDef, Task,
-    TaskOrigin, User,
+    AUTHOR_AGENT, AUTHOR_MEMBER, CONVERSATION_WEB, ChatAttachment, ChatMessage, Config,
+    Conversation, Member, SessionDef, Task, TaskOrigin, User,
 };
 use sanchoris_core::keys;
 use sanchoris_core::lifecycle::TaskDecision;
 use sanchoris_core::messages::{self, ChatStartMessage};
 use sanchoris_core::model::{NamedDefinition, TaskDefinition, TaskStatus};
 use sanchoris_core::modes::SessionModes;
+use sanchoris_core::tasks::runs_of;
 use sanchoris_core::tasks::{
     apply_decision, deliver_held_messages, latest_run, load_task, send_chat_to_task,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -128,6 +132,7 @@ pub async fn start_conversation(
         title: shorten(message.text),
         tasks: 0,
         modes: Some(message.modes),
+        resume: None,
         created_at: message.at,
         updated_at: message.at,
     };
@@ -397,6 +402,11 @@ async fn start_task(
         "repositories": repositories,
         "modes": message.modes,
         "attachments": message.attachments,
+        "resume": if conversation.tasks == 0 {
+            conversation.resume.clone().unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        },
     }));
     tx.put(&task)?;
     let mut conversation = load_conversation(tx, conversation.id).await?;
@@ -435,4 +445,171 @@ pub async fn deliver_next_queued(
         .ok_or_else(|| WorkerError::Invalid(format!("user {} is missing", member.user_id)))?;
     deliver_queued(tx, conversation_id, &next, &user.display_name, false, at).await?;
     Ok(())
+}
+
+/// The member's message a rewind took back, for the composer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rewound {
+    pub text: String,
+    pub attachments: Vec<ChatAttachment>,
+}
+
+async fn conversation_messages(
+    tx: &mut TenantTx,
+    conversation_id: Uuid,
+) -> Result<Vec<ChatMessage>> {
+    let mut messages = tx
+        .query::<ChatMessage>(
+            &keys::conversation_pk(tx.tenant_id(), conversation_id),
+            "MSG#",
+        )
+        .await?;
+    messages.sort_by_key(|message| (message.created_at, message.id));
+    Ok(messages)
+}
+
+/// Rewinds the conversation's task to before a member's message: the session resumes from the record of the turn before it, the message and everything after it leave the conversation, and with `restore_files` a running Workspace puts its repositories back as they were when that message's turn started.
+pub async fn rewind(
+    tx: &mut TenantTx,
+    conversation_id: Uuid,
+    message_id: Uuid,
+    restore_files: bool,
+) -> Result<Rewound> {
+    let conversation = load_conversation(tx, conversation_id).await?;
+    let task = latest_task(tx, &conversation)
+        .await?
+        .filter(|task| !task.status.is_terminal())
+        .ok_or_else(|| rejected("the conversation's task has finished; send a new message"))?;
+    if task.status == TaskStatus::Running && turn_in_progress(tx, conversation_id, task.id).await? {
+        return Err(rejected(
+            "Interrupt the current turn before reverting checkpoints.",
+        ));
+    }
+    let messages: Vec<ChatMessage> = conversation_messages(tx, conversation_id)
+        .await?
+        .into_iter()
+        .filter(|message| message.task_id == Some(task.id))
+        .collect();
+    let position = messages
+        .iter()
+        .position(|message| {
+            message.id == message_id
+                && message.author_kind == AUTHOR_MEMBER
+                && message.delivery.as_deref() != Some(DELIVERY_QUEUED)
+        })
+        .ok_or_else(|| {
+            rejected(format!(
+                "message {message_id} is not a sent message of the task"
+            ))
+        })?;
+    let previous = messages[..position]
+        .iter()
+        .rev()
+        .find(|message| message.author_kind == AUTHOR_AGENT && message.turn.is_some());
+    let mut run = runs_of(tx, task.id)
+        .await?
+        .into_iter()
+        .last()
+        .ok_or_else(|| rejected("the task has no session yet"))?;
+    if !matches!(run.status.as_str(), "running" | "idle") {
+        return Err(rejected("the session is starting; try again when it runs"));
+    }
+    let (record, restore_turn) = match previous {
+        Some(reply) => {
+            if reply.run_id != Some(run.id) {
+                return Err(rejected(
+                    "the message was answered in an earlier session; rewind to a later message",
+                ));
+            }
+            let turn = reply.turn.expect("the reply has a turn");
+            let record = session_records(tx, run.id)
+                .await?
+                .into_iter()
+                .rfind(|event| event.payload["turn"].as_i64() == Some(turn))
+                .ok_or_else(|| rejected("the agent saved no record after that turn"))?;
+            (Some(record), turn + 1)
+        }
+        None => (None, 1),
+    };
+    run.record_s3_key = record
+        .as_ref()
+        .and_then(|event| event.payload["key"].as_str())
+        .map(str::to_string);
+    run.agent_session_id = record
+        .as_ref()
+        .and_then(|event| event.payload["sessionId"].as_str())
+        .map(str::to_string);
+    tx.put(&run)?;
+    if run.status == "running" {
+        enqueue_outbox(
+            tx,
+            run.id,
+            OutboxType::Rewind,
+            &json!({
+                "resume": record.as_ref().map_or(Value::Null, |event| resume_from(event, run.turns)),
+                "restoreTurn": restore_files.then_some(restore_turn),
+            }),
+            &format!("rewind:{message_id}"),
+        )
+        .await?;
+    }
+    for message in &messages[position..] {
+        tx.delete(&message.key())?;
+    }
+    let taken = &messages[position];
+    Ok(Rewound {
+        text: taken.text.clone(),
+        attachments: taken.attachments.clone(),
+    })
+}
+
+/// Starts a new conversation with the messages up to an agent's reply; its first task resumes the session from the record of that reply's turn.
+pub async fn fork(
+    tx: &mut TenantTx,
+    conversation_id: Uuid,
+    message_id: Uuid,
+    member_id: Uuid,
+    at: DateTime<Utc>,
+) -> Result<Conversation> {
+    let source = load_conversation(tx, conversation_id).await?;
+    let messages = conversation_messages(tx, conversation_id).await?;
+    let position = messages
+        .iter()
+        .position(|message| message.id == message_id && message.author_kind == AUTHOR_AGENT)
+        .ok_or_else(|| rejected(format!("message {message_id} is not a reply of the agent")))?;
+    let reply = &messages[position];
+    let (Some(run_id), Some(turn)) = (reply.run_id, reply.turn) else {
+        return Err(rejected("the reply does not end a turn of the agent"));
+    };
+    let record = session_records(tx, run_id)
+        .await?
+        .into_iter()
+        .rfind(|event| event.payload["turn"].as_i64() == Some(turn))
+        .ok_or_else(|| rejected("the agent saved no record after that turn"))?;
+    let conversation = Conversation {
+        id: Uuid::new_v4(),
+        tenant_id: tx.tenant_id(),
+        kind: CONVERSATION_WEB.to_string(),
+        config_id: source.config_id,
+        session_name: source.session_name.clone(),
+        slack_thread_ts: None,
+        created_by_member_id: member_id,
+        title: shorten(&format!("{} fork", source.title)),
+        tasks: 0,
+        modes: source.modes,
+        resume: Some(resume_from(&record, 0)),
+        created_at: at,
+        updated_at: at,
+    };
+    tx.insert(&conversation)?;
+    for message in &messages[..=position] {
+        tx.insert(&ChatMessage {
+            id: Uuid::new_v4(),
+            conversation_id: conversation.id,
+            task_id: None,
+            delivery: None,
+            ..message.clone()
+        })?;
+    }
+    Ok(conversation)
 }

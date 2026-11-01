@@ -435,6 +435,40 @@ function createResolvers() {
         uploads.set(id, attachment)
         return attachment
       },
+      rewindChat: (_: unknown, { tenantId, conversationId, messageId }: Obj) => {
+        const conversation = tenantById(tenantId).conversationList.find(
+          (item: Obj) => item.id === conversationId,
+        )
+        if (conversation.working) {
+          throw new Error("Interrupt the current turn before reverting checkpoints.")
+        }
+        const index = conversation.messages.findIndex((item: Obj) => item.id === messageId)
+        const [message] = conversation.messages.slice(index, index + 1)
+        conversation.messages = conversation.messages.slice(0, index)
+        return { conversation, text: message.text, attachments: message.attachments }
+      },
+      forkChatConversation: (_: unknown, { tenantId, conversationId, messageId }: Obj) => {
+        const tenant = tenantById(tenantId)
+        const source = tenant.conversationList.find((item: Obj) => item.id === conversationId)
+        const index = source.messages.findIndex((item: Obj) => item.id === messageId)
+        const stamp = new Date().toISOString()
+        const conversation: Obj = {
+          ...source,
+          id: nextId("conv"),
+          title: `${source.title} fork`,
+          createdAt: stamp,
+          updatedAt: stamp,
+          working: null,
+          messages: source.messages
+            .slice(0, index + 1)
+            .map((message: Obj) => ({ ...message, id: nextId("msg-live") })),
+          tasks: () => [],
+          latestTask: () => null,
+          filedTasks: () => [],
+        }
+        tenant.conversationList.push(conversation)
+        return conversation
+      },
       steerChatMessage: (_: unknown, { tenantId, conversationId, messageId }: Obj) => {
         const conversation = tenantById(tenantId).conversationList.find(
           (item: Obj) => item.id === conversationId,

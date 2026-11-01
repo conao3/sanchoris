@@ -409,6 +409,34 @@ describe("workspace agent with a fake worker", () => {
     expect(await exitCode).toBe(0)
   })
 
+  it("rewinds to a fresh session when told to", async () => {
+    const { control, exitCode } = await setup(async (text) => `echo ${text}`)
+    await control.waitFor("hello")
+    control.send(startMessage())
+    await control.waitFor("ready")
+    control.send({
+      type: "user_message",
+      messageId: "m-1",
+      text: "first",
+      steer: false,
+      attachments: [],
+    })
+    const first = await control.waitFor("turn_end")
+    control.send({ type: "rewind", resume: null, restoreTurn: null })
+    control.send({
+      type: "user_message",
+      messageId: "m-2",
+      text: "again",
+      steer: false,
+      attachments: [],
+    })
+    const second = await control.waitFor("turn_end", (message) => message.turn === 2)
+    expect(second.summary).toBe("echo again")
+    expect(second.sessionId).not.toBe(first.sessionId)
+    control.send({ type: "shutdown", reason: "done" })
+    expect(await exitCode).toBe(0)
+  })
+
   it("ignores a repeated user_message with the same messageId", async () => {
     const { control, exitCode } = await setup(async (text) => `echo ${text}`)
     await control.waitFor("hello")

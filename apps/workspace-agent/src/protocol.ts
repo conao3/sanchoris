@@ -111,6 +111,14 @@ export const ApprovalResponseMessage = z.strictObject({
   decision: ApprovalDecision,
 })
 
+export const RewindMessage = z.strictObject({
+  type: z.literal("rewind"),
+  runId: RunId,
+  resume: ResumeRecord.nullable(),
+  restoreTurn: z.number().int().positive().nullable(),
+})
+export type RewindMessage = z.infer<typeof RewindMessage>
+
 export const ShutdownMessage = z.strictObject({
   type: z.literal("shutdown"),
   runId: RunId,
@@ -227,6 +235,7 @@ export const InboundMessage = z.union([
   UserMessage,
   SessionModeMessage,
   InterruptMessage,
+  RewindMessage,
   UserInputResponseMessage,
   ApprovalResponseMessage,
   ShutdownMessage,
