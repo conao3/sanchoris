@@ -76,6 +76,27 @@ pub(crate) struct ChatAnswer {
     pub answers: Vec<String>,
 }
 
+/// The files a turn changed in the session's repositories, from git checkpoints taken when the turn started and ended.
+#[derive(SimpleObject, Clone)]
+pub(crate) struct ChatDiff {
+    pub files: Vec<ChatChangedFile>,
+    /// The unified diff of all files, cut at about 48,000 characters.
+    pub patch: String,
+    /// True when the patch was cut.
+    pub truncated: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub(crate) struct ChatChangedFile {
+    /// The repository directory name, such as shop-web.
+    pub repo: String,
+    pub path: String,
+    /// Null for binary files.
+    pub additions: Option<i64>,
+    /// Null for binary files.
+    pub deletions: Option<i64>,
+}
+
 /// The turn in progress of the conversation's task.
 #[derive(SimpleObject, Clone)]
 pub(crate) struct ChatWorking {
@@ -105,6 +126,15 @@ impl RunWork {
             .iter()
             .find(|entry| entry.turn == turn)
             .map(|entry| entry.at)
+    }
+
+    pub fn diff(&self, turn: i64) -> Result<Option<ChatDiff>> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|entry| entry.turn == turn && entry.kind == "turn_diff")
+            .map(|entry| chat_diff(&entry.data))
+            .transpose()
     }
 
     pub fn open_question(&self, turn: i64) -> Result<Option<ChatQuestion>> {
@@ -200,6 +230,27 @@ impl RunWork {
         }
         Ok(work)
     }
+}
+
+fn chat_diff(data: &Value) -> Result<ChatDiff> {
+    let files = data["files"]
+        .as_array()
+        .ok_or_else(|| async_graphql::Error::new("turn_diff has no files"))?
+        .iter()
+        .map(|file| {
+            Ok(ChatChangedFile {
+                repo: string(file, "repo", "turn_diff")?,
+                path: string(file, "path", "turn_diff")?,
+                additions: file["additions"].as_i64(),
+                deletions: file["deletions"].as_i64(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ChatDiff {
+        files,
+        patch: string(data, "patch", "turn_diff")?,
+        truncated: data["truncated"].as_bool().unwrap_or(false),
+    })
 }
 
 fn plain(kind: ChatWorkKind, at: DateTime<Utc>, text: String) -> ChatWork {
@@ -379,5 +430,37 @@ mod tests {
             work.turn(2, None).unwrap()[0].text.as_deref(),
             Some("Next turn.")
         );
+    }
+
+    #[test]
+    fn a_turn_diff_lists_the_changed_files_and_keeps_out_of_the_work() {
+        let work = RunWork {
+            entries: vec![
+                entry(1, 1, "text", json!({ "text": "Edited." })),
+                entry(
+                    2,
+                    1,
+                    "turn_diff",
+                    json!({
+                        "files": [
+                            { "repo": "shop", "path": "src/a.ts", "additions": 3, "deletions": 1 },
+                            { "repo": "shop", "path": "logo.png", "additions": null, "deletions": null },
+                        ],
+                        "patch": "diff --git a/src/a.ts b/src/a.ts",
+                        "truncated": false,
+                    }),
+                ),
+            ],
+            questions: Vec::new(),
+        };
+        assert_eq!(work.turn(1, None).unwrap().len(), 1);
+        let diff = work.diff(1).unwrap().unwrap();
+        assert_eq!(diff.files.len(), 2);
+        assert_eq!(
+            (diff.files[0].additions, diff.files[0].deletions),
+            (Some(3), Some(1))
+        );
+        assert_eq!(diff.files[1].additions, None);
+        assert!(work.diff(2).unwrap().is_none());
     }
 }

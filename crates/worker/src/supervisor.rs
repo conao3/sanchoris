@@ -283,7 +283,7 @@ async fn turn_end(
             tx,
             &task,
             Some(event.run_id),
-            Some(turn),
+            payload["result"].as_str().map(|outcome| (turn, outcome)),
             id,
             summary,
             event.received_at,

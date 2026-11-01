@@ -2873,6 +2873,7 @@ pub struct ChatMessage {
     pub task_id: Option<Uuid>,
     pub run_id: Option<Uuid>,
     pub turn: Option<i64>,
+    pub outcome: Option<String>,
     pub author_kind: String,
     pub member_id: Option<Uuid>,
     pub text: String,
@@ -2898,6 +2899,7 @@ impl Entity for ChatMessage {
             .opt_uuid("task_id", self.task_id)
             .opt_uuid("run_id", self.run_id)
             .opt_n("turn", self.turn)
+            .opt_s("outcome", self.outcome.as_deref())
             .s("author_kind", &self.author_kind)
             .opt_uuid("member_id", self.member_id)
             .s("text", &self.text)
@@ -2912,6 +2914,7 @@ impl Entity for ChatMessage {
             task_id: r.opt_uuid("task_id")?,
             run_id: r.opt_uuid("run_id")?,
             turn: r.opt_n("turn")?,
+            outcome: r.opt_s("outcome")?,
             author_kind: r.s("author_kind")?,
             member_id: r.opt_uuid("member_id")?,
             text: r.s("text")?,

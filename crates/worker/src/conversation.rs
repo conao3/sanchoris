@@ -126,6 +126,7 @@ pub async fn post_member_message(
         task_id: None,
         run_id: None,
         turn: None,
+        outcome: None,
         author_kind: AUTHOR_MEMBER.to_string(),
         member_id: Some(message.member_id),
         text: message.text.to_string(),

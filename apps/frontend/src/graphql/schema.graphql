@@ -145,11 +145,46 @@ enum ChatAuthorKind {
 	AGENT
 }
 
+type ChatChangedFile {
+	"""
+	The repository directory name, such as shop-web.
+	"""
+	repo: String!
+	path: String!
+	"""
+	Null for binary files.
+	"""
+	additions: Int
+	"""
+	Null for binary files.
+	"""
+	deletions: Int
+}
+
+"""
+The files a turn changed in the session's repositories, from git checkpoints taken when the turn started and ended.
+"""
+type ChatDiff {
+	files: [ChatChangedFile!]!
+	"""
+	The unified diff of all files, cut at about 48,000 characters.
+	"""
+	patch: String!
+	"""
+	True when the patch was cut.
+	"""
+	truncated: Boolean!
+}
+
 type ChatMessage {
 	id: ID!
 	authorKind: ChatAuthorKind!
 	member: Member
 	text: String!
+	"""
+	How the turn this reply ends finished. Null for members' messages and posts outside a turn.
+	"""
+	outcome: ChatTurnOutcome
 	at: DateTime!
 	"""
 	The task the message went to or came from.
@@ -159,6 +194,10 @@ type ChatMessage {
 	The thinking, text and tool calls of the turn that this reply ends, oldest first. Empty for members' messages.
 	"""
 	work: [ChatWork!]!
+	"""
+	The files the turn this reply ends changed. Null when it changed none.
+	"""
+	diff: ChatDiff
 	"""
 	Issues the agent filed with file-issue during the turn this reply ends.
 	"""
@@ -202,6 +241,15 @@ type ChatTool {
 	"""
 	output: String
 	isError: Boolean!
+}
+
+enum ChatTurnOutcome {
+	COMPLETED
+	"""
+	Someone stopped the turn.
+	"""
+	INTERRUPTED
+	FAILED
 }
 
 type ChatWork {

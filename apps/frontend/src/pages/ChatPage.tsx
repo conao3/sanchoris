@@ -2,6 +2,7 @@ import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import { CircleDot, Plus, Square } from "lucide-react"
 import { type KeyboardEvent, useEffect, useRef, useState } from "react"
 import { Button } from "../components/Button.tsx"
+import { ChangedFiles } from "../components/chat/ChangedFiles.tsx"
 import { QuestionComposer } from "../components/chat/QuestionComposer.tsx"
 import { AgentMessage, MemberMessage, Working } from "../components/chat/Timeline.tsx"
 import { Reason } from "../components/Reason.tsx"
@@ -175,6 +176,7 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
               at={message.at}
               work={message.work}
               startedAt={asked?.at}
+              outcome={message.outcome}
             >
               {message.issues.map((issue) => {
                 const blockers = issue.task?.blockedBy ?? []
@@ -207,6 +209,7 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
                   </div>
                 )
               })}
+              {message.diff ? <ChangedFiles diff={message.diff} /> : null}
             </AgentMessage>
           )
         })}

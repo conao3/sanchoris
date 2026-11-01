@@ -1277,6 +1277,7 @@ impl MutationRoot {
                 row: delivered.message,
                 issues: Vec::new(),
                 work: Vec::new(),
+                diff: None,
             },
         })
     }

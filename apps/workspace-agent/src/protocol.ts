@@ -227,6 +227,7 @@ export const EventKind = z.enum([
   "tool_use",
   "tool_result",
   "item",
+  "turn_diff",
   "system",
   "log",
 ])

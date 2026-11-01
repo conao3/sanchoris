@@ -482,7 +482,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         &mut tx,
         &chat_task,
         Some(run_id),
-        Some(1),
+        Some((1, "completed")),
         Uuid::new_v4(),
         "Two issues are open.",
         Utc::now(),

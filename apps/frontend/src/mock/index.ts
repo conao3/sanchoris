@@ -320,6 +320,8 @@ function createResolvers() {
           text: `Going with **${input.answers[0]?.answers.join(", ") ?? ""}**. I will start on it now.`,
           at: stamp,
           issues: [],
+          outcome: "COMPLETED",
+          diff: null,
           work: [
             ...working.work,
             { kind: "QUESTION", at: question.askedAt, text: null, tool: null, question },
@@ -343,6 +345,8 @@ function createResolvers() {
           text: "",
           at: stamp,
           issues: [],
+          outcome: "INTERRUPTED",
+          diff: null,
           work: conversation.working.work,
         })
         conversation.working = null
@@ -359,6 +363,8 @@ function createResolvers() {
           at: stamp,
           issues: [],
           work: [],
+          outcome: null,
+          diff: null,
         }
         const startTask = (conversation: Obj, sequence: number): Obj => {
           const session = conversation.session

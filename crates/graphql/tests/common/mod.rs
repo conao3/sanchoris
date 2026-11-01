@@ -1479,6 +1479,7 @@ impl World {
                 task_id: Some(chat_task),
                 run_id: member.is_none().then_some(chat_run),
                 turn: member.is_none().then_some(1),
+                outcome: member.is_none().then(|| "completed".into()),
                 author_kind: author.into(),
                 member_id: member,
                 text: text.into(),

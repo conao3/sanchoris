@@ -14,10 +14,10 @@ use sanchoris_core::tasks::runs_of;
 use uuid::Uuid;
 
 use crate::account::Member;
-use crate::chat_work::{ChatWork, ChatWorking, RunWork};
+use crate::chat_work::{ChatDiff, ChatWork, ChatWorking, RunWork};
 use crate::config::Session;
 use crate::context::{Scope, tx};
-use crate::enums::{ChatAuthorKind, ConversationKind};
+use crate::enums::{ChatAuthorKind, ChatTurnOutcome, ConversationKind};
 use crate::error::not_found;
 use crate::scalars::{Timestamp, ts};
 use crate::task::{IssueRef, Task, filed_tasks_of, issue_outputs};
@@ -122,22 +122,24 @@ impl Conversation {
         let mut runs: BTreeMap<Uuid, RunWork> = BTreeMap::new();
         let mut messages = Vec::with_capacity(rows.len());
         for row in rows {
-            let work = match (row.author_kind.as_str(), row.run_id, row.turn) {
+            let (work, diff) = match (row.author_kind.as_str(), row.run_id, row.turn) {
                 (AUTHOR_AGENT, Some(run_id), Some(turn)) => {
                     if let Entry::Vacant(entry) = runs.entry(run_id) {
                         entry.insert(
                             RunWork::load(&mut tx(ctx, self.scope.tenant_id), run_id).await?,
                         );
                     }
-                    runs[&run_id].turn(turn, Some(&row.text))?
+                    let run = &runs[&run_id];
+                    (run.turn(turn, Some(&row.text))?, run.diff(turn)?)
                 }
-                _ => Vec::new(),
+                _ => (Vec::new(), None),
             };
             messages.push(ChatMessage {
                 scope: self.scope,
                 row,
                 issues: Vec::new(),
                 work,
+                diff,
             });
         }
         for task_id in self.task_ids(ctx).await? {
@@ -236,6 +238,7 @@ pub(crate) struct ChatMessage {
     pub row: ChatMessageItem,
     pub issues: Vec<OutputItem>,
     pub work: Vec<ChatWork>,
+    pub diff: Option<ChatDiff>,
 }
 
 #[Object]
@@ -266,6 +269,15 @@ impl ChatMessage {
         &self.row.text
     }
 
+    /// How the turn this reply ends finished. Null for members' messages and posts outside a turn.
+    async fn outcome(&self) -> Result<Option<ChatTurnOutcome>> {
+        self.row
+            .outcome
+            .as_deref()
+            .map(ChatTurnOutcome::from_db)
+            .transpose()
+    }
+
     async fn at(&self) -> Timestamp {
         ts(self.row.created_at)
     }
@@ -281,6 +293,11 @@ impl ChatMessage {
     /// The thinking, text and tool calls of the turn that this reply ends, oldest first. Empty for members' messages.
     async fn work(&self) -> &[ChatWork] {
         &self.work
+    }
+
+    /// The files the turn this reply ends changed. Null when it changed none.
+    async fn diff(&self) -> Option<&ChatDiff> {
+        self.diff.as_ref()
     }
 
     /// Issues the agent filed with file-issue during the turn this reply ends.

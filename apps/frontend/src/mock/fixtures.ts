@@ -1479,7 +1479,18 @@ function buildAcme(viewerRole: string): Obj {
     text: string,
     issues: Obj[] = [],
     work: Obj[] = [],
-  ): Obj => ({ id, authorKind, member, at: ago(minutes), text, issues, work })
+    diff: Obj | null = null,
+  ): Obj => ({
+    id,
+    authorKind,
+    member,
+    at: ago(minutes),
+    text,
+    issues,
+    work,
+    diff,
+    outcome: authorKind === "AGENT" ? "COMPLETED" : null,
+  })
   const work = (minutes: number, kind: string, fields: Obj): Obj => ({
     kind,
     at: ago(minutes),
@@ -1566,6 +1577,24 @@ function buildAcme(viewerRole: string): Obj {
         issue("acme/shop-api", 43, "Docs for the export API", () => t43),
       ],
       exportWork,
+      {
+        truncated: false,
+        files: [
+          { repo: "shop-api", path: "src/orders/export.ts", additions: 42, deletions: 0 },
+          { repo: "shop-api", path: "src/orders/routes.ts", additions: 2, deletions: 1 },
+          { repo: "shop-web", path: "src/pages/Orders.tsx", additions: 18, deletions: 3 },
+        ],
+        patch: [
+          "diff --git a/shop-api/src/orders/routes.ts b/shop-api/src/orders/routes.ts",
+          "--- a/shop-api/src/orders/routes.ts",
+          "+++ b/shop-api/src/orders/routes.ts",
+          "@@ -1,2 +1,3 @@",
+          " export const ordersRouter = Router()",
+          '-ordersRouter.get("/", listOrders)',
+          '+ordersRouter.get("/", listOrders)',
+          '+ordersRouter.get("/export.csv", exportOrders)',
+        ].join("\n"),
+      },
     ),
     message("msg-3", "MEMBER", mika, 27, "Looks right. Go."),
     message(

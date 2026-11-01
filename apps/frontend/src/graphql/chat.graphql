@@ -72,9 +72,20 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
         id
         authorKind
         text
+        outcome
         at
         work {
           ...ChatWorkFields
+        }
+        diff {
+          patch
+          truncated
+          files {
+            repo
+            path
+            additions
+            deletions
+          }
         }
         member {
           id

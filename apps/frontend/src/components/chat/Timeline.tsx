@@ -1,8 +1,10 @@
 import clsx from "clsx"
-import { Check, ChevronRight, Copy, LoaderCircle, type LucideIcon } from "lucide-react"
+import { ChevronRight, CircleStop, LoaderCircle, type LucideIcon } from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
+import type { ChatTurnOutcome } from "../../graphql/generated/graphql.ts"
 import { t } from "../../i18n/index.ts"
 import { clock } from "../../lib/format.ts"
+import { CopyButton } from "./CopyButton.tsx"
 import { Markdown } from "./Markdown.tsx"
 import {
   type Work,
@@ -17,28 +19,7 @@ import {
   workLabel,
 } from "./work.ts"
 
-const COPIED_MS = 1500
 const TICK_MS = 1000
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
-  useEffect(() => {
-    const timer = copied ? window.setTimeout(() => setCopied(false), COPIED_MS) : undefined
-    return () => window.clearTimeout(timer)
-  }, [copied])
-  const Icon = copied ? Check : Copy
-  return (
-    <button
-      type="button"
-      aria-label={copied ? t("chat.copied") : t("chat.copy")}
-      title={copied ? t("chat.copied") : t("chat.copy")}
-      onClick={() => void navigator.clipboard.writeText(text).then(() => setCopied(true))}
-      className="rounded-kbd p-0.5 text-faint outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-line2"
-    >
-      <Icon className="size-3.5" aria-hidden />
-    </button>
-  )
-}
 
 function Meta({ children, align }: { children: ReactNode; align: "left" | "right" }) {
   return (
@@ -74,12 +55,14 @@ export function AgentMessage({
   at,
   work,
   startedAt,
+  outcome,
   children,
 }: {
   text: string
   at: string
   work: Work[]
   startedAt?: string
+  outcome?: ChatTurnOutcome | null
   children?: ReactNode
 }) {
   return (
@@ -88,15 +71,26 @@ export function AgentMessage({
         <TurnFold
           label={
             startedAt
-              ? t("work.workedFor", {
+              ? t(outcome === "INTERRUPTED" ? "work.stoppedAfter" : "work.workedFor", {
                   d: elapsed((new Date(at).getTime() - new Date(startedAt).getTime()) / 1000),
                 })
-              : t("work.worked")
+              : t(outcome === "INTERRUPTED" ? "work.stopped" : "work.worked")
           }
           work={work}
         />
       ) : null}
       {text.trim() ? <Markdown text={text} className="text-ink" /> : null}
+      {outcome === "INTERRUPTED" || outcome === "FAILED" ? (
+        <div
+          className={clsx(
+            "mt-1.5 flex items-center gap-1.5 text-sm",
+            outcome === "FAILED" ? "text-err" : "text-muted",
+          )}
+        >
+          <CircleStop className="size-3.5 shrink-0" aria-hidden />
+          {outcome === "FAILED" ? t("chat.failed") : t("chat.interrupted")}
+        </div>
+      ) : null}
       {children}
       <Meta align="left">
         <span>sanchoris · {clock(at)}</span>

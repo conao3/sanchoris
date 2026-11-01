@@ -3,6 +3,7 @@ import { unlink } from "node:fs/promises"
 import type { Server } from "node:net"
 
 import { RunChannel } from "./channel.ts"
+import { capture, checkpointRef, diff, repositories } from "./checkpoint.ts"
 import { type Checkout, checkout } from "./checkout.ts"
 import {
   type CredentialProxy,
@@ -61,6 +62,7 @@ export class WorkspaceAgent {
   private sessionId: string | null = null
   private lastTurn = 0
   private busy = false
+  private baseline: Promise<{ dirs: string[]; ref: string }> | null = null
   private ready: Promise<void> | null = null
   private turnChain: Promise<void> = Promise.resolve()
   private execChain: Promise<void> = Promise.resolve()
@@ -268,7 +270,7 @@ export class WorkspaceAgent {
       resumed: restored !== null,
     })
     this.channel.startHeartbeat(start.heartbeatSeconds, () => this.busy)
-    if (start.instruction !== null) this.deliver(start.instruction)
+    if (start.instruction !== null) await this.deliver(start.instruction)
   }
 
   private ask(questions: UserInputQuestion[], signal: AbortSignal): Promise<UserInputAnswers> {
@@ -350,16 +352,60 @@ export class WorkspaceAgent {
       .catch((error: Error) => this.fail(error))
   }
 
-  private deliver(text: string): void {
-    this.busy = true
+  private async deliver(text: string): Promise<void> {
+    if (!this.busy) {
+      this.busy = true
+      this.baseline = this.checkpoint(checkpointRef(this.lastTurn + 1, "start"))
+    }
+    await this.baseline
     this.requireWorker().send(text)
+  }
+
+  private async checkpoint(ref: string): Promise<{ dirs: string[]; ref: string }> {
+    const dirs = await repositories(this.config.workspaceDir, this.config.env)
+    await capture(dirs, ref, this.config.env)
+    return { dirs, ref }
+  }
+
+  private async endCheckpoint(
+    started: Promise<{ dirs: string[]; ref: string }>,
+    turn: number,
+  ): Promise<{ dirs: string[]; ref: string }> {
+    const { dirs } = await started
+    const ref = checkpointRef(turn, "end")
+    await capture(dirs, ref, this.config.env)
+    return { dirs, ref }
+  }
+
+  private async sendDiff(
+    turn: number,
+    started: Promise<{ dirs: string[]; ref: string }> | null,
+    ended: Promise<{ dirs: string[]; ref: string }> | null,
+  ): Promise<void> {
+    if (!started || !ended) return
+    const from = await started
+    const to = await ended
+    const changes = await diff(from.dirs, from.ref, to.ref, this.config.env)
+    if (changes.files.length === 0) return
+    this.channel.send({
+      type: "event",
+      turn,
+      kind: "turn_diff",
+      data: { ...changes },
+      at: new Date().toISOString(),
+    })
   }
 
   private endTurn(result: WorkerTurnResult): void {
     this.lastTurn += 1
     const turn = this.lastTurn
     this.busy = false
+    const started = this.baseline
+    const ended = started ? this.endCheckpoint(started, turn) : null
+    ended?.catch(() => {})
+    this.baseline = ended
     this.turnChain = this.turnChain
+      .then(() => this.sendDiff(turn, started, ended))
       .then(() => this.saveRecord(turn))
       .then(() => {
         this.channel.send({ type: "turn_end", turn, sessionId: this.requireSessionId(), ...result })

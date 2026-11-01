@@ -1,5 +1,24 @@
+import { Children, isValidElement, type ReactNode } from "react"
 import ReactMarkdown, { type Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { CodeBlock } from "./CodeBlock.tsx"
+
+const LANGUAGE = /language-(\S+)/
+
+function fence(children: ReactNode): { code: string; language: string } | undefined {
+  const [child] = Children.toArray(children)
+  if (!isValidElement<{ className?: string; children?: ReactNode }>(child)) {
+    return undefined
+  }
+  const code = child.props.children
+  if (typeof code !== "string") {
+    return undefined
+  }
+  return {
+    code: code.replace(/\n$/, ""),
+    language: LANGUAGE.exec(child.props.className ?? "")?.[1] ?? "text",
+  }
+}
 
 const components: Components = {
   p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
@@ -22,11 +41,14 @@ const components: Components = {
   code: ({ children }) => (
     <code className="rounded-kbd bg-hover px-1 py-px font-mono text-[0.85em]">{children}</code>
   ),
-  pre: ({ children }) => (
-    <pre className="my-2 overflow-x-auto rounded-ui bg-term-bg p-3 font-mono text-xs text-term-fg [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-xs">
-      {children}
-    </pre>
-  ),
+  pre: ({ children }) => {
+    const block = fence(children)
+    return block ? (
+      <CodeBlock code={block.code} language={block.language} />
+    ) : (
+      <pre className="my-2 overflow-x-auto rounded-ui bg-sub p-3 font-mono text-xs">{children}</pre>
+    )
+  },
   table: ({ children }) => (
     <div className="my-2 overflow-x-auto">
       <table className="border-collapse text-sm">{children}</table>

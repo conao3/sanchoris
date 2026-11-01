@@ -317,6 +317,13 @@ pub enum ChatAuthorKind {
     Agent,
 }
 
+db_enum!(ChatTurnOutcome, "turn outcome", {
+    Completed => "completed",
+    /// Someone stopped the turn.
+    Interrupted => "interrupted",
+    Failed => "failed",
+});
+
 db_enum!(ActorKind, "actor kind", {
     Member => "member",
     Agent => "agent",
