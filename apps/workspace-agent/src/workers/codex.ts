@@ -25,6 +25,8 @@ import {
 } from "../worker.ts"
 import { CodexAppServerClient } from "./codex-rpc.ts"
 
+const CODEX_COMPACT_PROMPT =
+  "Summarize the conversation so far so that the work can continue from the summary alone: the goal, the decisions made, the current state of the work and its files, and the next step. Follow these instructions for the summary:"
 const SESSION_MINUTES = 5 * 60
 const WEEK_MINUTES = 7 * 24 * 60
 
@@ -164,6 +166,10 @@ export function codexApproval(method: string, params: unknown): ApprovalRequest 
     reason,
     input: { grantRoot: fields.grantRoot ?? null },
   }
+}
+
+export function codexCompactPrompt(instructions: string): string {
+  return `${CODEX_COMPACT_PROMPT}\n\n${instructions}`
 }
 
 export function codexContext(
@@ -335,7 +341,12 @@ export class CodexWorker implements Worker {
       model: this.context.model,
       approvalPolicy: CODEX_POLICIES[this.modes.runtimeMode].approvalPolicy,
       sandbox: CODEX_POLICIES[this.modes.runtimeMode].sandbox,
-      config: { "tools.update_plan.enabled": true },
+      config: {
+        "tools.update_plan.enabled": true,
+        ...(this.context.compactInstructions === null
+          ? {}
+          : { compact_prompt: codexCompactPrompt(this.context.compactInstructions) }),
+      },
       ...(this.context.systemPrompt === null
         ? {}
         : { developerInstructions: this.context.systemPrompt }),

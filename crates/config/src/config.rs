@@ -61,6 +61,8 @@ pub struct Session {
     pub workspace: Workspace,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_compact: Option<AutoCompact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_instructions: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -365,6 +367,7 @@ fn decode_session(d: &mut Decoder, v: &Value, loc: &str) -> Option<Session> {
             "UsageLimit",
             "Workspace",
             "AutoCompact",
+            "CompactInstructions",
         ],
     )?;
     let worker = d.field(m, loc, "Worker", decode_worker);
@@ -429,6 +432,8 @@ fn decode_session(d: &mut Decoder, v: &Value, loc: &str) -> Option<Session> {
             context_percent: context_percent?,
         })
     });
+    let compact_instructions =
+        d.optional(m, loc, "CompactInstructions", |d, v, loc| d.string(v, loc));
     let workspace = d.field(m, loc, "Workspace", |d, v, loc| {
         let m = d.object(v, loc, &["Compute", "Architecture", "IdleSeconds"])?;
         let compute = d.field(m, loc, "Compute", |d, v, loc| {
@@ -459,6 +464,7 @@ fn decode_session(d: &mut Decoder, v: &Value, loc: &str) -> Option<Session> {
         usage_limit: usage_limit?,
         workspace: workspace?,
         auto_compact: auto_compact?,
+        compact_instructions: compact_instructions?,
     })
 }
 

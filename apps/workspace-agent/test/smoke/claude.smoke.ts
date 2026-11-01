@@ -75,6 +75,7 @@ describe("ClaudeWorker smoke", () => {
       agent: "claude",
       model: MODEL,
       systemPrompt: null,
+      compactInstructions: null,
       skills: [],
       instruction: "Remember the code word BLUEBERRY-17. Reply with OK and nothing else.",
       attachments: [],
@@ -108,6 +109,7 @@ describe("ClaudeWorker smoke", () => {
       agent: "claude",
       model: MODEL,
       systemPrompt: null,
+      compactInstructions: null,
       skills: [],
       instruction:
         "[sanchoris] Message from Mika: What was the code word? Reply with the code word only.",

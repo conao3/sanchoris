@@ -43,8 +43,8 @@ The worker and `exec` commands run with the agent's environment, which holds non
 
 | `type` | Fields | Meaning |
 |---|---|---|
-| `start` | `agent`, `model`, `systemPrompt`, `skills`, `instruction`, `attachments`, `modes`, `resume`, `heartbeatSeconds` | Start (or restore) the agent session. Sent once per agent process, after `hello` with `started: false` |
-| `user_message` | `messageId`, `text`, `steer`, `compact`, `attachments` | A user turn: `[sanchoris]` notifications, a person's reply, "Continue where you left off.", chat messages. `attachments` lists the images a person attached (see `start` `attachments`). With `steer: true` (a chat message sent into a running turn) the worker gets it in that turn: Claude as a user message with `priority: "now"`, Codex with `turn/steer` (`expectedTurnId` = the running turn; when it fails, the message waits for the next turn). Otherwise it starts the next turn after the running one. With `compact: true` (`text` is `/compact`, `steer` is false, no attachments) the turn compacts the session instead: Claude gets `/compact` as the prompt, Codex `thread/compact/start`, and the turn ends with `turn_end` as usual |
+| `start` | `agent`, `model`, `systemPrompt`, `compactInstructions`, `skills`, `instruction`, `attachments`, `modes`, `resume`, `heartbeatSeconds` | Start (or restore) the agent session. Sent once per agent process, after `hello` with `started: false` |
+| `user_message` | `messageId`, `text`, `steer`, `compact`, `attachments` | A user turn: `[sanchoris]` notifications, a person's reply, "Continue where you left off.", chat messages. `attachments` lists the images a person attached (see `start` `attachments`). With `steer: true` (a chat message sent into a running turn) the worker gets it in that turn: Claude as a user message with `priority: "now"`, Codex with `turn/steer` (`expectedTurnId` = the running turn; when it fails, the message waits for the next turn). Otherwise it starts the next turn after the running one. With `compact: true` (`text` is `/compact` followed by the compaction instructions, if any, `steer` is false, no attachments) the turn compacts the session instead: Claude gets `text` as the prompt (Claude Code's `/compact [instructions]`), Codex `thread/compact/start` (which takes no instructions; see `start` `compactInstructions`), and the turn ends with `turn_end` as usual |
 | `session_mode` | `modes` | The modes for the messages after it (see `start` `modes`). The control plane sends one before every chat message; the agent applies it before delivering the next `user_message` |
 | `rewind` | `resume`, `restoreTurn` | Go back to an earlier point of the session between turns (the control plane sends it only when no turn runs; the agent ignores one that arrives during a turn). After downloading the record, with `restoreTurn` the agent puts every repository that has the `refs/sanchoris/turns/<restoreTurn>/start` snapshot back to it (a repository cloned by a later Workspace has none and stays as it is) (removing files added since and checking out the snapshot's files with a temporary index). It then closes the worker and starts a new one with the same settings and the current modes: from `resume` (same shape as `start` `resume`; its `lastTurn` is ignored and turns keep their numbers), or as a new session when `resume` is `null` |
 | `interrupt` | | Interrupt the current turn. The agent ignores one that arrives between turns. The turn ends with `turn_end` `result: "interrupted"` |
@@ -65,6 +65,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
 - `agent`: `"claude"` or `"codex"`.
 - `model`: the Worker model, fixed for the session.
 - `systemPrompt`: string appended to the worker's system prompt (Project `SystemPrompt`), or `null`.
+- `compactInstructions`: the Session's `CompactInstructions`, or `null`. Codex takes them as the thread config `compact_prompt`: a fixed request to summarize the conversation so that the work can continue from the summary alone, followed by the instructions (`compact_prompt` replaces Codex's own summarization prompt). Claude gets its instructions in each compact `user_message` instead.
 - `skills`: the Trigger's `Start.Skills` that have `skill.yaml`. Each has `name`, `required` (in `Start.RequiredSkills`), and `inputs` (the skill's `Inputs`: field name to `"string" | "number" | "boolean" | "array" | "object"`).
 - `instruction`: the first user turn, or `null` to wait for `user_message`.
 - `attachments`: the images attached to the first user turn, each `{ "name", "mimeType", "url" }` with `url` a presigned GET valid for 15 minutes (`[]` without an instruction). The agent downloads each into a directory of its own under the temporary directory, adds a line `[Attached image "<name>" is saved at: <path>]` to the text per image, and gives the images to the worker: Claude as `image` content blocks with base64 data before the text block, Codex as `{ "type": "image", "url": "data:<mimeType>;base64,..." }` input items after the text item.
@@ -79,6 +80,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
   "agent": "claude",
   "model": "claude-sonnet-5-5",
   "systemPrompt": "You are working on the Acme shop. Always write tests for new endpoints.",
+  "compactInstructions": "Keep the decisions, the files being edited, and the next step.",
   "skills": [{ "name": "open-pr-green-ci", "required": true, "inputs": { "Repos": "array", "Issue": "number", "MaxFixes": "number" } }],
   "instruction": "[sanchoris] Trigger labeled-issue started this task: Fix flaky checkout test (acme/shop-web#35).\nInstruction: Resolve issue 35 in acme/shop-web.\nSkills: open-pr-green-ci (required). Run it with `sanchoris skill run open-pr-green-ci`.",
   "attachments": [],
@@ -95,6 +97,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
   "agent": "claude",
   "model": "claude-sonnet-5-5",
   "systemPrompt": null,
+  "compactInstructions": null,
   "skills": [{ "name": "open-pr-green-ci", "required": true, "inputs": { "Repos": "array", "Issue": "number", "MaxFixes": "number" } }],
   "instruction": "[sanchoris] Skill open-pr-green-ci (run 1) needs you: CI failed on acme/shop-web#52 (checkout_spec::flaky).\nFix it, commit, and run `sanchoris skill continue 1`.",
   "attachments": [],

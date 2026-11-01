@@ -1294,7 +1294,7 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     assert_eq!(
         start,
         json!({
-            "type": "start", "runId": run, "agent": "claude", "model": "claude-sonnet-5-5", "systemPrompt": null,
+            "type": "start", "runId": run, "agent": "claude", "model": "claude-sonnet-5-5", "systemPrompt": null, "compactInstructions": null,
             "skills": [], "instruction": "Do the thing.", "attachments": [], "modes": { "interactionMode": "default", "runtimeMode": "full-access" }, "resume": null, "heartbeatSeconds": 60,
         })
     );

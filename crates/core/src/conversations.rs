@@ -155,8 +155,27 @@ pub const DELIVERY_STEER: &str = "steer";
 /// The message that compacts the session: the agent summarizes the conversation so far and continues from the summary.
 pub const COMPACT_COMMAND: &str = "/compact";
 
-pub fn is_compact(text: &str) -> bool {
-    text.trim().eq_ignore_ascii_case(COMPACT_COMMAND)
+/// The instructions of a `/compact` message (empty without any), or None when the message is not one.
+pub fn compact_request(text: &str) -> Option<&str> {
+    let text = text.trim();
+    let (command, rest) = text.split_at_checked(COMPACT_COMMAND.len())?;
+    (command.eq_ignore_ascii_case(COMPACT_COMMAND)
+        && rest.chars().next().is_none_or(char::is_whitespace))
+    .then(|| rest.trim())
+}
+
+/// The `/compact` the agent gets: the Session's `CompactInstructions` and then the message's own, each when given.
+pub fn compact_text(session: Option<&str>, message: &str) -> String {
+    [session.unwrap_or_default().trim(), message]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .fold(COMPACT_COMMAND.to_string(), |text, part| {
+            if text == COMPACT_COMMAND {
+                format!("{text} {part}")
+            } else {
+                format!("{text}\n\n{part}")
+            }
+        })
 }
 
 async fn task_messages(
@@ -205,4 +224,34 @@ pub async fn queued_messages(
         .into_iter()
         .filter(|message| message.delivery.as_deref() == Some(DELIVERY_QUEUED))
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_compact_message_carries_its_instructions_and_the_session_s_come_first() {
+        assert_eq!(compact_request(" /COMPACT "), Some(""));
+        assert_eq!(
+            compact_request("/compact keep the test plan\nand the branch"),
+            Some("keep the test plan\nand the branch")
+        );
+        assert_eq!(compact_request("/compaction"), None);
+        assert_eq!(compact_request("please /compact"), None);
+        assert_eq!(compact_request("/comp"), None);
+        assert_eq!(compact_text(None, ""), "/compact");
+        assert_eq!(
+            compact_text(Some("Keep decisions."), ""),
+            "/compact Keep decisions."
+        );
+        assert_eq!(
+            compact_text(None, "Keep the plan."),
+            "/compact Keep the plan."
+        );
+        assert_eq!(
+            compact_text(Some("Keep decisions."), "Keep the plan."),
+            "/compact Keep decisions.\n\nKeep the plan."
+        );
+    }
 }

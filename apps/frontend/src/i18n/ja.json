@@ -444,7 +444,7 @@
   "mode.fullAccess": "フルアクセス",
   "mode.fullAccessDetail": "コマンドと編集を確認なしで実行します。",
   "context.label": "コンテキストの使用率 {percent}",
-  "context.hint": "コンテキストのうち {max} トークン中 {used} トークンを使っています。/compact を送ると、エージェントが会話を要約し、要約から続けます。",
+  "context.hint": "コンテキストのうち {max} トークン中 {used} トークンを使っています。/compact を送ると、エージェントが会話を要約し、要約から続けます。/compact のあとに、要約に残してほしいことを書けます。",
   "context.autoCompact": "返答のあとコンテキストが {percent}% 以上埋まった状態で {minutes} 分操作がないと、自動で compact します。",
   "context.autoCompactOff": "このセッションでは自動の compact が無効です。有効にするには、config のセッションに AutoCompact (IdleMinutes, ContextPercent) を設定します。",
   "chat.autoCompacted": "会話を compact しました",

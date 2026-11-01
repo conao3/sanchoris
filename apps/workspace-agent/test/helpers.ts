@@ -91,6 +91,7 @@ export function startMessage(
     agent: "claude",
     model: "fake-model",
     systemPrompt: null,
+    compactInstructions: null,
     skills: [
       { name: "open-pr-green-ci", required: true, inputs: { Repos: "array", Issue: "number" } },
     ],

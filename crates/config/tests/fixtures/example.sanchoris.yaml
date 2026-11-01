@@ -31,6 +31,7 @@ Sessions:
     UsageLimit: { Resume: auto }
     Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }
     AutoCompact: { IdleMinutes: 55, ContextPercent: 50 }
+    CompactInstructions: Keep the decisions and the next step.
 Triggers:
   labeled-issue:
     State: ENABLED

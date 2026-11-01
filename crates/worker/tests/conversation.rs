@@ -624,7 +624,10 @@ async fn an_idle_chat_whose_context_is_full_enough_compacts_once_after_the_idle_
     world.worker.settle().await.unwrap();
     let sent = compactions(&world, run_id).await;
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0]["text"], "/compact");
+    assert_eq!(
+        sent[0]["text"],
+        "/compact Keep the decisions and the next step."
+    );
     assert_eq!(sent[0]["steer"], false);
     let last = messages(&world, conversation_id).await.pop().unwrap();
     assert_eq!(
@@ -633,7 +636,11 @@ async fn an_idle_chat_whose_context_is_full_enough_compacts_once_after_the_idle_
             last.text.as_str(),
             last.member_id
         ),
-        (AUTHOR_SANCHORIS, "/compact", None)
+        (
+            AUTHOR_SANCHORIS,
+            "/compact Keep the decisions and the next step.",
+            None
+        )
     );
     assert_eq!(world.task_of(first.task_id).await.status, "RUNNING");
     world
@@ -739,7 +746,32 @@ async fn a_member_compacts_with_slash_compact_but_not_into_a_running_turn() {
     world.worker.settle().await.unwrap();
     post(&world, conversation_id, " /COMPACT ").await;
     world.worker.settle().await.unwrap();
-    let sent = compactions(&world, run_id).await;
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0]["text"], "/compact");
+    world
+        .sequenced_event(
+            run_id,
+            3,
+            RunEventType::TurnEnd,
+            turn_end_payload(3, Value::Null),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    post(
+        &world,
+        conversation_id,
+        "/compact Keep the failing test name",
+    )
+    .await;
+    world.worker.settle().await.unwrap();
+    let sent = compactions(&world, run_id)
+        .await
+        .into_iter()
+        .map(|payload| payload["text"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sent,
+        [
+            "/compact Keep the decisions and the next step.",
+            "/compact Keep the decisions and the next step.\n\nKeep the failing test name",
+        ]
+    );
 }

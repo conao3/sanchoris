@@ -956,6 +956,7 @@ async fn start_workspace(
         "agent": task.definition["Session"]["Definition"]["Worker"]["Agent"],
         "model": task.definition["Session"]["Definition"]["Worker"]["Model"],
         "systemPrompt": start_payload["systemPrompt"],
+        "compactInstructions": task.definition["Session"]["Definition"]["CompactInstructions"],
         "skills": skills_payload(&definition, &start.required_skills)?,
         "instruction": if instructed { start_payload["instruction"].clone() } else { Value::Null },
         "attachments": if instructed {

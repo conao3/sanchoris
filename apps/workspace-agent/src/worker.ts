@@ -77,6 +77,7 @@ export interface WorkerContext {
   agent: "claude" | "codex"
   model: string
   systemPrompt: string | null
+  compactInstructions: string | null
   modes: SessionModes
   workspaceDir: string
   env: NodeJS.ProcessEnv

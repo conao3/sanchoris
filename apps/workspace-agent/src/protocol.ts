@@ -60,6 +60,7 @@ export const StartMessage = z.strictObject({
   agent: WorkerAgent,
   model: z.string().min(1),
   systemPrompt: z.string().nullable(),
+  compactInstructions: z.string().min(1).nullable(),
   skills: z.array(SkillDefinition),
   instruction: z.string().min(1).nullable(),
   attachments: z.array(Attachment),

@@ -293,6 +293,7 @@ export class WorkspaceAgent {
       agent: start.agent,
       model: start.model,
       systemPrompt: start.systemPrompt,
+      compactInstructions: start.compactInstructions,
       modes: start.modes,
       workspaceDir: this.config.workspaceDir,
       env,

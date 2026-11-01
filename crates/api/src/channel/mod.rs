@@ -954,6 +954,7 @@ impl Channel {
             "agent": payload["agent"],
             "model": payload["model"],
             "systemPrompt": payload["systemPrompt"],
+            "compactInstructions": payload["compactInstructions"],
             "skills": payload["skills"],
             "instruction": payload["instruction"],
             "attachments": self.attachment_urls(tx.tenant_id(), &payload["attachments"]).await?,

@@ -92,6 +92,7 @@ control.send({
   agent,
   model: values.model,
   systemPrompt: null,
+  compactInstructions: null,
   skills: (values.skill ?? []).map((name) => ({ name, required: true, inputs: {} })),
   instruction,
   attachments: [],

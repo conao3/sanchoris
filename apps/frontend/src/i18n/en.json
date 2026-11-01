@@ -444,7 +444,7 @@
   "mode.fullAccess": "Full access",
   "mode.fullAccessDetail": "Allow commands and edits without prompts.",
   "context.label": "Context {percent} full",
-  "context.hint": "{used} of {max} tokens of context in use. Send /compact to have the agent summarize the conversation and continue from the summary.",
+  "context.hint": "{used} of {max} tokens of context in use. Send /compact, optionally followed by what the summary should keep, to have the agent summarize the conversation and continue from the summary.",
   "context.autoCompact": "Compacts on its own when the chat stays idle for {minutes} min after a reply that leaves the context {percent}% full or more.",
   "context.autoCompactOff": "Automatic compaction is off for this session. Set AutoCompact (IdleMinutes, ContextPercent) on the session in the config to turn it on.",
   "chat.autoCompacted": "Compacted the conversation",

@@ -263,7 +263,7 @@ export class ClaudeWorker implements Worker {
     if (compact) {
       this.input.push({
         type: "user",
-        message: { role: "user", content: "/compact" },
+        message: { role: "user", content: text },
         parent_tool_use_id: null,
       })
       return

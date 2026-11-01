@@ -1,11 +1,11 @@
 use chrono::{DateTime, Utc};
-use sanchoris_config::{Limits, Start};
+use sanchoris_config::{Agent, Limits, Session, Start};
 use sanchoris_core::channel::{
     ChatInput, OutboxType, enqueue_chat_message, enqueue_outbox, enqueue_session_mode, resume_from,
     session_records,
 };
 use sanchoris_core::conversations::{
-    COMPACT_COMMAND, DELIVERY_QUEUED, DELIVERY_STEER, is_compact, latest_task, load_conversation,
+    DELIVERY_QUEUED, DELIVERY_STEER, compact_request, compact_text, latest_task, load_conversation,
     post_message, queued_messages, turn_in_progress,
 };
 use sanchoris_core::db::{self, DbError, NewTask, Recorded, Store, TenantTx, tenant_plan};
@@ -34,6 +34,12 @@ use crate::error::WorkerError;
 
 const MAX_INSTRUCTION_BYTES: usize = 96 * 1024;
 const NOTHING_TO_COMPACT: &str = "the session has not started yet; there is nothing to compact";
+
+fn session_of(task: &Task) -> Result<Session> {
+    Ok(serde_json::from_value(
+        task.definition["Session"]["Definition"].clone(),
+    )?)
+}
 
 #[derive(Debug, Error)]
 pub enum ChatError {
@@ -149,7 +155,7 @@ pub async fn post_member_message(
     conversation_id: Uuid,
     message: &MemberMessage<'_>,
 ) -> Result<Delivered> {
-    if is_compact(message.text) && !message.attachments.is_empty() {
+    if compact_request(message.text).is_some() && !message.attachments.is_empty() {
         return Err(rejected("/compact takes no attachments"));
     }
     let mut conversation = load_conversation(tx, conversation_id).await?;
@@ -220,8 +226,8 @@ async fn deliver(
     message: &MemberMessage<'_>,
     steer: bool,
 ) -> Result<Uuid> {
-    let compact = is_compact(message.text);
-    if compact && steer {
+    let compact = compact_request(message.text);
+    if compact.is_some() && steer {
         return Err(rejected(
             "compaction waits for the turn to end; send /compact without steering",
         ));
@@ -230,16 +236,24 @@ async fn deliver(
         .await?
         .filter(|task| !task.status.is_terminal())
     else {
-        if compact {
+        if compact.is_some() {
             return Err(rejected(NOTHING_TO_COMPACT));
         }
         return start_task(tx, conversation, message).await;
     };
-    let text = if compact {
-        COMPACT_COMMAND.to_string()
-    } else {
-        messages::reply_message(message.member_name, message.text)
+    let text = match compact {
+        Some(instructions) => {
+            let session = session_of(&task)?;
+            if !instructions.is_empty() && session.worker.agent == Agent::Codex {
+                return Err(rejected(
+                    "Codex compacts with the session's CompactInstructions only; send /compact without instructions",
+                ));
+            }
+            compact_text(session.compact_instructions.as_deref(), instructions)
+        }
+        None => messages::reply_message(message.member_name, message.text),
     };
+    let compact = compact.is_some();
     let dedupe = format!("chat:{}", message.id);
     if task.status == TaskStatus::Pending && task.runs == 0 {
         if compact {
@@ -697,16 +711,17 @@ pub async fn auto_compact(
         .iter()
         .rev()
         .find(|message| message.author_kind != AUTHOR_AGENT)
-        .is_some_and(|message| is_compact(&message.text));
+        .is_some_and(|message| compact_request(&message.text).is_some());
     if compacted {
         return Ok(false);
     }
     let id = Uuid::new_v5(&reply, b"auto-compact");
+    let text = compact_text(session_of(&task)?.compact_instructions.as_deref(), "");
     send_chat_to_task(
         tx,
         task.id,
         run_id,
-        chat_input(COMPACT_COMMAND, false, true, &[]),
+        chat_input(&text, false, true, &[]),
         &format!("chat:{id}"),
         at,
     )
@@ -725,7 +740,7 @@ pub async fn auto_compact(
             attachments: Vec::new(),
             author_kind: AUTHOR_SANCHORIS.to_string(),
             member_id: None,
-            text: COMPACT_COMMAND.to_string(),
+            text,
             created_at: at,
         },
     )
