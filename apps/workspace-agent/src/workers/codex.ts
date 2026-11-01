@@ -257,6 +257,7 @@ export class CodexWorker implements Worker {
   private lastUsage: CodexTokenUsage | null = null
   private rateLimits: CodexRateLimitSnapshot | null = null
   private pending: AbortController | null = null
+  private exited: Promise<void> = Promise.resolve()
   private readonly streamed = new Map<string, string>()
   private modes: SessionModes
 
@@ -288,6 +289,7 @@ export class CodexWorker implements Worker {
       for (const line of data.split("\n"))
         if (line !== "") this.context.handlers.onEvent("log", { line })
     })
+    this.exited = new Promise((resolve) => child.once("exit", () => resolve()))
     child.on("exit", (code, signal) => {
       const error = new Error(
         `Codex app-server exited (code ${String(code)}, signal ${String(signal)})`,
@@ -382,6 +384,7 @@ export class CodexWorker implements Worker {
   async close(): Promise<void> {
     this.closing = true
     this.child?.kill("SIGTERM")
+    await this.exited
   }
 
   private async answer(params: unknown): Promise<unknown> {

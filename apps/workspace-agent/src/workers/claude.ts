@@ -187,6 +187,7 @@ export class ClaudeWorker implements Worker {
   private closing = false
   private rejectedRateLimit: SDKRateLimitInfo | null = null
   private streaming: { kind: "text" | "thinking"; text: string } | null = null
+  private consumed: Promise<void> = Promise.resolve()
   private modes: SessionModes
 
   constructor(context: WorkerContext) {
@@ -229,7 +230,7 @@ export class ClaudeWorker implements Worker {
         },
       },
     })
-    void this.consume(this.session)
+    this.consumed = this.consume(this.session)
     return { sessionId }
   }
 
@@ -288,6 +289,7 @@ export class ClaudeWorker implements Worker {
     this.closing = true
     this.input.end()
     this.session?.close()
+    await this.consumed
   }
 
   private async canUseTool(
