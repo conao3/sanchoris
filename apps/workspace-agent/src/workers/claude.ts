@@ -28,6 +28,7 @@ import {
   type RestoredRecord,
   type Worker,
   type WorkerContext,
+  type WorkerMessage,
   type WorkerRateLimit,
   type WorkerRecord,
   type WorkerTurnResult,
@@ -232,10 +233,23 @@ export class ClaudeWorker implements Worker {
     return { sessionId }
   }
 
-  send(text: string, steer: boolean): void {
+  send({ text, steer, images }: WorkerMessage): void {
     this.input.push({
       type: "user",
-      message: { role: "user", content: text },
+      message: {
+        role: "user",
+        content: [
+          ...images.map((image) => ({
+            type: "image" as const,
+            source: {
+              type: "base64" as const,
+              media_type: image.mimeType as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
+              data: image.data,
+            },
+          })),
+          { type: "text" as const, text },
+        ],
+      },
       parent_tool_use_id: null,
       ...(steer ? { priority: "now" as const } : {}),
     })

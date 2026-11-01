@@ -17,6 +17,7 @@ import {
   type Worker,
   type WorkerContext,
   type WorkerFactory,
+  type WorkerMessage,
   type WorkerRecord,
 } from "../worker.ts"
 
@@ -76,7 +77,7 @@ class FakeWorker implements Worker {
     return { sessionId }
   }
 
-  send(text: string): void {
+  send({ text }: WorkerMessage): void {
     this.chain = this.chain
       .then(() => this.turn(text))
       .catch((error: Error) => this.context.handlers.onFatal(error))

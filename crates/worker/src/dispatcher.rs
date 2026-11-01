@@ -585,6 +585,7 @@ async fn start(
         "systemPrompt": system_prompt,
         "repositories": repositories,
         "modes": SessionModes::DEFAULT,
+        "attachments": [],
     }));
     tx.put(&task)?;
     Ok(TriggerEventOutcome::Started)

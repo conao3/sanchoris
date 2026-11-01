@@ -43,6 +43,9 @@ use uuid::Uuid;
 use crate::account::{
     Credential, Invitation, Member, Plan, Viewer, key_matches_provider, mask_key,
 };
+use crate::attachment::{
+    ChatAttachment, IMAGE_TYPES, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, attachment_name,
+};
 use crate::audit::{AuditEvent, AuditFilter};
 use crate::config::{ChangeRequest, Config, Session, ValidationError};
 use crate::context::{
@@ -119,6 +122,20 @@ pub(crate) struct SendChatMessageInput {
     runtime_mode: ChatRuntimeMode,
     /// What happens when the agent is working on a turn: QUEUE holds the message until the turn ends, STEER puts it into the turn. Otherwise the message goes to the agent at once.
     delivery: ChatDelivery,
+    /// Images uploaded with uploadChatAttachment, at most 10.
+    #[graphql(name = "attachmentIds")]
+    attachment_ids: Vec<ID>,
+}
+
+#[derive(InputObject)]
+pub(crate) struct UploadChatAttachmentInput {
+    #[graphql(name = "tenantId")]
+    tenant_id: ID,
+    name: String,
+    /// image/png, image/jpeg, image/gif or image/webp.
+    mime_type: String,
+    /// The file, base64-encoded; at most 4 MiB decoded.
+    data: String,
 }
 
 #[derive(SimpleObject, InputObject)]
@@ -1372,6 +1389,61 @@ impl MutationRoot {
         Conversation::load(ctx, scope, conversation_id).await
     }
 
+    /// Stores an image to attach to a chat message; send its id in sendChatMessage.attachmentIds.
+    async fn upload_chat_attachment(
+        &self,
+        ctx: &Context<'_>,
+        input: UploadChatAttachmentInput,
+    ) -> Result<ChatAttachment> {
+        let scope = tenant_scope(ctx, &input.tenant_id).await?;
+        let (member_id, _) = scope.member()?;
+        if !IMAGE_TYPES.contains(&input.mime_type.as_str()) {
+            return Err(bad_input(format!(
+                "{} is not an image type the agent reads (PNG, JPEG, GIF, WebP)",
+                input.mime_type
+            )));
+        }
+        let name = attachment_name(&input.name)?;
+        let bytes = STANDARD
+            .decode(input.data.as_bytes())
+            .map_err(|_| bad_input("the attachment data is not base64"))?;
+        if bytes.is_empty() || bytes.len() > MAX_ATTACHMENT_BYTES {
+            return Err(bad_input("an attachment is at most 4 MiB"));
+        }
+        let id = Uuid::new_v4();
+        let size_bytes = i64::try_from(bytes.len()).expect("the size fits in i64");
+        state(ctx)
+            .deps
+            .attachments
+            .store(
+                scope.tenant_id,
+                &keys::attachment_object(scope.tenant_id, id, &name),
+                bytes,
+            )
+            .await
+            .map_err(port)?;
+        let item = items::Attachment {
+            tenant_id: scope.tenant_id,
+            id,
+            name,
+            mime_type: input.mime_type,
+            size_bytes,
+            uploaded_by_member_id: member_id,
+            created_at: now(ctx),
+        };
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            tx.insert(&item)?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
+        Ok(ChatAttachment {
+            tenant_id: scope.tenant_id,
+            item: item.chat(),
+        })
+    }
+
     /// Sends a chat message. With conversationId, the message goes to that conversation: to its running session, to the start of its pending task, as the reply of a task that needs you, or into a new task when the last one finished.
     /// Without conversationId, a new conversation starts in the session sessionName.
     async fn send_chat_message(
@@ -1385,6 +1457,16 @@ impl MutationRoot {
         if text.is_empty() {
             return Err(bad_input("the message is empty"));
         }
+        if input.attachment_ids.len() > MAX_ATTACHMENTS {
+            return Err(bad_input(format!(
+                "a message takes at most {MAX_ATTACHMENTS} attachments"
+            )));
+        }
+        let attachment_ids = input
+            .attachment_ids
+            .iter()
+            .map(parse_id)
+            .collect::<Result<Vec<_>>>()?;
         let existing = input.conversation_id.as_ref().map(parse_id).transpose()?;
         let new_in = match existing {
             Some(conversation_id) => {
@@ -1398,6 +1480,18 @@ impl MutationRoot {
         let delivered = write(|| async {
             let mut tx = tx(ctx, scope.tenant_id);
             let member_name = member_name(ctx, &mut tx, member_id).await?;
+            let mut attachments = Vec::with_capacity(attachment_ids.len());
+            for attachment_id in &attachment_ids {
+                attachments.push(
+                    tx.get::<items::Attachment>(&keys::attachment_key(
+                        scope.tenant_id,
+                        *attachment_id,
+                    ))
+                    .await?
+                    .ok_or_else(|| not_found(format!("attachment {attachment_id}")))?
+                    .chat(),
+                );
+            }
             let message = MemberMessage {
                 id: message_id,
                 member_id,
@@ -1411,6 +1505,7 @@ impl MutationRoot {
                     ChatDelivery::Queue => Delivery::Queue,
                     ChatDelivery::Steer => Delivery::Steer,
                 },
+                attachments: &attachments,
                 at: now(ctx),
             };
             let (delivered, action, summary) = match (existing, &new_in) {

@@ -41,6 +41,7 @@ async fn start(world: &World, session: &str, text: &str) -> Delivered {
                 text,
                 modes: SessionModes::DEFAULT,
                 delivery: Delivery::Queue,
+                attachments: &[],
                 at,
             },
         )
@@ -78,6 +79,7 @@ async fn post_as(
                 text,
                 modes: SessionModes::DEFAULT,
                 delivery,
+                attachments: &[],
                 at,
             },
         )
@@ -224,6 +226,7 @@ async fn an_unknown_session_is_rejected() {
             text: "hello",
             modes: SessionModes::DEFAULT,
             delivery: Delivery::Queue,
+            attachments: &[],
             at: world.clock_now(),
         },
     )
@@ -252,7 +255,9 @@ async fn messages_go_to_the_running_task_and_a_finished_task_starts_the_next() {
     assert_eq!(steered.message.delivery.as_deref(), Some("steer"));
     assert_eq!(
         world.outbox(run_id, "user_message").await,
-        vec![json!({ "text": "[sanchoris] Message from Mika:\nSkip the docs", "steer": true })]
+        vec![
+            json!({ "text": "[sanchoris] Message from Mika:\nSkip the docs", "steer": true, "attachments": [] })
+        ]
     );
     let mut busy = turn_end_payload(1, Value::Null);
     busy["busy"] = json!(true);

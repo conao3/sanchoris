@@ -86,6 +86,12 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
         authorKind
         text
         delivery
+        attachments {
+          id
+          name
+          mimeType
+          url
+        }
         outcome
         proposedPlan
         at
@@ -220,6 +226,15 @@ fragment ChatApprovalFields on ChatApproval {
   reason
   decision
   askedAt
+}
+
+mutation UploadChatAttachment($input: UploadChatAttachmentInput!) {
+  uploadChatAttachment(input: $input) {
+    id
+    name
+    mimeType
+    sizeBytes
+  }
 }
 
 mutation SteerChatMessage($tenantId: ID!, $conversationId: ID!, $messageId: ID!) {

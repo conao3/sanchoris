@@ -100,6 +100,13 @@ pub trait ConfigRepositoryPort: Send + Sync {
     ) -> Result<i32, PortError>;
 }
 
+/// Stores chat attachments under a key of the tenant and hands out short-lived links to them.
+#[async_trait]
+pub trait AttachmentPort: Send + Sync {
+    async fn store(&self, tenant_id: Uuid, key: &str, bytes: Vec<u8>) -> Result<(), PortError>;
+    async fn url(&self, tenant_id: Uuid, key: &str) -> Result<String, PortError>;
+}
+
 #[async_trait]
 pub trait AuditExportPort: Send + Sync {
     async fn publish(
@@ -142,6 +149,7 @@ pub struct GraphqlDeps {
     pub config_sync: Arc<dyn ConfigSyncTrigger>,
     pub config_repository: Arc<dyn ConfigRepositoryPort>,
     pub audit_export: Arc<dyn AuditExportPort>,
+    pub attachments: Arc<dyn AttachmentPort>,
     pub encryptor: Arc<dyn Encryptor>,
     pub clock: Arc<dyn Clock>,
 }

@@ -424,7 +424,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .ok(
             owner,
             "SendChatMessage",
-            json!({ "input": { "tenantId": tenant, "sessionName": "shop", "text": "Which issues are open?", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" } }),
+            json!({ "input": { "tenantId": tenant, "sessionName": "shop", "text": "Which issues are open?", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] } }),
         )
         .await;
     let conversation_id = sent["sendChatMessage"]["conversation"]["id"]
@@ -443,7 +443,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     w.ok(
         owner,
         "SendChatMessage",
-        json!({ "input": { "tenantId": tenant, "conversationId": conversation_id, "text": "Only the labeled ones.", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" } }),
+        json!({ "input": { "tenantId": tenant, "conversationId": conversation_id, "text": "Only the labeled ones.", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] } }),
     )
     .await;
     let tasks = w
@@ -468,6 +468,14 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         )
         .await;
     assert!(chat.to_string().contains("Which issues are open?"));
+    let uploaded = w
+        .ok(
+            owner,
+            "UploadChatAttachment",
+            json!({ "input": { "tenantId": tenant, "name": "shot.png", "mimeType": "image/png", "data": "iVBORw0KGgo=" } }),
+        )
+        .await;
+    assert_eq!(uploaded["uploadChatAttachment"]["sizeBytes"], 8);
     let live = w
         .ok(
             owner,
@@ -650,7 +658,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         w.ok(
             owner,
             "SendChatMessage",
-            json!({ "input": { "tenantId": tenant, "conversationId": conversation_id, "text": text, "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" } }),
+            json!({ "input": { "tenantId": tenant, "conversationId": conversation_id, "text": text, "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] } }),
         )
         .await;
     }

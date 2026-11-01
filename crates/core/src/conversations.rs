@@ -72,6 +72,7 @@ pub async fn post_agent_message(
             turn: turn.map(|(turn, _)| turn),
             outcome: turn.map(|(_, outcome)| outcome.to_string()),
             delivery: None,
+            attachments: Vec::new(),
             author_kind: AUTHOR_AGENT.to_string(),
             member_id: None,
             text: text.to_string(),

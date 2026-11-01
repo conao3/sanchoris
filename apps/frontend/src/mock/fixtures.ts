@@ -1492,6 +1492,7 @@ function buildAcme(viewerRole: string): Obj {
     outcome: authorKind === "AGENT" ? "COMPLETED" : null,
     proposedPlan: null,
     delivery: null,
+    attachments: [],
   })
   const work = (minutes: number, kind: string, fields: Obj): Obj => ({
     kind,

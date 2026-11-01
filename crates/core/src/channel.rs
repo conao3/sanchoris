@@ -5,7 +5,8 @@ use uuid::Uuid;
 use crate::db::{DbError, REF_RUN, Recorded, Store, TenantTx, locate};
 use crate::github::{GithubEventError, normalize_github_event};
 use crate::items::{
-    Guard, InboundEvent, Integration, OutboxItem, Pending, RunChannel, RunEventItem, uniq,
+    ChatAttachment, Guard, InboundEvent, Integration, OutboxItem, Pending, RunChannel,
+    RunEventItem, uniq,
 };
 use crate::jobs::Job;
 use crate::keys;
@@ -131,18 +132,26 @@ pub async fn enqueue_outbox(
     Ok(true)
 }
 
+/// A chat message on its way to the agent.
+#[derive(Debug, Clone, Copy)]
+pub struct ChatInput<'a> {
+    pub text: &'a str,
+    /// Put it into the turn the agent works on.
+    pub steer: bool,
+    pub attachments: &'a [ChatAttachment],
+}
+
 pub async fn enqueue_chat_message(
     tx: &mut TenantTx,
     run_id: Uuid,
-    text: &str,
-    steer: bool,
+    input: ChatInput<'_>,
     dedupe_key: &str,
 ) -> Result<bool, DbError> {
     enqueue_outbox(
         tx,
         run_id,
         OutboxType::UserMessage,
-        &json!({ "text": text, "steer": steer }),
+        &json!({ "text": input.text, "steer": input.steer, "attachments": input.attachments }),
         dedupe_key,
     )
     .await

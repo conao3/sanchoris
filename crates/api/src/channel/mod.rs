@@ -11,8 +11,8 @@ use sanchoris_core::channel::{
 };
 use sanchoris_core::db::{DbError, Store, TenantTx, tenant_plan};
 use sanchoris_core::items::{
-    BootstrapRedemption, ChannelInstance, OutboxItem, RunApproval, RunChannel, RunEventItem,
-    RunLogEntry, RunPartial, RunQuestion, Workspace,
+    BootstrapRedemption, ChannelInstance, ChatAttachment, OutboxItem, RunApproval, RunChannel,
+    RunEventItem, RunLogEntry, RunPartial, RunQuestion, Workspace,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
@@ -987,10 +987,36 @@ impl Channel {
             "systemPrompt": payload["systemPrompt"],
             "skills": payload["skills"],
             "instruction": payload["instruction"],
+            "attachments": self.attachment_urls(tx.tenant_id(), &payload["attachments"]).await?,
             "modes": payload["modes"],
             "resume": resume,
             "heartbeatSeconds": payload["heartbeatSeconds"],
         }))
+    }
+
+    async fn attachment_urls(
+        &self,
+        tenant_id: Uuid,
+        attachments: &Value,
+    ) -> Result<Value, ChannelError> {
+        let attachments: Vec<ChatAttachment> = match attachments {
+            Value::Null => Vec::new(),
+            value => serde_json::from_value(value.clone())
+                .map_err(|error| ChannelError::Internal(format!("attachments: {error}")))?,
+        };
+        let mut urls = Vec::with_capacity(attachments.len());
+        for attachment in attachments {
+            let key = keys::attachment_object(tenant_id, attachment.id, &attachment.name);
+            let url = self
+                .records
+                .presign_get(tenant_id, &key)
+                .await
+                .map_err(|error| ChannelError::Internal(error.to_string()))?;
+            urls.push(
+                json!({ "name": attachment.name, "mimeType": attachment.mime_type, "url": url }),
+            );
+        }
+        Ok(Value::Array(urls))
     }
 
     fn command(run_id: Uuid, row: &OutboxRow) -> Result<Value, ChannelError> {
@@ -1082,7 +1108,13 @@ impl Channel {
             if row.kind == "start" || (row.kind == "interrupt" && row.seq < after) {
                 continue;
             }
-            plan.messages.push(Self::command(run_id, row)?);
+            let mut message = Self::command(run_id, row)?;
+            if row.kind == "user_message" {
+                message["attachments"] = self
+                    .attachment_urls(tx.tenant_id(), &row.payload["attachments"])
+                    .await?;
+            }
+            plan.messages.push(message);
             plan.delivered.push(row.seq);
         }
         Ok(Some(plan))

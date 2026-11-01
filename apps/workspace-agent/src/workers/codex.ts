@@ -17,6 +17,7 @@ import {
   type RestoredRecord,
   type Worker,
   type WorkerContext,
+  type WorkerMessage,
   type WorkerRateLimit,
   type WorkerRecord,
   type WorkerTurnResult,
@@ -163,6 +164,16 @@ export function codexApproval(method: string, params: unknown): ApprovalRequest 
   }
 }
 
+export function codexInput({ text, images }: WorkerMessage): unknown[] {
+  return [
+    { type: "text", text, text_elements: [] },
+    ...images.map((image) => ({
+      type: "image",
+      url: `data:${image.mimeType};base64,${image.data}`,
+    })),
+  ]
+}
+
 function mcpResultText(result: CodexItem["result"]): string {
   return (result?.content ?? [])
     .map((block) => {
@@ -240,7 +251,7 @@ export class CodexWorker implements Worker {
   private activeTurnId: string | null = null
   private readonly completedTurnIds = new Set<string>()
   private turnStarting = false
-  private readonly queued: string[] = []
+  private readonly queued: unknown[][] = []
   private closing = false
   private lastText = ""
   private lastUsage: CodexTokenUsage | null = null
@@ -331,22 +342,23 @@ export class CodexWorker implements Worker {
     this.modes = modes
   }
 
-  send(text: string, steer: boolean): void {
-    if (steer && this.client && this.threadId && this.activeTurnId) {
+  send(message: WorkerMessage): void {
+    const input = codexInput(message)
+    if (message.steer && this.client && this.threadId && this.activeTurnId) {
       this.client
         .request("turn/steer", {
           threadId: this.threadId,
           expectedTurnId: this.activeTurnId,
-          input: [{ type: "text", text, text_elements: [] }],
+          input,
         })
         .catch((error: Error) => {
           this.context.handlers.onEvent("log", { line: `turn/steer failed: ${error.message}` })
-          this.queued.push(text)
+          this.queued.push(input)
           this.startNextTurn()
         })
       return
     }
-    this.queued.push(text)
+    this.queued.push(input)
     this.startNextTurn()
   }
 
@@ -390,15 +402,15 @@ export class CodexWorker implements Worker {
 
   private startNextTurn(): void {
     if (this.activeTurnId || this.turnStarting || !this.client || !this.threadId) return
-    const text = this.queued.shift()
-    if (text === undefined) return
+    const input = this.queued.shift()
+    if (input === undefined) return
     this.turnStarting = true
     this.lastText = ""
     this.lastUsage = null
     this.client
       .request("turn/start", {
         threadId: this.threadId,
-        input: [{ type: "text", text, text_elements: [] }],
+        input,
         approvalPolicy: CODEX_POLICIES[this.modes.runtimeMode].approvalPolicy,
         sandboxPolicy: CODEX_POLICIES[this.modes.runtimeMode].sandboxPolicy,
         model: this.context.model,

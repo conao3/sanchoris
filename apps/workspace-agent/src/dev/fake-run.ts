@@ -58,6 +58,7 @@ const control = await FakeControl.listen({
         messageId: `skill-${id}`,
         text: `[sanchoris] Skill ${request.name} (run ${id}) SUCCEEDED: {}`,
         steer: false,
+        attachments: [],
       })
     }, notifyAfterMs)
     return { ok: true, result: { RunId: id, Status: "RUNNING" } }
@@ -92,6 +93,7 @@ control.send({
   systemPrompt: null,
   skills: (values.skill ?? []).map((name) => ({ name, required: true, inputs: {} })),
   instruction,
+  attachments: [],
   modes: { interactionMode: "default", runtimeMode: "full-access" },
   resume: null,
   heartbeatSeconds: 30,

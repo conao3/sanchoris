@@ -208,6 +208,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "m-1",
       text: `[sanchoris] Skill open-pr-green-ci (run 1) SUCCEEDED: {"PullRequests":["acme/shop-web#52"]} pushed with ghs_${"x".repeat(36)}`,
       steer: false,
+      attachments: [],
     })
     const secondEnd = await control.waitFor("turn_end", (message) => message.turn === 2)
     expect(secondEnd.summary).toBe("Task finished.")
@@ -234,14 +235,32 @@ describe("workspace agent with a fake worker", () => {
     await control.waitFor("hello")
     control.send(startMessage())
     await control.waitFor("ready")
-    control.send({ type: "user_message", messageId: "m-1", text: "first", steer: false })
+    control.send({
+      type: "user_message",
+      messageId: "m-1",
+      text: "first",
+      steer: false,
+      attachments: [],
+    })
     await control.waitFor("turn_end", (message) => message.turn === 1)
-    control.send({ type: "user_message", messageId: "m-2", text: "long", steer: false })
+    control.send({
+      type: "user_message",
+      messageId: "m-2",
+      text: "long",
+      steer: false,
+      attachments: [],
+    })
     await control.waitFor("heartbeat", (message) => message.busy)
     void agent.stop("SIGTERM")
     const stopping = await control.waitFor("stopping")
     expect(stopping.signal).toBe("SIGTERM")
-    control.send({ type: "user_message", messageId: "m-3", text: "after", steer: false })
+    control.send({
+      type: "user_message",
+      messageId: "m-3",
+      text: "after",
+      steer: false,
+      attachments: [],
+    })
     const interrupted = await control.waitFor("turn_end", (message) => message.turn === 2)
     expect(interrupted.result).toBe("interrupted")
     const record = await control.waitFor("session_record", (message) => message.turn === 2)
@@ -280,7 +299,13 @@ describe("workspace agent with a fake worker", () => {
     await control.waitFor("hello")
     control.send(startMessage())
     await control.waitFor("ready")
-    control.send({ type: "user_message", messageId: "m-1", text: "label it", steer: false })
+    control.send({
+      type: "user_message",
+      messageId: "m-1",
+      text: "label it",
+      steer: false,
+      attachments: [],
+    })
     const request = await control.waitFor("user_input_request")
     expect(request.turn).toBe(1)
     expect(request.questions[0]?.options).toEqual([{ label: "bug", description: "Bugs only" }])
@@ -304,7 +329,13 @@ describe("workspace agent with a fake worker", () => {
     await control.waitFor("hello")
     control.send(startMessage())
     await control.waitFor("ready")
-    control.send({ type: "user_message", messageId: "m-1", text: "go", steer: false })
+    control.send({
+      type: "user_message",
+      messageId: "m-1",
+      text: "go",
+      steer: false,
+      attachments: [],
+    })
     const request = await control.waitFor("user_input_request")
     control.send({ type: "interrupt" })
     const end = await control.waitFor("turn_end")
@@ -336,7 +367,13 @@ describe("workspace agent with a fake worker", () => {
       type: "session_mode",
       modes: { interactionMode: "plan", runtimeMode: "approval-required" },
     })
-    control.send({ type: "user_message", messageId: "m-1", text: "clean", steer: false })
+    control.send({
+      type: "user_message",
+      messageId: "m-1",
+      text: "clean",
+      steer: false,
+      attachments: [],
+    })
     const request = await control.waitFor("approval_request")
     expect(request.turn).toBe(1)
     expect(request.detail).toBe("rm -rf build")
@@ -358,7 +395,13 @@ describe("workspace agent with a fake worker", () => {
     await control.waitFor("hello")
     control.send(startMessage())
     await control.waitFor("ready")
-    control.send({ type: "user_message", messageId: "m-1", text: "hi", steer: false })
+    control.send({
+      type: "user_message",
+      messageId: "m-1",
+      text: "hi",
+      steer: false,
+      attachments: [],
+    })
     const partial = await control.waitFor("partial")
     expect(partial).toMatchObject({ turn: 1, kind: "text", text: "Hello" })
     await control.waitFor("turn_end")
@@ -371,9 +414,27 @@ describe("workspace agent with a fake worker", () => {
     await control.waitFor("hello")
     control.send(startMessage())
     await control.waitFor("ready")
-    control.send({ type: "user_message", messageId: "same", text: "first", steer: false })
-    control.send({ type: "user_message", messageId: "same", text: "first", steer: false })
-    control.send({ type: "user_message", messageId: "other", text: "second", steer: false })
+    control.send({
+      type: "user_message",
+      messageId: "same",
+      text: "first",
+      steer: false,
+      attachments: [],
+    })
+    control.send({
+      type: "user_message",
+      messageId: "same",
+      text: "first",
+      steer: false,
+      attachments: [],
+    })
+    control.send({
+      type: "user_message",
+      messageId: "other",
+      text: "second",
+      steer: false,
+      attachments: [],
+    })
     const second = await control.waitFor("turn_end", (message) => message.turn === 2)
     expect(second.summary).toBe("echo second")
     control.send({ type: "shutdown", reason: "done" })
@@ -440,6 +501,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "after-reconnect",
       text: "still there?",
       steer: false,
+      attachments: [],
     })
     const end = await control.waitFor("turn_end")
     expect(end.summary).toBe("echo still there?")

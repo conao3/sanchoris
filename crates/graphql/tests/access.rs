@@ -79,11 +79,11 @@ fn foreign_mutations(victim: &Victim, own_tenant: Uuid) -> Vec<(&'static str, Va
         ("StopRun", json!({ "runId": victim.run })),
         (
             "SendChatMessage",
-            json!({ "input": { "tenantId": victim.tenant, "sessionName": "all", "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" } }),
+            json!({ "input": { "tenantId": victim.tenant, "sessionName": "all", "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] } }),
         ),
         (
             "SendChatMessage",
-            json!({ "input": { "tenantId": own_tenant, "conversationId": victim.conversation, "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" } }),
+            json!({ "input": { "tenantId": own_tenant, "conversationId": victim.conversation, "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] } }),
         ),
         (
             "SetTriggerState",

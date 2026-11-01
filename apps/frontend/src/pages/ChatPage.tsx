@@ -1,8 +1,16 @@
 import { useApolloClient } from "@apollo/client/react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
-import { CircleDot, Plus, Square } from "lucide-react"
+import clsx from "clsx"
+import { CircleDot, ImagePlus, Plus, Square, X } from "lucide-react"
 import { type KeyboardEvent, useEffect, useRef, useState } from "react"
 import { Button } from "../components/Button.tsx"
+import {
+  IMAGE_TYPES,
+  MAX_ATTACHMENTS,
+  type Draft,
+  attachmentData,
+  imageFiles,
+} from "../components/chat/attachments.ts"
 import { ChangedFiles } from "../components/chat/ChangedFiles.tsx"
 import { ApprovalComposer } from "../components/chat/ApprovalComposer.tsx"
 import { DEFAULT_MODES, ModeControls, type Modes } from "../components/chat/ModeControls.tsx"
@@ -35,6 +43,7 @@ import {
   type ChatQuery,
   RemoveQueuedChatMessageDocument,
   SteerChatMessageDocument,
+  UploadChatAttachmentDocument,
   AnswerChatApprovalDocument,
   AnswerChatQuestionDocument,
   ChatDocument,
@@ -74,37 +83,136 @@ function sessionSkills(session: ChatSession): string {
 }
 
 function Composer({
+  tenantId,
   reason,
   modes,
   onModesChange,
   onSend,
   onStop,
 }: {
+  tenantId: string
   reason?: string
   modes: Modes
   onModesChange: (modes: Modes) => void
-  onSend: (text: string, delivery: ChatDelivery) => Promise<boolean>
+  onSend: (text: string, delivery: ChatDelivery, attachmentIds: string[]) => Promise<boolean>
   onStop?: () => void
 }) {
   const [text, setText] = useState("")
+  const [drafts, setDrafts] = useState<Draft[]>([])
+  const [dragging, setDragging] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [attachError, setAttachError] = useState<string>()
+  const picker = useRef<HTMLInputElement>(null)
+  const [upload] = useAction(UploadChatAttachmentDocument)
+  const busy = reason ?? (sending ? t("chat.uploading") : undefined)
+
+  function attach(files: Iterable<File>) {
+    const images = imageFiles(files)
+    if (images.length === 0) {
+      return
+    }
+    if (drafts.length + images.length > MAX_ATTACHMENTS) {
+      setAttachError(t("chat.tooManyAttachments", { n: MAX_ATTACHMENTS }))
+      return
+    }
+    setAttachError(undefined)
+    setDrafts([
+      ...drafts,
+      ...images.map((file) => ({
+        key: `${file.name}-${file.size}-${file.lastModified}-${Math.random()}`,
+        file,
+        preview: URL.createObjectURL(file),
+      })),
+    ])
+  }
+
+  function detach(key: string) {
+    const draft = drafts.find((item) => item.key === key)
+    if (draft) {
+      URL.revokeObjectURL(draft.preview)
+    }
+    setDrafts(drafts.filter((item) => item.key !== key))
+  }
+
+  async function submit(delivery: ChatDelivery) {
+    setSending(true)
+    try {
+      const ids: string[] = []
+      for (const draft of drafts) {
+        const { file, data } = await attachmentData(draft.file)
+        const uploaded = await upload({
+          input: { tenantId, name: file.name, mimeType: file.type, data },
+        })
+        if (!uploaded) {
+          return
+        }
+        ids.push(uploaded.uploadChatAttachment.id)
+      }
+      if (await onSend(text.trim(), delivery, ids)) {
+        setText("")
+        for (const draft of drafts) {
+          URL.revokeObjectURL(draft.preview)
+        }
+        setDrafts([])
+      }
+    } catch (error) {
+      setAttachError((error as Error).message)
+    } finally {
+      setSending(false)
+    }
+  }
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()
-      if (text.trim() && !reason) {
-        void onSend(text.trim(), event.metaKey || event.ctrlKey ? "STEER" : "QUEUE").then(
-          (sent) => {
-            if (sent) {
-              setText("")
-            }
-          },
-        )
+      if (text.trim() && !busy) {
+        void submit(event.metaKey || event.ctrlKey ? "STEER" : "QUEUE")
       }
     }
   }
 
   return (
-    <div className="mt-3.5 rounded-ui border border-line2">
+    <div
+      className={clsx(
+        "mt-3.5 rounded-ui border",
+        dragging ? "border-ink ring-2 ring-line2" : "border-line2",
+      )}
+      onDragOver={(event) => {
+        if (!reason && event.dataTransfer.types.includes("Files")) {
+          event.preventDefault()
+          setDragging(true)
+        }
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(event) => {
+        setDragging(false)
+        if (!reason && event.dataTransfer.files.length > 0) {
+          event.preventDefault()
+          attach(event.dataTransfer.files)
+        }
+      }}
+    >
+      {drafts.length > 0 ? (
+        <div className="flex flex-wrap gap-2 px-2.5 pt-2">
+          {drafts.map((draft) => (
+            <div
+              key={draft.key}
+              className="relative size-14 overflow-hidden rounded-ui border border-line"
+            >
+              <img src={draft.preview} alt={draft.file.name} className="size-full object-cover" />
+              <button
+                type="button"
+                aria-label={t("chat.removeAttachment", { name: draft.file.name })}
+                title={t("chat.removeAttachment", { name: draft.file.name })}
+                onClick={() => detach(draft.key)}
+                className="absolute top-0.5 right-0.5 rounded-full bg-ink/70 p-0.5 text-white outline-none hover:bg-ink focus-visible:ring-2 focus-visible:ring-line2"
+              >
+                <X className="size-3" aria-hidden />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="flex px-2.5 pt-2">
         <Reason reason={reason} className="flex min-w-0 flex-1">
           <textarea
@@ -113,6 +221,13 @@ function Composer({
             disabled={!!reason}
             onChange={(event) => setText(event.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={(event) => {
+              const files = imageFiles(event.clipboardData.files)
+              if (files.length > 0) {
+                event.preventDefault()
+                attach(files)
+              }
+            }}
             placeholder={t("chat.placeholder")}
             aria-label={t("chat.placeholder")}
             className="min-h-5 flex-1 resize-none bg-transparent outline-none placeholder:text-faint"
@@ -120,7 +235,32 @@ function Composer({
         </Reason>
       </div>
       <div className="flex items-center justify-between gap-3 px-2 pt-1 pb-1.5">
-        {reason ? <span /> : <ModeControls modes={modes} onChange={onModesChange} />}
+        {reason ? (
+          <span />
+        ) : (
+          <span className="flex items-center gap-1.5">
+            <input
+              ref={picker}
+              type="file"
+              accept={IMAGE_TYPES.join(",")}
+              multiple
+              hidden
+              onChange={(event) => {
+                attach(event.target.files ?? [])
+                event.target.value = ""
+              }}
+            />
+            <Button
+              small
+              icon={ImagePlus}
+              reason={sending ? t("chat.uploading") : undefined}
+              onPress={() => picker.current?.click()}
+            >
+              {t("chat.attach")}
+            </Button>
+            <ModeControls modes={modes} onChange={onModesChange} />
+          </span>
+        )}
         {onStop ? (
           <span className="flex items-center gap-2">
             <Kbd>{t("chat.enterQueue")}</Kbd>
@@ -132,6 +272,7 @@ function Composer({
           <Kbd>{t("chat.enterSend")}</Kbd>
         )}
       </div>
+      {attachError ? <p className="px-2.5 pb-1.5 text-xs text-err">{attachError}</p> : null}
     </div>
   )
 }
@@ -185,9 +326,21 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
   const starter = conversation.createdBy?.user.name
   const finished = task ? !isActive(task.status) : false
 
-  function sendText(text: string, using: Modes, delivery: ChatDelivery) {
+  function sendText(
+    text: string,
+    using: Modes,
+    delivery: ChatDelivery,
+    attachmentIds: string[] = [],
+  ) {
     return send({
-      input: { tenantId: tenant.id, conversationId: conversation.id, text, delivery, ...using },
+      input: {
+        tenantId: tenant.id,
+        conversationId: conversation.id,
+        text,
+        delivery,
+        attachmentIds,
+        ...using,
+      },
     }).then(Boolean)
   }
 
@@ -229,6 +382,7 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
                 text={message.text}
                 at={message.at}
                 steered={message.delivery === "STEERED"}
+                images={message.attachments}
               />
             )
           }
@@ -352,6 +506,7 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
         />
       ) : (
         <Composer
+          tenantId={tenant.id}
           reason={conversation.kind === "SLACK" ? t("reason.slackThread") : undefined}
           modes={modes}
           onModesChange={setModes}
@@ -360,7 +515,7 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
               ? () => void interrupt({ tenantId: tenant.id, conversationId: conversation.id })
               : undefined
           }
-          onSend={(text, delivery) => sendText(text, modes, delivery)}
+          onSend={(text, delivery, attachmentIds) => sendText(text, modes, delivery, attachmentIds)}
         />
       )}
       <ActionError
@@ -444,6 +599,7 @@ function NewChat({
       ) : null}
       {session ? <Dim className="mt-2.5">{sessionSkills(session)}</Dim> : null}
       <Composer
+        tenantId={tenant.id}
         reason={
           !hasConfig || tenant.sessions.length === 0
             ? t("reason.noSession")
@@ -453,7 +609,7 @@ function NewChat({
         }
         modes={modes}
         onModesChange={setModes}
-        onSend={(text) =>
+        onSend={(text, _delivery, attachmentIds) =>
           send({
             input: {
               tenantId: tenant.id,
@@ -462,6 +618,7 @@ function NewChat({
               text,
               ...modes,
               delivery: "QUEUE",
+              attachmentIds,
             },
           }).then((result) => {
             const conversation = result?.sendChatMessage.conversation

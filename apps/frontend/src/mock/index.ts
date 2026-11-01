@@ -144,8 +144,11 @@ function respond(conversation: Obj, stamp: string, input: Obj) {
     diff: null,
     proposedPlan: PROPOSED_PLAN,
     delivery: null,
+    attachments: [],
   })
 }
+
+const uploads = new Map<string, Obj>()
 
 function createResolvers() {
   const fixtures = buildFixtures()
@@ -402,6 +405,7 @@ function createResolvers() {
           diff: null,
           proposedPlan: null,
           delivery: null,
+          attachments: [],
           work: [
             ...working.work,
             {
@@ -418,6 +422,18 @@ function createResolvers() {
         conversation.working = null
         conversation.updatedAt = stamp
         return conversation
+      },
+      uploadChatAttachment: (_: unknown, { input }: Obj) => {
+        const id = nextId("att")
+        const attachment = {
+          id,
+          name: input.name,
+          mimeType: input.mimeType,
+          sizeBytes: Math.round((input.data.length * 3) / 4),
+          url: `data:${input.mimeType};base64,${input.data}`,
+        }
+        uploads.set(id, attachment)
+        return attachment
       },
       steerChatMessage: (_: unknown, { tenantId, conversationId, messageId }: Obj) => {
         const conversation = tenantById(tenantId).conversationList.find(
@@ -483,6 +499,7 @@ function createResolvers() {
           diff: null,
           proposedPlan: null,
           delivery: null,
+          attachments: [],
         })
         conversation.working = null
         conversation.updatedAt = stamp
@@ -506,6 +523,7 @@ function createResolvers() {
           diff: null,
           proposedPlan: null,
           delivery: null,
+          attachments: [],
           work: conversation.working.work,
         })
         conversation.working = null
@@ -522,6 +540,7 @@ function createResolvers() {
           at: stamp,
           issues: [],
           work: [],
+          attachments: (input.attachmentIds ?? []).map((id: string) => uploads.get(id)),
           outcome: null,
           diff: null,
           proposedPlan: null,

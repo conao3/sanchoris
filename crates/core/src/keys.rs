@@ -85,6 +85,15 @@ pub fn credential_key(tenant_id: Uuid, credential_id: Uuid) -> Key {
     Key::main(tenant_pk(tenant_id), format!("CRED#{credential_id}"))
 }
 
+pub fn attachment_key(tenant_id: Uuid, attachment_id: Uuid) -> Key {
+    Key::main(tenant_pk(tenant_id), format!("ATT#{attachment_id}"))
+}
+
+/// The object key of an attachment in the records bucket.
+pub fn attachment_object(tenant_id: Uuid, attachment_id: Uuid, name: &str) -> String {
+    format!("t/{tenant_id}/attachments/{attachment_id}/{name}")
+}
+
 pub fn credential_name_key(tenant_id: Uuid, name: &str) -> Key {
     Key::main(tenant_pk(tenant_id), format!("CREDNAME#{name}"))
 }

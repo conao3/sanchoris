@@ -30,10 +30,10 @@ use sanchoris_core::store::{Relay, relayed_from_item};
 use sanchoris_core::tenants::{NewTenant, PendingSession, create_tenant, free_tenant_key};
 use sanchoris_core::testing::TestDynamo;
 use sanchoris_graphql::{
-    AesGcmEncryptor, AuditExportPort, AuthUser, CheckoutPort, Clock, ConfigCheck, ConfigLocation,
-    ConfigProblem, ConfigRepositoryPort, ConfigSyncTrigger, GithubConnectUrl, GithubRedirect,
-    GraphqlDeps, PlanChange, PortError, SanchorisSchema, SlackConnectUrl, TenantCheckout,
-    TriggerProposal, build_schema,
+    AesGcmEncryptor, AttachmentPort, AuditExportPort, AuthUser, CheckoutPort, Clock, ConfigCheck,
+    ConfigLocation, ConfigProblem, ConfigRepositoryPort, ConfigSyncTrigger, GithubConnectUrl,
+    GithubRedirect, GraphqlDeps, PlanChange, PortError, SanchorisSchema, SlackConnectUrl,
+    TenantCheckout, TriggerProposal, build_schema,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -174,6 +174,7 @@ pub struct Recorder {
     pub syncs: Mutex<Vec<Uuid>>,
     pub proposals: Mutex<Vec<TriggerProposal>>,
     pub exports: Mutex<Vec<(String, Vec<u8>)>>,
+    pub attachments: Mutex<Vec<(String, Vec<u8>)>>,
     pub checks: Mutex<Vec<ConfigLocation>>,
     pub problems: Mutex<Vec<ConfigProblem>>,
     pub plan_change: Mutex<Option<PlanChange>>,
@@ -332,6 +333,22 @@ impl ConfigRepositoryPort for Fakes {
             .unwrap()
             .push(proposal.clone());
         Ok(42)
+    }
+}
+
+#[async_trait]
+impl AttachmentPort for Fakes {
+    async fn store(&self, _tenant_id: Uuid, key: &str, bytes: Vec<u8>) -> Result<(), PortError> {
+        self.recorder
+            .attachments
+            .lock()
+            .unwrap()
+            .push((key.to_string(), bytes));
+        Ok(())
+    }
+
+    async fn url(&self, _tenant_id: Uuid, key: &str) -> Result<String, PortError> {
+        Ok(format!("https://records.example/{key}"))
     }
 }
 
@@ -1488,6 +1505,7 @@ impl World {
                 turn: member.is_none().then_some(1),
                 outcome: member.is_none().then(|| "completed".into()),
                 delivery: None,
+                attachments: Vec::new(),
                 author_kind: author.into(),
                 member_id: member,
                 text: text.into(),
@@ -1605,6 +1623,7 @@ impl World {
                 config_sync: fakes.clone(),
                 config_repository: fakes.clone(),
                 audit_export: fakes.clone(),
+                attachments: fakes.clone(),
                 encryptor: encryptor.clone(),
                 clock: clock.clone(),
             },

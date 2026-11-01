@@ -206,6 +206,17 @@ enum ChatApprovalKind {
 	TOOL
 }
 
+type ChatAttachment {
+	id: ID!
+	name: String!
+	mimeType: String!
+	sizeBytes: Int!
+	"""
+	A link to the file that works for 15 minutes.
+	"""
+	url: String!
+}
+
 enum ChatAuthorKind {
 	MEMBER
 	AGENT
@@ -266,6 +277,10 @@ type ChatMessage {
 	authorKind: ChatAuthorKind!
 	member: Member
 	text: String!
+	"""
+	Images the member attached.
+	"""
+	attachments: [ChatAttachment!]!
 	"""
 	For members' messages: QUEUED while it waits for the agent's turn to end, STEERED when it went into a running turn.
 	"""
@@ -881,6 +896,10 @@ type Mutation {
 	"""
 	interruptChat(tenantId: ID!, conversationId: ID!): Conversation!
 	"""
+	Stores an image to attach to a chat message; send its id in sendChatMessage.attachmentIds.
+	"""
+	uploadChatAttachment(input: UploadChatAttachmentInput!): ChatAttachment!
+	"""
 	Sends a chat message. With conversationId, the message goes to that conversation: to its running session, to the start of its pending task, as the reply of a task that needs you, or into a new task when the last one finished.
 	Without conversationId, a new conversation starts in the session sessionName.
 	"""
@@ -1207,6 +1226,10 @@ input SendChatMessageInput {
 	What happens when the agent is working on a turn: QUEUE holds the message until the turn ends, STEER puts it into the turn. Otherwise the message goes to the agent at once.
 	"""
 	delivery: ChatDelivery!
+	"""
+	Images uploaded with uploadChatAttachment, at most 10.
+	"""
+	attachmentIds: [ID!]!
 }
 
 type SendChatMessagePayload {
@@ -1725,6 +1748,19 @@ type TriggerTemplate {
 	id: ID!
 	name: String!
 	description: String!
+}
+
+input UploadChatAttachmentInput {
+	tenantId: ID!
+	name: String!
+	"""
+	image/png, image/jpeg, image/gif or image/webp.
+	"""
+	mimeType: String!
+	"""
+	The file, base64-encoded; at most 4 MiB decoded.
+	"""
+	data: String!
 }
 
 enum UsageLimitResume {

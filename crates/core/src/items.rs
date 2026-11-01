@@ -2695,6 +2695,69 @@ impl Entity for RunQuestion {
     }
 }
 
+/// A file a member attached to a chat message, as the message stores it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAttachment {
+    pub id: Uuid,
+    pub name: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+}
+
+/// An uploaded attachment; its bytes are in the records bucket at `keys::attachment_object`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attachment {
+    pub tenant_id: Uuid,
+    pub id: Uuid,
+    pub name: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub uploaded_by_member_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+impl Attachment {
+    pub fn chat(&self) -> ChatAttachment {
+        ChatAttachment {
+            id: self.id,
+            name: self.name.clone(),
+            mime_type: self.mime_type.clone(),
+            size_bytes: self.size_bytes,
+        }
+    }
+}
+
+impl Entity for Attachment {
+    const KIND: &'static str = "attachment";
+
+    fn key(&self) -> Key {
+        keys::attachment_key(self.tenant_id, self.id)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .uuid("id", self.id)
+            .s("name", &self.name)
+            .s("mime_type", &self.mime_type)
+            .n("size_bytes", self.size_bytes)
+            .uuid("uploaded_by_member_id", self.uploaded_by_member_id)
+            .time("created_at", self.created_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            id: r.uuid("id")?,
+            name: r.s("name")?,
+            mime_type: r.s("mime_type")?,
+            size_bytes: r.n("size_bytes")?,
+            uploaded_by_member_id: r.uuid("uploaded_by_member_id")?,
+            created_at: r.time("created_at")?,
+        })
+    }
+}
+
 /// The text the agent is writing, replaced as it grows; one per run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunPartial {
@@ -2993,6 +3056,7 @@ pub struct ChatMessage {
     pub turn: Option<i64>,
     pub outcome: Option<String>,
     pub delivery: Option<String>,
+    pub attachments: Vec<ChatAttachment>,
     pub author_kind: String,
     pub member_id: Option<Uuid>,
     pub text: String,
@@ -3020,6 +3084,14 @@ impl Entity for ChatMessage {
             .opt_n("turn", self.turn)
             .opt_s("outcome", self.outcome.as_deref())
             .opt_s("delivery", self.delivery.as_deref())
+            .opt_json(
+                "attachments",
+                (!self.attachments.is_empty())
+                    .then(|| {
+                        serde_json::to_value(&self.attachments).expect("attachments serialize")
+                    })
+                    .as_ref(),
+            )
             .s("author_kind", &self.author_kind)
             .opt_uuid("member_id", self.member_id)
             .s("text", &self.text)
@@ -3036,6 +3108,12 @@ impl Entity for ChatMessage {
             turn: r.opt_n("turn")?,
             outcome: r.opt_s("outcome")?,
             delivery: r.opt_s("delivery")?,
+            attachments: r
+                .opt_json("attachments")?
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| DbError::Decode(format!("chat message attachments: {e}")))?
+                .unwrap_or_default(),
             author_kind: r.s("author_kind")?,
             member_id: r.opt_uuid("member_id")?,
             text: r.s("text")?,

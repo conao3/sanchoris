@@ -18,7 +18,8 @@ use crate::auth::CurrentUser;
 use crate::config::{AllowedSources, ApiConfig};
 use crate::github_oauth::GitHubLinks;
 use crate::ports::{
-    GitHubConfigRepository, InlineConfigSync, RecordsAuditExport, SlackUnavailable,
+    GitHubConfigRepository, InlineConfigSync, RecordsAttachments, RecordsAuditExport,
+    SlackUnavailable,
 };
 use crate::records::RecordStore;
 use crate::stripe::StripeCheckout;
@@ -47,7 +48,8 @@ pub fn deps(ports: GraphqlPorts) -> GraphqlDeps {
             ports.worker.clone(),
             ports.github_app,
         )),
-        audit_export: Arc::new(RecordsAuditExport::new(ports.records)),
+        audit_export: Arc::new(RecordsAuditExport::new(ports.records.clone())),
+        attachments: Arc::new(RecordsAttachments::new(ports.records)),
         encryptor,
         clock: Arc::new(SystemClock),
     }

@@ -895,6 +895,14 @@ async fn start_workspace(
         "systemPrompt": start_payload["systemPrompt"],
         "skills": skills_payload(&definition, &start.required_skills)?,
         "instruction": if instructed { start_payload["instruction"].clone() } else { Value::Null },
+        "attachments": if instructed {
+            start_payload
+                .get("attachments")
+                .cloned()
+                .ok_or_else(|| invalid("the task's start payload has no attachments"))?
+        } else {
+            json!([])
+        },
         "modes": start_payload
             .get("modes")
             .cloned()

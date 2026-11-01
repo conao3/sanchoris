@@ -47,6 +47,13 @@ export const SessionModes = z.strictObject({
 })
 export type SessionModes = z.infer<typeof SessionModes>
 
+export const Attachment = z.strictObject({
+  name: z.string().min(1),
+  mimeType: z.string().min(1),
+  url: z.url(),
+})
+export type Attachment = z.infer<typeof Attachment>
+
 export const StartMessage = z.strictObject({
   type: z.literal("start"),
   runId: RunId,
@@ -55,6 +62,7 @@ export const StartMessage = z.strictObject({
   systemPrompt: z.string().nullable(),
   skills: z.array(SkillDefinition),
   instruction: z.string().min(1).nullable(),
+  attachments: z.array(Attachment),
   modes: SessionModes,
   resume: ResumeRecord.nullable(),
   heartbeatSeconds: z.number().int().positive(),
@@ -67,6 +75,7 @@ export const UserMessage = z.strictObject({
   messageId: z.string().min(1),
   text: z.string().min(1),
   steer: z.boolean(),
+  attachments: z.array(Attachment),
 })
 export type UserMessage = z.infer<typeof UserMessage>
 

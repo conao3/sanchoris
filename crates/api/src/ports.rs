@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use sanchoris_config::{CONFIG_FILE, ConfigFiles, parse_repository, validate};
 use sanchoris_graphql::{
-    AuditExportPort, ConfigCheck, ConfigLocation, ConfigProblem, ConfigRepositoryPort,
-    ConfigSyncTrigger, PortError, SlackConnectUrl, TriggerProposal,
+    AttachmentPort, AuditExportPort, ConfigCheck, ConfigLocation, ConfigProblem,
+    ConfigRepositoryPort, ConfigSyncTrigger, PortError, SlackConnectUrl, TriggerProposal,
 };
 use sanchoris_worker::config_sync::resolve_repository;
 use sanchoris_worker::error::WorkerError;
@@ -162,6 +162,33 @@ impl AuditExportPort for RecordsAuditExport {
             .map_err(port_error)?;
         self.records
             .presign_get(tenant_id, &key)
+            .await
+            .map_err(port_error)
+    }
+}
+
+pub struct RecordsAttachments {
+    records: Arc<dyn RecordStore>,
+}
+
+impl RecordsAttachments {
+    pub fn new(records: Arc<dyn RecordStore>) -> Self {
+        Self { records }
+    }
+}
+
+#[async_trait]
+impl AttachmentPort for RecordsAttachments {
+    async fn store(&self, tenant_id: Uuid, key: &str, bytes: Vec<u8>) -> Result<(), PortError> {
+        self.records
+            .put(tenant_id, key, bytes)
+            .await
+            .map_err(port_error)
+    }
+
+    async fn url(&self, tenant_id: Uuid, key: &str) -> Result<String, PortError> {
+        self.records
+            .presign_get(tenant_id, key)
             .await
             .map_err(port_error)
     }

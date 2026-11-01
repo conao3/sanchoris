@@ -1,4 +1,5 @@
 mod account;
+mod attachment;
 mod audit;
 mod chat_work;
 mod config;
@@ -23,8 +24,8 @@ pub use context::{AuthUser, ClientIp};
 pub use crypto::{AesGcmEncryptor, LOCAL_KEY_ID};
 pub use mutation::MutationRoot;
 pub use ports::{
-    AuditExportPort, CheckoutPort, Clock, ConfigCheck, ConfigLocation, ConfigProblem,
-    ConfigRepositoryPort, ConfigSyncTrigger, Encrypted, Encryptor, GithubConnectUrl,
+    AttachmentPort, AuditExportPort, CheckoutPort, Clock, ConfigCheck, ConfigLocation,
+    ConfigProblem, ConfigRepositoryPort, ConfigSyncTrigger, Encrypted, Encryptor, GithubConnectUrl,
     GithubRedirect, GraphqlDeps, PlanChange, PortError, SlackConnectUrl, SystemClock,
     TenantCheckout, TriggerProposal,
 };

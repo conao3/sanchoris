@@ -118,7 +118,7 @@ async fn owners_delete_a_tenant_by_typing_its_slug_and_its_work_stops() {
         ("SyncConfig", json!({ "configId": w.config_id })),
         (
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" } }),
+            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] } }),
         ),
         (
             "InviteMember",
@@ -289,11 +289,38 @@ async fn task_and_run_mutations_reach_the_agent_session() {
 async fn chat_messages_start_conversations_and_continue_them() {
     let w = World::new().await;
 
+    let uploaded = w
+        .ok(
+            &w.ken,
+            "UploadChatAttachment",
+            json!({ "input": { "tenantId": w.acme, "name": "my screen.png", "mimeType": "image/png", "data": "iVBORw0KGgo=" } }),
+        )
+        .await;
+    let attachment = &uploaded["uploadChatAttachment"];
+    assert_eq!(attachment["name"], "my_screen.png");
+    assert_eq!(attachment["sizeBytes"], 8);
+    assert_eq!(
+        w.recorder.attachments.lock().unwrap()[0].0,
+        format!(
+            "t/{}/attachments/{}/my_screen.png",
+            w.acme,
+            attachment["id"].as_str().unwrap()
+        )
+    );
+    assert_eq!(
+        w.error_code(
+            &w.ken,
+            "UploadChatAttachment",
+            json!({ "input": { "tenantId": w.acme, "name": "a.pdf", "mimeType": "application/pdf", "data": "JVBERg==" } }),
+        )
+        .await,
+        "BAD_USER_INPUT"
+    );
     let started = w
         .ok(
             &w.ken,
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "Add a dark mode", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" } }),
+            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "Add a dark mode", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [attachment["id"].clone()] } }),
         )
         .await;
     let payload = &started["sendChatMessage"];
@@ -305,6 +332,16 @@ async fn chat_messages_start_conversations_and_continue_them() {
     let task_id: Uuid = payload["task"]["id"].as_str().unwrap().parse().unwrap();
     assert_ne!(task_id, w.chat_task);
     assert_eq!(payload["message"]["text"], "Add a dark mode");
+    let first = w
+        .ok(
+            &w.ken,
+            "Chat",
+            json!({ "tenant": "acme", "conversation": conversation_id, "withConversation": true }),
+        )
+        .await;
+    let image = &first["tenant"]["conversation"]["messages"][0]["attachments"][0];
+    assert_eq!(image["name"], "my_screen.png");
+    assert!(image["url"].as_str().unwrap().ends_with("/my_screen.png"));
     let task = w.task(w.acme, task_id).await;
     assert_eq!(task.requested_by_member_id, w.ken.member_id);
     assert_eq!(
@@ -339,7 +376,7 @@ async fn chat_messages_start_conversations_and_continue_them() {
         .ok(
             &w.mika,
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "Any update?", "interactionMode": "PLAN", "runtimeMode": "APPROVAL_REQUIRED", "delivery": "QUEUE" } }),
+            json!({ "input": { "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "Any update?", "interactionMode": "PLAN", "runtimeMode": "APPROVAL_REQUIRED", "delivery": "QUEUE", "attachmentIds": [] } }),
         )
         .await;
     assert_eq!(
@@ -387,7 +424,7 @@ async fn chat_messages_start_conversations_and_continue_them() {
         .ok(
             &w.mika,
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "Next step", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" } }),
+            json!({ "input": { "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "Next step", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] } }),
         )
         .await;
     let next_id: Uuid = next["sendChatMessage"]["task"]["id"]
@@ -402,19 +439,19 @@ async fn chat_messages_start_conversations_and_continue_them() {
 
     for (input, code) in [
         (
-            json!({ "tenantId": w.acme, "sessionName": "nope", "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" }),
+            json!({ "tenantId": w.acme, "sessionName": "nope", "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] }),
             "BAD_USER_INPUT",
         ),
         (
-            json!({ "tenantId": w.acme, "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" }),
+            json!({ "tenantId": w.acme, "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] }),
             "BAD_USER_INPUT",
         ),
         (
-            json!({ "tenantId": w.acme, "conversationId": Uuid::new_v4(), "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" }),
+            json!({ "tenantId": w.acme, "conversationId": Uuid::new_v4(), "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] }),
             "NOT_FOUND",
         ),
         (
-            json!({ "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "  ", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" }),
+            json!({ "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "  ", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] }),
             "BAD_USER_INPUT",
         ),
     ] {
@@ -1638,7 +1675,7 @@ async fn chat_messages_and_resumes_over_the_receive_limit_are_rate_limited() {
         .run(
             &w.ken,
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "Flood", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE" } }),
+            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "Flood", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] } }),
         )
         .await;
     let extensions = response.errors[0].extensions.as_ref().unwrap();

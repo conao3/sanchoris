@@ -174,6 +174,7 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
         interactionMode: conversation.interactionMode,
         runtimeMode: conversation.runtimeMode,
         delivery: "QUEUE",
+        attachmentIds: [],
       },
     }).then((done) => {
       if (!done) {

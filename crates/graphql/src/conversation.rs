@@ -15,6 +15,7 @@ use sanchoris_core::tasks::runs_of;
 use uuid::Uuid;
 
 use crate::account::Member;
+use crate::attachment::ChatAttachment;
 use crate::chat_work::{ChatDiff, ChatPartial, ChatWork, ChatWorkKind, ChatWorking, RunWork};
 use crate::config::Session;
 use crate::context::{Scope, tx};
@@ -327,6 +328,18 @@ impl ChatMessage {
 
     async fn text(&self) -> &str {
         &self.row.text
+    }
+
+    /// Images the member attached.
+    async fn attachments(&self) -> Vec<ChatAttachment> {
+        self.row
+            .attachments
+            .iter()
+            .map(|item| ChatAttachment {
+                tenant_id: self.scope.tenant_id,
+                item: item.clone(),
+            })
+            .collect()
     }
 
     /// For members' messages: QUEUED while it waits for the agent's turn to end, STEERED when it went into a running turn.

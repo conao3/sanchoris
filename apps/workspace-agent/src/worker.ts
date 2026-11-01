@@ -50,11 +50,24 @@ export interface RestoredRecord {
 
 export interface Worker {
   start(restore: RestoredRecord | null): Promise<{ sessionId: string }>
-  send(text: string, steer: boolean): void
+  send(message: WorkerMessage): void
   setModes(modes: SessionModes): Promise<void>
   interrupt(): Promise<void>
   readRecord(): Promise<WorkerRecord>
   close(): Promise<void>
+}
+
+export interface WorkerImage {
+  name: string
+  mimeType: string
+  path: string
+  data: string
+}
+
+export interface WorkerMessage {
+  text: string
+  steer: boolean
+  images: WorkerImage[]
 }
 
 export interface WorkerContext {

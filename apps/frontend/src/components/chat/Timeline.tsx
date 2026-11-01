@@ -46,11 +46,13 @@ export function MemberMessage({
   text,
   at,
   steered,
+  images = [],
 }: {
   name: string
   text: string
   at: string
   steered?: boolean
+  images?: { id: string; name: string; url: string }[]
 }) {
   return (
     <div className="group flex flex-col items-end">
@@ -62,6 +64,26 @@ export function MemberMessage({
           <CornerDownLeft className="size-3" aria-hidden />
           {t("chat.steered")}
         </span>
+      ) : null}
+      {images.length > 0 ? (
+        <div className="mb-1 flex max-w-[80%] flex-wrap justify-end gap-1.5">
+          {images.map((image) => (
+            <a
+              key={image.id}
+              href={image.url}
+              target="_blank"
+              rel="noreferrer"
+              title={t("chat.openImage", { name: image.name })}
+              className="block overflow-hidden rounded-ui border border-line"
+            >
+              <img
+                src={image.url}
+                alt={image.name}
+                className="max-h-52 w-full max-w-[210px] object-cover"
+              />
+            </a>
+          ))}
+        </div>
       ) : null}
       <div className="max-w-[80%] rounded-bubble bg-hover px-3.5 py-2 break-words whitespace-pre-wrap text-ink">
         {text}

@@ -43,8 +43,8 @@ The worker and `exec` commands run with the agent's environment, which holds non
 
 | `type` | Fields | Meaning |
 |---|---|---|
-| `start` | `agent`, `model`, `systemPrompt`, `skills`, `instruction`, `modes`, `resume`, `heartbeatSeconds` | Start (or restore) the agent session. Sent once per agent process, after `hello` with `started: false` |
-| `user_message` | `messageId`, `text`, `steer` | A user turn: `[sanchoris]` notifications, a person's reply, "Continue where you left off.", chat messages. With `steer: true` (a chat message sent into a running turn) the worker gets it in that turn: Claude as a user message with `priority: "now"`, Codex with `turn/steer` (`expectedTurnId` = the running turn; when it fails, the message waits for the next turn). Otherwise it starts the next turn after the running one |
+| `start` | `agent`, `model`, `systemPrompt`, `skills`, `instruction`, `attachments`, `modes`, `resume`, `heartbeatSeconds` | Start (or restore) the agent session. Sent once per agent process, after `hello` with `started: false` |
+| `user_message` | `messageId`, `text`, `steer`, `attachments` | A user turn: `[sanchoris]` notifications, a person's reply, "Continue where you left off.", chat messages. `attachments` lists the images a person attached (see `start` `attachments`). With `steer: true` (a chat message sent into a running turn) the worker gets it in that turn: Claude as a user message with `priority: "now"`, Codex with `turn/steer` (`expectedTurnId` = the running turn; when it fails, the message waits for the next turn). Otherwise it starts the next turn after the running one |
 | `session_mode` | `modes` | The modes for the messages after it (see `start` `modes`). The control plane sends one before every chat message; the agent applies it before delivering the next `user_message` |
 | `interrupt` | | Interrupt the current turn. The turn ends with `turn_end` `result: "interrupted"` |
 | `user_input_response` | `requestId`, `answers` | The answers to `user_input_request`: question `id` to the answer strings (the picked option labels, or a person's own words). The agent drops an answer to a question that is no longer open (the turn was interrupted, or the agent restarted) |
@@ -66,6 +66,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
 - `systemPrompt`: string appended to the worker's system prompt (Project `SystemPrompt`), or `null`.
 - `skills`: the Trigger's `Start.Skills` that have `skill.yaml`. Each has `name`, `required` (in `Start.RequiredSkills`), and `inputs` (the skill's `Inputs`: field name to `"string" | "number" | "boolean" | "array" | "object"`).
 - `instruction`: the first user turn, or `null` to wait for `user_message`.
+- `attachments`: the images attached to the first user turn, each `{ "name", "mimeType", "url" }` with `url` a presigned GET valid for 15 minutes (`[]` without an instruction). The agent downloads each into a directory of its own under the temporary directory, adds a line `[Attached image "<name>" is saved at: <path>]` to the text per image, and gives the images to the worker: Claude as `image` content blocks with base64 data before the text block, Codex as `{ "type": "image", "url": "data:<mimeType>;base64,..." }` input items after the text item.
 - `modes`: `interactionMode` (`"default"`, or `"plan"` to have the worker plan without changing files and propose the plan) and `runtimeMode` (`"full-access"` runs every tool without asking, `"auto-accept-edits"` asks before commands and other tools but not file edits, `"approval-required"` asks before commands and file changes). Claude maps them to `permissionMode` (`plan`, `bypassPermissions`, `acceptEdits`, `default`) and calls `setPermissionMode` when they change. Codex sends them with every `turn/start`: `collaborationMode.mode`, and `approvalPolicy` with `sandboxPolicy` (`never` with `dangerFullAccess`, `on-request` with `workspaceWrite`, `untrusted` with `readOnly`). In plan mode with full access, Claude's tools that would need approval are denied.
 - `resume`: `null` for a new session, or the last saved record: `sessionId`, `url` (presigned GET), `relativePath` and `sha256` (from the `session_record` being restored), `lastTurn` (the `turn` of that record; new turns continue from `lastTurn + 1`).
 - `heartbeatSeconds`: interval of `heartbeat`. The control plane sends a third of the Session's `Limits.HeartbeatSeconds`, capped at a third of 900 s (the `HeartbeatSeconds` of the built-in HandOff states) and at least 30 s, so one late heartbeat trips neither the Task's heartbeat limit nor a waiting HandOff's `States.HeartbeatTimeout`.
@@ -79,6 +80,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
   "systemPrompt": "You are working on the Acme shop. Always write tests for new endpoints.",
   "skills": [{ "name": "open-pr-green-ci", "required": true, "inputs": { "Repos": "array", "Issue": "number", "MaxFixes": "number" } }],
   "instruction": "[sanchoris] Trigger labeled-issue started this task: Fix flaky checkout test (acme/shop-web#35).\nInstruction: Resolve issue 35 in acme/shop-web.\nSkills: open-pr-green-ci (required). Run it with `sanchoris skill run open-pr-green-ci`.",
+  "attachments": [],
   "modes": { "interactionMode": "default", "runtimeMode": "full-access" },
   "resume": null,
   "heartbeatSeconds": 60
@@ -94,6 +96,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
   "systemPrompt": null,
   "skills": [{ "name": "open-pr-green-ci", "required": true, "inputs": { "Repos": "array", "Issue": "number", "MaxFixes": "number" } }],
   "instruction": "[sanchoris] Skill open-pr-green-ci (run 1) needs you: CI failed on acme/shop-web#52 (checkout_spec::flaky).\nFix it, commit, and run `sanchoris skill continue 1`.",
+  "attachments": [],
   "modes": { "interactionMode": "default", "runtimeMode": "full-access" },
   "resume": {
     "sessionId": "5f0c6a8e-2d55-4c43-9a51-0a7b8f3d2e10",
@@ -107,7 +110,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
 ```
 
 ```json
-{ "type": "user_message", "runId": "42", "messageId": "skill-1-succeeded", "text": "[sanchoris] Skill open-pr-green-ci (run 1) SUCCEEDED: {\"PullRequests\":[\"acme/shop-web#52\"]}", "steer": false }
+{ "type": "user_message", "runId": "42", "messageId": "skill-1-succeeded", "text": "[sanchoris] Skill open-pr-green-ci (run 1) SUCCEEDED: {\"PullRequests\":[\"acme/shop-web#52\"]}", "steer": false, "attachments": [] }
 ```
 
 ```json

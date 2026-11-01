@@ -1284,7 +1284,7 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
         start,
         json!({
             "type": "start", "runId": run, "agent": "claude", "model": "claude-sonnet-5-5", "systemPrompt": null,
-            "skills": [], "instruction": "Do the thing.", "modes": { "interactionMode": "default", "runtimeMode": "full-access" }, "resume": null, "heartbeatSeconds": 60,
+            "skills": [], "instruction": "Do the thing.", "attachments": [], "modes": { "interactionMode": "default", "runtimeMode": "full-access" }, "resume": null, "heartbeatSeconds": 60,
         })
     );
     let message = receive(&mut socket).await;

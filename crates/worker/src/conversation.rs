@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use sanchoris_config::{Limits, Start};
-use sanchoris_core::channel::enqueue_session_mode;
+use sanchoris_core::channel::{ChatInput, enqueue_chat_message, enqueue_session_mode};
 use sanchoris_core::conversations::{
     DELIVERY_QUEUED, DELIVERY_STEER, latest_task, load_conversation, post_message, queued_messages,
     turn_in_progress,
@@ -8,14 +8,17 @@ use sanchoris_core::conversations::{
 use sanchoris_core::db::{self, DbError, NewTask, Recorded, Store, TenantTx, tenant_plan};
 use sanchoris_core::item::Entity;
 use sanchoris_core::items::{
-    AUTHOR_MEMBER, ChatMessage, Config, Conversation, Member, SessionDef, Task, TaskOrigin, User,
+    AUTHOR_MEMBER, ChatAttachment, ChatMessage, Config, Conversation, Member, SessionDef, Task,
+    TaskOrigin, User,
 };
 use sanchoris_core::keys;
 use sanchoris_core::lifecycle::TaskDecision;
 use sanchoris_core::messages::{self, ChatStartMessage};
 use sanchoris_core::model::{NamedDefinition, TaskDefinition, TaskStatus};
 use sanchoris_core::modes::SessionModes;
-use sanchoris_core::tasks::{apply_decision, latest_run, load_task, send_chat_to_task};
+use sanchoris_core::tasks::{
+    apply_decision, deliver_held_messages, latest_run, load_task, send_chat_to_task,
+};
 use serde_json::json;
 use thiserror::Error;
 use uuid::Uuid;
@@ -67,6 +70,7 @@ pub struct MemberMessage<'a> {
     pub text: &'a str,
     pub modes: SessionModes,
     pub delivery: Delivery,
+    pub attachments: &'a [ChatAttachment],
     pub at: DateTime<Utc>,
 }
 
@@ -150,6 +154,7 @@ pub async fn post_member_message(
         turn: None,
         outcome: None,
         delivery: None,
+        attachments: message.attachments.to_vec(),
         author_kind: AUTHOR_MEMBER.to_string(),
         member_id: Some(message.member_id),
         text: message.text.to_string(),
@@ -183,6 +188,14 @@ pub async fn post_member_message(
     })
 }
 
+fn chat_input<'a>(text: &'a str, steer: bool, attachments: &'a [ChatAttachment]) -> ChatInput<'a> {
+    ChatInput {
+        text,
+        steer,
+        attachments,
+    }
+}
+
 async fn deliver(
     tx: &mut TenantTx,
     conversation: &Conversation,
@@ -203,6 +216,10 @@ async fn deliver(
         })?;
         let instruction = payload["instruction"].as_str().unwrap_or_default();
         payload["instruction"] = json!(format!("{instruction}\n\n{text}"));
+        let mut attachments: Vec<ChatAttachment> =
+            serde_json::from_value(payload["attachments"].clone())?;
+        attachments.extend_from_slice(message.attachments);
+        payload["attachments"] = serde_json::to_value(attachments)?;
         payload["modes"] = serde_json::to_value(message.modes)?;
         task.updated_at = message.at;
         tx.put(&task)?;
@@ -218,13 +235,29 @@ async fn deliver(
     tx.put(&task)?;
     enqueue_session_mode(tx, run_id, message.modes, &format!("mode:{}", message.id)).await?;
     if task.status == TaskStatus::NeedsYou {
+        deliver_held_messages(tx, task.id, run_id).await?;
+        enqueue_chat_message(
+            tx,
+            run_id,
+            chat_input(&text, false, message.attachments),
+            &dedupe,
+        )
+        .await?;
         let decision = TaskDecision::Resume {
             message: text,
             reset_nudges: true,
         };
         apply_decision(tx, task.id, run_id, &decision, &dedupe, message.at).await?;
     } else {
-        send_chat_to_task(tx, task.id, run_id, &text, steer, &dedupe, message.at).await?;
+        send_chat_to_task(
+            tx,
+            task.id,
+            run_id,
+            chat_input(&text, steer, message.attachments),
+            &dedupe,
+            message.at,
+        )
+        .await?;
     }
     Ok(task.id)
 }
@@ -249,6 +282,7 @@ pub async fn deliver_queued(
         text: &queued.text,
         modes: conversation.modes.unwrap_or(SessionModes::DEFAULT),
         delivery: Delivery::Queue,
+        attachments: &queued.attachments,
         at,
     };
     let task_id = deliver(tx, &conversation, &message, steer).await?;
@@ -362,6 +396,7 @@ async fn start_task(
         "systemPrompt": system_prompt,
         "repositories": repositories,
         "modes": message.modes,
+        "attachments": message.attachments,
     }));
     tx.put(&task)?;
     let mut conversation = load_conversation(tx, conversation.id).await?;
