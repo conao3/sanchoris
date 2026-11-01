@@ -9,6 +9,7 @@ use crate::items::{
 };
 use crate::jobs::Job;
 use crate::keys;
+use crate::modes::SessionModes;
 use crate::receive::{Admission, ReceiveLimited, SOURCE_GITHUB, admit_inbound};
 use crate::store::retry;
 use crate::tenants::accepts_work;
@@ -22,6 +23,8 @@ pub enum OutboxType {
     Exec,
     Interrupt,
     UserInputResponse,
+    ApprovalResponse,
+    SessionMode,
     Shutdown,
 }
 
@@ -33,6 +36,8 @@ impl OutboxType {
             Self::Exec => "exec",
             Self::Interrupt => "interrupt",
             Self::UserInputResponse => "user_input_response",
+            Self::ApprovalResponse => "approval_response",
+            Self::SessionMode => "session_mode",
             Self::Shutdown => "shutdown",
         }
     }
@@ -124,6 +129,22 @@ pub async fn enqueue_outbox(
         });
     }
     Ok(true)
+}
+
+pub async fn enqueue_session_mode(
+    tx: &mut TenantTx,
+    run_id: Uuid,
+    modes: SessionModes,
+    dedupe_key: &str,
+) -> Result<bool, DbError> {
+    enqueue_outbox(
+        tx,
+        run_id,
+        OutboxType::SessionMode,
+        &json!({ "modes": modes }),
+        dedupe_key,
+    )
+    .await
 }
 
 pub async fn enqueue_user_message(

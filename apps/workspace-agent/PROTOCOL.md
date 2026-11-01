@@ -43,10 +43,12 @@ The worker and `exec` commands run with the agent's environment, which holds non
 
 | `type` | Fields | Meaning |
 |---|---|---|
-| `start` | `agent`, `model`, `systemPrompt`, `skills`, `instruction`, `resume`, `heartbeatSeconds` | Start (or restore) the agent session. Sent once per agent process, after `hello` with `started: false` |
+| `start` | `agent`, `model`, `systemPrompt`, `skills`, `instruction`, `modes`, `resume`, `heartbeatSeconds` | Start (or restore) the agent session. Sent once per agent process, after `hello` with `started: false` |
 | `user_message` | `messageId`, `text` | A user turn: `[sanchoris]` notifications, a person's reply, "Continue where you left off.", chat messages |
+| `session_mode` | `modes` | The modes for the messages after it (see `start` `modes`). The control plane sends one before every chat message; the agent applies it before delivering the next `user_message` |
 | `interrupt` | | Interrupt the current turn. The turn ends with `turn_end` `result: "interrupted"` |
 | `user_input_response` | `requestId`, `answers` | The answers to `user_input_request`: question `id` to the answer strings (the picked option labels, or a person's own words). The agent drops an answer to a question that is no longer open (the turn was interrupted, or the agent restarted) |
+| `approval_response` | `requestId`, `decision` | The decision on `approval_request`: `"accept"` (run it once), `"acceptForSession"` (run it and stop asking for the same kind of action in this session), `"decline"` (skip it; the turn goes on), or `"cancel"` (skip it and end the turn). The agent drops a decision on an approval that is no longer open |
 | `shutdown` | `reason` | Finish: the agent waits for the in-flight record upload and commands, stops the worker, waits up to 10 s for all `ack`s, closes with code 1000, and exits 0 |
 | `exec` | `requestId`, `purpose`, `commands` | Run shell commands in the workspace for a skill (`purpose`: `git_push` for `git:push`, `exec` for `workspace:exec`). The agent runs them after the session of `start` is ready and answers with `exec_result` |
 | `skill_response` | `requestId`, `ok`, `result` or `error` | Reply to `skill_request` |
@@ -64,6 +66,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
 - `systemPrompt`: string appended to the worker's system prompt (Project `SystemPrompt`), or `null`.
 - `skills`: the Trigger's `Start.Skills` that have `skill.yaml`. Each has `name`, `required` (in `Start.RequiredSkills`), and `inputs` (the skill's `Inputs`: field name to `"string" | "number" | "boolean" | "array" | "object"`).
 - `instruction`: the first user turn, or `null` to wait for `user_message`.
+- `modes`: `interactionMode` (`"default"`, or `"plan"` to have the worker plan without changing files and propose the plan) and `runtimeMode` (`"full-access"` runs every tool without asking, `"auto-accept-edits"` asks before commands and other tools but not file edits, `"approval-required"` asks before commands and file changes). Claude maps them to `permissionMode` (`plan`, `bypassPermissions`, `acceptEdits`, `default`) and calls `setPermissionMode` when they change. Codex sends them with every `turn/start`: `collaborationMode.mode`, and `approvalPolicy` with `sandboxPolicy` (`never` with `dangerFullAccess`, `on-request` with `workspaceWrite`, `untrusted` with `readOnly`). In plan mode with full access, Claude's tools that would need approval are denied.
 - `resume`: `null` for a new session, or the last saved record: `sessionId`, `url` (presigned GET), `relativePath` and `sha256` (from the `session_record` being restored), `lastTurn` (the `turn` of that record; new turns continue from `lastTurn + 1`).
 - `heartbeatSeconds`: interval of `heartbeat`. The control plane sends a third of the Session's `Limits.HeartbeatSeconds`, capped at a third of 900 s (the `HeartbeatSeconds` of the built-in HandOff states) and at least 30 s, so one late heartbeat trips neither the Task's heartbeat limit nor a waiting HandOff's `States.HeartbeatTimeout`.
 
@@ -76,6 +79,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
   "systemPrompt": "You are working on the Acme shop. Always write tests for new endpoints.",
   "skills": [{ "name": "open-pr-green-ci", "required": true, "inputs": { "Repos": "array", "Issue": "number", "MaxFixes": "number" } }],
   "instruction": "[sanchoris] Trigger labeled-issue started this task: Fix flaky checkout test (acme/shop-web#35).\nInstruction: Resolve issue 35 in acme/shop-web.\nSkills: open-pr-green-ci (required). Run it with `sanchoris skill run open-pr-green-ci`.",
+  "modes": { "interactionMode": "default", "runtimeMode": "full-access" },
   "resume": null,
   "heartbeatSeconds": 60
 }
@@ -90,6 +94,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
   "systemPrompt": null,
   "skills": [{ "name": "open-pr-green-ci", "required": true, "inputs": { "Repos": "array", "Issue": "number", "MaxFixes": "number" } }],
   "instruction": "[sanchoris] Skill open-pr-green-ci (run 1) needs you: CI failed on acme/shop-web#52 (checkout_spec::flaky).\nFix it, commit, and run `sanchoris skill continue 1`.",
+  "modes": { "interactionMode": "default", "runtimeMode": "full-access" },
   "resume": {
     "sessionId": "5f0c6a8e-2d55-4c43-9a51-0a7b8f3d2e10",
     "url": "https://records.s3.amazonaws.com/t/7/runs/42/5f0c6a8e-2d55-4c43-9a51-0a7b8f3d2e10/turn-3.jsonl?X-Amz-Signature=abc",
@@ -167,6 +172,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
 | `git_token_request` | yes | `requestId` | Asks for a GitHub token for `git` (`channel` source only) |
 | `worker_credential_request` | yes | `requestId` | Asks for the worker credential before the session starts (`channel` source only) |
 | `user_input_request` | yes | `requestId`, `turn`, `questions` | The worker asks the people in the conversation (Claude `AskUserQuestion`, Codex `item/tool/requestUserInput`). The turn waits for `user_input_response`; interrupting the turn cancels the question |
+| `approval_request` | yes | `requestId`, `turn`, `kind`, `toolName`, `detail`, `reason`, `input` | The worker asks before a tool runs (`runtimeMode` other than `full-access`): `kind` is `"command"` (Claude `Bash`, Codex `item/commandExecution/requestApproval`), `"file-change"` (Claude `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, Codex `item/fileChange/requestApproval`), or `"tool"` (any other Claude tool); `detail` is the command, the file path, or the input as JSON; `reason` is the worker's explanation or `null`. The turn waits for `approval_response`; interrupting the turn cancels it |
 
 Field details:
 
@@ -177,6 +183,8 @@ Field details:
   - `tool_use`: `{ "id": string | null, "name": string, "input": object }`. Codex items become tool calls too: `commandExecution` (`input.command`), `fileChange` (`input.changes`: `path` and `kind`), `mcp__<server>__<tool>` (the arguments), and `webSearch` (`input.query`).
   - `tool_result`: `{ "toolUseId": string | null, "isError": boolean, "content": string }` (content truncated to 4000 characters).
   - `item`: `{ "itemType": string, "id": string | null }` another Codex item.
+  - `plan`: `{ "steps": [{ "text": string, "status": "pending" | "running" | "completed" }], "explanation": string | null }` the worker's task list after each change: Claude `TodoWrite` (`todos[].content` and `status`, also sent as `tool_use`), Codex `turn/plan/updated` (the thread runs with `config["tools.update_plan.enabled"] = true`).
+  - `proposed_plan`: `{ "markdown": string }` the plan the worker proposes in plan mode: the `plan` of Claude `ExitPlanMode`, which the agent then denies with "The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.", or a Codex `plan` item.
   - `turn_diff`: `{ "files": [{ "repo": string, "path": string, "additions": number | null, "deletions": number | null }], "patch": string, "truncated": boolean }` the files the turn changed, sent before `turn_end` when it changed any. When a turn starts, the agent snapshots every git repository in the workspace (the workspace itself, or each repository directly under it) into `refs/sanchoris/turns/<turn>/start` with a temporary index, so the person's index and `HEAD` stay as they are, and into `refs/sanchoris/turns/<turn>/end` when it ends; the files and counts come from `git diff --numstat` and the patch from `git diff` between the two (binary files have `null` counts; the patch is cut at 48,000 characters and `truncated` is true). A turn that starts from a message queued during the previous turn begins at that turn's `end` snapshot.
   - `system`: `{ "subtype": string }` worker system message.
   - `log`: `{ "line": string }` one stderr line of the worker process.

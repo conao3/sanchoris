@@ -1,6 +1,9 @@
 import type {
+  ApprovalDecision,
+  ApprovalRequest,
   EventKind,
   RateLimitWindow,
+  SessionModes,
   TurnError,
   TurnUsage,
   UserInputAnswers,
@@ -28,6 +31,7 @@ interface WorkerHandlers {
   onTurnEnd: (result: WorkerTurnResult) => void
   onRateLimit: (rateLimit: WorkerRateLimit) => void
   onUserInput: (questions: UserInputQuestion[], signal: AbortSignal) => Promise<UserInputAnswers>
+  onApproval: (request: ApprovalRequest, signal: AbortSignal) => Promise<ApprovalDecision>
   onFatal: (error: Error) => void
 }
 
@@ -45,6 +49,7 @@ export interface RestoredRecord {
 export interface Worker {
   start(restore: RestoredRecord | null): Promise<{ sessionId: string }>
   send(text: string): void
+  setModes(modes: SessionModes): Promise<void>
   interrupt(): Promise<void>
   readRecord(): Promise<WorkerRecord>
   close(): Promise<void>
@@ -54,6 +59,7 @@ export interface WorkerContext {
   agent: "claude" | "codex"
   model: string
   systemPrompt: string | null
+  modes: SessionModes
   workspaceDir: string
   env: NodeJS.ProcessEnv
   handlers: WorkerHandlers

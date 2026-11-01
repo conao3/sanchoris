@@ -118,7 +118,7 @@ async fn owners_delete_a_tenant_by_typing_its_slug_and_its_work_stops() {
         ("SyncConfig", json!({ "configId": w.config_id })),
         (
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "hi" } }),
+            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS" } }),
         ),
         (
             "InviteMember",
@@ -293,7 +293,7 @@ async fn chat_messages_start_conversations_and_continue_them() {
         .ok(
             &w.ken,
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "Add a dark mode" } }),
+            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "Add a dark mode", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS" } }),
         )
         .await;
     let payload = &started["sendChatMessage"];
@@ -339,7 +339,7 @@ async fn chat_messages_start_conversations_and_continue_them() {
         .ok(
             &w.mika,
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "Any update?" } }),
+            json!({ "input": { "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "Any update?", "interactionMode": "PLAN", "runtimeMode": "APPROVAL_REQUIRED" } }),
         )
         .await;
     assert_eq!(
@@ -372,6 +372,11 @@ async fn chat_messages_start_conversations_and_continue_them() {
             "Any update?".to_string(),
         ]
     );
+    assert_eq!(chat["tenant"]["conversation"]["interactionMode"], "PLAN");
+    assert_eq!(
+        chat["tenant"]["conversation"]["runtimeMode"],
+        "APPROVAL_REQUIRED"
+    );
 
     w.dynamo
         .modify::<Task>(&keys::task_key(w.acme, w.chat_task), |task| {
@@ -382,7 +387,7 @@ async fn chat_messages_start_conversations_and_continue_them() {
         .ok(
             &w.mika,
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "Next step" } }),
+            json!({ "input": { "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "Next step", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS" } }),
         )
         .await;
     let next_id: Uuid = next["sendChatMessage"]["task"]["id"]
@@ -397,19 +402,19 @@ async fn chat_messages_start_conversations_and_continue_them() {
 
     for (input, code) in [
         (
-            json!({ "tenantId": w.acme, "sessionName": "nope", "text": "hi" }),
+            json!({ "tenantId": w.acme, "sessionName": "nope", "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS" }),
             "BAD_USER_INPUT",
         ),
         (
-            json!({ "tenantId": w.acme, "text": "hi" }),
+            json!({ "tenantId": w.acme, "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS" }),
             "BAD_USER_INPUT",
         ),
         (
-            json!({ "tenantId": w.acme, "conversationId": Uuid::new_v4(), "text": "hi" }),
+            json!({ "tenantId": w.acme, "conversationId": Uuid::new_v4(), "text": "hi", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS" }),
             "NOT_FOUND",
         ),
         (
-            json!({ "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "  " }),
+            json!({ "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "  ", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS" }),
             "BAD_USER_INPUT",
         ),
     ] {
@@ -1633,7 +1638,7 @@ async fn chat_messages_and_resumes_over_the_receive_limit_are_rate_limited() {
         .run(
             &w.ken,
             "SendChatMessage",
-            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "Flood" } }),
+            json!({ "input": { "tenantId": w.acme, "sessionName": "all", "text": "Flood", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS" } }),
         )
         .await;
     let extensions = response.errors[0].extensions.as_ref().unwrap();

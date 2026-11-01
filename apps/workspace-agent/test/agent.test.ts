@@ -317,6 +317,36 @@ describe("workspace agent with a fake worker", () => {
     expect(await exitCode).toBe(0)
   })
 
+  it("applies session_mode before the next message and asks for approval in supervised mode", async () => {
+    const { control, exitCode } = await setup(async (_text, { approve, modes }) => {
+      const decision = await approve({
+        kind: "command",
+        toolName: "Bash",
+        detail: "rm -rf build",
+        reason: null,
+        input: { command: "rm -rf build" },
+      })
+      return `${modes.interactionMode} ${modes.runtimeMode} ${decision}`
+    })
+    await control.waitFor("hello")
+    control.send(startMessage())
+    await control.waitFor("ready")
+    control.send({
+      type: "session_mode",
+      modes: { interactionMode: "plan", runtimeMode: "approval-required" },
+    })
+    control.send({ type: "user_message", messageId: "m-1", text: "clean" })
+    const request = await control.waitFor("approval_request")
+    expect(request.turn).toBe(1)
+    expect(request.detail).toBe("rm -rf build")
+    control.send({ type: "approval_response", requestId: "unknown", decision: "accept" })
+    control.send({ type: "approval_response", requestId: request.requestId, decision: "decline" })
+    const end = await control.waitFor("turn_end")
+    expect(end.summary).toBe("plan approval-required decline")
+    control.send({ type: "shutdown", reason: "done" })
+    expect(await exitCode).toBe(0)
+  })
+
   it("ignores a repeated user_message with the same messageId", async () => {
     const { control, exitCode } = await setup(async (text) => `echo ${text}`)
     await control.waitFor("hello")

@@ -6,6 +6,8 @@ query Run($tenant: String!, $task: ID!, $number: Int!) {
       title
       conversation {
         id
+        interactionMode
+        runtimeMode
       }
       issue {
         repository

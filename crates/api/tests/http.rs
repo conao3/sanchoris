@@ -1230,7 +1230,7 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
             "start",
             json!({
                 "agent": "claude", "model": "claude-sonnet-5-5", "systemPrompt": null, "skills": [],
-                "instruction": "Do the thing.", "resume": null, "heartbeatSeconds": 60,
+                "instruction": "Do the thing.", "modes": { "interactionMode": "default", "runtimeMode": "full-access" }, "resume": null, "heartbeatSeconds": 60,
                 "branch": "sanchoris/x", "repositories": ["acme/shop-web"],
             }),
         ),
@@ -1284,7 +1284,7 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
         start,
         json!({
             "type": "start", "runId": run, "agent": "claude", "model": "claude-sonnet-5-5", "systemPrompt": null,
-            "skills": [], "instruction": "Do the thing.", "resume": null, "heartbeatSeconds": 60,
+            "skills": [], "instruction": "Do the thing.", "modes": { "interactionMode": "default", "runtimeMode": "full-access" }, "resume": null, "heartbeatSeconds": 60,
         })
     );
     let message = receive(&mut socket).await;
@@ -1355,12 +1355,23 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     );
     send(
         &mut socket,
+        json!({ "type": "approval_request", "runId": run, "seq": 6, "requestId": "a-1", "turn": 1,
+            "kind": "command", "toolName": "Bash", "detail": "rm -rf build", "reason": null,
+            "input": { "command": "rm -rf build" } }),
+    )
+    .await;
+    assert_eq!(
+        receive(&mut socket).await,
+        json!({ "type": "ack", "runId": run, "seq": 6 })
+    );
+    send(
+        &mut socket,
         json!({ "type": "turn_end", "runId": run, "seq": 9, "turn": 1 }),
     )
     .await;
     assert_eq!(
         receive(&mut socket).await,
-        json!({ "type": "close", "runId": run, "code": CLOSE_PROTOCOL_ERROR, "reason": "expected seq 6, received 9" })
+        json!({ "type": "close", "runId": run, "code": CLOSE_PROTOCOL_ERROR, "reason": "expected seq 7, received 9" })
     );
     assert_eq!(
         receive(&mut socket).await,

@@ -37,6 +37,16 @@ input AddCredentialInput {
 	scope: CredentialScope!
 }
 
+input AnswerChatApprovalInput {
+	tenantId: ID!
+	conversationId: ID!
+	"""
+	The id of the approval the agent waits on.
+	"""
+	approvalId: ID!
+	decision: ChatApprovalDecision!
+}
+
 input AnswerChatQuestionInput {
 	tenantId: ID!
 	conversationId: ID!
@@ -140,6 +150,62 @@ input ChatAnswerInput {
 	answers: [String!]!
 }
 
+type ChatApproval {
+	id: ID!
+	kind: ChatApprovalKind!
+	"""
+	The tool as the agent names it, such as Bash, Edit or commandExecution.
+	"""
+	toolName: String!
+	"""
+	The command, the file path, or the tool input as JSON.
+	"""
+	detail: String!
+	"""
+	Why the agent asks, when it says.
+	"""
+	reason: String
+	"""
+	Null until someone decides.
+	"""
+	decision: ChatApprovalDecision
+	askedAt: DateTime!
+}
+
+enum ChatApprovalDecision {
+	"""
+	Run it once.
+	"""
+	ACCEPT
+	"""
+	Run it and stop asking for the same kind of action in this session.
+	"""
+	ACCEPT_FOR_SESSION
+	"""
+	Skip it; the turn goes on.
+	"""
+	DECLINE
+	"""
+	Skip it and end the turn.
+	"""
+	CANCEL
+}
+
+enum ChatApprovalKind {
+	"""
+	A shell command.
+	"""
+	COMMAND
+	"""
+	Edits to files.
+	"""
+	FILE_CHANGE
+	"""
+	Another tool.
+	"""
+	TOOL
+}
+
 enum ChatAuthorKind {
 	MEMBER
 	AGENT
@@ -176,6 +242,14 @@ type ChatDiff {
 	truncated: Boolean!
 }
 
+enum ChatInteractionMode {
+	DEFAULT
+	"""
+	The agent plans without changing files and proposes the plan.
+	"""
+	PLAN
+}
+
 type ChatMessage {
 	id: ID!
 	authorKind: ChatAuthorKind!
@@ -195,6 +269,10 @@ type ChatMessage {
 	"""
 	work: [ChatWork!]!
 	"""
+	The plan the agent proposed in plan mode during the turn this reply ends, as Markdown.
+	"""
+	proposedPlan: String
+	"""
 	The files the turn this reply ends changed. Null when it changed none.
 	"""
 	diff: ChatDiff
@@ -202,6 +280,22 @@ type ChatMessage {
 	Issues the agent filed with file-issue during the turn this reply ends.
 	"""
 	issues: [IssueRef!]!
+}
+
+type ChatPlan {
+	steps: [ChatPlanStep!]!
+	explanation: String
+}
+
+type ChatPlanStep {
+	text: String!
+	status: ChatPlanStepStatus!
+}
+
+enum ChatPlanStepStatus {
+	PENDING
+	RUNNING
+	COMPLETED
 }
 
 type ChatQuestion {
@@ -225,6 +319,21 @@ type ChatQuestionItem {
 type ChatQuestionOption {
 	label: String!
 	description: String!
+}
+
+enum ChatRuntimeMode {
+	"""
+	Ask before commands and file changes.
+	"""
+	APPROVAL_REQUIRED
+	"""
+	Edit files without asking; ask before other actions.
+	"""
+	AUTO_ACCEPT_EDITS
+	"""
+	Run commands and edit files without asking.
+	"""
+	FULL_ACCESS
 }
 
 type ChatTool {
@@ -267,6 +376,14 @@ type ChatWork {
 	Set for QUESTION.
 	"""
 	question: ChatQuestion
+	"""
+	Set for PLAN.
+	"""
+	plan: ChatPlan
+	"""
+	Set for APPROVAL.
+	"""
+	approval: ChatApproval
 }
 
 enum ChatWorkKind {
@@ -283,6 +400,14 @@ enum ChatWorkKind {
 	A question the agent asked, with the answer.
 	"""
 	QUESTION
+	"""
+	The agent's task list after a change.
+	"""
+	PLAN
+	"""
+	An action the agent asked to take, with the decision.
+	"""
+	APPROVAL
 }
 
 """
@@ -295,6 +420,14 @@ type ChatWorking {
 	The question the agent waits on.
 	"""
 	question: ChatQuestion
+	"""
+	The action the agent waits to be approved.
+	"""
+	approval: ChatApproval
+	"""
+	The agent's latest task list in this turn.
+	"""
+	plan: ChatPlan
 }
 
 type Config {
@@ -379,6 +512,14 @@ type Conversation {
 	The member who started the conversation; its tasks run with this member as the requester.
 	"""
 	createdBy: Member
+	"""
+	The mode of the last message sent to the conversation; DEFAULT before any.
+	"""
+	interactionMode: ChatInteractionMode!
+	"""
+	The runtime mode of the last message sent to the conversation; FULL_ACCESS before any.
+	"""
+	runtimeMode: ChatRuntimeMode!
 	createdAt: DateTime!
 	updatedAt: DateTime!
 	"""
@@ -684,6 +825,10 @@ type Mutation {
 	Answers the question that the agent of the conversation's running task waits on.
 	"""
 	answerChatQuestion(input: AnswerChatQuestionInput!): Conversation!
+	"""
+	Decides on the action that the agent of the conversation's running task waits to be approved.
+	"""
+	answerChatApproval(input: AnswerChatApprovalInput!): Conversation!
 	"""
 	Interrupts the turn that the agent of the conversation's running task is working on. The session stays open for the next message.
 	"""
@@ -1003,6 +1148,14 @@ input SendChatMessageInput {
 	"""
 	configId: ID
 	text: String!
+	"""
+	Default works on the message; Plan has the agent plan without changing files and propose the plan.
+	"""
+	interactionMode: ChatInteractionMode!
+	"""
+	What the agent may do without asking.
+	"""
+	runtimeMode: ChatRuntimeMode!
 }
 
 type SendChatMessagePayload {

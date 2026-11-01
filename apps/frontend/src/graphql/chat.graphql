@@ -37,6 +37,8 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
       title
       kind
       sessionName
+      interactionMode
+      runtimeMode
       createdBy {
         id
         user {
@@ -57,6 +59,12 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
         question {
           ...ChatQuestionFields
         }
+        approval {
+          ...ChatApprovalFields
+        }
+        plan {
+          ...ChatPlanFields
+        }
       }
       latestTask {
         id
@@ -73,6 +81,7 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
         authorKind
         text
         outcome
+        proposedPlan
         at
         work {
           ...ChatWorkFields
@@ -180,6 +189,36 @@ fragment ChatWorkFields on ChatWork {
   }
   question {
     ...ChatQuestionFields
+  }
+  plan {
+    ...ChatPlanFields
+  }
+  approval {
+    ...ChatApprovalFields
+  }
+}
+
+fragment ChatPlanFields on ChatPlan {
+  explanation
+  steps {
+    text
+    status
+  }
+}
+
+fragment ChatApprovalFields on ChatApproval {
+  id
+  kind
+  toolName
+  detail
+  reason
+  decision
+  askedAt
+}
+
+mutation AnswerChatApproval($input: AnswerChatApprovalInput!) {
+  answerChatApproval(input: $input) {
+    id
   }
 }
 

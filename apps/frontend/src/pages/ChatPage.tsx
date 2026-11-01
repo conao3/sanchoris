@@ -3,6 +3,9 @@ import { CircleDot, Plus, Square } from "lucide-react"
 import { type KeyboardEvent, useEffect, useRef, useState } from "react"
 import { Button } from "../components/Button.tsx"
 import { ChangedFiles } from "../components/chat/ChangedFiles.tsx"
+import { ApprovalComposer } from "../components/chat/ApprovalComposer.tsx"
+import { DEFAULT_MODES, ModeControls, type Modes } from "../components/chat/ModeControls.tsx"
+import { ProposedPlanCard, TasksBanner } from "../components/chat/Plan.tsx"
 import { QuestionComposer } from "../components/chat/QuestionComposer.tsx"
 import { AgentMessage, MemberMessage, Working } from "../components/chat/Timeline.tsx"
 import { Reason } from "../components/Reason.tsx"
@@ -27,6 +30,7 @@ import {
 } from "../components/ui.tsx"
 import {
   type ChatQuery,
+  AnswerChatApprovalDocument,
   AnswerChatQuestionDocument,
   ChatDocument,
   InterruptChatDocument,
@@ -65,10 +69,14 @@ function sessionSkills(session: ChatSession): string {
 
 function Composer({
   reason,
+  modes,
+  onModesChange,
   onSend,
   onStop,
 }: {
   reason?: string
+  modes: Modes
+  onModesChange: (modes: Modes) => void
   onSend: (text: string) => Promise<boolean>
   onStop?: () => void
 }) {
@@ -88,26 +96,31 @@ function Composer({
   }
 
   return (
-    <div className="mt-3.5 flex items-start justify-between gap-3 rounded-ui border border-line2 px-2.5 py-2">
-      <Reason reason={reason} className="min-w-0 flex-1">
-        <textarea
-          rows={1}
-          value={text}
-          disabled={!!reason}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={t("chat.placeholder")}
-          aria-label={t("chat.placeholder")}
-          className="min-h-5 flex-1 resize-none bg-transparent outline-none placeholder:text-faint"
-        />
-      </Reason>
-      {onStop ? (
-        <Button small icon={Square} onPress={onStop}>
-          {t("chat.stop")}
-        </Button>
-      ) : reason ? null : (
-        <Kbd>{t("chat.enterSend")}</Kbd>
-      )}
+    <div className="mt-3.5 rounded-ui border border-line2">
+      <div className="flex px-2.5 pt-2">
+        <Reason reason={reason} className="flex min-w-0 flex-1">
+          <textarea
+            rows={1}
+            value={text}
+            disabled={!!reason}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder={t("chat.placeholder")}
+            aria-label={t("chat.placeholder")}
+            className="min-h-5 flex-1 resize-none bg-transparent outline-none placeholder:text-faint"
+          />
+        </Reason>
+      </div>
+      <div className="flex items-center justify-between gap-3 px-2 pt-1 pb-1.5">
+        {reason ? <span /> : <ModeControls modes={modes} onChange={onModesChange} />}
+        {onStop ? (
+          <Button small icon={Square} onPress={onStop}>
+            {t("chat.stop")}
+          </Button>
+        ) : reason ? null : (
+          <Kbd>{t("chat.enterSend")}</Kbd>
+        )}
+      </div>
     </div>
   )
 }
@@ -120,9 +133,16 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
   const [interrupt, { error: interruptError }] = useAction(InterruptChatDocument, {
     refetchQueries: [ChatDocument],
   })
+  const [decide, { error: decideError }] = useAction(AnswerChatApprovalDocument, {
+    refetchQueries: [ChatDocument],
+  })
+  const [modes, setModes] = useState<Modes>({
+    interactionMode: conversation.interactionMode,
+    runtimeMode: conversation.runtimeMode,
+  })
   const working = conversation.working
   const end = useRef<HTMLDivElement>(null)
-  const follow = `${conversation.id}:${conversation.messages.length}:${working?.work.length ?? -1}:${working?.question?.id ?? ""}`
+  const follow = `${conversation.id}:${conversation.messages.length}:${working?.work.length ?? -1}:${working?.question?.id ?? ""}:${working?.approval?.id ?? ""}`
   useEffect(() => {
     end.current?.scrollIntoView({ block: "nearest" })
   }, [follow])
@@ -131,6 +151,18 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
   const repos = conversation.session?.repositories.join(", ") ?? ""
   const starter = conversation.createdBy?.user.name
   const finished = task ? !isActive(task.status) : false
+
+  function sendText(text: string, using: Modes) {
+    return send({
+      input: { tenantId: tenant.id, conversationId: conversation.id, text, ...using },
+    }).then(Boolean)
+  }
+
+  function implement(markdown: string) {
+    const using: Modes = { ...modes, interactionMode: "DEFAULT" }
+    setModes(using)
+    void sendText(`PLEASE IMPLEMENT THIS PLAN:\n${markdown}`, using)
+  }
   return (
     <>
       <Title>{conversation.title}</Title>
@@ -209,12 +241,27 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
                   </div>
                 )
               })}
+              {message.proposedPlan ? (
+                <ProposedPlanCard
+                  markdown={message.proposedPlan}
+                  onImplement={
+                    position === conversation.messages.length - 1 && conversation.kind === "WEB"
+                      ? () => implement(message.proposedPlan ?? "")
+                      : undefined
+                  }
+                  implementReason={working ? t("reason.agentWorking") : undefined}
+                />
+              ) : null}
               {message.diff ? <ChangedFiles diff={message.diff} /> : null}
             </AgentMessage>
           )
         })}
         {working ? (
-          <Working startedAt={working.startedAt} work={working.work} waiting={!!working.question} />
+          <Working
+            startedAt={working.startedAt}
+            work={working.work}
+            waiting={working.approval ? "approval" : working.question ? "question" : undefined}
+          />
         ) : null}
       </div>
       {finished && task && conversation.kind === "WEB" ? (
@@ -222,7 +269,25 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
           {t("chat.continueHint", { n: (task.conversationSequence ?? 1) + 1 })}
         </Dim>
       ) : null}
-      {working?.question ? (
+      {working?.plan && !working.question && !working.approval ? (
+        <TasksBanner plan={working.plan} />
+      ) : null}
+      {working?.approval ? (
+        <ApprovalComposer
+          key={working.approval.id}
+          approval={working.approval}
+          onDecide={(decision) =>
+            decide({
+              input: {
+                tenantId: tenant.id,
+                conversationId: conversation.id,
+                approvalId: working.approval?.id ?? "",
+                decision,
+              },
+            }).then(Boolean)
+          }
+        />
+      ) : working?.question ? (
         <QuestionComposer
           key={working.question.id}
           question={working.question}
@@ -241,19 +306,17 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
       ) : (
         <Composer
           reason={conversation.kind === "SLACK" ? t("reason.slackThread") : undefined}
+          modes={modes}
+          onModesChange={setModes}
           onStop={
             working && run
               ? () => void interrupt({ tenantId: tenant.id, conversationId: conversation.id })
               : undefined
           }
-          onSend={(text) =>
-            send({
-              input: { tenantId: tenant.id, conversationId: conversation.id, text },
-            }).then(Boolean)
-          }
+          onSend={(text) => sendText(text, modes)}
         />
       )}
-      <ActionError error={error ?? answerError ?? interruptError} className="mt-2" />
+      <ActionError error={error ?? answerError ?? interruptError ?? decideError} className="mt-2" />
       <div ref={end} />
     </>
   )
@@ -304,6 +367,7 @@ function NewChat({
 }) {
   const navigate = useNavigate()
   const [send, { error }] = useAction(SendChatMessageDocument, { refetchQueries: [ChatDocument] })
+  const [modes, setModes] = useState<Modes>(DEFAULT_MODES)
   const hasConfig = tenant.configs.some((config) => config.status === "ACTIVE")
   return (
     <>
@@ -337,6 +401,8 @@ function NewChat({
               ? undefined
               : t("reason.pickSession")
         }
+        modes={modes}
+        onModesChange={setModes}
         onSend={(text) =>
           send({
             input: {
@@ -344,6 +410,7 @@ function NewChat({
               sessionName: session?.name,
               configId: session?.config.id,
               text,
+              ...modes,
             },
           }).then((result) => {
             const conversation = result?.sendChatMessage.conversation

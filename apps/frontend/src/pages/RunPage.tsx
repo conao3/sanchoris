@@ -162,11 +162,19 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
   function submit(event?: FormEvent) {
     event?.preventDefault()
     const tenantId = data?.tenant?.id
-    const conversationId = task?.conversation?.id
-    if (!conversationId || !tenantId || !text.trim()) {
+    const conversation = task?.conversation
+    if (!conversation || !tenantId || !text.trim()) {
       return
     }
-    void send({ input: { tenantId, conversationId, text: text.trim() } }).then((done) => {
+    void send({
+      input: {
+        tenantId,
+        conversationId: conversation.id,
+        text: text.trim(),
+        interactionMode: conversation.interactionMode,
+        runtimeMode: conversation.runtimeMode,
+      },
+    }).then((done) => {
       if (!done) {
         return
       }

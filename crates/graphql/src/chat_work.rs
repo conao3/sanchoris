@@ -3,14 +3,15 @@ use std::collections::BTreeMap;
 use async_graphql::{Enum, ID, Result, SimpleObject};
 use chrono::{DateTime, Utc};
 use sanchoris_core::db::TenantTx;
-use sanchoris_core::items::{RunLogEntry, RunQuestion};
+use sanchoris_core::items::{RunApproval, RunLogEntry, RunQuestion};
 use sanchoris_core::keys;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::enums::{ChatApprovalDecision, ChatApprovalKind, ChatPlanStepStatus};
 use crate::scalars::{Timestamp, ts};
 
-const ASK_USER_QUESTION: &str = "AskUserQuestion";
+const HIDDEN_TOOLS: [&str; 3] = ["AskUserQuestion", "TodoWrite", "ExitPlanMode"];
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChatWorkKind {
@@ -21,6 +22,10 @@ pub(crate) enum ChatWorkKind {
     Tool,
     /// A question the agent asked, with the answer.
     Question,
+    /// The agent's task list after a change.
+    Plan,
+    /// An action the agent asked to take, with the decision.
+    Approval,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -33,6 +38,37 @@ pub(crate) struct ChatWork {
     pub tool: Option<ChatTool>,
     /// Set for QUESTION.
     pub question: Option<ChatQuestion>,
+    /// Set for PLAN.
+    pub plan: Option<ChatPlan>,
+    /// Set for APPROVAL.
+    pub approval: Option<ChatApproval>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub(crate) struct ChatPlan {
+    pub steps: Vec<ChatPlanStep>,
+    pub explanation: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub(crate) struct ChatPlanStep {
+    pub text: String,
+    pub status: ChatPlanStepStatus,
+}
+
+#[derive(SimpleObject, Clone)]
+pub(crate) struct ChatApproval {
+    pub id: ID,
+    pub kind: ChatApprovalKind,
+    /// The tool as the agent names it, such as Bash, Edit or commandExecution.
+    pub tool_name: String,
+    /// The command, the file path, or the tool input as JSON.
+    pub detail: String,
+    /// Why the agent asks, when it says.
+    pub reason: Option<String>,
+    /// Null until someone decides.
+    pub decision: Option<ChatApprovalDecision>,
+    pub asked_at: Timestamp,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -104,11 +140,16 @@ pub(crate) struct ChatWorking {
     pub work: Vec<ChatWork>,
     /// The question the agent waits on.
     pub question: Option<ChatQuestion>,
+    /// The action the agent waits to be approved.
+    pub approval: Option<ChatApproval>,
+    /// The agent's latest task list in this turn.
+    pub plan: Option<ChatPlan>,
 }
 
 pub(crate) struct RunWork {
     entries: Vec<RunLogEntry>,
     questions: Vec<RunQuestion>,
+    approvals: Vec<RunApproval>,
 }
 
 impl RunWork {
@@ -118,7 +159,13 @@ impl RunWork {
         entries.sort_by_key(|entry| entry.seq);
         let mut questions = tx.query::<RunQuestion>(&pk, "Q#").await?;
         questions.sort_by_key(|question| question.asked_at);
-        Ok(Self { entries, questions })
+        let mut approvals = tx.query::<RunApproval>(&pk, "AP#").await?;
+        approvals.sort_by_key(|approval| approval.asked_at);
+        Ok(Self {
+            entries,
+            questions,
+            approvals,
+        })
     }
 
     pub fn first_at(&self, turn: i64) -> Option<DateTime<Utc>> {
@@ -126,6 +173,34 @@ impl RunWork {
             .iter()
             .find(|entry| entry.turn == turn)
             .map(|entry| entry.at)
+    }
+
+    pub fn open_approval(&self, turn: i64) -> Result<Option<ChatApproval>> {
+        self.approvals
+            .iter()
+            .rev()
+            .find(|approval| approval.turn == turn && approval.decision.is_none())
+            .map(chat_approval)
+            .transpose()
+    }
+
+    pub fn plan(&self, turn: i64) -> Result<Option<ChatPlan>> {
+        self.last(turn, "plan").map(chat_plan).transpose()
+    }
+
+    /// The plan the agent proposed in plan mode, as Markdown.
+    pub fn proposed_plan(&self, turn: i64) -> Option<String> {
+        self.last(turn, "proposed_plan")
+            .and_then(|data| data["markdown"].as_str())
+            .map(str::to_string)
+    }
+
+    fn last(&self, turn: i64, kind: &str) -> Option<&Value> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|entry| entry.turn == turn && entry.kind == kind)
+            .map(|entry| &entry.data)
     }
 
     pub fn diff(&self, turn: i64) -> Result<Option<ChatDiff>> {
@@ -154,6 +229,18 @@ impl RunWork {
             let data = &entry.data;
             let text = || data["text"].as_str().unwrap_or_default().to_string();
             match entry.kind.as_str() {
+                "plan" => work.push((
+                    entry.at,
+                    ChatWork {
+                        kind: ChatWorkKind::Plan,
+                        at: ts(entry.at),
+                        text: None,
+                        tool: None,
+                        question: None,
+                        plan: Some(chat_plan(&entry.data)?),
+                        approval: None,
+                    },
+                )),
                 "thinking" => {
                     work.push((entry.at, plain(ChatWorkKind::Thinking, entry.at, text())))
                 }
@@ -162,7 +249,7 @@ impl RunWork {
                 }
                 "tool_use" => {
                     let name = data["name"].as_str().unwrap_or_default();
-                    if name == ASK_USER_QUESTION {
+                    if HIDDEN_TOOLS.contains(&name) {
                         continue;
                     }
                     if let Some(id) = data["id"].as_str() {
@@ -181,6 +268,8 @@ impl RunWork {
                                 is_error: false,
                             }),
                             question: None,
+                            plan: None,
+                            approval: None,
                         },
                     ));
                 }
@@ -215,6 +304,26 @@ impl RunWork {
                     text: None,
                     tool: None,
                     question: Some(chat_question(question)?),
+                    plan: None,
+                    approval: None,
+                },
+            ));
+        }
+        for approval in self
+            .approvals
+            .iter()
+            .filter(|approval| approval.turn == turn && approval.decision.is_some())
+        {
+            work.push((
+                approval.asked_at,
+                ChatWork {
+                    kind: ChatWorkKind::Approval,
+                    at: ts(approval.asked_at),
+                    text: None,
+                    tool: None,
+                    question: None,
+                    plan: None,
+                    approval: Some(chat_approval(approval)?),
                 },
             ));
         }
@@ -230,6 +339,40 @@ impl RunWork {
         }
         Ok(work)
     }
+}
+
+fn chat_plan(data: &Value) -> Result<ChatPlan> {
+    let steps = data["steps"]
+        .as_array()
+        .ok_or_else(|| async_graphql::Error::new("plan has no steps"))?
+        .iter()
+        .map(|step| {
+            Ok(ChatPlanStep {
+                text: string(step, "text", "plan")?,
+                status: ChatPlanStepStatus::from_db(&string(step, "status", "plan")?)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ChatPlan {
+        steps,
+        explanation: data["explanation"].as_str().map(str::to_string),
+    })
+}
+
+fn chat_approval(approval: &RunApproval) -> Result<ChatApproval> {
+    Ok(ChatApproval {
+        id: ID(approval.request_id.clone()),
+        kind: ChatApprovalKind::from_db(&approval.approval_kind)?,
+        tool_name: approval.tool_name.clone(),
+        detail: approval.detail.clone(),
+        reason: approval.reason.clone(),
+        decision: approval
+            .decision
+            .as_deref()
+            .map(ChatApprovalDecision::from_db)
+            .transpose()?,
+        asked_at: ts(approval.asked_at),
+    })
 }
 
 fn chat_diff(data: &Value) -> Result<ChatDiff> {
@@ -260,6 +403,8 @@ fn plain(kind: ChatWorkKind, at: DateTime<Utc>, text: String) -> ChatWork {
         text: Some(text),
         tool: None,
         question: None,
+        plan: None,
+        approval: None,
     }
 }
 
@@ -400,6 +545,7 @@ mod tests {
                 question(1, 6, Some(json!({ "Which label?": ["bug"] }))),
                 question(2, 9, None),
             ],
+            approvals: Vec::new(),
         };
         let turn = work.turn(1, Some("Done.")).unwrap();
         let kinds: Vec<_> = turn.iter().map(|work| work.kind).collect();
@@ -452,6 +598,7 @@ mod tests {
                 ),
             ],
             questions: Vec::new(),
+            approvals: Vec::new(),
         };
         assert_eq!(work.turn(1, None).unwrap().len(), 1);
         let diff = work.diff(1).unwrap().unwrap();

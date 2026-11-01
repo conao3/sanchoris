@@ -14,6 +14,7 @@ pub mod lifecycle;
 pub mod local;
 pub mod messages;
 pub mod model;
+pub mod modes;
 pub mod pattern;
 pub mod ports;
 pub mod receive;

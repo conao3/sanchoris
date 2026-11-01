@@ -885,6 +885,10 @@ async fn start_workspace(
         "systemPrompt": start_payload["systemPrompt"],
         "skills": skills_payload(&definition, &start.required_skills)?,
         "instruction": if instructed { start_payload["instruction"].clone() } else { Value::Null },
+        "modes": start_payload
+            .get("modes")
+            .cloned()
+            .ok_or_else(|| invalid("the task's start payload has no modes"))?,
         "resume": resume,
         "heartbeatSeconds": heartbeat_interval(start.limits.heartbeat_seconds),
         "branch": branch,

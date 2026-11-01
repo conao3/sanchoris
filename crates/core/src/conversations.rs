@@ -6,7 +6,9 @@ use serde_json::{Value, json};
 use crate::channel::{OutboxType, enqueue_outbox};
 use crate::db::{DbError, TenantTx};
 use crate::item::Entity;
-use crate::items::{AUTHOR_AGENT, ChatMessage, Conversation, ConversationTask, RunQuestion, Task};
+use crate::items::{
+    AUTHOR_AGENT, ChatMessage, Conversation, ConversationTask, RunApproval, RunQuestion, Task,
+};
 use crate::keys;
 use crate::tasks::load_task;
 
@@ -107,4 +109,35 @@ pub async fn answer_question(
     )
     .await?;
     Ok(question)
+}
+
+pub async fn decide_approval(
+    tx: &mut TenantTx,
+    run_id: Uuid,
+    request_id: &str,
+    decision: &str,
+    member_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<RunApproval, DbError> {
+    let key = keys::run_approval_key(tx.tenant_id(), run_id, request_id);
+    let mut approval = tx
+        .get::<RunApproval>(&key)
+        .await?
+        .ok_or_else(|| DbError::Missing(format!("approval {request_id} of run {run_id}")))?;
+    if approval.decision.is_some() {
+        return Err(DbError::Conflict);
+    }
+    approval.decision = Some(decision.to_string());
+    approval.decided_by_member_id = Some(member_id);
+    approval.decided_at = Some(now);
+    tx.put(&approval)?;
+    enqueue_outbox(
+        tx,
+        run_id,
+        OutboxType::ApprovalResponse,
+        &json!({ "requestId": request_id, "decision": decision }),
+        &format!("approval:{request_id}"),
+    )
+    .await?;
+    Ok(approval)
 }

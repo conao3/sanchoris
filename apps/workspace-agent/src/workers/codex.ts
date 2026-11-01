@@ -2,7 +2,15 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative } from "node:path"
 
-import type { RateLimitWindow, UserInputQuestion } from "../protocol.ts"
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  PlanStep,
+  RateLimitWindow,
+  RuntimeMode,
+  SessionModes,
+  UserInputQuestion,
+} from "../protocol.ts"
 import {
   emptyUsage,
   requireEnv,
@@ -94,6 +102,67 @@ export function codexQuestions(params: unknown): UserInputQuestion[] {
   }))
 }
 
+const CODEX_POLICIES: Record<
+  RuntimeMode,
+  { approvalPolicy: string; sandbox: string; sandboxPolicy: { type: string } }
+> = {
+  "approval-required": {
+    approvalPolicy: "untrusted",
+    sandbox: "read-only",
+    sandboxPolicy: { type: "readOnly" },
+  },
+  "auto-accept-edits": {
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+    sandboxPolicy: { type: "workspaceWrite" },
+  },
+  "full-access": {
+    approvalPolicy: "never",
+    sandbox: "danger-full-access",
+    sandboxPolicy: { type: "dangerFullAccess" },
+  },
+}
+
+const PLAN_STATUS: Record<string, PlanStep["status"]> = {
+  pending: "pending",
+  inProgress: "running",
+  completed: "completed",
+}
+
+export function codexPlanSteps(params: unknown): PlanStep[] {
+  const plan = (params as { plan?: { step?: unknown; status?: unknown }[] }).plan ?? []
+  return plan.map((step, index) => ({
+    text:
+      typeof step.step === "string" && step.step.trim() !== "" ? step.step : `Step ${index + 1}`,
+    status: PLAN_STATUS[String(step.status)] ?? "pending",
+  }))
+}
+
+export function codexApproval(method: string, params: unknown): ApprovalRequest {
+  const fields = params as {
+    command?: unknown
+    cwd?: unknown
+    reason?: unknown
+    grantRoot?: unknown
+  }
+  const reason = typeof fields.reason === "string" ? fields.reason : null
+  if (method === "item/commandExecution/requestApproval")
+    return {
+      kind: "command",
+      toolName: "commandExecution",
+      detail: typeof fields.command === "string" ? fields.command : "",
+      reason,
+      input: { command: fields.command ?? null, cwd: fields.cwd ?? null },
+    }
+  return {
+    kind: "file-change",
+    toolName: "fileChange",
+    detail: typeof fields.grantRoot === "string" ? fields.grantRoot : "",
+    reason,
+    input: { grantRoot: fields.grantRoot ?? null },
+  }
+}
+
 function mcpResultText(result: CodexItem["result"]): string {
   return (result?.content ?? [])
     .map((block) => {
@@ -176,12 +245,14 @@ export class CodexWorker implements Worker {
   private lastText = ""
   private lastUsage: CodexTokenUsage | null = null
   private rateLimits: CodexRateLimitSnapshot | null = null
-  private questions: AbortController | null = null
+  private pending: AbortController | null = null
+  private modes: SessionModes
 
   constructor(context: WorkerContext) {
     this.context = context
     this.codexHome = requireEnv(context.env, "CODEX_HOME")
     this.executable = requireEnv(context.env, "SANCHORIS_CODEX_PATH")
+    this.modes = context.modes
   }
 
   async start(restore: RestoredRecord | null): Promise<{ sessionId: string }> {
@@ -216,6 +287,11 @@ export class CodexWorker implements Worker {
       onNotification: (method, params) => this.handleNotification(method, params),
       onRequest: async (method, params) => {
         if (method === "item/tool/requestUserInput") return this.answer(params)
+        if (
+          method === "item/commandExecution/requestApproval" ||
+          method === "item/fileChange/requestApproval"
+        )
+          return { decision: await this.approve(codexApproval(method, params)) }
         this.context.handlers.onEvent("log", { line: `Codex request ${method} was declined` })
         throw new Error(`sanchoris does not handle ${method}`)
       },
@@ -230,8 +306,9 @@ export class CodexWorker implements Worker {
     const threadParams = {
       cwd: this.context.workspaceDir,
       model: this.context.model,
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
+      approvalPolicy: CODEX_POLICIES[this.modes.runtimeMode].approvalPolicy,
+      sandbox: CODEX_POLICIES[this.modes.runtimeMode].sandbox,
+      config: { "tools.update_plan.enabled": true },
       ...(this.context.systemPrompt === null
         ? {}
         : { developerInstructions: this.context.systemPrompt }),
@@ -249,13 +326,17 @@ export class CodexWorker implements Worker {
     return { sessionId: response.thread.id }
   }
 
+  async setModes(modes: SessionModes): Promise<void> {
+    this.modes = modes
+  }
+
   send(text: string): void {
     this.queued.push(text)
     this.startNextTurn()
   }
 
   async interrupt(): Promise<void> {
-    this.questions?.abort()
+    this.pending?.abort()
     if (!this.client || !this.threadId || !this.activeTurnId) return
     await this.client.request("turn/interrupt", {
       threadId: this.threadId,
@@ -278,13 +359,18 @@ export class CodexWorker implements Worker {
 
   private async answer(params: unknown): Promise<unknown> {
     const questions = codexQuestions(params)
-    this.questions ??= new AbortController()
-    const answers = await this.context.handlers.onUserInput(questions, this.questions.signal)
+    this.pending ??= new AbortController()
+    const answers = await this.context.handlers.onUserInput(questions, this.pending.signal)
     return {
       answers: Object.fromEntries(
         questions.map((question) => [question.id, { answers: answers[question.id] ?? [] }]),
       ),
     }
+  }
+
+  private async approve(request: ApprovalRequest): Promise<ApprovalDecision> {
+    this.pending ??= new AbortController()
+    return this.context.handlers.onApproval(request, this.pending.signal)
   }
 
   private startNextTurn(): void {
@@ -298,9 +384,13 @@ export class CodexWorker implements Worker {
       .request("turn/start", {
         threadId: this.threadId,
         input: [{ type: "text", text, text_elements: [] }],
-        approvalPolicy: "never",
-        sandboxPolicy: { type: "dangerFullAccess" },
+        approvalPolicy: CODEX_POLICIES[this.modes.runtimeMode].approvalPolicy,
+        sandboxPolicy: CODEX_POLICIES[this.modes.runtimeMode].sandboxPolicy,
         model: this.context.model,
+        collaborationMode: {
+          mode: this.modes.interactionMode,
+          settings: { model: this.context.model },
+        },
       })
       .then(
         (response) => {
@@ -362,6 +452,8 @@ export class CodexWorker implements Worker {
             isError: Boolean(item.error),
             content: (item.error ? item.error.message : mcpResultText(item.result)).slice(0, 4000),
           })
+        } else if (item.type === "plan") {
+          if ((item.text ?? "").trim() !== "") onEvent("proposed_plan", { markdown: item.text })
         } else if (item.type === "webSearch") {
           onEvent("tool_use", {
             id: item.id ?? null,
@@ -371,6 +463,15 @@ export class CodexWorker implements Worker {
         } else {
           onEvent("item", { itemType: item.type, id: item.id ?? null })
         }
+        return
+      }
+      case "turn/plan/updated": {
+        const explanation = (params as { explanation?: unknown }).explanation
+        onEvent("plan", {
+          steps: codexPlanSteps(params),
+          explanation:
+            typeof explanation === "string" && explanation.trim() !== "" ? explanation : null,
+        })
         return
       }
       case "thread/tokenUsage/updated":
@@ -395,8 +496,8 @@ export class CodexWorker implements Worker {
   }
 
   private completeTurn(turn: CodexTurn): void {
-    this.questions?.abort()
-    this.questions = null
+    this.pending?.abort()
+    this.pending = null
     this.activeTurnId = null
     this.completedTurnIds.add(turn.id)
     const usage = this.lastUsage

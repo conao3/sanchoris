@@ -1426,6 +1426,7 @@ impl World {
             created_by_member_id: mika_member,
             title: "What is failing?".into(),
             tasks: 1,
+            modes: None,
             created_at: now - Duration::minutes(20),
             updated_at: now - Duration::minutes(15),
         })
@@ -1450,6 +1451,12 @@ impl World {
         );
         task.wait_reason = Some(WaitReason::Message);
         task.runs = 1;
+        task.start_payload = Some(json!({
+            "instruction": "What is failing?",
+            "systemPrompt": null,
+            "repositories": [],
+            "modes": { "interactionMode": "default", "runtimeMode": "full-access" },
+        }));
         tx.insert(&task).unwrap();
         let chat_run = run_item(
             &mut tx,
@@ -1571,6 +1578,7 @@ impl World {
             created_by_member_id: hana_member,
             title: "Globex secret chat".into(),
             tasks: 0,
+            modes: None,
             created_at: now,
             updated_at: now,
         })

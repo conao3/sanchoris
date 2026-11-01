@@ -95,6 +95,7 @@ export function startMessage(
       { name: "open-pr-green-ci", required: true, inputs: { Repos: "array", Issue: "number" } },
     ],
     instruction: null,
+    modes: { interactionMode: "default", runtimeMode: "full-access" },
     resume: null,
     heartbeatSeconds: 1,
     ...overrides,

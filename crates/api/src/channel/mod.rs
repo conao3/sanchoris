@@ -11,8 +11,8 @@ use sanchoris_core::channel::{
 };
 use sanchoris_core::db::{DbError, Store, TenantTx, tenant_plan};
 use sanchoris_core::items::{
-    BootstrapRedemption, ChannelInstance, OutboxItem, RunChannel, RunEventItem, RunLogEntry,
-    RunQuestion, Workspace,
+    BootstrapRedemption, ChannelInstance, OutboxItem, RunApproval, RunChannel, RunEventItem,
+    RunLogEntry, RunQuestion, Workspace,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
@@ -369,7 +369,8 @@ impl Channel {
             | "exec_result"
             | "git_token_request"
             | "worker_credential_request"
-            | "user_input_request" => self.sequenced(claims, connection_id, &kind, message).await,
+            | "user_input_request"
+            | "approval_request" => self.sequenced(claims, connection_id, &kind, message).await,
             other => Err(protocol(format!("unknown message type {other}"))),
         }
     }
@@ -517,6 +518,10 @@ impl Channel {
                     self.question(&mut tx, claims, &payload).await?;
                     None
                 }
+                "approval_request" => {
+                    self.approval(&mut tx, claims, &payload).await?;
+                    None
+                }
                 "skill_request" => Some(self.skill(&mut tx, claims, &payload).await?),
                 "record_upload_request" => Some(self.upload(&mut tx, claims, &payload).await?),
                 "git_token_request" => Some(self.git_token(claims, &payload).await?),
@@ -634,6 +639,48 @@ impl Channel {
             answered_by_member_id: None,
             asked_at: Utc::now(),
             answered_at: None,
+        })?;
+        Ok(())
+    }
+
+    async fn approval(
+        &self,
+        tx: &mut TenantTx,
+        claims: RunClaims,
+        payload: &Value,
+    ) -> Result<(), ChannelError> {
+        let text = |name: &str| {
+            payload[name]
+                .as_str()
+                .ok_or_else(|| protocol(format!("approval_request needs {name}")))
+        };
+        let request_id = text("requestId")?;
+        let turn = payload["turn"]
+            .as_i64()
+            .filter(|turn| *turn > 0)
+            .ok_or_else(|| protocol("approval_request needs a positive turn"))?;
+        let key = keys::run_approval_key(claims.tenant_id, claims.run_id, request_id);
+        if tx.get::<RunApproval>(&key).await?.is_some() {
+            return Ok(());
+        }
+        let run = load_run(tx, claims.run_id)
+            .await?
+            .ok_or_else(|| ChannelError::Internal(format!("run {} is missing", claims.run_id)))?;
+        tx.insert(&RunApproval {
+            tenant_id: claims.tenant_id,
+            run_id: claims.run_id,
+            task_id: run.task_id,
+            request_id: request_id.to_string(),
+            turn,
+            approval_kind: text("kind")?.to_string(),
+            tool_name: text("toolName")?.to_string(),
+            detail: text("detail")?.to_string(),
+            reason: payload["reason"].as_str().map(str::to_string),
+            input: redact_tokens_in(&payload["input"]),
+            decision: None,
+            decided_by_member_id: None,
+            asked_at: Utc::now(),
+            decided_at: None,
         })?;
         Ok(())
     }
@@ -899,6 +946,7 @@ impl Channel {
             "systemPrompt": payload["systemPrompt"],
             "skills": payload["skills"],
             "instruction": payload["instruction"],
+            "modes": payload["modes"],
             "resume": resume,
             "heartbeatSeconds": payload["heartbeatSeconds"],
         }))
@@ -920,6 +968,13 @@ impl Channel {
                 "type": "user_input_response", "runId": run_id,
                 "requestId": payload["requestId"], "answers": payload["answers"],
             }),
+            "approval_response" => json!({
+                "type": "approval_response", "runId": run_id,
+                "requestId": payload["requestId"], "decision": payload["decision"],
+            }),
+            "session_mode" => {
+                json!({ "type": "session_mode", "runId": run_id, "modes": payload["modes"] })
+            }
             "shutdown" => {
                 json!({ "type": "shutdown", "runId": run_id, "reason": payload["reason"] })
             }

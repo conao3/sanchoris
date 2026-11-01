@@ -4,7 +4,9 @@ import { join, relative } from "node:path"
 
 import {
   query,
+  type PermissionMode,
   type PermissionResult,
+  type PermissionUpdate,
   type Query,
   type SDKMessage,
   type SDKRateLimitInfo,
@@ -13,7 +15,14 @@ import {
 } from "@anthropic-ai/claude-agent-sdk"
 
 import { AsyncQueue } from "../async-queue.ts"
-import type { RateLimitWindow, UserInputAnswers, UserInputQuestion } from "../protocol.ts"
+import type {
+  ApprovalRequest,
+  PlanStep,
+  RateLimitWindow,
+  SessionModes,
+  UserInputAnswers,
+  UserInputQuestion,
+} from "../protocol.ts"
 import {
   requireEnv,
   type RestoredRecord,
@@ -101,6 +110,59 @@ export function claudeAnswers(
   )
 }
 
+const PLAN_CAPTURED =
+  "The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn."
+
+export function claudePermissionMode(modes: SessionModes): PermissionMode {
+  if (modes.interactionMode === "plan") return "plan"
+  switch (modes.runtimeMode) {
+    case "approval-required":
+      return "default"
+    case "auto-accept-edits":
+      return "acceptEdits"
+    case "full-access":
+      return "bypassPermissions"
+  }
+}
+
+const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
+
+export function claudeApproval(
+  toolName: string,
+  input: Record<string, unknown>,
+  reason: string | undefined,
+): ApprovalRequest {
+  const field = (name: string) => (typeof input[name] === "string" ? input[name] : "")
+  if (toolName === "Bash")
+    return { kind: "command", toolName, detail: field("command"), reason: reason ?? null, input }
+  if (EDIT_TOOLS.has(toolName))
+    return {
+      kind: "file-change",
+      toolName,
+      detail: field("file_path") || field("notebook_path"),
+      reason: reason ?? null,
+      input,
+    }
+  return { kind: "tool", toolName, detail: JSON.stringify(input), reason: reason ?? null, input }
+}
+
+const TODO_STATUS: Record<string, PlanStep["status"]> = {
+  pending: "pending",
+  in_progress: "running",
+  completed: "completed",
+}
+
+export function claudeTodoSteps(input: Record<string, unknown>): PlanStep[] {
+  const todos = Array.isArray(input.todos)
+    ? (input.todos as { content?: unknown; status?: unknown }[])
+    : []
+  return todos.flatMap((todo) =>
+    typeof todo.content === "string" && todo.content !== ""
+      ? [{ text: todo.content, status: TODO_STATUS[String(todo.status)] ?? "pending" }]
+      : [],
+  )
+}
+
 function textOf(content: unknown): string {
   if (typeof content === "string") return content
   if (Array.isArray(content)) {
@@ -123,11 +185,13 @@ export class ClaudeWorker implements Worker {
   private interrupting = false
   private closing = false
   private rejectedRateLimit: SDKRateLimitInfo | null = null
+  private modes: SessionModes
 
   constructor(context: WorkerContext) {
     this.context = context
     this.configDir = requireEnv(context.env, "CLAUDE_CONFIG_DIR")
     this.executable = requireEnv(context.env, "SANCHORIS_CLAUDE_PATH")
+    this.modes = context.modes
   }
 
   async start(restore: RestoredRecord | null): Promise<{ sessionId: string }> {
@@ -146,9 +210,9 @@ export class ClaudeWorker implements Worker {
         env: this.context.env,
         pathToClaudeCodeExecutable: this.executable,
         ...(restore ? { resume: sessionId } : { sessionId }),
-        permissionMode: "bypassPermissions",
+        permissionMode: claudePermissionMode(this.modes),
         allowDangerouslySkipPermissions: true,
-        canUseTool: (toolName, input, { signal }) => this.canUseTool(toolName, input, signal),
+        canUseTool: (toolName, input, options) => this.canUseTool(toolName, input, options),
         thinking: { type: "adaptive", display: "summarized" },
         settings: { showThinkingSummaries: true },
         settingSources: ["user", "project", "local"],
@@ -172,6 +236,13 @@ export class ClaudeWorker implements Worker {
       message: { role: "user", content: text },
       parent_tool_use_id: null,
     })
+  }
+
+  async setModes(modes: SessionModes): Promise<void> {
+    if (!this.session) throw new Error("Claude session is not running")
+    if (claudePermissionMode(modes) !== claudePermissionMode(this.modes))
+      await this.session.setPermissionMode(claudePermissionMode(modes))
+    this.modes = modes
   }
 
   async interrupt(): Promise<void> {
@@ -205,9 +276,49 @@ export class ClaudeWorker implements Worker {
   private async canUseTool(
     toolName: string,
     input: Record<string, unknown>,
+    options: { signal: AbortSignal; suggestions?: PermissionUpdate[]; decisionReason?: string },
+  ): Promise<PermissionResult> {
+    if (toolName === "AskUserQuestion") return this.askQuestions(input, options.signal)
+    if (toolName === "ExitPlanMode") {
+      if (typeof input.plan === "string" && input.plan.trim() !== "")
+        this.context.handlers.onEvent("proposed_plan", { markdown: input.plan })
+      return { behavior: "deny", message: PLAN_CAPTURED }
+    }
+    if (claudePermissionMode(this.modes) === "bypassPermissions")
+      return { behavior: "allow", updatedInput: input }
+    if (this.modes.interactionMode === "plan" && this.modes.runtimeMode === "full-access")
+      return {
+        behavior: "deny",
+        message:
+          "This tool requires approval in Plan mode, but approvals are disabled for this thread.",
+      }
+    const decision = await this.context.handlers.onApproval(
+      claudeApproval(toolName, input, options.decisionReason),
+      options.signal,
+    )
+    switch (decision) {
+      case "accept":
+        return { behavior: "allow", updatedInput: input }
+      case "acceptForSession":
+        return {
+          behavior: "allow",
+          updatedInput: input,
+          updatedPermissions: (options.suggestions ?? []).map((update) => ({
+            ...update,
+            destination: "session",
+          })),
+        }
+      case "decline":
+        return { behavior: "deny", message: "User declined tool execution." }
+      case "cancel":
+        return { behavior: "deny", message: "User cancelled tool execution.", interrupt: true }
+    }
+  }
+
+  private async askQuestions(
+    input: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<PermissionResult> {
-    if (toolName !== "AskUserQuestion") return { behavior: "allow", updatedInput: input }
     const questions = claudeQuestions(input)
     try {
       const answers = await this.context.handlers.onUserInput(questions, signal)
@@ -245,6 +356,11 @@ export class ClaudeWorker implements Worker {
             onEvent("text", { text: block.text })
           } else if (block.type === "tool_use") {
             onEvent("tool_use", { id: block.id, name: block.name, input: block.input })
+            if (block.name === "TodoWrite")
+              onEvent("plan", {
+                steps: claudeTodoSteps(block.input as Record<string, unknown>),
+                explanation: null,
+              })
           }
         }
         return

@@ -7,6 +7,7 @@ use sanchoris_core::items::{
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
 use sanchoris_core::model::{TaskDefinition, TaskStatus};
+use sanchoris_core::modes::SessionModes;
 use sanchoris_core::store::retry;
 use sanchoris_worker::conversation::{
     ChatError, Delivered, MemberMessage, NewConversation, post_member_message, start_conversation,
@@ -36,6 +37,7 @@ async fn start(world: &World, session: &str, text: &str) -> Delivered {
                 member_id,
                 member_name: "Mika",
                 text,
+                modes: SessionModes::DEFAULT,
                 at,
             },
         )
@@ -62,6 +64,7 @@ async fn post(world: &World, conversation_id: Uuid, text: &str) -> Delivered {
                 member_id,
                 member_name: "Mika",
                 text,
+                modes: SessionModes::DEFAULT,
                 at,
             },
         )
@@ -149,6 +152,10 @@ async fn a_new_conversation_starts_its_first_task_in_the_session_with_the_plan_c
     assert_eq!(view.status, "RUNNING");
     let starts = world.outbox(view.run_id.unwrap(), "start").await;
     let instruction = starts[0]["instruction"].as_str().unwrap();
+    assert_eq!(
+        starts[0]["modes"],
+        json!({ "interactionMode": "default", "runtimeMode": "full-access" })
+    );
     assert!(
         instruction.starts_with("[sanchoris] Mika started this chat in session all."),
         "{instruction}"
@@ -202,6 +209,7 @@ async fn an_unknown_session_is_rejected() {
             member_id: world.seeded.member_id,
             member_name: "Mika",
             text: "hello",
+            modes: SessionModes::DEFAULT,
             at: world.clock_now(),
         },
     )
@@ -226,6 +234,10 @@ async fn messages_go_to_the_running_task_and_a_finished_task_starts_the_next() {
     assert_eq!(
         world.messages(run_id).await,
         vec!["[sanchoris] Message from Mika:\nAlso check the changelog".to_string()]
+    );
+    assert_eq!(
+        world.outbox(run_id, "session_mode").await,
+        vec![json!({ "modes": { "interactionMode": "default", "runtimeMode": "full-access" } })]
     );
     world
         .dynamo

@@ -7,7 +7,7 @@ use base64::engine::general_purpose::STANDARD;
 use chrono::Duration;
 use sanchoris_core::billing::{ADMIN_PLAN, FREE_PLAN, PRIVILEGED_EMAIL_DOMAIN, stage_plan_change};
 use sanchoris_core::channel::{OutboxType, RunEventType, enqueue_outbox, record_run_event};
-use sanchoris_core::conversations::{answer_question, latest_task};
+use sanchoris_core::conversations::{answer_question, decide_approval, latest_task};
 use sanchoris_core::db::{self, REF_RUN, REF_TRIGGER, TenantTx};
 use sanchoris_core::item::format_time;
 use sanchoris_core::items::{
@@ -17,6 +17,7 @@ use sanchoris_core::items::{
 use sanchoris_core::jobs::{Deletion, Job};
 use sanchoris_core::keys;
 use sanchoris_core::model::{AuditOrigin, TaskStatus as CoreStatus};
+use sanchoris_core::modes::SessionModes;
 use sanchoris_core::receive::{Admission, SOURCE_CHAT, SOURCE_REPLY, admit_inbound};
 use sanchoris_core::skillrun::{SkillRunError, resolve_waiting_approval};
 use sanchoris_core::store::{Index, SortKey, Update};
@@ -46,7 +47,10 @@ use crate::context::{
     now, scope_for_tenant, serialize_tenant, state, store, tx, user_tx, viewer_user, write,
 };
 use crate::conversation::{ChatMessage, Conversation};
-use crate::enums::{ApiKeyProvider, CredentialScope, InvitationState, TriggerState};
+use crate::enums::{
+    ApiKeyProvider, ChatApprovalDecision, ChatInteractionMode, ChatRuntimeMode, CredentialScope,
+    InvitationState, TriggerState,
+};
 use crate::error::{bad_input, conflict, forbidden, not_found, parse_id, port, rate_limited};
 use crate::ports::{ConfigCheck, ConfigLocation, PlanChange, TenantCheckout, TriggerProposal};
 use crate::scalars::Timestamp;
@@ -105,6 +109,10 @@ pub(crate) struct SendChatMessageInput {
     #[graphql(name = "configId")]
     config_id: Option<ID>,
     text: String,
+    /// Default works on the message; Plan has the agent plan without changing files and propose the plan.
+    interaction_mode: ChatInteractionMode,
+    /// What the agent may do without asking.
+    runtime_mode: ChatRuntimeMode,
 }
 
 #[derive(SimpleObject, InputObject)]
@@ -126,6 +134,18 @@ pub(crate) struct AnswerChatQuestionInput {
     question_id: ID,
     /// One answer per item of the question.
     answers: Vec<ChatAnswerInput>,
+}
+
+#[derive(InputObject)]
+pub(crate) struct AnswerChatApprovalInput {
+    #[graphql(name = "tenantId")]
+    tenant_id: ID,
+    #[graphql(name = "conversationId")]
+    conversation_id: ID,
+    /// The id of the approval the agent waits on.
+    #[graphql(name = "approvalId")]
+    approval_id: ID,
+    decision: ChatApprovalDecision,
 }
 
 #[derive(SimpleObject)]
@@ -1147,6 +1167,64 @@ impl MutationRoot {
         Conversation::load(ctx, scope, conversation_id).await
     }
 
+    /// Decides on the action that the agent of the conversation's running task waits to be approved.
+    async fn answer_chat_approval(
+        &self,
+        ctx: &Context<'_>,
+        input: AnswerChatApprovalInput,
+    ) -> Result<Conversation> {
+        let scope = tenant_scope(ctx, &input.tenant_id).await?;
+        let (member_id, _) = scope.member()?;
+        let conversation_id = parse_id(&input.conversation_id)?;
+        let conversation = Conversation::load(ctx, scope, conversation_id).await?;
+        let request_id = input.approval_id.to_string();
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            let run = open_chat_run(&mut tx, &conversation.row).await?;
+            let approval = tx
+                .get::<items::RunApproval>(&keys::run_approval_key(
+                    scope.tenant_id,
+                    run.id,
+                    &request_id,
+                ))
+                .await?
+                .ok_or_else(|| not_found(format!("approval {request_id}")))?;
+            if approval.decision.is_some() {
+                return Err(conflict("the action has already been decided").into());
+            }
+            decide_approval(
+                &mut tx,
+                run.id,
+                &request_id,
+                input.decision.as_db(),
+                member_id,
+                now(ctx),
+            )
+            .await?;
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "chat.approval_decide",
+                target(
+                    "conversation",
+                    conversation_id,
+                    conversation.row.title.clone(),
+                ),
+                &format!(
+                    "Decided {} on {}",
+                    input.decision.as_db(),
+                    approval.tool_name
+                ),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
+        Conversation::load(ctx, scope, conversation_id).await
+    }
+
     /// Interrupts the turn that the agent of the conversation's running task is working on. The session stays open for the next message.
     async fn interrupt_chat(
         &self,
@@ -1220,6 +1298,10 @@ impl MutationRoot {
                 member_id,
                 member_name: &member_name,
                 text: &text,
+                modes: SessionModes {
+                    interaction_mode: input.interaction_mode.into(),
+                    runtime_mode: input.runtime_mode.into(),
+                },
                 at: now(ctx),
             };
             let (delivered, action, summary) = match (existing, &new_in) {
@@ -1278,6 +1360,7 @@ impl MutationRoot {
                 issues: Vec::new(),
                 work: Vec::new(),
                 diff: None,
+                proposed_plan: None,
             },
         })
     }

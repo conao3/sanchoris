@@ -187,6 +187,7 @@ describe("agent secrets", () => {
       return {
         start: async () => ({ sessionId: "session-1" }),
         send: () => {},
+        setModes: async () => {},
         interrupt: async () => {},
         readRecord: async () => ({ relativePath: "r", bytes: Buffer.alloc(0) }),
         close: async () => {},

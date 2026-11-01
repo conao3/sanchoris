@@ -9,6 +9,7 @@ use sanchoris_core::items::{
 };
 use sanchoris_core::keys;
 use sanchoris_core::model::TaskStatus;
+use sanchoris_core::modes::SessionModes;
 use sanchoris_core::store::{Index, Listing};
 use sanchoris_core::tasks::runs_of;
 use uuid::Uuid;
@@ -17,7 +18,9 @@ use crate::account::Member;
 use crate::chat_work::{ChatDiff, ChatWork, ChatWorking, RunWork};
 use crate::config::Session;
 use crate::context::{Scope, tx};
-use crate::enums::{ChatAuthorKind, ChatTurnOutcome, ConversationKind};
+use crate::enums::{
+    ChatAuthorKind, ChatInteractionMode, ChatRuntimeMode, ChatTurnOutcome, ConversationKind,
+};
 use crate::error::not_found;
 use crate::scalars::{Timestamp, ts};
 use crate::task::{IssueRef, Task, filed_tasks_of, issue_outputs};
@@ -105,6 +108,24 @@ impl Conversation {
         Member::find(ctx, self.scope, self.row.created_by_member_id).await
     }
 
+    /// The mode of the last message sent to the conversation; DEFAULT before any.
+    async fn interaction_mode(&self) -> ChatInteractionMode {
+        self.row
+            .modes
+            .unwrap_or(SessionModes::DEFAULT)
+            .interaction_mode
+            .into()
+    }
+
+    /// The runtime mode of the last message sent to the conversation; FULL_ACCESS before any.
+    async fn runtime_mode(&self) -> ChatRuntimeMode {
+        self.row
+            .modes
+            .unwrap_or(SessionModes::DEFAULT)
+            .runtime_mode
+            .into()
+    }
+
     async fn created_at(&self) -> Timestamp {
         ts(self.row.created_at)
     }
@@ -122,7 +143,8 @@ impl Conversation {
         let mut runs: BTreeMap<Uuid, RunWork> = BTreeMap::new();
         let mut messages = Vec::with_capacity(rows.len());
         for row in rows {
-            let (work, diff) = match (row.author_kind.as_str(), row.run_id, row.turn) {
+            let (work, diff, proposed_plan) = match (row.author_kind.as_str(), row.run_id, row.turn)
+            {
                 (AUTHOR_AGENT, Some(run_id), Some(turn)) => {
                     if let Entry::Vacant(entry) = runs.entry(run_id) {
                         entry.insert(
@@ -130,9 +152,13 @@ impl Conversation {
                         );
                     }
                     let run = &runs[&run_id];
-                    (run.turn(turn, Some(&row.text))?, run.diff(turn)?)
+                    (
+                        run.turn(turn, Some(&row.text))?,
+                        run.diff(turn)?,
+                        run.proposed_plan(turn),
+                    )
                 }
-                _ => (Vec::new(), None),
+                _ => (Vec::new(), None, None),
             };
             messages.push(ChatMessage {
                 scope: self.scope,
@@ -140,6 +166,7 @@ impl Conversation {
                 issues: Vec::new(),
                 work,
                 diff,
+                proposed_plan,
             });
         }
         for task_id in self.task_ids(ctx).await? {
@@ -188,25 +215,36 @@ impl Conversation {
                 started_at: ts(at),
                 work: Vec::new(),
                 question: None,
+                approval: None,
+                plan: None,
             }));
         };
         let turn = run.turns + 1;
         let work = RunWork::load(&mut tx, run.id).await?;
         let question = work.open_question(turn)?;
+        let approval = work.open_approval(turn)?;
+        let plan = work.plan(turn)?;
         let entries = work.turn(turn, None)?;
         let Some(started_at) = last_member_at
             .or_else(|| work.first_at(turn))
             .or_else(|| question.as_ref().map(|question| question.asked_at.0))
+            .or_else(|| approval.as_ref().map(|approval| approval.asked_at.0))
         else {
             return Ok(None);
         };
-        if entries.is_empty() && question.is_none() && last_member_at.is_none() {
+        if entries.is_empty()
+            && question.is_none()
+            && approval.is_none()
+            && last_member_at.is_none()
+        {
             return Ok(None);
         }
         Ok(Some(ChatWorking {
             started_at: ts(started_at),
             work: entries,
             question,
+            approval,
+            plan,
         }))
     }
 
@@ -239,6 +277,7 @@ pub(crate) struct ChatMessage {
     pub issues: Vec<OutputItem>,
     pub work: Vec<ChatWork>,
     pub diff: Option<ChatDiff>,
+    pub proposed_plan: Option<String>,
 }
 
 #[Object]
@@ -293,6 +332,11 @@ impl ChatMessage {
     /// The thinking, text and tool calls of the turn that this reply ends, oldest first. Empty for members' messages.
     async fn work(&self) -> &[ChatWork] {
         &self.work
+    }
+
+    /// The plan the agent proposed in plan mode during the turn this reply ends, as Markdown.
+    async fn proposed_plan(&self) -> Option<&str> {
+        self.proposed_plan.as_deref()
     }
 
     /// The files the turn this reply ends changed. Null when it changed none.

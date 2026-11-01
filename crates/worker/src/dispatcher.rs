@@ -18,6 +18,7 @@ use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
 use sanchoris_core::messages::{self, OfferedInput, OfferedSkill, StartMessage};
 use sanchoris_core::model::{ActorKind, AuditOrigin, NamedDefinition, TaskDefinition};
+use sanchoris_core::modes::SessionModes;
 use sanchoris_core::pattern::EventPattern;
 use sanchoris_core::store::{Index, SortKey, Update};
 use sanchoris_core::tasks::load_task;
@@ -583,6 +584,7 @@ async fn start(
         "instruction": text,
         "systemPrompt": system_prompt,
         "repositories": repositories,
+        "modes": SessionModes::DEFAULT,
     }));
     tx.put(&task)?;
     Ok(TriggerEventOutcome::Started)

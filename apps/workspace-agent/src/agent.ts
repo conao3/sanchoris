@@ -14,6 +14,8 @@ import { type EgressForwarder, type Relay, startEgressForwarder } from "./egress
 import { runCommands } from "./exec.ts"
 import type { Logger } from "./log.ts"
 import type {
+  ApprovalDecision,
+  ApprovalRequest,
   CredentialsMessage,
   ExecMessage,
   InboundMessage,
@@ -69,6 +71,8 @@ export class WorkspaceAgent {
   private readonly seenMessageIds = new Set<string>()
   private readonly seenExecRequestIds = new Set<string>()
   private readonly questions = new Map<string, (answers: UserInputAnswers) => void>()
+  private readonly approvals = new Map<string, (decision: ApprovalDecision) => void>()
+  private deliveries: Promise<void> = Promise.resolve()
   private finished = false
   private stopping = false
   private turnEnded: (() => void) | null = null
@@ -144,7 +148,14 @@ export class WorkspaceAgent {
         }
         if (this.seenMessageIds.has(message.messageId)) return
         this.seenMessageIds.add(message.messageId)
-        void this.whenReady(() => this.deliver(message.text))
+        this.deliveries = this.deliveries.then(() =>
+          this.whenReady(() => this.deliver(message.text)),
+        )
+        return
+      case "session_mode":
+        this.deliveries = this.deliveries.then(() =>
+          this.whenReady(() => this.requireWorker().setModes(message.modes)),
+        )
         return
       case "interrupt":
         void this.whenReady(() => this.requireWorker().interrupt())
@@ -159,6 +170,18 @@ export class WorkspaceAgent {
         }
         this.questions.delete(message.requestId)
         resolve(message.answers)
+        return
+      }
+      case "approval_response": {
+        const resolve = this.approvals.get(message.requestId)
+        if (!resolve) {
+          this.config.logger("info", "decision ignored for an approval that is not open", {
+            requestId: message.requestId,
+          })
+          return
+        }
+        this.approvals.delete(message.requestId)
+        resolve(message.decision)
         return
       }
       case "exec":
@@ -239,6 +262,7 @@ export class WorkspaceAgent {
       agent: start.agent,
       model: start.model,
       systemPrompt: start.systemPrompt,
+      modes: start.modes,
       workspaceDir: this.config.workspaceDir,
       env,
       handlers: {
@@ -257,6 +281,7 @@ export class WorkspaceAgent {
           this.channel.send({ type: "rate_limit", ...rateLimit })
         },
         onUserInput: (questions, signal) => this.ask(questions, signal),
+        onApproval: (request, signal) => this.approve(request, signal),
         onFatal: (error) => void this.fail(error),
       },
     })
@@ -294,6 +319,31 @@ export class WorkspaceAgent {
         requestId,
         turn: this.lastTurn + 1,
         questions,
+      })
+    })
+  }
+
+  private approve(request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalDecision> {
+    const requestId = randomUUID()
+    return new Promise((resolve, reject) => {
+      const cancel = () => {
+        this.approvals.delete(requestId)
+        reject(new Error("The approval was cancelled before anyone decided."))
+      }
+      if (signal.aborted) {
+        cancel()
+        return
+      }
+      signal.addEventListener("abort", cancel, { once: true })
+      this.approvals.set(requestId, (decision) => {
+        signal.removeEventListener("abort", cancel)
+        resolve(decision)
+      })
+      this.channel.send({
+        type: "approval_request",
+        requestId,
+        turn: this.lastTurn + 1,
+        ...request,
       })
     })
   }

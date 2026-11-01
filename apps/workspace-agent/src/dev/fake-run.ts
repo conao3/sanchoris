@@ -91,6 +91,7 @@ control.send({
   systemPrompt: null,
   skills: (values.skill ?? []).map((name) => ({ name, required: true, inputs: {} })),
   instruction,
+  modes: { interactionMode: "default", runtimeMode: "full-access" },
   resume: null,
   heartbeatSeconds: 30,
 })

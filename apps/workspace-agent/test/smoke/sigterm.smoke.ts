@@ -234,6 +234,7 @@ describe("Claude Code on SIGTERM", () => {
       systemPrompt: null,
       skills: [],
       instruction: "START-LONG: run the long command.",
+      modes: { interactionMode: "default", runtimeMode: "full-access" },
       resume: null,
       heartbeatSeconds: 30,
     })
@@ -283,6 +284,7 @@ describe("Claude Code on SIGTERM", () => {
       systemPrompt: null,
       skills: [],
       instruction: "RESUME-CHECK: continue where you left off.",
+      modes: { interactionMode: "default", runtimeMode: "full-access" },
       resume: {
         sessionId: record.sessionId,
         url: control.recordUrl(record.key),

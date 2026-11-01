@@ -3,7 +3,13 @@ import { randomUUID } from "node:crypto"
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
-import type { UserInputAnswers, UserInputQuestion } from "../protocol.ts"
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  SessionModes,
+  UserInputAnswers,
+  UserInputQuestion,
+} from "../protocol.ts"
 import {
   emptyUsage,
   requireEnv,
@@ -29,6 +35,8 @@ interface FakeTurnContext {
   history: readonly TranscriptLine[]
   exec: (command: string, args: string[]) => Promise<CommandResult>
   ask: (questions: UserInputQuestion[]) => Promise<UserInputAnswers>
+  approve: (request: ApprovalRequest) => Promise<ApprovalDecision>
+  modes: SessionModes
 }
 
 export type FakeScript = (text: string, context: FakeTurnContext) => Promise<string>
@@ -41,11 +49,13 @@ class FakeWorker implements Worker {
   private history: TranscriptLine[] = []
   private chain: Promise<void> = Promise.resolve()
   private interruptTurn: (() => void) | null = null
+  private modes: SessionModes
 
   constructor(context: WorkerContext, script: FakeScript) {
     this.context = context
     this.script = script
     this.home = requireEnv(context.env, "FAKE_WORKER_HOME")
+    this.modes = context.modes
   }
 
   async start(restore: RestoredRecord | null): Promise<{ sessionId: string }> {
@@ -69,6 +79,10 @@ class FakeWorker implements Worker {
     this.chain = this.chain
       .then(() => this.turn(text))
       .catch((error: Error) => this.context.handlers.onFatal(error))
+  }
+
+  async setModes(modes: SessionModes): Promise<void> {
+    this.modes = modes
   }
 
   async interrupt(): Promise<void> {
@@ -112,6 +126,8 @@ class FakeWorker implements Worker {
         history: this.history,
         exec: (command, args) => this.exec(command, args),
         ask: (asked) => this.context.handlers.onUserInput(asked, questions.signal),
+        approve: (request) => this.context.handlers.onApproval(request, questions.signal),
+        modes: this.modes,
       }),
       interrupted,
     ])

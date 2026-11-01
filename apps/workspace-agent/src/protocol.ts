@@ -35,6 +35,18 @@ const RunId = z.string().min(1)
 const RequestId = z.string().min(1)
 const SkillRunId = z.number().int().positive()
 
+export const InteractionMode = z.enum(["default", "plan"])
+export type InteractionMode = z.infer<typeof InteractionMode>
+
+export const RuntimeMode = z.enum(["approval-required", "auto-accept-edits", "full-access"])
+export type RuntimeMode = z.infer<typeof RuntimeMode>
+
+export const SessionModes = z.strictObject({
+  interactionMode: InteractionMode,
+  runtimeMode: RuntimeMode,
+})
+export type SessionModes = z.infer<typeof SessionModes>
+
 export const StartMessage = z.strictObject({
   type: z.literal("start"),
   runId: RunId,
@@ -43,6 +55,7 @@ export const StartMessage = z.strictObject({
   systemPrompt: z.string().nullable(),
   skills: z.array(SkillDefinition),
   instruction: z.string().min(1).nullable(),
+  modes: SessionModes,
   resume: ResumeRecord.nullable(),
   heartbeatSeconds: z.number().int().positive(),
 })
@@ -55,6 +68,13 @@ export const UserMessage = z.strictObject({
   text: z.string().min(1),
 })
 export type UserMessage = z.infer<typeof UserMessage>
+
+export const SessionModeMessage = z.strictObject({
+  type: z.literal("session_mode"),
+  runId: RunId,
+  modes: SessionModes,
+})
+export type SessionModeMessage = z.infer<typeof SessionModeMessage>
 
 export const InterruptMessage = z.strictObject({
   type: z.literal("interrupt"),
@@ -69,6 +89,16 @@ export const UserInputResponseMessage = z.strictObject({
   runId: RunId,
   requestId: RequestId,
   answers: UserInputAnswers,
+})
+
+export const ApprovalDecision = z.enum(["accept", "acceptForSession", "decline", "cancel"])
+export type ApprovalDecision = z.infer<typeof ApprovalDecision>
+
+export const ApprovalResponseMessage = z.strictObject({
+  type: z.literal("approval_response"),
+  runId: RunId,
+  requestId: RequestId,
+  decision: ApprovalDecision,
 })
 
 export const ShutdownMessage = z.strictObject({
@@ -185,8 +215,10 @@ export type CredentialsMessage = z.infer<typeof CredentialsMessage>
 export const InboundMessage = z.union([
   StartMessage,
   UserMessage,
+  SessionModeMessage,
   InterruptMessage,
   UserInputResponseMessage,
+  ApprovalResponseMessage,
   ShutdownMessage,
   ExecMessage,
   SkillResponseMessage,
@@ -221,12 +253,20 @@ export const RateLimitWindow = z.strictObject({
 })
 export type RateLimitWindow = z.infer<typeof RateLimitWindow>
 
+export const PlanStep = z.strictObject({
+  text: z.string().min(1),
+  status: z.enum(["pending", "running", "completed"]),
+})
+export type PlanStep = z.infer<typeof PlanStep>
+
 export const EventKind = z.enum([
   "thinking",
   "text",
   "tool_use",
   "tool_result",
   "item",
+  "plan",
+  "proposed_plan",
   "turn_diff",
   "system",
   "log",
@@ -376,6 +416,23 @@ export const UserInputRequestMessage = z.strictObject({
   questions: z.array(UserInputQuestion).min(1),
 })
 
+export const ApprovalRequest = z.strictObject({
+  kind: z.enum(["command", "file-change", "tool"]),
+  toolName: z.string().min(1),
+  detail: z.string(),
+  reason: z.string().nullable(),
+  input: JsonObject,
+})
+export type ApprovalRequest = z.infer<typeof ApprovalRequest>
+
+export const ApprovalRequestMessage = z.strictObject({
+  type: z.literal("approval_request"),
+  ...sequenced,
+  requestId: RequestId,
+  turn: z.number().int().positive(),
+  ...ApprovalRequest.shape,
+})
+
 export const ExecCommandResult = z.strictObject({
   command: z.string(),
   exitCode: z.number().int(),
@@ -407,6 +464,7 @@ export const OutboundMessage = z.union([
   GitTokenRequestMessage,
   WorkerCredentialRequestMessage,
   UserInputRequestMessage,
+  ApprovalRequestMessage,
 ])
 export type OutboundMessage = z.infer<typeof OutboundMessage>
 

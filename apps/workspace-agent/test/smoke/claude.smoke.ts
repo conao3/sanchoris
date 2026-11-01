@@ -77,6 +77,7 @@ describe("ClaudeWorker smoke", () => {
       systemPrompt: null,
       skills: [],
       instruction: "Remember the code word BLUEBERRY-17. Reply with OK and nothing else.",
+      modes: { interactionMode: "default", runtimeMode: "full-access" },
       resume: null,
       heartbeatSeconds: 30,
     })
@@ -109,6 +110,7 @@ describe("ClaudeWorker smoke", () => {
       skills: [],
       instruction:
         "[sanchoris] Message from Mika: What was the code word? Reply with the code word only.",
+      modes: { interactionMode: "default", runtimeMode: "full-access" },
       resume: {
         sessionId: record.sessionId,
         url: control.recordUrl(record.key),

@@ -6,6 +6,7 @@ import { t } from "../../i18n/index.ts"
 import { clock } from "../../lib/format.ts"
 import { CopyButton } from "./CopyButton.tsx"
 import { Markdown } from "./Markdown.tsx"
+import { PlanSteps } from "./Plan.tsx"
 import {
   type Work,
   answerText,
@@ -171,6 +172,17 @@ function WorkDetail({ work }: { work: Work }) {
   if (work.kind === "THINKING") {
     return <Markdown text={work.text ?? ""} className="text-sm text-muted" />
   }
+  if (work.kind === "PLAN" && work.plan) {
+    return <PlanSteps plan={work.plan} />
+  }
+  if (work.kind === "APPROVAL" && work.approval) {
+    return (
+      <div className="space-y-1.5 text-sm">
+        <Output>{work.approval.detail || work.approval.toolName}</Output>
+        {work.approval.reason ? <p className="text-muted">{work.approval.reason}</p> : null}
+      </div>
+    )
+  }
   if (work.kind === "QUESTION" && work.question) {
     const question = work.question
     return (
@@ -301,7 +313,7 @@ export function Working({
 }: {
   startedAt: string
   work: Work[]
-  waiting: boolean
+  waiting?: "question" | "approval"
 }) {
   const now = useNow(true)
   const latest = work.findLast((entry) => entry.kind !== "TEXT")
@@ -313,11 +325,13 @@ export function Working({
         icon={LoaderCircle}
         live
         label={
-          waiting
+          waiting === "question"
             ? t("work.waitingAnswer")
-            : latest
-              ? `${t("work.workingFor", { d: elapsed(seconds) })} · ${workLabel(latest)}`
-              : t("work.workingFor", { d: elapsed(seconds) })
+            : waiting === "approval"
+              ? t("work.waitingApproval")
+              : latest
+                ? `${t("work.workingFor", { d: elapsed(seconds) })} · ${workLabel(latest)}`
+                : t("work.workingFor", { d: elapsed(seconds) })
         }
       />
     </div>

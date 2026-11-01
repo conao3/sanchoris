@@ -1,4 +1,5 @@
 use async_graphql::{Enum, Error};
+use sanchoris_core::modes::{InteractionMode, RuntimeMode};
 
 macro_rules! db_enum {
     ($name:ident, $kind:literal, { $($(#[$meta:meta])* $variant:ident => $text:literal),+ $(,)? }) => {
@@ -337,4 +338,85 @@ db_enum!(AuditOrigin, "audit origin", {
     Github => "github",
     Slack => "slack",
     System => "system",
+});
+
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatInteractionMode {
+    Default,
+    /// The agent plans without changing files and proposes the plan.
+    Plan,
+}
+
+impl From<ChatInteractionMode> for InteractionMode {
+    fn from(mode: ChatInteractionMode) -> Self {
+        match mode {
+            ChatInteractionMode::Default => Self::Default,
+            ChatInteractionMode::Plan => Self::Plan,
+        }
+    }
+}
+
+impl From<InteractionMode> for ChatInteractionMode {
+    fn from(mode: InteractionMode) -> Self {
+        match mode {
+            InteractionMode::Default => Self::Default,
+            InteractionMode::Plan => Self::Plan,
+        }
+    }
+}
+
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatRuntimeMode {
+    /// Ask before commands and file changes.
+    ApprovalRequired,
+    /// Edit files without asking; ask before other actions.
+    AutoAcceptEdits,
+    /// Run commands and edit files without asking.
+    FullAccess,
+}
+
+impl From<ChatRuntimeMode> for RuntimeMode {
+    fn from(mode: ChatRuntimeMode) -> Self {
+        match mode {
+            ChatRuntimeMode::ApprovalRequired => Self::ApprovalRequired,
+            ChatRuntimeMode::AutoAcceptEdits => Self::AutoAcceptEdits,
+            ChatRuntimeMode::FullAccess => Self::FullAccess,
+        }
+    }
+}
+
+impl From<RuntimeMode> for ChatRuntimeMode {
+    fn from(mode: RuntimeMode) -> Self {
+        match mode {
+            RuntimeMode::ApprovalRequired => Self::ApprovalRequired,
+            RuntimeMode::AutoAcceptEdits => Self::AutoAcceptEdits,
+            RuntimeMode::FullAccess => Self::FullAccess,
+        }
+    }
+}
+
+db_enum!(ChatApprovalKind, "approval kind", {
+    /// A shell command.
+    Command => "command",
+    /// Edits to files.
+    FileChange => "file-change",
+    /// Another tool.
+    Tool => "tool",
+});
+
+db_enum!(ChatApprovalDecision, "approval decision", {
+    /// Run it once.
+    Accept => "accept",
+    /// Run it and stop asking for the same kind of action in this session.
+    AcceptForSession => "acceptForSession",
+    /// Skip it; the turn goes on.
+    Decline => "decline",
+    /// Skip it and end the turn.
+    Cancel => "cancel",
+});
+
+db_enum!(ChatPlanStepStatus, "plan step status", {
+    Pending => "pending",
+    Running => "running",
+    Completed => "completed",
 });

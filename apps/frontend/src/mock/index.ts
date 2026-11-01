@@ -13,7 +13,36 @@ import {
 
 type Obj = Record<string, any>
 
-function mockWorking(stamp: string): Obj {
+const MOCK_PLAN = {
+  explanation: null,
+  steps: [
+    { text: "Read the checkout code", status: "COMPLETED" },
+    { text: "Pick an approach", status: "RUNNING" },
+    { text: "Change and test it", status: "PENDING" },
+  ],
+}
+
+const PROPOSED_PLAN = [
+  "# Fix the flaky checkout test",
+  "",
+  "1. Wait for the payment iframe before typing the card number.",
+  "2. Replace the fixed `sleep(2)` with `waitFor` on the confirmation text.",
+  "3. Run the spec 20 times in CI to confirm it is stable.",
+].join("\n")
+
+function mockApproval(stamp: string): Obj {
+  return {
+    id: `a-${stamp}`,
+    kind: "COMMAND",
+    toolName: "Bash",
+    detail: "rm -rf node_modules && pnpm install",
+    reason: "Reinstall the dependencies before running the tests.",
+    decision: null,
+    askedAt: stamp,
+  }
+}
+
+function mockWorking(stamp: string, input: Obj): Obj {
   const at = (seconds: number) => new Date(new Date(stamp).getTime() + seconds * 1000).toISOString()
   return {
     startedAt: stamp,
@@ -24,6 +53,8 @@ function mockWorking(stamp: string): Obj {
         text: "**Checking the current setup**\n\nI should look at the repository before choosing an approach.",
         tool: null,
         question: null,
+        plan: null,
+        approval: null,
       },
       {
         kind: "TOOL",
@@ -36,37 +67,76 @@ function mockWorking(stamp: string): Obj {
           isError: false,
         },
         question: null,
+        plan: null,
+        approval: null,
       },
     ],
-    question: {
-      id: `q-${stamp}`,
-      askedAt: at(6),
-      items: [
-        {
-          id: "Which approach should I take?",
-          header: "Approach",
-          question: "Which approach should I take?",
-          multiSelect: false,
-          options: [
-            { label: "Small fix", description: "Change only what the request needs" },
-            { label: "Refactor", description: "Clean up the module while I am there" },
-          ],
-        },
-        {
-          id: "Which checks should I run?",
-          header: "Checks",
-          question: "Which checks should I run?",
-          multiSelect: true,
-          options: [
-            { label: "Unit tests", description: "pnpm test" },
-            { label: "Lint", description: "pnpm lint" },
-            { label: "E2E", description: "pnpm e2e" },
-          ],
-        },
-      ],
-      answers: null,
-    },
+    question:
+      input.runtimeMode === "APPROVAL_REQUIRED"
+        ? null
+        : {
+            id: `q-${stamp}`,
+            askedAt: at(6),
+            items: [
+              {
+                id: "Which approach should I take?",
+                header: "Approach",
+                question: "Which approach should I take?",
+                multiSelect: false,
+                options: [
+                  { label: "Small fix", description: "Change only what the request needs" },
+                  { label: "Refactor", description: "Clean up the module while I am there" },
+                ],
+              },
+              {
+                id: "Which checks should I run?",
+                header: "Checks",
+                question: "Which checks should I run?",
+                multiSelect: true,
+                options: [
+                  { label: "Unit tests", description: "pnpm test" },
+                  { label: "Lint", description: "pnpm lint" },
+                  { label: "E2E", description: "pnpm e2e" },
+                ],
+              },
+            ],
+            answers: null,
+          },
+    plan: MOCK_PLAN,
+    approval: input.runtimeMode === "APPROVAL_REQUIRED" ? mockApproval(stamp) : null,
   }
+}
+
+function respond(conversation: Obj, stamp: string, input: Obj) {
+  conversation.interactionMode = input.interactionMode
+  conversation.runtimeMode = input.runtimeMode
+  if (input.interactionMode !== "PLAN") {
+    conversation.working = mockWorking(stamp, input)
+    return
+  }
+  conversation.working = null
+  conversation.messages.push({
+    id: nextId("msg-live"),
+    authorKind: "AGENT",
+    member: null,
+    text: "Here is the plan. Say Implement when it looks right.",
+    at: new Date(new Date(stamp).getTime() + 1000).toISOString(),
+    issues: [],
+    work: [
+      {
+        kind: "PLAN",
+        at: stamp,
+        text: null,
+        tool: null,
+        question: null,
+        plan: MOCK_PLAN,
+        approval: null,
+      },
+    ],
+    outcome: "COMPLETED",
+    diff: null,
+    proposedPlan: PROPOSED_PLAN,
+  })
 }
 
 function createResolvers() {
@@ -322,10 +392,60 @@ function createResolvers() {
           issues: [],
           outcome: "COMPLETED",
           diff: null,
+          proposedPlan: null,
           work: [
             ...working.work,
-            { kind: "QUESTION", at: question.askedAt, text: null, tool: null, question },
+            {
+              kind: "QUESTION",
+              at: question.askedAt,
+              text: null,
+              tool: null,
+              question,
+              plan: null,
+              approval: null,
+            },
           ],
+        })
+        conversation.working = null
+        conversation.updatedAt = stamp
+        return conversation
+      },
+      answerChatApproval: (_: unknown, { input }: Obj) => {
+        const tenant = tenantById(input.tenantId)
+        const conversation = tenant.conversationList.find(
+          (item: Obj) => item.id === input.conversationId,
+        )
+        const working = conversation?.working
+        if (!working?.approval || working.approval.id !== input.approvalId) {
+          throw new Error("The agent is not waiting on this approval")
+        }
+        const stamp = new Date().toISOString()
+        const approval = { ...working.approval, decision: input.decision }
+        conversation.messages.push({
+          id: nextId("msg-live"),
+          authorKind: "AGENT",
+          member: null,
+          text:
+            input.decision === "DECLINE" || input.decision === "CANCEL"
+              ? "I left the dependencies as they are."
+              : "Reinstalled the dependencies; the tests pass.",
+          at: stamp,
+          issues: [],
+          work: [
+            ...working.work,
+            {
+              kind: "APPROVAL",
+              at: approval.askedAt,
+              text: null,
+              tool: null,
+              question: null,
+              plan: null,
+              approval,
+            },
+          ],
+          outcome: input.decision === "CANCEL" ? "INTERRUPTED" : "COMPLETED",
+          diff: null,
+          proposedPlan: null,
         })
         conversation.working = null
         conversation.updatedAt = stamp
@@ -347,6 +467,7 @@ function createResolvers() {
           issues: [],
           outcome: "INTERRUPTED",
           diff: null,
+          proposedPlan: null,
           work: conversation.working.work,
         })
         conversation.working = null
@@ -365,6 +486,7 @@ function createResolvers() {
           work: [],
           outcome: null,
           diff: null,
+          proposedPlan: null,
         }
         const startTask = (conversation: Obj, sequence: number): Obj => {
           const session = conversation.session
@@ -433,7 +555,7 @@ function createResolvers() {
           }
           conversation.messages.push(message)
           conversation.updatedAt = stamp
-          conversation.working = mockWorking(stamp)
+          respond(conversation, stamp, input)
           const latest = conversation.latestTask()
           if (!latest || ["SUCCEEDED", "FAILED", "ABORTED"].includes(latest.status)) {
             const task = startTask(conversation, (latest?.conversationSequence ?? 0) + 1)
@@ -464,7 +586,9 @@ function createResolvers() {
           createdBy: viewerMemberOf(tenant),
           createdAt: stamp,
           updatedAt: stamp,
-          working: mockWorking(stamp),
+          interactionMode: input.interactionMode,
+          runtimeMode: input.runtimeMode,
+          working: null,
           messages: [message],
           tasks: () => tenant.taskList.filter((task: Obj) => task.conversation === conversation),
           latestTask: () => {
@@ -474,6 +598,7 @@ function createResolvers() {
           filedTasks: () => [],
         }
         tenant.conversationList.push(conversation)
+        respond(conversation, stamp, input)
         const task = startTask(conversation, 1)
         return { conversation, task, message }
       },

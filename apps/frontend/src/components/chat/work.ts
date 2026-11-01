@@ -9,10 +9,14 @@ import {
   MessageCircleQuestion,
   Plug,
   Search,
+  ShieldCheck,
   SquarePen,
   SquareTerminal,
 } from "lucide-react"
-import type { ChatWorkFieldsFragment } from "../../graphql/generated/graphql.ts"
+import type {
+  ChatApprovalDecision,
+  ChatWorkFieldsFragment,
+} from "../../graphql/generated/graphql.ts"
 import { type MessageKey, t } from "../../i18n/index.ts"
 
 export type Work = ChatWorkFieldsFragment
@@ -28,6 +32,7 @@ export type WorkCategory =
   | "web"
   | "agent"
   | "todo"
+  | "approval"
   | "mcp"
   | "other"
 
@@ -60,6 +65,7 @@ const ICONS: Record<WorkCategory, LucideIcon> = {
   web: Globe,
   agent: Bot,
   todo: ListTodo,
+  approval: ShieldCheck,
   mcp: Plug,
   other: Hammer,
 }
@@ -74,8 +80,16 @@ const SUMMARY_KEYS: Record<WorkCategory, [MessageKey, MessageKey]> = {
   web: ["work.sum.web.one", "work.sum.web.other"],
   agent: ["work.sum.agent.one", "work.sum.agent.other"],
   todo: ["work.sum.todo.one", "work.sum.todo.other"],
+  approval: ["work.sum.approval.one", "work.sum.approval.other"],
   mcp: ["work.sum.mcp.one", "work.sum.mcp.other"],
   other: ["work.sum.other.one", "work.sum.other.other"],
+}
+
+const DECISION_KEYS: Record<ChatApprovalDecision, MessageKey> = {
+  ACCEPT: "work.approved",
+  ACCEPT_FOR_SESSION: "work.approvedSession",
+  DECLINE: "work.declined",
+  CANCEL: "work.cancelled",
 }
 
 const WORKSPACE_PREFIX = /^\/workspace\//
@@ -93,6 +107,12 @@ export function workCategory(work: Work): WorkCategory {
   }
   if (work.kind === "QUESTION") {
     return "question"
+  }
+  if (work.kind === "PLAN") {
+    return "todo"
+  }
+  if (work.kind === "APPROVAL") {
+    return "approval"
   }
   return toolCategory(work.tool?.name ?? "")
 }
@@ -170,6 +190,15 @@ export function answerText(question: NonNullable<Work["question"]>, id: string):
 export function workLabel(work: Work): string {
   if (work.kind === "THINKING") {
     return firstLine((work.text ?? "").replace(/\*\*/g, ""), 140) || t("work.thought")
+  }
+  if (work.kind === "PLAN" && work.plan) {
+    const done = work.plan.steps.filter((step) => step.status === "COMPLETED").length
+    return t("work.planUpdated", { done, total: work.plan.steps.length })
+  }
+  if (work.kind === "APPROVAL" && work.approval) {
+    return t(DECISION_KEYS[work.approval.decision ?? "DECLINE"], {
+      what: firstLine(work.approval.detail || work.approval.toolName),
+    })
   }
   if (work.kind === "QUESTION" && work.question) {
     const question = work.question

@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::item::{Entity, ItemReader, ItemWriter, Key, format_time};
 use crate::keys;
 use crate::model::{SkillRunStatus, TaskStatus, WaitReason};
+use crate::modes::SessionModes;
 use crate::store::DbError;
 
 pub const USAGE_SNAPSHOT_RETENTION_DAYS: i64 = 30;
@@ -2695,6 +2696,68 @@ impl Entity for RunQuestion {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RunApproval {
+    pub tenant_id: Uuid,
+    pub run_id: Uuid,
+    pub task_id: Uuid,
+    pub request_id: String,
+    pub turn: i64,
+    pub approval_kind: String,
+    pub tool_name: String,
+    pub detail: String,
+    pub reason: Option<String>,
+    pub input: Value,
+    pub decision: Option<String>,
+    pub decided_by_member_id: Option<Uuid>,
+    pub asked_at: DateTime<Utc>,
+    pub decided_at: Option<DateTime<Utc>>,
+}
+
+impl Entity for RunApproval {
+    const KIND: &'static str = "run_approval";
+
+    fn key(&self) -> Key {
+        keys::run_approval_key(self.tenant_id, self.run_id, &self.request_id)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .uuid("run_id", self.run_id)
+            .uuid("task_id", self.task_id)
+            .s("request_id", &self.request_id)
+            .n("turn", self.turn)
+            .s("approval_kind", &self.approval_kind)
+            .s("tool_name", &self.tool_name)
+            .s("detail", &self.detail)
+            .opt_s("reason", self.reason.as_ref())
+            .json("input", &self.input)
+            .opt_s("decision", self.decision.as_ref())
+            .opt_uuid("decided_by_member_id", self.decided_by_member_id)
+            .time("asked_at", self.asked_at)
+            .opt_time("decided_at", self.decided_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            run_id: r.uuid("run_id")?,
+            task_id: r.uuid("task_id")?,
+            request_id: r.s("request_id")?,
+            turn: r.n("turn")?,
+            approval_kind: r.s("approval_kind")?,
+            tool_name: r.s("tool_name")?,
+            detail: r.s("detail")?,
+            reason: r.opt_s("reason")?,
+            input: r.json("input")?,
+            decision: r.opt_s("decision")?,
+            decided_by_member_id: r.opt_uuid("decided_by_member_id")?,
+            asked_at: r.time("asked_at")?,
+            decided_at: r.opt_time("decided_at")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReceiveRate {
     pub tenant_id: Uuid,
     pub window_start: DateTime<Utc>,
@@ -2780,6 +2843,7 @@ pub struct Conversation {
     pub created_by_member_id: Uuid,
     pub title: String,
     pub tasks: i64,
+    pub modes: Option<SessionModes>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -2804,6 +2868,12 @@ impl Entity for Conversation {
             .uuid("created_by_member_id", self.created_by_member_id)
             .s("title", &self.title)
             .n("tasks", self.tasks)
+            .opt_json(
+                "modes",
+                self.modes
+                    .map(|modes| serde_json::to_value(modes).expect("modes serialize"))
+                    .as_ref(),
+            )
             .time("created_at", self.created_at)
             .time("updated_at", self.updated_at)
             .s("gsi1pk", keys::conversations_index(self.tenant_id))
@@ -2821,6 +2891,11 @@ impl Entity for Conversation {
             created_by_member_id: r.uuid("created_by_member_id")?,
             title: r.s("title")?,
             tasks: r.n("tasks")?,
+            modes: r
+                .opt_json("modes")?
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| DbError::Decode(format!("conversation modes: {e}")))?,
             created_at: r.time("created_at")?,
             updated_at: r.time("updated_at")?,
         })

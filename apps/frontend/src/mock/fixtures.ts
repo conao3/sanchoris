@@ -1490,6 +1490,7 @@ function buildAcme(viewerRole: string): Obj {
     work,
     diff,
     outcome: authorKind === "AGENT" ? "COMPLETED" : null,
+    proposedPlan: null,
   })
   const work = (minutes: number, kind: string, fields: Obj): Obj => ({
     kind,
@@ -1497,6 +1498,8 @@ function buildAcme(viewerRole: string): Obj {
     text: null,
     tool: null,
     question: null,
+    plan: null,
+    approval: null,
     ...fields,
   })
   const tool = (name: string, input: Obj, output: string | null, isError = false): Obj => ({
@@ -1642,6 +1645,8 @@ function buildAcme(viewerRole: string): Obj {
       createdBy,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
+      interactionMode: "DEFAULT",
+      runtimeMode: "FULL_ACCESS",
       working: null,
       messages,
       tasks: () => tasks.filter((candidate) => candidate.conversation === item),

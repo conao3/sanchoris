@@ -11,7 +11,7 @@ use sanchoris_api::signing::HmacKey;
 use sanchoris_core::conversations::post_agent_message;
 use sanchoris_core::items::{
     ApprovalWait, AuditEvent, ConfigRevision, Credential, Guard, Integration, Member, Run,
-    RunQuestion, SkillRunItem, Task, Tenant, User,
+    RunApproval, RunQuestion, SkillRunItem, Task, Tenant, User,
 };
 use sanchoris_core::keys;
 use sanchoris_core::model::{SkillRunStatus, TaskStatus};
@@ -424,7 +424,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .ok(
             owner,
             "SendChatMessage",
-            json!({ "input": { "tenantId": tenant, "sessionName": "shop", "text": "Which issues are open?" } }),
+            json!({ "input": { "tenantId": tenant, "sessionName": "shop", "text": "Which issues are open?", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS" } }),
         )
         .await;
     let conversation_id = sent["sendChatMessage"]["conversation"]["id"]
@@ -443,7 +443,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     w.ok(
         owner,
         "SendChatMessage",
-        json!({ "input": { "tenantId": tenant, "conversationId": conversation_id, "text": "Only the labeled ones." } }),
+        json!({ "input": { "tenantId": tenant, "conversationId": conversation_id, "text": "Only the labeled ones.", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS" } }),
     )
     .await;
     let tasks = w
@@ -582,6 +582,55 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .find(|question| question.request_id == "question-1")
         .unwrap();
     assert_eq!(answered.answers, Some(json!({ "Which label?": ["bug"] })));
+    let mut tx = w.api.store.tx(tenant);
+    tx.insert(&RunApproval {
+        tenant_id: tenant,
+        run_id,
+        task_id: task_uuid,
+        request_id: "approval-1".into(),
+        turn,
+        approval_kind: "command".into(),
+        tool_name: "Bash".into(),
+        detail: "rm -rf build".into(),
+        reason: None,
+        input: json!({ "command": "rm -rf build" }),
+        decision: None,
+        decided_by_member_id: None,
+        asked_at: Utc::now(),
+        decided_at: None,
+    })
+    .unwrap();
+    tx.commit().await.unwrap();
+    let pending = w
+        .ok(
+            owner,
+            "Chat",
+            json!({ "tenant": slug, "conversation": conversation_id, "withConversation": true }),
+        )
+        .await;
+    assert_eq!(
+        pending["tenant"]["conversation"]["working"]["approval"]["detail"],
+        "rm -rf build"
+    );
+    w.ok(
+        owner,
+        "AnswerChatApproval",
+        json!({ "input": {
+            "tenantId": tenant,
+            "conversationId": conversation_id,
+            "approvalId": "approval-1",
+            "decision": "ACCEPT_FOR_SESSION",
+        } }),
+    )
+    .await;
+    let decided = w
+        .dynamo
+        .all::<RunApproval>()
+        .await
+        .into_iter()
+        .find(|approval| approval.request_id == "approval-1")
+        .unwrap();
+    assert_eq!(decided.decision.as_deref(), Some("acceptForSession"));
     w.ok(
         owner,
         "InterruptChat",

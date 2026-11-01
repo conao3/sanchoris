@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use sanchoris_config::{Limits, Start};
+use sanchoris_core::channel::enqueue_session_mode;
 use sanchoris_core::conversations::{latest_task, load_conversation, post_message};
 use sanchoris_core::db::{self, DbError, NewTask, Recorded, TenantTx, tenant_plan};
 use sanchoris_core::items::{
@@ -9,6 +10,7 @@ use sanchoris_core::keys;
 use sanchoris_core::lifecycle::TaskDecision;
 use sanchoris_core::messages::{self, ChatStartMessage};
 use sanchoris_core::model::{NamedDefinition, TaskDefinition, TaskStatus};
+use sanchoris_core::modes::SessionModes;
 use sanchoris_core::tasks::{apply_decision, latest_run, load_task, send_to_task};
 use serde_json::json;
 use thiserror::Error;
@@ -59,6 +61,7 @@ pub struct MemberMessage<'a> {
     pub member_id: Uuid,
     pub member_name: &'a str,
     pub text: &'a str,
+    pub modes: SessionModes,
     pub at: DateTime<Utc>,
 }
 
@@ -106,6 +109,7 @@ pub async fn start_conversation(
         created_by_member_id: message.member_id,
         title: shorten(message.text),
         tasks: 0,
+        modes: Some(message.modes),
         created_at: message.at,
         updated_at: message.at,
     };
@@ -118,7 +122,11 @@ pub async fn post_member_message(
     conversation_id: Uuid,
     message: &MemberMessage<'_>,
 ) -> Result<Delivered> {
-    let conversation = load_conversation(tx, conversation_id).await?;
+    let mut conversation = load_conversation(tx, conversation_id).await?;
+    if conversation.modes != Some(message.modes) {
+        conversation.modes = Some(message.modes);
+        tx.put(&conversation)?;
+    }
     let item = ChatMessage {
         id: message.id,
         tenant_id: tx.tenant_id(),
@@ -163,6 +171,7 @@ async fn deliver(
         })?;
         let instruction = payload["instruction"].as_str().unwrap_or_default();
         payload["instruction"] = json!(format!("{instruction}\n\n{text}"));
+        payload["modes"] = serde_json::to_value(message.modes)?;
         task.updated_at = message.at;
         tx.put(&task)?;
         return Ok(task.id);
@@ -170,6 +179,12 @@ async fn deliver(
     let run_id = latest_run(tx, task.id).await?.ok_or_else(|| {
         WorkerError::Invalid(format!("the {} task {} has no run", task.status, task.id))
     })?;
+    let payload = task.start_payload.as_mut().ok_or_else(|| {
+        WorkerError::Invalid(format!("the task {} has no start payload", task.id))
+    })?;
+    payload["modes"] = serde_json::to_value(message.modes)?;
+    tx.put(&task)?;
+    enqueue_session_mode(tx, run_id, message.modes, &format!("mode:{}", message.id)).await?;
     if task.status == TaskStatus::NeedsYou {
         let decision = TaskDecision::Resume {
             message: text,
@@ -276,6 +291,7 @@ async fn start_task(
         "instruction": instruction,
         "systemPrompt": system_prompt,
         "repositories": repositories,
+        "modes": message.modes,
     }));
     tx.put(&task)?;
     let mut conversation = load_conversation(tx, conversation.id).await?;
