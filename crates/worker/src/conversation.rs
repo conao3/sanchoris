@@ -594,7 +594,7 @@ pub async fn fork(
         session_name: source.session_name.clone(),
         slack_thread_ts: None,
         created_by_member_id: member_id,
-        title: shorten(&format!("{} fork", source.title)),
+        title: format!("{} fork", shorten(&source.title)),
         tasks: 0,
         modes: source.modes,
         resume: Some(resume_from(&record, 0)),
