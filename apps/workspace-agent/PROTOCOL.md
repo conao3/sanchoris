@@ -166,7 +166,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
 | `skill_request` | yes | `requestId`, `action`, and `name` + `input` (`run`), `skillRunId` + `output` (`continue`), `skillRunId` (`status`) | A `sanchoris skill` command; the control plane answers with `skill_response` |
 | `record_upload_request` | yes | `requestId`, `sessionId`, `turn`, `contentLength`, `sha256` | Asks for a presigned PUT URL for the session record after a turn |
 | `session_record` | yes | `sessionId`, `turn`, `key`, `relativePath`, `contentLength`, `sha256` | The record of `turn` has been uploaded to `key` |
-| `turn_end` | yes | `turn`, `sessionId`, `result`, `summary`, `error`, `usage`, `totalCostUsd`, `durationMs` | A turn ended |
+| `turn_end` | yes | `turn`, `sessionId`, `result`, `summary`, `error`, `usage`, `totalCostUsd`, `durationMs`, `busy` | A turn ended. `busy` is true when the worker had already started its next turn by the time the record was uploaded (Claude ends the running turn when a steer arrives and handles the steer in a turn of its own); the control plane leaves the task running and holds queued chat messages until a `turn_end` with `busy: false` |
 | `stopping` | yes | `signal` (`"SIGTERM"`) | The agent received the signal and is stopping (see "Stopping on SIGTERM") |
 | `exec_result` | yes | `requestId`, `ok`, `results` | The outcome of `exec` |
 | `git_token_request` | yes | `requestId` | Asks for a GitHub token for `git` (`channel` source only) |
@@ -257,7 +257,8 @@ Field details:
   "error": null,
   "usage": { "inputTokens": 1200, "outputTokens": 340, "cacheReadInputTokens": 21110, "cacheCreationInputTokens": 751 },
   "totalCostUsd": 0.0123,
-  "durationMs": 18234
+  "durationMs": 18234,
+  "busy": false
 }
 ```
 
@@ -273,7 +274,8 @@ Field details:
   "error": { "code": "Worker.UsageLimit", "message": "Claude usage limit reached.", "resetAt": 1793061000 },
   "usage": { "inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0 },
   "totalCostUsd": 0.4561,
-  "durationMs": 912
+  "durationMs": 912,
+  "busy": false
 }
 ```
 

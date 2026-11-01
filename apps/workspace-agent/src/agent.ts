@@ -268,6 +268,7 @@ export class WorkspaceAgent {
       handlers: {
         onEvent: (kind, data) => {
           if (kind === "log") this.config.logger("info", "worker log", data)
+          else this.busy = true
           this.channel.send({
             type: "event",
             turn: this.lastTurn + 1,
@@ -458,7 +459,13 @@ export class WorkspaceAgent {
       .then(() => this.sendDiff(turn, started, ended))
       .then(() => this.saveRecord(turn))
       .then(() => {
-        this.channel.send({ type: "turn_end", turn, sessionId: this.requireSessionId(), ...result })
+        this.channel.send({
+          type: "turn_end",
+          turn,
+          sessionId: this.requireSessionId(),
+          ...result,
+          busy: this.busy,
+        })
       })
       .catch((error: Error) => this.fail(error))
     this.turnEnded?.()

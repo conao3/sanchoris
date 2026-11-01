@@ -419,6 +419,7 @@ pub fn turn_end_payload(turn: i64, error: Value) -> Value {
         "usage": { "inputTokens": 100, "outputTokens": 20, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0 },
         "totalCostUsd": 0.25,
         "durationMs": 1000,
+        "busy": false,
     })
 }
 

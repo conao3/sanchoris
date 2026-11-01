@@ -1,3 +1,4 @@
+use sanchoris_core::channel::RunEventType;
 use sanchoris_core::conversations::load_conversation;
 use sanchoris_core::db::tenant_plan;
 use sanchoris_core::items::{
@@ -13,10 +14,10 @@ use sanchoris_worker::conversation::{
     ChatError, Delivered, Delivery, MemberMessage, NewConversation, post_member_message,
     start_conversation,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::common::{self, APP_LOGIN, REPO, World};
+use crate::common::{self, APP_LOGIN, REPO, World, turn_end_payload};
 
 async fn start(world: &World, session: &str, text: &str) -> Delivered {
     let config_id = world.seeded.config_id;
@@ -253,7 +254,17 @@ async fn messages_go_to_the_running_task_and_a_finished_task_starts_the_next() {
         world.outbox(run_id, "user_message").await,
         vec![json!({ "text": "[sanchoris] Message from Mika:\nSkip the docs", "steer": true })]
     );
-    world.turn_end(run_id, 1).await;
+    let mut busy = turn_end_payload(1, Value::Null);
+    busy["busy"] = json!(true);
+    world
+        .sequenced_event(run_id, 1, RunEventType::TurnEnd, busy)
+        .await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(
+        world.messages(run_id).await,
+        vec!["[sanchoris] Message from Mika:\nSkip the docs".to_string()]
+    );
+    world.turn_end(run_id, 2).await;
     world.worker.settle().await.unwrap();
     assert_eq!(
         world.messages(run_id).await,

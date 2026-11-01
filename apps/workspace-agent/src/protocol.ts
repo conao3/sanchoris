@@ -324,6 +324,7 @@ export const TurnEndMessage = z.strictObject({
   usage: TurnUsage,
   totalCostUsd: z.number().nonnegative().nullable(),
   durationMs: z.number().int().nonnegative(),
+  busy: z.boolean(),
 })
 
 export const StoppingMessage = z.strictObject({

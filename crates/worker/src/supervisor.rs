@@ -291,7 +291,10 @@ async fn turn_end(
         )
         .await?;
     }
-    if task.status != TaskStatus::Running || payload["result"] == "interrupted" {
+    let busy = payload["busy"]
+        .as_bool()
+        .ok_or_else(|| invalid("turn_end needs busy"))?;
+    if task.status != TaskStatus::Running || payload["result"] == "interrupted" || busy {
         return Ok(());
     }
     let start = start_of(&task)?;
