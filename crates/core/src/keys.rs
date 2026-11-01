@@ -471,6 +471,10 @@ pub fn run_approval_key(tenant_id: Uuid, run_id: Uuid, request_id: &str) -> Key 
     Key::main(run_pk(tenant_id, run_id), format!("AP#{request_id}"))
 }
 
+pub fn run_partial_key(tenant_id: Uuid, run_id: Uuid) -> Key {
+    Key::main(run_pk(tenant_id, run_id), "PARTIAL")
+}
+
 pub fn audit_key(tenant_id: Uuid, at: DateTime<Utc>, id: Uuid) -> Key {
     Key::audit(tenant_pk(tenant_id), format!("{}#{id}", format_time(at)))
 }

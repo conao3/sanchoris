@@ -71,3 +71,15 @@
     height: 100vh;
   }
 }
+
+@keyframes stream-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .streaming > * {
+    animation: stream-in 600ms ease-out;
+  }
+}

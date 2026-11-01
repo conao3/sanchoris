@@ -308,6 +308,15 @@ enum ChatMessageDelivery {
 	STEERED
 }
 
+type ChatPartial {
+	"""
+	TEXT or THINKING.
+	"""
+	kind: ChatWorkKind!
+	text: String!
+	at: DateTime!
+}
+
 type ChatPlan {
 	steps: [ChatPlanStep!]!
 	explanation: String
@@ -454,6 +463,10 @@ type ChatWorking {
 	The agent's latest task list in this turn.
 	"""
 	plan: ChatPlan
+	"""
+	The text or thinking the agent is writing now, before it is complete.
+	"""
+	partial: ChatPartial
 }
 
 type Config {

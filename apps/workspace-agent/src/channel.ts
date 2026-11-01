@@ -216,6 +216,10 @@ export class RunChannel {
     }
   }
 
+  post(message: Extract<OutboundMessage, { type: "partial" }>): void {
+    if (this.helloAcked) this.write(message)
+  }
+
   private write(message: OutboundMessage): void {
     if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(message))
   }

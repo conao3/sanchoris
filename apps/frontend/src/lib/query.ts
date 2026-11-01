@@ -3,6 +3,7 @@ import { useQuery } from "@apollo/client/react"
 import { useEffect, useRef, useState } from "react"
 
 export const LIVE_POLL = 5000
+export const STREAM_POLL = 1000
 export const IDLE_POLL = 30000
 
 function usePageVisible(): boolean {

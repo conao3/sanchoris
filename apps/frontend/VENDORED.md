@@ -14,6 +14,7 @@ The chat timeline and the question composer are adapted from [T3 Code](https://g
 | `src/components/chat/ApprovalComposer.tsx` | `apps/web/src/components/chat/ComposerPendingApprovalPanel.tsx`, `ComposerPendingApprovalActions.tsx` | The approval panel in place of the composer: the title by kind ("Command approval", "File change approval"), the command or path, the agent's reason, and "Decline", "Approve", "Always allow this session" and "Cancel" |
 | `src/components/chat/ModeControls.tsx` | `apps/web/src/components/chat/ComposerFooterControls.tsx`, `apps/web/src/runtimeModeConfig.ts` | The "Build" / "Plan" toggle with its tooltips and the runtime mode picker "Supervised", "Auto-accept edits", "Full access" with their descriptions |
 | `src/components/chat/QueuedBanner.tsx` | `apps/web/src/components/chat/QueuedRunsControl.tsx`, `useComposerSend.ts`, `TimelineUserMessageRow.tsx` | Messages sent while the agent works wait in a "Queued" list over the composer with "Steer" ("Send as a steer instead"), "Send now" ("Start a turn with this message") when nothing runs, and "Remove from queue"; Enter queues and Ctrl/⌘+Enter steers; a steered message carries "Steer" ("Steered the active turn") |
+| `src/style.css` (`.streaming`), `src/lib/query.ts` (`STREAM_POLL`) | `apps/web/src/index.css`, `apps/web/src/components/ChatMarkdown.tsx` | The text the agent is writing shown under the work as it grows, each new Markdown block fading in over 600 ms unless reduced motion is set, without a cursor |
 
 ## License
 

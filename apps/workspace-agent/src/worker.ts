@@ -2,6 +2,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   EventKind,
+  PartialKind,
   RateLimitWindow,
   SessionModes,
   TurnError,
@@ -28,6 +29,7 @@ export interface WorkerRateLimit {
 
 interface WorkerHandlers {
   onEvent: (kind: EventKind, data: Record<string, unknown>) => void
+  onPartial: (kind: PartialKind, text: string) => void
   onTurnEnd: (result: WorkerTurnResult) => void
   onRateLimit: (rateLimit: WorkerRateLimit) => void
   onUserInput: (questions: UserInputQuestion[], signal: AbortSignal) => Promise<UserInputAnswers>

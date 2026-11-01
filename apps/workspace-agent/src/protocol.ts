@@ -290,6 +290,18 @@ export const HeartbeatMessage = z.strictObject({
   busy: z.boolean(),
 })
 
+export const PartialKind = z.enum(["text", "thinking"])
+export type PartialKind = z.infer<typeof PartialKind>
+
+export const PartialMessage = z.strictObject({
+  type: z.literal("partial"),
+  runId: RunId,
+  turn: z.number().int().positive(),
+  kind: PartialKind,
+  text: z.string(),
+  at: z.iso.datetime(),
+})
+
 const sequenced = {
   runId: RunId,
   seq: z.number().int().positive(),
@@ -454,6 +466,7 @@ export const ExecResultMessage = z.strictObject({
 export const OutboundMessage = z.union([
   HelloMessage,
   HeartbeatMessage,
+  PartialMessage,
   ReadyMessage,
   EventMessage,
   TurnEndMessage,

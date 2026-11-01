@@ -468,6 +468,17 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         )
         .await;
     assert!(chat.to_string().contains("Which issues are open?"));
+    let live = w
+        .ok(
+            owner,
+            "ChatLive",
+            json!({ "tenant": slug, "conversation": conversation_id }),
+        )
+        .await;
+    assert_eq!(
+        live["tenant"]["conversation"]["id"],
+        conversation_id.as_str()
+    );
     let run_id = w
         .dynamo
         .all::<Run>()

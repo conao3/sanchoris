@@ -348,6 +348,24 @@ describe("workspace agent with a fake worker", () => {
     expect(await exitCode).toBe(0)
   })
 
+  it("streams partial text unsequenced while the turn runs", async () => {
+    const { control, exitCode } = await setup(async (_text, { partial }) => {
+      partial("Hel")
+      partial("Hello")
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      return "Hello"
+    })
+    await control.waitFor("hello")
+    control.send(startMessage())
+    await control.waitFor("ready")
+    control.send({ type: "user_message", messageId: "m-1", text: "hi", steer: false })
+    const partial = await control.waitFor("partial")
+    expect(partial).toMatchObject({ turn: 1, kind: "text", text: "Hello" })
+    await control.waitFor("turn_end")
+    control.send({ type: "shutdown", reason: "done" })
+    expect(await exitCode).toBe(0)
+  })
+
   it("ignores a repeated user_message with the same messageId", async () => {
     const { control, exitCode } = await setup(async (text) => `echo ${text}`)
     await control.waitFor("hello")

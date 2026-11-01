@@ -246,6 +246,7 @@ export class CodexWorker implements Worker {
   private lastUsage: CodexTokenUsage | null = null
   private rateLimits: CodexRateLimitSnapshot | null = null
   private pending: AbortController | null = null
+  private readonly streamed = new Map<string, string>()
   private modes: SessionModes
 
   constructor(context: WorkerContext) {
@@ -425,6 +426,7 @@ export class CodexWorker implements Worker {
     switch (method) {
       case "item/completed": {
         const item = (params as { item: CodexItem }).item
+        if (item.id) this.streamed.delete(item.id)
         if (item.type === "agentMessage") {
           this.lastText = item.text ?? ""
           onEvent("text", { text: this.lastText })
@@ -477,6 +479,17 @@ export class CodexWorker implements Worker {
         } else {
           onEvent("item", { itemType: item.type, id: item.id ?? null })
         }
+        return
+      }
+      case "item/agentMessage/delta":
+      case "item/reasoning/summaryTextDelta": {
+        const { itemId, delta } = params as { itemId: string; delta: string }
+        const text = (this.streamed.get(itemId) ?? "") + delta
+        this.streamed.set(itemId, text)
+        this.context.handlers.onPartial(
+          method === "item/agentMessage/delta" ? "text" : "thinking",
+          text,
+        )
         return
       }
       case "turn/plan/updated": {

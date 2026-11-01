@@ -17,6 +17,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   CredentialsMessage,
+  PartialKind,
   ExecMessage,
   InboundMessage,
   SocketRequest,
@@ -33,6 +34,8 @@ import type { RestoredRecord, Worker, WorkerFactory, WorkerTurnResult } from "./
 export type CredentialSource = { kind: "environment" } | ({ kind: "channel" } & Checkout)
 
 const GIT_TOKEN_MARGIN_MS = 5 * 60_000
+const PARTIAL_INTERVAL_MS = 500
+const MAX_PARTIAL_CHARS = 16_000
 
 export interface AgentConfig {
   runId: string
@@ -73,6 +76,9 @@ export class WorkspaceAgent {
   private readonly questions = new Map<string, (answers: UserInputAnswers) => void>()
   private readonly approvals = new Map<string, (decision: ApprovalDecision) => void>()
   private deliveries: Promise<void> = Promise.resolve()
+  private partial: { kind: PartialKind; text: string } | null = null
+  private partialTimer: NodeJS.Timeout | null = null
+  private partialSentAt = 0
   private finished = false
   private stopping = false
   private turnEnded: (() => void) | null = null
@@ -269,6 +275,7 @@ export class WorkspaceAgent {
         onEvent: (kind, data) => {
           if (kind === "log") this.config.logger("info", "worker log", data)
           else this.busy = true
+          if (kind === "text" || kind === "thinking") this.clearPartial()
           this.channel.send({
             type: "event",
             turn: this.lastTurn + 1,
@@ -277,6 +284,7 @@ export class WorkspaceAgent {
             at: new Date().toISOString(),
           })
         },
+        onPartial: (kind, text) => this.showPartial(kind, text),
         onTurnEnd: (result) => this.endTurn(result),
         onRateLimit: (rateLimit) => {
           this.channel.send({ type: "rate_limit", ...rateLimit })
@@ -447,7 +455,37 @@ export class WorkspaceAgent {
     })
   }
 
+  private showPartial(kind: PartialKind, text: string): void {
+    this.busy = true
+    this.partial = { kind, text }
+    if (this.partialTimer) return
+    const wait = Math.max(0, this.partialSentAt + PARTIAL_INTERVAL_MS - Date.now())
+    this.partialTimer = setTimeout(() => this.flushPartial(), wait)
+  }
+
+  private flushPartial(): void {
+    this.partialTimer = null
+    const partial = this.partial
+    if (!partial) return
+    this.partialSentAt = Date.now()
+    this.channel.post({
+      type: "partial",
+      runId: this.config.runId,
+      turn: this.lastTurn + 1,
+      kind: partial.kind,
+      text: partial.text.slice(0, MAX_PARTIAL_CHARS),
+      at: new Date().toISOString(),
+    })
+  }
+
+  private clearPartial(): void {
+    if (this.partialTimer) clearTimeout(this.partialTimer)
+    this.partialTimer = null
+    this.partial = null
+  }
+
   private endTurn(result: WorkerTurnResult): void {
+    this.clearPartial()
     this.lastTurn += 1
     const turn = this.lastTurn
     this.busy = false

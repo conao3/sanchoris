@@ -1,3 +1,4 @@
+import { useApolloClient } from "@apollo/client/react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import { CircleDot, Plus, Square } from "lucide-react"
 import { type KeyboardEvent, useEffect, useRef, useState } from "react"
@@ -37,13 +38,14 @@ import {
   AnswerChatApprovalDocument,
   AnswerChatQuestionDocument,
   ChatDocument,
+  ChatLiveDocument,
   InterruptChatDocument,
   SendChatMessageDocument,
 } from "../graphql/generated/graphql.ts"
 import { t, tx } from "../i18n/index.ts"
 import { useKeys } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
-import { IDLE_POLL, LIVE_POLL, useData } from "../lib/query.ts"
+import { IDLE_POLL, LIVE_POLL, STREAM_POLL, useData } from "../lib/query.ts"
 import { isActive, skillStep } from "../lib/taskText.ts"
 import { useTenant } from "../lib/tenant.tsx"
 
@@ -157,7 +159,21 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
     interactionMode: conversation.interactionMode,
     runtimeMode: conversation.runtimeMode,
   })
+  const { slug } = useTenant()
+  const client = useApolloClient()
+  useData(
+    ChatLiveDocument,
+    { tenant: slug, conversation: conversation.id },
+    { skip: !conversation.working, poll: () => STREAM_POLL },
+  )
   const working = conversation.working
+  const wasWorking = useRef(!!working)
+  useEffect(() => {
+    if (wasWorking.current && !working) {
+      void client.refetchQueries({ include: [ChatDocument] })
+    }
+    wasWorking.current = !!working
+  }, [working, client])
   const end = useRef<HTMLDivElement>(null)
   const follow = `${conversation.id}:${conversation.messages.length}:${working?.work.length ?? -1}:${working?.question?.id ?? ""}:${working?.approval?.id ?? ""}`
   useEffect(() => {
@@ -279,6 +295,7 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
             startedAt={working.startedAt}
             work={working.work}
             waiting={working.approval ? "approval" : working.question ? "question" : undefined}
+            partial={working.partial}
           />
         ) : null}
       </div>

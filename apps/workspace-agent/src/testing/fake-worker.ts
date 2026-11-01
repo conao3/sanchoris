@@ -36,6 +36,7 @@ interface FakeTurnContext {
   exec: (command: string, args: string[]) => Promise<CommandResult>
   ask: (questions: UserInputQuestion[]) => Promise<UserInputAnswers>
   approve: (request: ApprovalRequest) => Promise<ApprovalDecision>
+  partial: (text: string) => void
   modes: SessionModes
 }
 
@@ -127,6 +128,7 @@ class FakeWorker implements Worker {
         exec: (command, args) => this.exec(command, args),
         ask: (asked) => this.context.handlers.onUserInput(asked, questions.signal),
         approve: (request) => this.context.handlers.onApproval(request, questions.signal),
+        partial: (text) => this.context.handlers.onPartial("text", text),
         modes: this.modes,
       }),
       interrupted,

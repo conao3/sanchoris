@@ -185,6 +185,7 @@ export class ClaudeWorker implements Worker {
   private interrupting = false
   private closing = false
   private rejectedRateLimit: SDKRateLimitInfo | null = null
+  private streaming: { kind: "text" | "thinking"; text: string } | null = null
   private modes: SessionModes
 
   constructor(context: WorkerContext) {
@@ -214,6 +215,7 @@ export class ClaudeWorker implements Worker {
         allowDangerouslySkipPermissions: true,
         canUseTool: (toolName, input, options) => this.canUseTool(toolName, input, options),
         thinking: { type: "adaptive", display: "summarized" },
+        includePartialMessages: true,
         settings: { showThinkingSummaries: true },
         settingSources: ["user", "project", "local"],
         systemPrompt:
@@ -377,6 +379,21 @@ export class ClaudeWorker implements Worker {
             isError: block.is_error ?? false,
             content: textOf(block.content).slice(0, MAX_TOOL_RESULT_CHARS),
           })
+        }
+        return
+      }
+      case "stream_event": {
+        if (message.parent_tool_use_id !== null) return
+        const event = message.event
+        if (event.type === "content_block_start") {
+          const type = event.content_block.type
+          this.streaming = type === "text" || type === "thinking" ? { kind: type, text: "" } : null
+        } else if (event.type === "content_block_delta" && this.streaming) {
+          const delta = event.delta
+          if (delta.type === "text_delta") this.streaming.text += delta.text
+          else if (delta.type === "thinking_delta") this.streaming.text += delta.thinking
+          else return
+          this.context.handlers.onPartial(this.streaming.kind, this.streaming.text)
         }
         return
       }

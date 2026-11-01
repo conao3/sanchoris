@@ -144,6 +144,16 @@ pub(crate) struct ChatWorking {
     pub approval: Option<ChatApproval>,
     /// The agent's latest task list in this turn.
     pub plan: Option<ChatPlan>,
+    /// The text or thinking the agent is writing now, before it is complete.
+    pub partial: Option<ChatPartial>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub(crate) struct ChatPartial {
+    /// TEXT or THINKING.
+    pub kind: ChatWorkKind,
+    pub text: String,
+    pub at: Timestamp,
 }
 
 pub(crate) struct RunWork {
@@ -166,6 +176,14 @@ impl RunWork {
             questions,
             approvals,
         })
+    }
+
+    pub fn last_at(&self, turn: i64) -> Option<DateTime<Utc>> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.turn == turn && entry.kind != "log")
+            .map(|entry| entry.at)
+            .max()
     }
 
     pub fn first_at(&self, turn: i64) -> Option<DateTime<Utc>> {

@@ -104,6 +104,13 @@ function mockWorking(stamp: string, input: Obj): Obj {
           },
     plan: MOCK_PLAN,
     approval: input.runtimeMode === "APPROVAL_REQUIRED" ? mockApproval(stamp) : null,
+    partial: String(input.text ?? "").includes("long")
+      ? {
+          kind: "TEXT",
+          text: "The suite has 412 tests. So far **398 passed**; the checkout specs are still running.",
+          at: at(8),
+        }
+      : null,
   }
 }
 

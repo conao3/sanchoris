@@ -13,7 +13,7 @@ use sanchoris_core::audit::audit_events;
 use sanchoris_core::billing::PAYMENT_PENDING;
 use sanchoris_core::items::{
     ApprovalWait, AuditEvent, Config, InboundEvent, Integration, Member, Membership, OutboxItem,
-    ReceiveRate, RunEventItem, RunLogEntry, RunQuestion, Task, Tenant, User, Workspace,
+    ReceiveRate, RunEventItem, RunLogEntry, RunPartial, RunQuestion, Task, Tenant, User, Workspace,
 };
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
@@ -1366,6 +1366,16 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     );
     send(
         &mut socket,
+        json!({ "type": "partial", "runId": run, "turn": 1, "kind": "text", "text": "Hel", "at": "2026-10-27T03:15:03.000Z" }),
+    )
+    .await;
+    send(
+        &mut socket,
+        json!({ "type": "partial", "runId": run, "turn": 1, "kind": "text", "text": "Hello", "at": "2026-10-27T03:15:04.000Z" }),
+    )
+    .await;
+    send(
+        &mut socket,
         json!({ "type": "turn_end", "runId": run, "seq": 9, "turn": 1 }),
     )
     .await;
@@ -1387,6 +1397,14 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
         .map(|event| (event.seq, event.kind))
         .collect::<Vec<_>>();
     assert_eq!(events, vec![(Some(1), "ready".to_string())]);
+    let partials = server.dynamo.all::<RunPartial>().await;
+    assert_eq!(
+        partials
+            .iter()
+            .map(|partial| (partial.turn, partial.text.as_str()))
+            .collect::<Vec<_>>(),
+        [(1, "Hello")]
+    );
     let questions = server.dynamo.all::<RunQuestion>().await;
     assert_eq!(questions.len(), 1);
     assert_eq!(

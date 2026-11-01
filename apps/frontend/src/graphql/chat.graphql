@@ -65,6 +65,11 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
         plan {
           ...ChatPlanFields
         }
+        partial {
+          kind
+          text
+          at
+        }
       }
       latestTask {
         id
@@ -248,5 +253,34 @@ mutation AnswerChatQuestion($input: AnswerChatQuestionInput!) {
 mutation InterruptChat($tenantId: ID!, $conversationId: ID!) {
   interruptChat(tenantId: $tenantId, conversationId: $conversationId) {
     id
+  }
+}
+
+query ChatLive($tenant: String!, $conversation: ID!) {
+  tenant(slug: $tenant) {
+    id
+    conversation(id: $conversation) {
+      id
+      working {
+        startedAt
+        work {
+          ...ChatWorkFields
+        }
+        question {
+          ...ChatQuestionFields
+        }
+        approval {
+          ...ChatApprovalFields
+        }
+        plan {
+          ...ChatPlanFields
+        }
+        partial {
+          kind
+          text
+          at
+        }
+      }
+    }
   }
 }

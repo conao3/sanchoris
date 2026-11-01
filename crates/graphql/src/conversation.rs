@@ -5,7 +5,7 @@ use async_graphql::{Context, ID, Object, Result};
 use sanchoris_core::conversations::{DELIVERY_QUEUED, latest_task};
 use sanchoris_core::items::{
     AUTHOR_AGENT, AUTHOR_MEMBER, ChatMessage as ChatMessageItem, Conversation as ConversationItem,
-    ConversationTask, Output as OutputItem,
+    ConversationTask, Output as OutputItem, RunPartial,
 };
 use sanchoris_core::keys;
 use sanchoris_core::model::TaskStatus;
@@ -15,7 +15,7 @@ use sanchoris_core::tasks::runs_of;
 use uuid::Uuid;
 
 use crate::account::Member;
-use crate::chat_work::{ChatDiff, ChatWork, ChatWorking, RunWork};
+use crate::chat_work::{ChatDiff, ChatPartial, ChatWork, ChatWorkKind, ChatWorking, RunWork};
 use crate::config::Session;
 use crate::context::{Scope, tx};
 use crate::enums::{
@@ -221,6 +221,7 @@ impl Conversation {
                 question: None,
                 approval: None,
                 plan: None,
+                partial: None,
             }));
         };
         let turn = run.turns + 1;
@@ -228,6 +229,21 @@ impl Conversation {
         let question = work.open_question(turn)?;
         let approval = work.open_approval(turn)?;
         let plan = work.plan(turn)?;
+        let partial = tx
+            .get::<RunPartial>(&keys::run_partial_key(self.scope.tenant_id, run.id))
+            .await?
+            .filter(|partial| {
+                partial.turn == turn && work.last_at(turn).is_none_or(|last| partial.at > last)
+            })
+            .map(|partial| ChatPartial {
+                kind: if partial.partial_kind == "thinking" {
+                    ChatWorkKind::Thinking
+                } else {
+                    ChatWorkKind::Text
+                },
+                text: partial.text,
+                at: ts(partial.at),
+            });
         let entries = work.turn(turn, None)?;
         let Some(started_at) = last_member_at
             .or_else(|| work.first_at(turn))
@@ -249,6 +265,7 @@ impl Conversation {
             question,
             approval,
             plan,
+            partial,
         }))
     }
 

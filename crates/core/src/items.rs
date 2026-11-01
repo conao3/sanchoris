@@ -2695,6 +2695,49 @@ impl Entity for RunQuestion {
     }
 }
 
+/// The text the agent is writing, replaced as it grows; one per run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunPartial {
+    pub tenant_id: Uuid,
+    pub run_id: Uuid,
+    pub turn: i64,
+    pub partial_kind: String,
+    pub text: String,
+    pub at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl Entity for RunPartial {
+    const KIND: &'static str = "run_partial";
+
+    fn key(&self) -> Key {
+        keys::run_partial_key(self.tenant_id, self.run_id)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .uuid("run_id", self.run_id)
+            .n("turn", self.turn)
+            .s("partial_kind", &self.partial_kind)
+            .s("text", &self.text)
+            .time("at", self.at)
+            .ttl(self.expires_at);
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            run_id: r.uuid("run_id")?,
+            turn: r.n("turn")?,
+            partial_kind: r.s("partial_kind")?,
+            text: r.s("text")?,
+            at: r.time("at")?,
+            expires_at: DateTime::from_timestamp(r.n(crate::item::TTL)?, 0)
+                .ok_or_else(|| DbError::Decode("run partial expires_at".into()))?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunApproval {
     pub tenant_id: Uuid,

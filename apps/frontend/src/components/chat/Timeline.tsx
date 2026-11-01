@@ -335,10 +335,12 @@ export function Working({
   startedAt,
   work,
   waiting,
+  partial,
 }: {
   startedAt: string
   work: Work[]
   waiting?: "question" | "approval"
+  partial?: { kind: string; text: string } | null
 }) {
   const now = useNow(true)
   const latest = work.findLast((entry) => entry.kind !== "TEXT")
@@ -346,6 +348,12 @@ export function Working({
   return (
     <div>
       {work.length > 0 ? <WorkSegments work={work} /> : null}
+      {partial?.kind === "THINKING" ? (
+        <Markdown text={partial.text} className="streaming my-1 text-sm text-muted" />
+      ) : null}
+      {partial?.kind === "TEXT" ? (
+        <Markdown text={partial.text} className="streaming my-1.5 text-ink" />
+      ) : null}
       <Disclosure
         icon={LoaderCircle}
         live

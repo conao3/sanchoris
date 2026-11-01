@@ -160,6 +160,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
 |---|---|---|---|
 | `hello` | no | `protocolVersion` (`2`), `instanceId`, `started`, `sessionId` (string or `null`) | First message on every connection |
 | `heartbeat` | no | `at` (ISO 8601), `busy` (a turn is running) | Every `heartbeatSeconds` after `start`, and once immediately |
+| `partial` | no | `turn`, `kind`, `text`, `at` | The text (`kind: "text"`) or thinking (`"thinking"`) the worker is writing now, the whole block so far (cut at 16,000 characters), at most every 500 ms while it grows, from Claude `stream_event` deltas (`includePartialMessages: true`) and Codex `item/agentMessage/delta` and `item/reasoning/summaryTextDelta`. The finished block comes as an `event`; a `partial` that would arrive after it is not sent. The control plane keeps only the latest one per Run and drops it when the Run has no current connection |
 | `ready` | yes | `sessionId`, `agent`, `model`, `resumed` | The worker session is ready. `sessionId` is the Claude session ID or the Codex thread ID; on resume it equals `resume.sessionId` |
 | `event` | yes | `turn`, `kind`, `data`, `at` | One line of agent output (S3 log and screen summary) |
 | `rate_limit` | yes | `status`, `resetsAt`, `rateLimitType`, `windows` | A usage-limit snapshot from the worker |

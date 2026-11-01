@@ -12,11 +12,11 @@ use sanchoris_core::channel::{
 use sanchoris_core::db::{DbError, Store, TenantTx, tenant_plan};
 use sanchoris_core::items::{
     BootstrapRedemption, ChannelInstance, OutboxItem, RunApproval, RunChannel, RunEventItem,
-    RunLogEntry, RunQuestion, Workspace,
+    RunLogEntry, RunPartial, RunQuestion, Workspace,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
-use sanchoris_core::messages::redact_tokens_in;
+use sanchoris_core::messages::{redact_tokens, redact_tokens_in};
 use sanchoris_core::ports::PortError;
 use sanchoris_core::skillrun::{
     SkillRunError, accept_skill_request, continue_skill_run, skill_run_status,
@@ -340,6 +340,47 @@ impl Channel {
             .to_string();
         match kind.as_str() {
             "hello" => self.hello(claims, connection_id, &message).await,
+            "partial" => {
+                let payload = strip(message);
+                let turn = payload["turn"]
+                    .as_i64()
+                    .filter(|turn| *turn > 0)
+                    .ok_or_else(|| protocol("partial needs a positive turn"))?;
+                let at = payload["at"]
+                    .as_str()
+                    .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+                    .ok_or_else(|| protocol("partial needs an ISO 8601 at"))?
+                    .with_timezone(&Utc);
+                let kind = payload["kind"]
+                    .as_str()
+                    .filter(|kind| matches!(*kind, "text" | "thinking"))
+                    .ok_or_else(|| protocol("partial needs kind text or thinking"))?;
+                let text = payload["text"]
+                    .as_str()
+                    .ok_or_else(|| protocol("partial needs text"))?;
+                retrying(|| async {
+                    let mut tx = self.store.tx(claims.tenant_id);
+                    current_instance(&mut tx, claims.run_id, connection_id).await?;
+                    let key = keys::run_partial_key(claims.tenant_id, claims.run_id);
+                    let partial = RunPartial {
+                        tenant_id: claims.tenant_id,
+                        run_id: claims.run_id,
+                        turn,
+                        partial_kind: kind.to_string(),
+                        text: redact_tokens(text),
+                        at,
+                        expires_at: Utc::now() + Duration::days(1),
+                    };
+                    if tx.get::<RunPartial>(&key).await?.is_some() {
+                        tx.put(&partial)?;
+                    } else {
+                        tx.insert(&partial)?;
+                    }
+                    tx.commit().await?;
+                    Ok(())
+                })
+                .await
+            }
             "heartbeat" => {
                 let payload = strip(message);
                 retrying(|| async {
