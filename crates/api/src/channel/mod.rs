@@ -1108,6 +1108,11 @@ impl Channel {
                     .attachment_urls(tx.tenant_id(), &row.payload["attachments"])
                     .await?;
             }
+            if row.kind == "rewind" {
+                message["resume"] = self
+                    .resume_record(tx.tenant_id(), &row.payload["resume"])
+                    .await?;
+            }
             plan.messages.push(message);
             plan.delivered.push(row.seq);
         }

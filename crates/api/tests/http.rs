@@ -1235,6 +1235,17 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
             }),
         ),
         (2, "user_message", json!({ "text": "Hello." })),
+        (
+            3,
+            "rewind",
+            json!({
+                "resume": {
+                    "sessionId": "s-0", "recordKey": format!("t/{tenant}/runs/{run_id}/s-0/turn-1.jsonl"),
+                    "relativePath": "projects/-workspace/s-0.jsonl", "sha256": "ab", "lastTurn": 1,
+                },
+                "restoreTurn": 2,
+            }),
+        ),
     ] {
         server
             .dynamo
@@ -1290,6 +1301,20 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
     let message = receive(&mut socket).await;
     assert_eq!(message["type"], "user_message");
     assert_eq!(message["text"], "Hello.");
+    let rewind = receive(&mut socket).await;
+    assert_eq!(rewind["type"], "rewind");
+    assert_eq!(rewind["restoreTurn"], 2);
+    assert_eq!(rewind["resume"]["sessionId"], "s-0");
+    assert_eq!(
+        rewind["resume"]["relativePath"],
+        "projects/-workspace/s-0.jsonl"
+    );
+    assert!(
+        rewind["resume"]["url"]
+            .as_str()
+            .unwrap()
+            .contains("turn-1.jsonl")
+    );
 
     let ready = json!({ "type": "ready", "runId": run, "seq": 1, "sessionId": "s-1", "agent": "claude", "model": "m", "resumed": false });
     send(&mut socket, ready.clone()).await;
