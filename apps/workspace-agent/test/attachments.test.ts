@@ -25,7 +25,7 @@ describe("attachments", () => {
       expect(images).toHaveLength(1)
       expect(images[0]?.data).toBe("AQID")
       expect(await readFile(images[0]?.path ?? "")).toEqual(Buffer.from([1, 2, 3]))
-      const message = workerMessage("Why does it fail?", false, images)
+      const message = workerMessage("Why does it fail?", false, false, images)
       expect(message.text).toBe(
         `Why does it fail?\n[Attached image "shot.png" is saved at: ${images[0]?.path}]`,
       )

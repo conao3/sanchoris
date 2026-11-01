@@ -3,6 +3,7 @@ import {
   ChevronRight,
   CircleStop,
   CornerDownLeft,
+  FoldVertical,
   GitFork,
   LoaderCircle,
   Undo2,
@@ -140,6 +141,19 @@ export function MemberMessage({
           />
         ) : null}
       </Meta>
+    </div>
+  )
+}
+
+export function CompactNotice({ at }: { at: string }) {
+  return (
+    <div className="flex items-center gap-3 text-xs text-muted" title={t("chat.autoCompactedHint")}>
+      <span className="h-px flex-1 bg-line" aria-hidden />
+      <span className="flex items-center gap-1.5">
+        <FoldVertical className="size-3.5" aria-hidden />
+        {t("chat.autoCompacted")} · {clock(at)}
+      </span>
+      <span className="h-px flex-1 bg-line" aria-hidden />
     </div>
   )
 }

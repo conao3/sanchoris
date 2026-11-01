@@ -30,6 +30,7 @@ Sessions:
     Network: { Allow: [github.com] }
     UsageLimit: { Resume: auto }
     Workspace: { Compute: standard, Architecture: arm64, IdleSeconds: 900 }
+    AutoCompact: { IdleMinutes: 55, ContextPercent: 50 }
 Triggers:
   labeled-issue:
     State: ENABLED

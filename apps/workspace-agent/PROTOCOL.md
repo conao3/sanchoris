@@ -44,7 +44,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
 | `type` | Fields | Meaning |
 |---|---|---|
 | `start` | `agent`, `model`, `systemPrompt`, `skills`, `instruction`, `attachments`, `modes`, `resume`, `heartbeatSeconds` | Start (or restore) the agent session. Sent once per agent process, after `hello` with `started: false` |
-| `user_message` | `messageId`, `text`, `steer`, `attachments` | A user turn: `[sanchoris]` notifications, a person's reply, "Continue where you left off.", chat messages. `attachments` lists the images a person attached (see `start` `attachments`). With `steer: true` (a chat message sent into a running turn) the worker gets it in that turn: Claude as a user message with `priority: "now"`, Codex with `turn/steer` (`expectedTurnId` = the running turn; when it fails, the message waits for the next turn). Otherwise it starts the next turn after the running one |
+| `user_message` | `messageId`, `text`, `steer`, `compact`, `attachments` | A user turn: `[sanchoris]` notifications, a person's reply, "Continue where you left off.", chat messages. `attachments` lists the images a person attached (see `start` `attachments`). With `steer: true` (a chat message sent into a running turn) the worker gets it in that turn: Claude as a user message with `priority: "now"`, Codex with `turn/steer` (`expectedTurnId` = the running turn; when it fails, the message waits for the next turn). Otherwise it starts the next turn after the running one. With `compact: true` (`text` is `/compact`, `steer` is false, no attachments) the turn compacts the session instead: Claude gets `/compact` as the prompt, Codex `thread/compact/start`, and the turn ends with `turn_end` as usual |
 | `session_mode` | `modes` | The modes for the messages after it (see `start` `modes`). The control plane sends one before every chat message; the agent applies it before delivering the next `user_message` |
 | `rewind` | `resume`, `restoreTurn` | Go back to an earlier point of the session between turns (the control plane sends it only when no turn runs; the agent ignores one that arrives during a turn). After downloading the record, with `restoreTurn` the agent puts every repository that has the `refs/sanchoris/turns/<restoreTurn>/start` snapshot back to it (a repository cloned by a later Workspace has none and stays as it is) (removing files added since and checking out the snapshot's files with a temporary index). It then closes the worker and starts a new one with the same settings and the current modes: from `resume` (same shape as `start` `resume`; its `lastTurn` is ignored and turns keep their numbers), or as a new session when `resume` is `null` |
 | `interrupt` | | Interrupt the current turn. The agent ignores one that arrives between turns. The turn ends with `turn_end` `result: "interrupted"` |
@@ -111,7 +111,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
 ```
 
 ```json
-{ "type": "user_message", "runId": "42", "messageId": "skill-1-succeeded", "text": "[sanchoris] Skill open-pr-green-ci (run 1) SUCCEEDED: {\"PullRequests\":[\"acme/shop-web#52\"]}", "steer": false, "attachments": [] }
+{ "type": "user_message", "runId": "42", "messageId": "skill-1-succeeded", "text": "[sanchoris] Skill open-pr-green-ci (run 1) SUCCEEDED: {\"PullRequests\":[\"acme/shop-web#52\"]}", "steer": false, "compact": false, "attachments": [] }
 ```
 
 ```json
@@ -173,7 +173,7 @@ Every message the agent sends fits in one frame of 120 KiB: when its JSON is lar
 | `skill_request` | yes | `requestId`, `action`, and `name` + `input` (`run`), `skillRunId` + `output` (`continue`), `skillRunId` (`status`) | A `sanchoris skill` command; the control plane answers with `skill_response` |
 | `record_upload_request` | yes | `requestId`, `sessionId`, `turn`, `contentLength`, `sha256` | Asks for a presigned PUT URL for the session record after a turn |
 | `session_record` | yes | `sessionId`, `turn`, `key`, `relativePath`, `contentLength`, `sha256` | The record of `turn` has been uploaded to `key` |
-| `turn_end` | yes | `turn`, `sessionId`, `result`, `summary`, `error`, `usage`, `totalCostUsd`, `durationMs`, `busy` | A turn ended. `busy` is true when the worker had already started its next turn by the time the record was uploaded (Claude ends the running turn when a steer arrives and handles the steer in a turn of its own); the control plane leaves the task running and holds queued chat messages until a `turn_end` with `busy: false`, and posts the turn's reply with the outcome `continued` so the chat still counts the agent as working |
+| `turn_end` | yes | `turn`, `sessionId`, `result`, `summary`, `error`, `usage`, `context`, `totalCostUsd`, `durationMs`, `busy` | A turn ended. `busy` is true when the worker had already started its next turn by the time the record was uploaded (Claude ends the running turn when a steer arrives and handles the steer in a turn of its own); the control plane leaves the task running and holds queued chat messages until a `turn_end` with `busy: false`, and posts the turn's reply with the outcome `continued` so the chat still counts the agent as working |
 | `stopping` | yes | `signal` (`"SIGTERM"`) | The agent received the signal and is stopping (see "Stopping on SIGTERM") |
 | `exec_result` | yes | `requestId`, `ok`, `results` | The outcome of `exec` |
 | `git_token_request` | yes | `requestId` | Asks for a GitHub token for `git` (`channel` source only) |
@@ -198,6 +198,7 @@ Field details:
 - `rate_limit`: `status` is `"allowed"`, `"allowed_warning"` or `"rejected"`. `resetsAt` is Unix seconds or `null`. `windows` maps a window name (`five_hour`, `seven_day`, `seven_day_opus`, ...) to `{ utilization (0–1 or null), resetsAt (Unix seconds or null), status (string or null) }`. Claude values come from `rate_limit_event`; Codex values from `account/rateLimits/updated` (`usedPercent / 100`).
 - `turn_end.result`: `completed`, `failed`, or `interrupted`. `summary` is the final assistant text (or the error text). `error` is `null` unless `failed`: `{ code: "Worker.UsageLimit" | "Worker.Error", message, resetAt }`; `resetAt` (Unix seconds) is set for `Worker.UsageLimit` when the provider reported it.
 - `turn_end.usage`: tokens of this turn's main loop: `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheCreationInputTokens`. `totalCostUsd` is Claude's cumulative estimated cost reported by the SDK since this agent process opened the session; `null` for Codex. A restored session starts again from 0 (observed with Claude Code 2.1.310), so the Run's cost is the sum over `instanceId`s of the last `totalCostUsd` of each.
+- `turn_end.context`: how full the session's context is at the end of the turn: `usedTokens` of `maxTokens`. Claude: the input (with cache reads and writes) and output tokens of the last main-loop response, or the `post_tokens` of the last `compact_boundary` after it, against the largest `contextWindow` of the result's `modelUsage`. Codex: `tokenUsage.last.totalTokens` against `modelContextWindow` of the last `thread/tokenUsage/updated`. `null` until the session has reported both
 - `skill_request.output` is the parsed `--output` JSON, or `null` when the option was omitted.
 - `user_input_request.questions`: each has `id` (the question text for Claude, Codex's question id), `header`, `question`, `multiSelect` (always `false` for Codex), and `options` (`label`, `description`). Claude receives the answers as `AskUserQuestion`'s `answers` (question text to the labels joined with ", "), Codex as `{ answers: { <id>: { answers: [...] } } }`.
 
@@ -263,6 +264,7 @@ Field details:
   "summary": "Started open-pr-green-ci (run 1). Waiting for the result.",
   "error": null,
   "usage": { "inputTokens": 1200, "outputTokens": 340, "cacheReadInputTokens": 21110, "cacheCreationInputTokens": 751 },
+  "context": { "usedTokens": 23401, "maxTokens": 200000 },
   "totalCostUsd": 0.0123,
   "durationMs": 18234,
   "busy": false
@@ -280,6 +282,7 @@ Field details:
   "summary": "Claude usage limit reached.",
   "error": { "code": "Worker.UsageLimit", "message": "Claude usage limit reached.", "resetAt": 1793061000 },
   "usage": { "inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0 },
+  "context": null,
   "totalCostUsd": 0.4561,
   "durationMs": 912,
   "busy": false

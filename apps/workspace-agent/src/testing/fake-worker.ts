@@ -141,6 +141,7 @@ class FakeWorker implements Worker {
         summary: "",
         error: null,
         usage: emptyUsage(),
+        context: null,
         totalCostUsd: 0,
         durationMs: Date.now() - started,
       })
@@ -153,6 +154,7 @@ class FakeWorker implements Worker {
       summary: reply,
       error: null,
       usage: emptyUsage(),
+      context: null,
       totalCostUsd: 0,
       durationMs: Date.now() - started,
     })

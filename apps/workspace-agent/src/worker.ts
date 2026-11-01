@@ -1,6 +1,7 @@
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  ContextUsage,
   EventKind,
   PartialKind,
   RateLimitWindow,
@@ -16,6 +17,7 @@ export interface WorkerTurnResult {
   summary: string
   error: TurnError | null
   usage: TurnUsage
+  context: ContextUsage | null
   totalCostUsd: number | null
   durationMs: number
 }
@@ -67,6 +69,7 @@ export interface WorkerImage {
 export interface WorkerMessage {
   text: string
   steer: boolean
+  compact: boolean
   images: WorkerImage[]
 }
 

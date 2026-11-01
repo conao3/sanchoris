@@ -31,7 +31,12 @@ export async function downloadAttachments(
   return images
 }
 
-export function workerMessage(text: string, steer: boolean, images: WorkerImage[]): WorkerMessage {
+export function workerMessage(
+  text: string,
+  steer: boolean,
+  compact: boolean,
+  images: WorkerImage[],
+): WorkerMessage {
   const saved = images.map((image) => `[Attached image "${image.name}" is saved at: ${image.path}]`)
-  return { text: [text, ...saved].join("\n"), steer, images }
+  return { text: [text, ...saved].join("\n"), steer, compact, images }
 }

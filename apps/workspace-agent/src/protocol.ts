@@ -75,6 +75,7 @@ export const UserMessage = z.strictObject({
   messageId: z.string().min(1),
   text: z.string().min(1),
   steer: z.boolean(),
+  compact: z.boolean(),
   attachments: z.array(Attachment),
 })
 export type UserMessage = z.infer<typeof UserMessage>
@@ -258,6 +259,12 @@ export const TurnUsage = z.strictObject({
 })
 export type TurnUsage = z.infer<typeof TurnUsage>
 
+export const ContextUsage = z.strictObject({
+  usedTokens: z.number().int().nonnegative(),
+  maxTokens: z.number().int().positive(),
+})
+export type ContextUsage = z.infer<typeof ContextUsage>
+
 export const TurnError = z.strictObject({
   code: z.enum(["Worker.UsageLimit", "Worker.Error"]),
   message: z.string(),
@@ -352,6 +359,7 @@ export const TurnEndMessage = z.strictObject({
   summary: z.string(),
   error: TurnError.nullable(),
   usage: TurnUsage,
+  context: ContextUsage.nullable(),
   totalCostUsd: z.number().nonnegative().nullable(),
   durationMs: z.number().int().nonnegative(),
   busy: z.boolean(),

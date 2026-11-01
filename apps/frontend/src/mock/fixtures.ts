@@ -437,6 +437,7 @@ function buildAcme(viewerRole: string): Obj {
     compute: "STANDARD",
     idleSeconds: 900,
     usageLimitResume: "AUTO",
+    autoCompact: name === "all" ? { idleMinutes: 55, contextPercent: 50 } : null,
     config: configMain,
     callableSkills: [],
   })
@@ -1609,6 +1610,8 @@ function buildAcme(viewerRole: string): Obj {
       26,
       "Created #41, #42 and #43 as children of #38. Two agents are working now. I will post here when the pull requests are open.",
     ),
+    message("msg-5", "SANCHORIS", null, 1, "/compact"),
+    message("msg-6", "AGENT", null, 1, ""),
   ]
   const flakyMessages = [
     message(
@@ -1649,6 +1652,7 @@ function buildAcme(viewerRole: string): Obj {
       updatedAt: task.updatedAt,
       interactionMode: "DEFAULT",
       runtimeMode: "FULL_ACCESS",
+      context: kind === "WEB" ? { usedTokens: 61_240, maxTokens: 200_000 } : null,
       working: null,
       messages,
       tasks: () => tasks.filter((candidate) => candidate.conversation === item),

@@ -208,6 +208,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "m-1",
       text: `[sanchoris] Skill open-pr-green-ci (run 1) SUCCEEDED: {"PullRequests":["acme/shop-web#52"]} pushed with ghs_${"x".repeat(36)}`,
       steer: false,
+      compact: false,
       attachments: [],
     })
     const secondEnd = await control.waitFor("turn_end", (message) => message.turn === 2)
@@ -240,6 +241,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "m-1",
       text: "first",
       steer: false,
+      compact: false,
       attachments: [],
     })
     await control.waitFor("turn_end", (message) => message.turn === 1)
@@ -248,6 +250,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "m-2",
       text: "long",
       steer: false,
+      compact: false,
       attachments: [],
     })
     await control.waitFor("heartbeat", (message) => message.busy)
@@ -259,6 +262,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "m-3",
       text: "after",
       steer: false,
+      compact: false,
       attachments: [],
     })
     const interrupted = await control.waitFor("turn_end", (message) => message.turn === 2)
@@ -304,6 +308,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "m-1",
       text: "label it",
       steer: false,
+      compact: false,
       attachments: [],
     })
     const request = await control.waitFor("user_input_request")
@@ -334,6 +339,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "m-1",
       text: "go",
       steer: false,
+      compact: false,
       attachments: [],
     })
     const request = await control.waitFor("user_input_request")
@@ -372,6 +378,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "m-1",
       text: "clean",
       steer: false,
+      compact: false,
       attachments: [],
     })
     const request = await control.waitFor("approval_request")
@@ -400,6 +407,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "m-1",
       text: "hi",
       steer: false,
+      compact: false,
       attachments: [],
     })
     const partial = await control.waitFor("partial")
@@ -419,6 +427,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "m-1",
       text: "first",
       steer: false,
+      compact: false,
       attachments: [],
     })
     const first = await control.waitFor("turn_end")
@@ -428,6 +437,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "m-2",
       text: "again",
       steer: false,
+      compact: false,
       attachments: [],
     })
     const second = await control.waitFor("turn_end", (message) => message.turn === 2)
@@ -447,6 +457,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "same",
       text: "first",
       steer: false,
+      compact: false,
       attachments: [],
     })
     control.send({
@@ -454,6 +465,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "same",
       text: "first",
       steer: false,
+      compact: false,
       attachments: [],
     })
     control.send({
@@ -461,6 +473,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "other",
       text: "second",
       steer: false,
+      compact: false,
       attachments: [],
     })
     const second = await control.waitFor("turn_end", (message) => message.turn === 2)
@@ -529,6 +542,7 @@ describe("workspace agent with a fake worker", () => {
       messageId: "after-reconnect",
       text: "still there?",
       steer: false,
+      compact: false,
       attachments: [],
     })
     const end = await control.waitFor("turn_end")

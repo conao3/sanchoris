@@ -1445,6 +1445,7 @@ impl World {
             tasks: 1,
             modes: None,
             resume: None,
+            context: None,
             created_at: now - Duration::minutes(20),
             updated_at: now - Duration::minutes(15),
         })
@@ -1600,6 +1601,7 @@ impl World {
             tasks: 0,
             modes: None,
             resume: None,
+            context: None,
             created_at: now,
             updated_at: now,
         })

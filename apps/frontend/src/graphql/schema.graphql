@@ -104,6 +104,14 @@ enum AuditOrigin {
 	SYSTEM
 }
 
+"""
+A chat sends `/compact` once it has been idle for `idleMinutes` after a reply that left the context at least `contextPercent` full.
+"""
+type AutoCompact {
+	idleMinutes: Int!
+	contextPercent: Int!
+}
+
 enum BillingUnit {
 	TENANT
 	SEAT
@@ -220,6 +228,10 @@ type ChatAttachment {
 enum ChatAuthorKind {
 	MEMBER
 	AGENT
+	"""
+	sanchoris sent it on its own, such as `/compact` after the chat stayed idle.
+	"""
+	SANCHORIS
 }
 
 type ChatChangedFile {
@@ -236,6 +248,11 @@ type ChatChangedFile {
 	Null for binary files.
 	"""
 	deletions: Int
+}
+
+type ChatContext {
+	usedTokens: Int!
+	maxTokens: Int!
 }
 
 enum ChatDelivery {
@@ -578,6 +595,10 @@ type Conversation {
 	The runtime mode of the last message sent to the conversation; FULL_ACCESS before any.
 	"""
 	runtimeMode: ChatRuntimeMode!
+	"""
+	How full the session's context was at the end of the last turn; null before the agent reported it and after a rewind.
+	"""
+	context: ChatContext
 	createdAt: DateTime!
 	updatedAt: DateTime!
 	"""
@@ -1286,6 +1307,10 @@ type Session {
 	architecture: WorkspaceArchitecture!
 	idleSeconds: Int!
 	usageLimitResume: UsageLimitResume!
+	"""
+	When a chat in this session compacts on its own: null when it never does.
+	"""
+	autoCompact: AutoCompact
 	"""
 	The skills a chat in this session can run: the config skills whose GitHub resources fit the session's GitHub.Repos and Permissions, and the built-in file-issue.
 	"""

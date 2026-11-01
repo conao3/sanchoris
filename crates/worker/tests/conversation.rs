@@ -2,8 +2,8 @@ use sanchoris_core::channel::RunEventType;
 use sanchoris_core::conversations::load_conversation;
 use sanchoris_core::db::tenant_plan;
 use sanchoris_core::items::{
-    AUTHOR_AGENT, ChatMessage, Conversation, ConversationTask, FiledIssue, HeldMessage, Output,
-    Run, Task, Tenant,
+    AUTHOR_AGENT, AUTHOR_SANCHORIS, ChatMessage, ContextUsage, Conversation, ConversationTask,
+    FiledIssue, HeldMessage, Output, Run, Task, Tenant,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
@@ -256,7 +256,7 @@ async fn messages_go_to_the_running_task_and_a_finished_task_starts_the_next() {
     assert_eq!(
         world.outbox(run_id, "user_message").await,
         vec![
-            json!({ "text": "[sanchoris] Message from Mika:\nSkip the docs", "steer": true, "attachments": [] })
+            json!({ "text": "[sanchoris] Message from Mika:\nSkip the docs", "steer": true, "compact": false, "attachments": [] })
         ]
     );
     let mut busy = turn_end_payload(1, Value::Null);
@@ -577,4 +577,169 @@ async fn a_rewind_drops_a_message_and_what_follows_and_a_fork_copies_up_to_a_rep
         record(1)["key"]
     );
     assert_eq!(messages(&world, forked.id).await.len(), 2);
+}
+
+fn turn_end_with_context(turn: i64, used_tokens: i64) -> Value {
+    let mut payload = turn_end_payload(turn, Value::Null);
+    payload["context"] = json!({ "usedTokens": used_tokens, "maxTokens": 200_000 });
+    payload
+}
+
+async fn compactions(world: &World, run_id: Uuid) -> Vec<Value> {
+    world
+        .outbox(run_id, "user_message")
+        .await
+        .into_iter()
+        .filter(|payload| payload["compact"] == true)
+        .collect()
+}
+
+#[tokio::test]
+async fn an_idle_chat_whose_context_is_full_enough_compacts_once_after_the_idle_minutes() {
+    let world = World::new("pro").await;
+    let first = start(&world, "all", "What is failing?").await;
+    let conversation_id = first.message.conversation_id;
+    world.worker.settle().await.unwrap();
+    let run_id = world.task_of(first.task_id).await.run_id.unwrap();
+    world
+        .sequenced_event(
+            run_id,
+            1,
+            RunEventType::TurnEnd,
+            turn_end_with_context(1, 120_000),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    assert_eq!(
+        conversation(&world, conversation_id).await.context,
+        Some(ContextUsage {
+            used_tokens: 120_000,
+            max_tokens: 200_000
+        })
+    );
+    world.clock.advance(chrono::Duration::minutes(54));
+    world.worker.settle().await.unwrap();
+    assert!(compactions(&world, run_id).await.is_empty());
+    world.clock.advance(chrono::Duration::minutes(2));
+    world.worker.settle().await.unwrap();
+    let sent = compactions(&world, run_id).await;
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["text"], "/compact");
+    assert_eq!(sent[0]["steer"], false);
+    let last = messages(&world, conversation_id).await.pop().unwrap();
+    assert_eq!(
+        (
+            last.author_kind.as_str(),
+            last.text.as_str(),
+            last.member_id
+        ),
+        (AUTHOR_SANCHORIS, "/compact", None)
+    );
+    assert_eq!(world.task_of(first.task_id).await.status, "RUNNING");
+    world
+        .sequenced_event(
+            run_id,
+            2,
+            RunEventType::TurnEnd,
+            turn_end_with_context(2, 110_000),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    world.clock.advance(chrono::Duration::minutes(60));
+    world.worker.settle().await.unwrap();
+    assert_eq!(
+        compactions(&world, run_id).await.len(),
+        1,
+        "a compaction never compacts again"
+    );
+}
+
+#[tokio::test]
+async fn a_message_within_the_idle_minutes_or_a_lighter_context_keeps_the_session_as_it_is() {
+    let world = World::new("pro").await;
+    let first = start(&world, "all", "What is failing?").await;
+    let conversation_id = first.message.conversation_id;
+    world.worker.settle().await.unwrap();
+    let run_id = world.task_of(first.task_id).await.run_id.unwrap();
+    world
+        .sequenced_event(
+            run_id,
+            1,
+            RunEventType::TurnEnd,
+            turn_end_with_context(1, 90_000),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    world.clock.advance(chrono::Duration::minutes(60));
+    world.worker.settle().await.unwrap();
+    assert!(
+        compactions(&world, run_id).await.is_empty(),
+        "45% is under 50%"
+    );
+    post(&world, conversation_id, "Go on").await;
+    world.worker.settle().await.unwrap();
+    world
+        .sequenced_event(
+            run_id,
+            2,
+            RunEventType::TurnEnd,
+            turn_end_with_context(2, 150_000),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    world.clock.advance(chrono::Duration::minutes(30));
+    post(&world, conversation_id, "And the docs").await;
+    world.worker.settle().await.unwrap();
+    world.clock.advance(chrono::Duration::minutes(30));
+    world.worker.settle().await.unwrap();
+    assert!(
+        compactions(&world, run_id).await.is_empty(),
+        "the member wrote in time"
+    );
+}
+
+#[tokio::test]
+async fn a_member_compacts_with_slash_compact_but_not_into_a_running_turn() {
+    let world = World::new("pro").await;
+    let first = start(&world, "all", "What is failing?").await;
+    let conversation_id = first.message.conversation_id;
+    world.worker.settle().await.unwrap();
+    let run_id = world.task_of(first.task_id).await.run_id.unwrap();
+    post(&world, conversation_id, "Then fix it").await;
+    let member_id = world.seeded.member_id;
+    let at = world.clock_now();
+    let mut tx = world.store.tx(world.tenant());
+    let steered = post_member_message(
+        &mut tx,
+        conversation_id,
+        &MemberMessage {
+            id: Uuid::new_v4(),
+            member_id,
+            member_name: "Mika",
+            text: "/compact",
+            modes: SessionModes::DEFAULT,
+            delivery: Delivery::Steer,
+            attachments: &[],
+            at,
+        },
+    )
+    .await;
+    assert!(matches!(steered, Err(ChatError::Rejected(_))));
+    drop(tx);
+    world.turn_end(run_id, 1).await;
+    world.worker.settle().await.unwrap();
+    world
+        .sequenced_event(
+            run_id,
+            2,
+            RunEventType::TurnEnd,
+            turn_end_payload(2, Value::Null),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    post(&world, conversation_id, " /COMPACT ").await;
+    world.worker.settle().await.unwrap();
+    let sent = compactions(&world, run_id).await;
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["text"], "/compact");
 }

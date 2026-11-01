@@ -3,11 +3,18 @@ import { describe, expect, it } from "vite-plus/test"
 import {
   claudeAnswers,
   claudeApproval,
+  claudeContext,
+  claudeContextTokens,
   claudePermissionMode,
   claudeQuestions,
   claudeTodoSteps,
 } from "../src/workers/claude.ts"
-import { codexApproval, codexPlanSteps, codexQuestions } from "../src/workers/codex.ts"
+import {
+  codexApproval,
+  codexContext,
+  codexPlanSteps,
+  codexQuestions,
+} from "../src/workers/codex.ts"
 
 describe("Claude AskUserQuestion", () => {
   it("names each question by its text and joins the picked labels for the SDK", () => {
@@ -165,5 +172,31 @@ describe("approvals", () => {
       reason: null,
       input: { grantRoot: "/workspace" },
     })
+  })
+})
+
+describe("context usage", () => {
+  it("measures Claude's last response against the largest model window and Codex's last request against its window", () => {
+    expect(
+      claudeContextTokens({
+        input_tokens: 10,
+        output_tokens: 200,
+        cache_read_input_tokens: 40_000,
+        cache_creation_input_tokens: 1_500,
+      }),
+    ).toBe(41_710)
+    expect(
+      claudeContext(41_710, {
+        "claude-haiku-4-5": { contextWindow: 200_000 },
+        "claude-sonnet-5-5": { contextWindow: 1_000_000 },
+      }),
+    ).toEqual({ usedTokens: 41_710, maxTokens: 1_000_000 })
+    expect(claudeContext(null, { "claude-sonnet-5-5": { contextWindow: 200_000 } })).toBeNull()
+    expect(claudeContext(41_710, {})).toBeNull()
+    expect(codexContext({ totalTokens: 52_000 }, 272_000)).toEqual({
+      usedTokens: 52_000,
+      maxTokens: 272_000,
+    })
+    expect(codexContext({ totalTokens: 52_000 }, null)).toBeNull()
   })
 })

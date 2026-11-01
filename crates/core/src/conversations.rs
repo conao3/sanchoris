@@ -152,6 +152,13 @@ pub const DELIVERY_QUEUED: &str = "queued";
 /// A member's message delivered into the turn the agent was working on.
 pub const DELIVERY_STEER: &str = "steer";
 
+/// The message that compacts the session: the agent summarizes the conversation so far and continues from the summary.
+pub const COMPACT_COMMAND: &str = "/compact";
+
+pub fn is_compact(text: &str) -> bool {
+    text.trim().eq_ignore_ascii_case(COMPACT_COMMAND)
+}
+
 async fn task_messages(
     tx: &mut TenantTx,
     conversation_id: Uuid,

@@ -1,13 +1,14 @@
-use crate::conversation::{ChatError, deliver_next_queued};
+use crate::conversation::{self, ChatError, deliver_next_queued};
 use chrono::{DateTime, Duration, Utc};
 use sanchoris_config::{Session, Start};
 use sanchoris_core::channel::{
     OutboxType, RunEventType, SEQ_STRIDE, enqueue_outbox, outbox, resume_from, session_records,
 };
-use sanchoris_core::conversations::{OUTCOME_CONTINUED, post_agent_message};
+use sanchoris_core::conversations::{OUTCOME_CONTINUED, load_conversation, post_agent_message};
 use sanchoris_core::db::{self, TenantTx};
 use sanchoris_core::items::{
-    OutboxItem, Pending, Run, RunEventItem, RunPartial, SkillRunItem, Task, UsageRecord, Workspace,
+    ContextUsage, OutboxItem, Pending, Run, RunEventItem, RunPartial, SkillRunItem, Task,
+    UsageRecord, Workspace,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::lifecycle::{
@@ -287,6 +288,12 @@ async fn turn_end(
     let busy = payload["busy"]
         .as_bool()
         .ok_or_else(|| invalid("turn_end needs busy"))?;
+    let context: Option<ContextUsage> = serde_json::from_value(payload["context"].clone())?;
+    if let (Some(context), Some(conversation_id)) = (context, task.origin.conversation_id()) {
+        let mut conversation = load_conversation(tx, conversation_id).await?;
+        conversation.context = Some(context);
+        tx.put(&conversation)?;
+    }
     if let Some(summary) = payload["summary"].as_str() {
         let id = Uuid::new_v5(&event.run_id, format!("turn:{turn}").as_bytes());
         let outcome = if busy {
@@ -352,12 +359,28 @@ async fn turn_end(
         decision = limited;
     }
     apply_decision(tx, task.id, event.run_id, &decision, &dedupe, now).await?;
+    if matches!(
+        decision,
+        TaskDecision::Wait {
+            reason: WaitReason::Message,
+            ..
+        }
+    ) && let Some(auto) = session_of(&task)?.auto_compact
+        && context.is_some_and(|context| context.percent() >= auto.context_percent as f64)
+    {
+        tx.emit_at(
+            Job::AutoCompact {
+                tenant_id: tx.tenant_id(),
+                task_id: task.id,
+                run_id: event.run_id,
+                turn,
+            },
+            now + Duration::minutes(i64::try_from(auto.idle_minutes).expect("IdleMinutes fits")),
+        );
+    }
     deliver_next_queued(&worker.store, tx, &task, now)
         .await
-        .map_err(|error| match error {
-            ChatError::Failed(error) => error,
-            ChatError::Rejected(message) => invalid(message),
-        })?;
+        .map_err(chat_error)?;
     Ok(())
 }
 
@@ -441,6 +464,31 @@ pub async fn resume(
     .await?;
     tx.commit().await?;
     Ok(1)
+}
+
+pub async fn auto_compact(
+    worker: &Worker,
+    tenant_id: Uuid,
+    task_id: Uuid,
+    run_id: Uuid,
+    turn: i64,
+) -> Result<usize> {
+    let mut tx = worker.tx(tenant_id);
+    let sent = conversation::auto_compact(&mut tx, task_id, run_id, turn, worker.now())
+        .await
+        .map_err(chat_error)?;
+    if !sent {
+        return Ok(0);
+    }
+    tx.commit().await?;
+    Ok(1)
+}
+
+fn chat_error(error: ChatError) -> WorkerError {
+    match error {
+        ChatError::Failed(error) => error,
+        ChatError::Rejected(message) => invalid(message),
+    }
 }
 
 pub async fn end_snooze(

@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, relative } from "node:path"
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  ContextUsage,
   PlanStep,
   RateLimitWindow,
   RuntimeMode,
@@ -50,6 +51,7 @@ interface CodexTokenUsage {
   inputTokens: number
   cachedInputTokens: number
   outputTokens: number
+  totalTokens: number
   cacheWriteInputTokens?: number
 }
 
@@ -164,6 +166,15 @@ export function codexApproval(method: string, params: unknown): ApprovalRequest 
   }
 }
 
+export function codexContext(
+  last: { totalTokens: number },
+  modelContextWindow: number | null,
+): ContextUsage | null {
+  return modelContextWindow
+    ? { usedTokens: Math.max(0, last.totalTokens), maxTokens: modelContextWindow }
+    : null
+}
+
 export function codexInput({ text, images }: WorkerMessage): unknown[] {
   return [
     { type: "text", text, text_elements: [] },
@@ -251,10 +262,12 @@ export class CodexWorker implements Worker {
   private activeTurnId: string | null = null
   private readonly completedTurnIds = new Set<string>()
   private turnStarting = false
-  private readonly queued: unknown[][] = []
+  private compacting = false
+  private readonly queued: (unknown[] | "compact")[] = []
   private closing = false
   private lastText = ""
   private lastUsage: CodexTokenUsage | null = null
+  private contextUsage: ContextUsage | null = null
   private rateLimits: CodexRateLimitSnapshot | null = null
   private pending: AbortController | null = null
   private exited: Promise<void> = Promise.resolve()
@@ -345,6 +358,11 @@ export class CodexWorker implements Worker {
   }
 
   send(message: WorkerMessage): void {
+    if (message.compact) {
+      this.queued.push("compact")
+      this.startNextTurn()
+      return
+    }
     const input = codexInput(message)
     if (message.steer && this.client && this.threadId && this.activeTurnId) {
       this.client
@@ -410,6 +428,13 @@ export class CodexWorker implements Worker {
     this.turnStarting = true
     this.lastText = ""
     this.lastUsage = null
+    if (input === "compact") {
+      this.compacting = true
+      this.client
+        .request("thread/compact/start", { threadId: this.threadId })
+        .catch((error: Error) => this.context.handlers.onFatal(error))
+      return
+    }
     this.client
       .request("turn/start", {
         threadId: this.threadId,
@@ -516,9 +541,22 @@ export class CodexWorker implements Worker {
         })
         return
       }
-      case "thread/tokenUsage/updated":
-        this.lastUsage = (params as { tokenUsage: { last: CodexTokenUsage } }).tokenUsage.last
+      case "thread/tokenUsage/updated": {
+        const { tokenUsage } = params as {
+          tokenUsage: { last: CodexTokenUsage; modelContextWindow?: number | null }
+        }
+        this.lastUsage = tokenUsage.last
+        this.contextUsage = codexContext(tokenUsage.last, tokenUsage.modelContextWindow ?? null)
         return
+      }
+      case "turn/started": {
+        const turn = (params as { turn: CodexTurn }).turn
+        if (!this.compacting || this.completedTurnIds.has(turn.id)) return
+        this.compacting = false
+        this.turnStarting = false
+        this.activeTurnId = turn.id
+        return
+      }
       case "account/rateLimits/updated": {
         const merged = mergeCodexRateLimits(
           this.rateLimits,
@@ -575,6 +613,7 @@ export class CodexWorker implements Worker {
             cacheCreationInputTokens: usage.cacheWriteInputTokens ?? 0,
           }
         : emptyUsage(),
+      context: this.contextUsage,
       totalCostUsd: null,
       durationMs,
     })

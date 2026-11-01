@@ -44,6 +44,10 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
       sessionName
       interactionMode
       runtimeMode
+      context {
+        usedTokens
+        maxTokens
+      }
       createdBy {
         id
         user {
@@ -55,6 +59,10 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
         id
         name
         repositories
+        autoCompact {
+          idleMinutes
+          contextPercent
+        }
       }
       working {
         startedAt

@@ -59,6 +59,8 @@ pub struct Session {
     pub network: Network,
     pub usage_limit: UsageLimit,
     pub workspace: Workspace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_compact: Option<AutoCompact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -112,6 +114,13 @@ pub struct Network {
 #[serde(rename_all = "PascalCase", deny_unknown_fields)]
 pub struct UsageLimit {
     pub resume: ResumeMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+pub struct AutoCompact {
+    pub idle_minutes: u64,
+    pub context_percent: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -355,6 +364,7 @@ fn decode_session(d: &mut Decoder, v: &Value, loc: &str) -> Option<Session> {
             "Network",
             "UsageLimit",
             "Workspace",
+            "AutoCompact",
         ],
     )?;
     let worker = d.field(m, loc, "Worker", decode_worker);
@@ -403,6 +413,22 @@ fn decode_session(d: &mut Decoder, v: &Value, loc: &str) -> Option<Session> {
         });
         Some(UsageLimit { resume: resume? })
     });
+    let auto_compact = d.optional(m, loc, "AutoCompact", |d, v, loc| {
+        let m = d.object(v, loc, &["IdleMinutes", "ContextPercent"])?;
+        let idle_minutes = d.field(m, loc, "IdleMinutes", |d, v, loc| d.positive(v, loc));
+        let context_percent = d.field(m, loc, "ContextPercent", |d, v, loc| {
+            let n = d.positive(v, loc)?;
+            if n > 100 {
+                d.error(loc, "must be at most 100");
+                return None;
+            }
+            Some(n)
+        });
+        Some(AutoCompact {
+            idle_minutes: idle_minutes?,
+            context_percent: context_percent?,
+        })
+    });
     let workspace = d.field(m, loc, "Workspace", |d, v, loc| {
         let m = d.object(v, loc, &["Compute", "Architecture", "IdleSeconds"])?;
         let compute = d.field(m, loc, "Compute", |d, v, loc| {
@@ -432,6 +458,7 @@ fn decode_session(d: &mut Decoder, v: &Value, loc: &str) -> Option<Session> {
         network: network?,
         usage_limit: usage_limit?,
         workspace: workspace?,
+        auto_compact: auto_compact?,
     })
 }
 

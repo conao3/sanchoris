@@ -2,7 +2,7 @@ import { useApolloClient } from "@apollo/client/react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import clsx from "clsx"
 import { ArrowDown, CircleDot, ImagePlus, Plus, Square, X } from "lucide-react"
-import { type KeyboardEvent, useEffect, useRef, useState } from "react"
+import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react"
 import { Button } from "../components/Button.tsx"
 import {
   IMAGE_TYPES,
@@ -18,7 +18,13 @@ import { ProposedPlanCard, TasksBanner } from "../components/chat/Plan.tsx"
 import { QuestionComposer } from "../components/chat/QuestionComposer.tsx"
 import { QueuedBanner } from "../components/chat/QueuedBanner.tsx"
 import { RewindDialog } from "../components/chat/RewindDialog.tsx"
-import { AgentMessage, MemberMessage, Working } from "../components/chat/Timeline.tsx"
+import {
+  AgentMessage,
+  CompactNotice,
+  MemberMessage,
+  Working,
+} from "../components/chat/Timeline.tsx"
+import { ContextMeter } from "../components/chat/ContextMeter.tsx"
 import { Reason } from "../components/Reason.tsx"
 import { Page } from "../components/Shell.tsx"
 import { TaskState } from "../components/status.tsx"
@@ -92,6 +98,7 @@ function Composer({
   initial,
   reason,
   modes,
+  meter,
   onModesChange,
   onSend,
   onStop,
@@ -101,6 +108,7 @@ function Composer({
   initial?: { text: string; attachments: { id: string; name: string; url: string }[] }
   reason?: string
   modes: Modes
+  meter?: ReactNode
   onModesChange: (modes: Modes) => void
   onSend: (text: string, delivery: ChatDelivery, attachmentIds: string[]) => Promise<boolean>
   onStop?: () => void
@@ -270,11 +278,11 @@ function Composer({
           />
         </Reason>
       </div>
-      <div className="flex items-center justify-between gap-3 px-2 pt-1 pb-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-2 pt-1 pb-1.5">
         {reason ? (
           <span />
         ) : (
-          <span className="flex items-center gap-1.5">
+          <span className="flex flex-wrap items-center gap-1.5">
             <input
               ref={picker}
               type="file"
@@ -295,6 +303,7 @@ function Composer({
               {t("chat.attach")}
             </Button>
             <ModeControls modes={modes} onChange={onModesChange} />
+            {meter}
           </span>
         )}
         {onStop ? (
@@ -527,6 +536,9 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
       </Sub>
       <div className="mt-4 space-y-5">
         {timeline.map((message, position) => {
+          if (message.authorKind === "SANCHORIS") {
+            return <CompactNotice key={message.id} at={message.at} />
+          }
           if (message.authorKind !== "AGENT") {
             return (
               <MemberMessage
@@ -688,6 +700,14 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
           tenantId={tenant.id}
           reason={conversation.kind === "SLACK" ? t("reason.slackThread") : undefined}
           modes={modes}
+          meter={
+            conversation.context ? (
+              <ContextMeter
+                context={conversation.context}
+                autoCompact={conversation.session?.autoCompact ?? null}
+              />
+            ) : undefined
+          }
           onModesChange={setModes}
           onStop={
             working && run

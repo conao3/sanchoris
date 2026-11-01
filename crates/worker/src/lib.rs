@@ -180,6 +180,12 @@ impl Worker {
                 task_id,
                 until,
             } => supervisor::end_snooze(self, *tenant_id, *task_id, *until).await,
+            Job::AutoCompact {
+                tenant_id,
+                task_id,
+                run_id,
+                turn,
+            } => supervisor::auto_compact(self, *tenant_id, *task_id, *run_id, *turn).await,
             Job::CheckPoll {
                 tenant_id, wait_id, ..
             } => engine_worker::poll_check(self, *tenant_id, *wait_id).await,
@@ -235,6 +241,7 @@ fn held_by_tenant(job: &Job) -> Option<uuid::Uuid> {
         | Job::EngineTimer { tenant_id, .. }
         | Job::TaskResume { tenant_id, .. }
         | Job::TaskSnoozeEnd { tenant_id, .. }
+        | Job::AutoCompact { tenant_id, .. }
         | Job::CheckPoll { tenant_id, .. }
         | Job::ConfigSync { tenant_id, .. }
         | Job::TriggerSchedule { tenant_id, .. } => Some(*tenant_id),

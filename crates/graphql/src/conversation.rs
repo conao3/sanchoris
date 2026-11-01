@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
-use async_graphql::{Context, ID, Object, Result};
+use async_graphql::{Context, ID, Object, Result, SimpleObject};
 use sanchoris_core::conversations::{DELIVERY_QUEUED, OUTCOME_CONTINUED, latest_task};
 use sanchoris_core::items::{
-    AUTHOR_AGENT, AUTHOR_MEMBER, ChatMessage as ChatMessageItem, Conversation as ConversationItem,
-    ConversationTask, Output as OutputItem, RunPartial,
+    AUTHOR_AGENT, AUTHOR_MEMBER, AUTHOR_SANCHORIS, ChatMessage as ChatMessageItem,
+    Conversation as ConversationItem, ConversationTask, Output as OutputItem, RunPartial,
 };
 use sanchoris_core::keys;
 use sanchoris_core::model::TaskStatus;
@@ -29,6 +29,12 @@ use crate::task::{IssueRef, Task, filed_tasks_of, issue_outputs};
 use crate::tenant::tenant_repositories;
 
 pub(crate) const CONVERSATION_LISTING_LIMIT: usize = 200;
+
+#[derive(SimpleObject)]
+pub(crate) struct ChatContext {
+    pub used_tokens: i64,
+    pub max_tokens: i64,
+}
 
 pub(crate) struct Conversation {
     pub scope: Scope,
@@ -128,6 +134,14 @@ impl Conversation {
             .into()
     }
 
+    /// How full the session's context was at the end of the last turn; null before the agent reported it and after a rewind.
+    async fn context(&self) -> Option<ChatContext> {
+        self.row.context.map(|context| ChatContext {
+            used_tokens: context.used_tokens,
+            max_tokens: context.max_tokens,
+        })
+    }
+
     async fn created_at(&self) -> Timestamp {
         ts(self.row.created_at)
     }
@@ -204,7 +218,7 @@ impl Conversation {
                     && message.delivery.as_deref() != Some(DELIVERY_QUEUED)
             })
         {
-            if message.author_kind == AUTHOR_MEMBER {
+            if message.author_kind != AUTHOR_AGENT {
                 last_member_at = last_member_at.max(Some(message.created_at));
             } else if message.outcome.as_deref() != Some(OUTCOME_CONTINUED) {
                 last_member_at = last_member_at.filter(|at| *at > message.created_at);
@@ -312,6 +326,7 @@ impl ChatMessage {
         match self.row.author_kind.as_str() {
             AUTHOR_AGENT => Ok(ChatAuthorKind::Agent),
             AUTHOR_MEMBER => Ok(ChatAuthorKind::Member),
+            AUTHOR_SANCHORIS => Ok(ChatAuthorKind::Sanchoris),
             other => Err(async_graphql::Error::new(format!(
                 "chat message {} has the unknown author kind {other}",
                 self.row.id

@@ -18,6 +18,7 @@ import { AsyncQueue } from "../async-queue.ts"
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  ContextUsage,
   PlanStep,
   RateLimitWindow,
   SessionModes,
@@ -40,6 +41,28 @@ const MAX_TOOL_RESULT_CHARS = 4000
 type UnifiedWindow = { utilization?: number; resetsAt?: number; status?: string }
 type RateLimitInfoWithWindows = SDKRateLimitInfo & {
   unifiedWindows?: Record<string, UnifiedWindow>
+}
+
+export function claudeContextTokens(usage: {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens?: number | null
+  cache_creation_input_tokens?: number | null
+}): number {
+  return (
+    usage.input_tokens +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0) +
+    usage.output_tokens
+  )
+}
+
+export function claudeContext(
+  usedTokens: number | null,
+  modelUsage: Record<string, { contextWindow: number }>,
+): ContextUsage | null {
+  const maxTokens = Math.max(0, ...Object.values(modelUsage).map((usage) => usage.contextWindow))
+  return usedTokens === null || maxTokens === 0 ? null : { usedTokens, maxTokens }
 }
 
 export function claudeProjectDirName(cwd: string): string {
@@ -188,6 +211,7 @@ export class ClaudeWorker implements Worker {
   private closing = false
   private rejectedRateLimit: SDKRateLimitInfo | null = null
   private streaming: { kind: "text" | "thinking"; text: string } | null = null
+  private contextTokens: number | null = null
   private consumed: Promise<void> = Promise.resolve()
   private modes: SessionModes
 
@@ -235,7 +259,15 @@ export class ClaudeWorker implements Worker {
     return { sessionId }
   }
 
-  send({ text, steer, images }: WorkerMessage): void {
+  send({ text, steer, compact, images }: WorkerMessage): void {
+    if (compact) {
+      this.input.push({
+        type: "user",
+        message: { role: "user", content: "/compact" },
+        parent_tool_use_id: null,
+      })
+      return
+    }
     this.input.push({
       type: "user",
       message: {
@@ -377,10 +409,13 @@ export class ClaudeWorker implements Worker {
     const { onEvent, onRateLimit, onTurnEnd } = this.context.handlers
     switch (message.type) {
       case "system":
+        if (message.subtype === "compact_boundary")
+          this.contextTokens = message.compact_metadata.post_tokens ?? null
         onEvent("system", { subtype: message.subtype })
         return
       case "assistant":
         if (message.parent_tool_use_id !== null) return
+        this.contextTokens = claudeContextTokens(message.message.usage)
         for (const block of message.message.content) {
           if (block.type === "thinking") {
             if (block.thinking !== "") onEvent("thinking", { text: block.thinking })
@@ -466,6 +501,7 @@ export class ClaudeWorker implements Worker {
         cacheReadInputTokens: message.usage.cache_read_input_tokens,
         cacheCreationInputTokens: message.usage.cache_creation_input_tokens,
       },
+      context: claudeContext(this.contextTokens, message.modelUsage),
       totalCostUsd: message.total_cost_usd,
       durationMs: message.duration_ms,
     }

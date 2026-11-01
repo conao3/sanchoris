@@ -316,6 +316,8 @@ db_enum!(OutputState, "output state", {
 pub enum ChatAuthorKind {
     Member,
     Agent,
+    /// sanchoris sent it on its own, such as `/compact` after the chat stayed idle.
+    Sanchoris,
 }
 
 db_enum!(ChatTurnOutcome, "turn outcome", {

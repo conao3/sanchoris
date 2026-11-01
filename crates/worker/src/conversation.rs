@@ -5,19 +5,19 @@ use sanchoris_core::channel::{
     session_records,
 };
 use sanchoris_core::conversations::{
-    DELIVERY_QUEUED, DELIVERY_STEER, latest_task, load_conversation, post_message, queued_messages,
-    turn_in_progress,
+    COMPACT_COMMAND, DELIVERY_QUEUED, DELIVERY_STEER, is_compact, latest_task, load_conversation,
+    post_message, queued_messages, turn_in_progress,
 };
 use sanchoris_core::db::{self, DbError, NewTask, Recorded, Store, TenantTx, tenant_plan};
 use sanchoris_core::item::Entity;
 use sanchoris_core::items::{
-    AUTHOR_AGENT, AUTHOR_MEMBER, CONVERSATION_WEB, ChatAttachment, ChatMessage, Config,
-    Conversation, Member, SessionDef, Task, TaskOrigin, User,
+    AUTHOR_AGENT, AUTHOR_MEMBER, AUTHOR_SANCHORIS, CONVERSATION_WEB, ChatAttachment, ChatMessage,
+    Config, Conversation, Member, SessionDef, Task, TaskOrigin, User,
 };
 use sanchoris_core::keys;
 use sanchoris_core::lifecycle::TaskDecision;
 use sanchoris_core::messages::{self, ChatStartMessage};
-use sanchoris_core::model::{NamedDefinition, TaskDefinition, TaskStatus};
+use sanchoris_core::model::{NamedDefinition, TaskDefinition, TaskStatus, WaitReason};
 use sanchoris_core::modes::SessionModes;
 use sanchoris_core::tasks::runs_of;
 use sanchoris_core::tasks::{
@@ -33,6 +33,7 @@ use crate::dispatcher::{
 use crate::error::WorkerError;
 
 const MAX_INSTRUCTION_BYTES: usize = 96 * 1024;
+const NOTHING_TO_COMPACT: &str = "the session has not started yet; there is nothing to compact";
 
 #[derive(Debug, Error)]
 pub enum ChatError {
@@ -135,6 +136,7 @@ pub async fn start_conversation(
         tasks: 0,
         modes: Some(message.modes),
         resume: None,
+        context: None,
         created_at: message.at,
         updated_at: message.at,
     };
@@ -147,6 +149,9 @@ pub async fn post_member_message(
     conversation_id: Uuid,
     message: &MemberMessage<'_>,
 ) -> Result<Delivered> {
+    if is_compact(message.text) && !message.attachments.is_empty() {
+        return Err(rejected("/compact takes no attachments"));
+    }
     let mut conversation = load_conversation(tx, conversation_id).await?;
     if conversation.modes != Some(message.modes) {
         conversation.modes = Some(message.modes);
@@ -195,10 +200,16 @@ pub async fn post_member_message(
     })
 }
 
-fn chat_input<'a>(text: &'a str, steer: bool, attachments: &'a [ChatAttachment]) -> ChatInput<'a> {
+fn chat_input<'a>(
+    text: &'a str,
+    steer: bool,
+    compact: bool,
+    attachments: &'a [ChatAttachment],
+) -> ChatInput<'a> {
     ChatInput {
         text,
         steer,
+        compact,
         attachments,
     }
 }
@@ -209,15 +220,31 @@ async fn deliver(
     message: &MemberMessage<'_>,
     steer: bool,
 ) -> Result<Uuid> {
+    let compact = is_compact(message.text);
+    if compact && steer {
+        return Err(rejected(
+            "compaction waits for the turn to end; send /compact without steering",
+        ));
+    }
     let Some(mut task) = latest_task(tx, conversation)
         .await?
         .filter(|task| !task.status.is_terminal())
     else {
+        if compact {
+            return Err(rejected(NOTHING_TO_COMPACT));
+        }
         return start_task(tx, conversation, message).await;
     };
-    let text = messages::reply_message(message.member_name, message.text);
+    let text = if compact {
+        COMPACT_COMMAND.to_string()
+    } else {
+        messages::reply_message(message.member_name, message.text)
+    };
     let dedupe = format!("chat:{}", message.id);
     if task.status == TaskStatus::Pending && task.runs == 0 {
+        if compact {
+            return Err(rejected(NOTHING_TO_COMPACT));
+        }
         let payload = task.start_payload.as_mut().ok_or_else(|| {
             WorkerError::Invalid(format!("the pending task {} has no start payload", task.id))
         })?;
@@ -251,7 +278,7 @@ async fn deliver(
         enqueue_chat_message(
             tx,
             run_id,
-            chat_input(&text, false, message.attachments),
+            chat_input(&text, false, compact, message.attachments),
             &dedupe,
         )
         .await?;
@@ -265,7 +292,7 @@ async fn deliver(
             tx,
             task.id,
             run_id,
-            chat_input(&text, steer, message.attachments),
+            chat_input(&text, steer, compact, message.attachments),
             &dedupe,
             message.at,
         )
@@ -571,6 +598,9 @@ pub async fn rewind(
     for message in &messages[position..] {
         tx.delete(&message.key())?;
     }
+    let mut conversation = load_conversation(tx, conversation_id).await?;
+    conversation.context = None;
+    tx.put(&conversation)?;
     let taken = &messages[position];
     Ok(Rewound {
         text: taken.text.clone(),
@@ -613,6 +643,7 @@ pub async fn fork(
         tasks: 0,
         modes: source.modes,
         resume: Some(resume_from(&record, 0)),
+        context: None,
         created_at: at,
         updated_at: at,
     };
@@ -627,4 +658,77 @@ pub async fn fork(
         })?;
     }
     Ok(conversation)
+}
+
+/// Compacts the session of a conversation that stayed idle after the reply of `turn`: sends `/compact` to the run as sanchoris. Does nothing when anything happened since, when the task no longer waits for a message, or when that turn was itself a compaction.
+pub async fn auto_compact(
+    tx: &mut TenantTx,
+    task_id: Uuid,
+    run_id: Uuid,
+    turn: i64,
+    at: DateTime<Utc>,
+) -> Result<bool> {
+    let task = load_task(tx, task_id).await?;
+    let Some(conversation_id) = task.origin.conversation_id() else {
+        return Ok(false);
+    };
+    if task.status != TaskStatus::Waiting
+        || task.wait_reason != Some(WaitReason::Message)
+        || latest_run(tx, task.id).await? != Some(run_id)
+    {
+        return Ok(false);
+    }
+    let messages = conversation_messages(tx, conversation_id).await?;
+    let reply = Uuid::new_v5(&run_id, format!("turn:{turn}").as_bytes());
+    let Some(replied_at) = messages
+        .iter()
+        .find(|message| message.id == reply)
+        .map(|message| message.created_at)
+    else {
+        return Ok(false);
+    };
+    if messages
+        .iter()
+        .any(|message| message.created_at > replied_at)
+    {
+        return Ok(false);
+    }
+    let compacted = messages
+        .iter()
+        .rev()
+        .find(|message| message.author_kind != AUTHOR_AGENT)
+        .is_some_and(|message| is_compact(&message.text));
+    if compacted {
+        return Ok(false);
+    }
+    let id = Uuid::new_v5(&reply, b"auto-compact");
+    send_chat_to_task(
+        tx,
+        task.id,
+        run_id,
+        chat_input(COMPACT_COMMAND, false, true, &[]),
+        &format!("chat:{id}"),
+        at,
+    )
+    .await?;
+    post_message(
+        tx,
+        &ChatMessage {
+            id,
+            tenant_id: tx.tenant_id(),
+            conversation_id,
+            task_id: Some(task.id),
+            run_id: None,
+            turn: None,
+            outcome: None,
+            delivery: None,
+            attachments: Vec::new(),
+            author_kind: AUTHOR_SANCHORIS.to_string(),
+            member_id: None,
+            text: COMPACT_COMMAND.to_string(),
+            created_at: at,
+        },
+    )
+    .await?;
+    Ok(true)
 }

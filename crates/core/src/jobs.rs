@@ -37,6 +37,12 @@ pub enum Job {
         task_id: Uuid,
         until: DateTime<Utc>,
     },
+    AutoCompact {
+        tenant_id: Uuid,
+        task_id: Uuid,
+        run_id: Uuid,
+        turn: i64,
+    },
     CheckPoll {
         tenant_id: Uuid,
         task_id: Uuid,
@@ -83,6 +89,7 @@ impl Job {
             | Self::EngineTimer { task_id, .. }
             | Self::TaskResume { task_id, .. }
             | Self::TaskSnoozeEnd { task_id, .. }
+            | Self::AutoCompact { task_id, .. }
             | Self::CheckPoll { task_id, .. }
             | Self::Reconcile { task_id, .. } => format!("task:{task_id}"),
             Self::DeliverOutbox { run_id, .. } => format!("run:{run_id}"),

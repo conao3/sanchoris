@@ -1,4 +1,4 @@
-use async_graphql::{Context, ID, Object, Result};
+use async_graphql::{Context, ID, Object, Result, SimpleObject};
 use chrono::{DateTime, Utc};
 use sanchoris_config::{Checkout, REQUESTER};
 use sanchoris_core::db::{self, REF_CONFIG_REVISION};
@@ -543,6 +543,13 @@ impl WarmBuild {
     }
 }
 
+/// A chat sends `/compact` once it has been idle for `idleMinutes` after a reply that left the context at least `contextPercent` full.
+#[derive(SimpleObject)]
+pub(crate) struct AutoCompact {
+    pub idle_minutes: i32,
+    pub context_percent: i32,
+}
+
 pub(crate) struct Session {
     pub scope: Scope,
     pub id: String,
@@ -691,6 +698,19 @@ impl Session {
             sanchoris_config::ResumeMode::Auto => UsageLimitResume::Auto,
             sanchoris_config::ResumeMode::Manual => UsageLimitResume::Manual,
         })
+    }
+
+    /// When a chat in this session compacts on its own: null when it never does.
+    async fn auto_compact(&self) -> Result<Option<AutoCompact>> {
+        self.parsed()?
+            .auto_compact
+            .map(|auto| {
+                Ok(AutoCompact {
+                    idle_minutes: i32::try_from(auto.idle_minutes)?,
+                    context_percent: i32::try_from(auto.context_percent)?,
+                })
+            })
+            .transpose()
     }
 
     /// The skills a chat in this session can run: the config skills whose GitHub resources fit the session's GitHub.Repos and Permissions, and the built-in file-issue.

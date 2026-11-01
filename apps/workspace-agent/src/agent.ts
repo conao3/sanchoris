@@ -167,7 +167,9 @@ export class WorkspaceAgent {
         if (this.seenMessageIds.has(message.messageId)) return
         this.seenMessageIds.add(message.messageId)
         this.deliveries = this.deliveries.then(() =>
-          this.whenReady(() => this.deliver(message.text, message.steer, message.attachments)),
+          this.whenReady(() =>
+            this.deliver(message.text, message.steer, message.compact, message.attachments),
+          ),
         )
         return
       case "session_mode":
@@ -328,7 +330,8 @@ export class WorkspaceAgent {
       resumed: restored !== null,
     })
     this.channel.startHeartbeat(start.heartbeatSeconds, () => this.busy)
-    if (start.instruction !== null) await this.deliver(start.instruction, false, start.attachments)
+    if (start.instruction !== null)
+      await this.deliver(start.instruction, false, false, start.attachments)
   }
 
   private ask(questions: UserInputQuestion[], signal: AbortSignal): Promise<UserInputAnswers> {
@@ -438,6 +441,7 @@ export class WorkspaceAgent {
   private async deliver(
     text: string,
     steer: boolean,
+    compact: boolean,
     attachments: readonly Attachment[],
   ): Promise<void> {
     const images = await downloadAttachments(attachments)
@@ -446,7 +450,7 @@ export class WorkspaceAgent {
       this.baseline = this.checkpoint(checkpointRef(this.lastTurn + 1, "start"))
     }
     await this.baseline
-    this.requireWorker().send(workerMessage(text, steer, images))
+    this.requireWorker().send(workerMessage(text, steer, compact, images))
   }
 
   private async rewind(message: RewindMessage): Promise<void> {

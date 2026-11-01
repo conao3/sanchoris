@@ -2956,8 +2956,23 @@ pub struct Conversation {
     pub modes: Option<SessionModes>,
     /// For a fork: the `resume` its first task starts from.
     pub resume: Option<Value>,
+    /// How full the session's context was at the end of the last turn.
+    pub context: Option<ContextUsage>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContextUsage {
+    pub used_tokens: i64,
+    pub max_tokens: i64,
+}
+
+impl ContextUsage {
+    pub fn percent(&self) -> f64 {
+        self.used_tokens as f64 * 100.0 / self.max_tokens as f64
+    }
 }
 
 pub const CONVERSATION_WEB: &str = "web";
@@ -2987,6 +3002,12 @@ impl Entity for Conversation {
                     .as_ref(),
             )
             .opt_json("resume", self.resume.as_ref())
+            .opt_json(
+                "context",
+                self.context
+                    .map(|context| serde_json::to_value(context).expect("context serializes"))
+                    .as_ref(),
+            )
             .time("created_at", self.created_at)
             .time("updated_at", self.updated_at)
             .s("gsi1pk", keys::conversations_index(self.tenant_id))
@@ -3010,6 +3031,11 @@ impl Entity for Conversation {
                 .transpose()
                 .map_err(|e| DbError::Decode(format!("conversation modes: {e}")))?,
             resume: r.opt_json("resume")?,
+            context: r
+                .opt_json("context")?
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| DbError::Decode(format!("conversation context: {e}")))?,
             created_at: r.time("created_at")?,
             updated_at: r.time("updated_at")?,
         })
@@ -3053,6 +3079,7 @@ impl Entity for ConversationTask {
 
 pub const AUTHOR_MEMBER: &str = "member";
 pub const AUTHOR_AGENT: &str = "agent";
+pub const AUTHOR_SANCHORIS: &str = "sanchoris";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatMessage {

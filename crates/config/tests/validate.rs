@@ -1,7 +1,7 @@
 use sanchoris_config::{
-    Architecture, Compute, ConfigFiles, PlanLimits, SkillOrigin, TriggerSource, ValidationContext,
-    ValidationErrors, builtin_skill, builtin_skills, chat_skills, load_repository,
-    parse_repository, read_config_dir,
+    Architecture, AutoCompact, Compute, ConfigFiles, PlanLimits, SkillOrigin, TriggerSource,
+    ValidationContext, ValidationErrors, builtin_skill, builtin_skills, chat_skills,
+    load_repository, parse_repository, read_config_dir,
 };
 use std::collections::BTreeSet;
 
@@ -593,6 +593,47 @@ fn the_workspace_architecture_is_required_and_docker_compute_is_rejected() {
             .collect::<Vec<_>>(),
         vec!["unknown value \"docker\"; expected one of standard"]
     );
+}
+
+#[test]
+fn auto_compact_is_optional_and_its_percent_is_at_most_100() {
+    let repository = load_repository(&example_files(EXAMPLE), &context()).unwrap();
+    assert_eq!(
+        repository.config.sessions["all"].auto_compact,
+        Some(AutoCompact {
+            idle_minutes: 55,
+            context_percent: 50
+        })
+    );
+    assert_eq!(repository.config.sessions["shop"].auto_compact, None);
+    for (setting, location, message) in [
+        (
+            "{ IdleMinutes: 55, ContextPercent: 101 }",
+            "Sessions.all.AutoCompact.ContextPercent",
+            "must be at most 100",
+        ),
+        (
+            "{ IdleMinutes: 0, ContextPercent: 50 }",
+            "Sessions.all.AutoCompact.IdleMinutes",
+            "must be greater than 0",
+        ),
+    ] {
+        let errors = errors_with(
+            &example_files(&replaced(
+                "AutoCompact: { IdleMinutes: 55, ContextPercent: 50 }",
+                &format!("AutoCompact: {setting}"),
+            )),
+            &context(),
+        );
+        assert_eq!(
+            errors
+                .at(location)
+                .iter()
+                .map(|e| e.message.as_str())
+                .collect::<Vec<_>>(),
+            vec![message]
+        );
+    }
 }
 
 #[test]

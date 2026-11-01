@@ -12,10 +12,10 @@ pub mod validate;
 
 pub use builtin::{FILE_ISSUE_SKILL, builtin_skill, builtin_skills};
 pub use config::{
-    Agent, Architecture, CONFIG_FILE, Checkout, ChildLimits, Compute, Config, GitHubAccess, Hook,
-    InputTransformer, Limits, Network, PermissionLevel, Project, ProjectRepo, REQUESTER,
-    ResumeMode, Session, Start, Trigger, TriggerSource, TriggerState, UsageLimit, Worker,
-    Workspace, parse_config_yaml,
+    Agent, Architecture, AutoCompact, CONFIG_FILE, Checkout, ChildLimits, Compute, Config,
+    GitHubAccess, Hook, InputTransformer, Limits, Network, PermissionLevel, Project, ProjectRepo,
+    REQUESTER, ResumeMode, Session, Start, Trigger, TriggerSource, TriggerState, UsageLimit,
+    Worker, Workspace, parse_config_yaml,
 };
 pub use error::{ValidationError, ValidationErrors};
 pub use repository::{

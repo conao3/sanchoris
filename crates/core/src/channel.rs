@@ -140,6 +140,8 @@ pub struct ChatInput<'a> {
     pub text: &'a str,
     /// Put it into the turn the agent works on.
     pub steer: bool,
+    /// Compact the session instead of sending `text`.
+    pub compact: bool,
     pub attachments: &'a [ChatAttachment],
 }
 
@@ -153,7 +155,12 @@ pub async fn enqueue_chat_message(
         tx,
         run_id,
         OutboxType::UserMessage,
-        &json!({ "text": input.text, "steer": input.steer, "attachments": input.attachments }),
+        &json!({
+            "text": input.text,
+            "steer": input.steer,
+            "compact": input.compact,
+            "attachments": input.attachments,
+        }),
         dedupe_key,
     )
     .await

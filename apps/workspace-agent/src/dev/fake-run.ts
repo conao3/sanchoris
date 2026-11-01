@@ -58,6 +58,7 @@ const control = await FakeControl.listen({
         messageId: `skill-${id}`,
         text: `[sanchoris] Skill ${request.name} (run ${id}) SUCCEEDED: {}`,
         steer: false,
+        compact: false,
         attachments: [],
       })
     }, notifyAfterMs)
