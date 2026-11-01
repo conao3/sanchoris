@@ -311,6 +311,7 @@ export class ClaudeWorker implements Worker {
       case "decline":
         return { behavior: "deny", message: "User declined tool execution." }
       case "cancel":
+        this.interrupting = true
         return { behavior: "deny", message: "User cancelled tool execution.", interrupt: true }
     }
   }
@@ -393,7 +394,7 @@ export class ClaudeWorker implements Worker {
 
   private turnResult(message: SDKResultMessage): WorkerTurnResult {
     const failed = message.subtype !== "success" || message.is_error
-    const summary = message.subtype === "success" ? message.result : message.errors.join("\n")
+    let summary = message.subtype === "success" ? message.result : message.errors.join("\n")
     const rejected = this.rejectedRateLimit
     const interrupted = this.interrupting
     this.rejectedRateLimit = null
@@ -402,6 +403,7 @@ export class ClaudeWorker implements Worker {
     let error: WorkerTurnResult["error"] = null
     if (interrupted) {
       result = "interrupted"
+      if (message.subtype !== "success") summary = ""
     } else if (failed) {
       result = "failed"
       error = rejected
