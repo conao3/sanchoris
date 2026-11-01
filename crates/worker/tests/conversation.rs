@@ -266,6 +266,15 @@ async fn messages_go_to_the_running_task_and_a_finished_task_starts_the_next() {
         .await;
     world.worker.settle().await.unwrap();
     assert_eq!(
+        messages(&world, conversation_id)
+            .await
+            .into_iter()
+            .filter(|message| message.author_kind == AUTHOR_AGENT)
+            .map(|message| message.outcome)
+            .collect::<Vec<_>>(),
+        [Some("continued".to_string())]
+    );
+    assert_eq!(
         world.messages(run_id).await,
         vec!["[sanchoris] Message from Mika:\nSkip the docs".to_string()]
     );

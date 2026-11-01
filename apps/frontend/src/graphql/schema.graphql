@@ -409,6 +409,10 @@ enum ChatTurnOutcome {
 	"""
 	INTERRUPTED
 	FAILED
+	"""
+	The agent went straight on to another turn, such as one for a steer.
+	"""
+	CONTINUED
 }
 
 type ChatWork {

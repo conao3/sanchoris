@@ -182,6 +182,10 @@ export class WorkspaceAgent {
         this.deliveries = this.deliveries.then(() => this.whenReady(() => this.rewind(message)))
         return
       case "interrupt":
+        if (!this.busy) {
+          this.config.logger("info", "interrupt ignored between turns", {})
+          return
+        }
         void this.whenReady(() => this.requireWorker().interrupt())
         return
       case "user_input_response": {
@@ -452,10 +456,6 @@ export class WorkspaceAgent {
     }
     const context = this.workerContext
     if (!context || !this.modes) throw new Error("Worker is not running")
-    if (message.restoreTurn !== null) {
-      const dirs = await repositories(this.config.workspaceDir, this.config.env)
-      await restore(dirs, checkpointRef(message.restoreTurn, "start"), this.config.env)
-    }
     const restored: RestoredRecord | null = message.resume
       ? {
           sessionId: message.resume.sessionId,
@@ -463,6 +463,18 @@ export class WorkspaceAgent {
           bytes: await downloadRecord(message.resume.url, message.resume.sha256),
         }
       : null
+    if (message.restoreTurn !== null) {
+      const dirs = await repositories(this.config.workspaceDir, this.config.env)
+      const skipped = await restore(
+        dirs,
+        checkpointRef(message.restoreTurn, "start"),
+        this.config.env,
+      )
+      if (skipped.length > 0)
+        this.config.logger("warn", "repositories without the checkpoint were left as they are", {
+          skipped,
+        })
+    }
     await this.requireWorker().close()
     this.baseline = null
     this.worker = this.config.createWorker({ ...context, modes: this.modes })

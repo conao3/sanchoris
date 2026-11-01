@@ -976,6 +976,17 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     assert_eq!(revoked["revokeInvitation"]["state"], "REVOKED");
     let members = w.ok(owner, "Members", json!({ "tenant": slug })).await;
     assert_eq!(members["tenant"]["members"].as_array().unwrap().len(), 2);
+    let sole_owner = members["tenant"]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|member| member["role"] == "OWNER")
+        .unwrap()["id"]
+        .clone();
+    let kept = w
+        .run(owner, "RemoveMember", json!({ "memberId": sole_owner }))
+        .await;
+    assert_eq!(kept["errors"][0]["extensions"]["code"], "CONFLICT");
 
     let (link_url, _) = w
         .redirect(owner, "ConnectGitHub", "connectGitHub", json!({}))

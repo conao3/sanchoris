@@ -140,7 +140,7 @@ export function CreateTenantPage() {
             required
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="acme"
+            placeholder={t("placeholder.tenantSlug")}
             className="h-[30px] w-full rounded-ui border border-line2 bg-bg px-2.5 outline-none focus:border-ink"
           />
           <div className="mb-1 mt-3 text-xs text-muted">{t("billing.plan")}</div>

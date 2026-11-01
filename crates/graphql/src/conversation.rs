@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
 use async_graphql::{Context, ID, Object, Result};
-use sanchoris_core::conversations::{DELIVERY_QUEUED, latest_task};
+use sanchoris_core::conversations::{DELIVERY_QUEUED, OUTCOME_CONTINUED, latest_task};
 use sanchoris_core::items::{
     AUTHOR_AGENT, AUTHOR_MEMBER, ChatMessage as ChatMessageItem, Conversation as ConversationItem,
     ConversationTask, Output as OutputItem, RunPartial,
@@ -206,7 +206,7 @@ impl Conversation {
         {
             if message.author_kind == AUTHOR_MEMBER {
                 last_member_at = last_member_at.max(Some(message.created_at));
-            } else {
+            } else if message.outcome.as_deref() != Some(OUTCOME_CONTINUED) {
                 last_member_at = last_member_at.filter(|at| *at > message.created_at);
             }
         }

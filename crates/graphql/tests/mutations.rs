@@ -454,6 +454,10 @@ async fn chat_messages_start_conversations_and_continue_them() {
             json!({ "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "  ", "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] }),
             "BAD_USER_INPUT",
         ),
+        (
+            json!({ "tenantId": w.acme, "conversationId": w.chat_conversation, "text": "x".repeat(32_001), "interactionMode": "DEFAULT", "runtimeMode": "FULL_ACCESS", "delivery": "QUEUE", "attachmentIds": [] }),
+            "BAD_USER_INPUT",
+        ),
     ] {
         assert_eq!(
             w.error_code(&w.mika, "SendChatMessage", json!({ "input": input }))

@@ -144,6 +144,9 @@ pub async fn decide_approval(
     Ok(approval)
 }
 
+/// The outcome of a reply whose turn ended while the agent had already started the next one.
+pub const OUTCOME_CONTINUED: &str = "continued";
+
 /// A member's message held while the agent works on a turn, delivered when the turn ends.
 pub const DELIVERY_QUEUED: &str = "queued";
 /// A member's message delivered into the turn the agent was working on.
@@ -176,7 +179,7 @@ pub async fn turn_in_progress(
     let mut busy = false;
     for message in task_messages(tx, conversation_id, task_id).await? {
         if message.author_kind == AUTHOR_AGENT {
-            busy = false;
+            busy = busy && message.outcome.as_deref() == Some(OUTCOME_CONTINUED);
         } else if message.delivery.as_deref() != Some(DELIVERY_QUEUED) {
             busy = true;
         }

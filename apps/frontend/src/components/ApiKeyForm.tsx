@@ -65,7 +65,7 @@ export function ApiKeyForm({ tenantId, reason }: { tenantId: string; reason?: st
         <input
           id="credential-name"
           className={`${fieldClass} font-mono text-sm`}
-          placeholder="acme-claude-key"
+          placeholder={t("placeholder.credentialName")}
           value={name}
           onChange={(event) => setName(event.target.value)}
           required
@@ -77,7 +77,7 @@ export function ApiKeyForm({ tenantId, reason }: { tenantId: string; reason?: st
           id="credential-key"
           type="password"
           className={`${fieldClass} font-mono text-sm`}
-          placeholder="sk-ant-••••••••••••••••"
+          placeholder={t("placeholder.apiKey")}
           value={key}
           onChange={(event) => setKey(event.target.value)}
           required

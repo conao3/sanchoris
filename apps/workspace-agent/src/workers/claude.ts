@@ -16,6 +16,7 @@ import {
 
 import { AsyncQueue } from "../async-queue.ts"
 import type {
+  ApprovalDecision,
   ApprovalRequest,
   PlanStep,
   RateLimitWindow,
@@ -311,10 +312,15 @@ export class ClaudeWorker implements Worker {
         message:
           "This tool requires approval in Plan mode, but approvals are disabled for this thread.",
       }
-    const decision = await this.context.handlers.onApproval(
-      claudeApproval(toolName, input, options.decisionReason),
-      options.signal,
-    )
+    let decision: ApprovalDecision
+    try {
+      decision = await this.context.handlers.onApproval(
+        claudeApproval(toolName, input, options.decisionReason),
+        options.signal,
+      )
+    } catch (error) {
+      return { behavior: "deny", message: (error as Error).message }
+    }
     switch (decision) {
       case "accept":
         return { behavior: "allow", updatedInput: input }
@@ -322,10 +328,16 @@ export class ClaudeWorker implements Worker {
         return {
           behavior: "allow",
           updatedInput: input,
-          updatedPermissions: (options.suggestions ?? []).map((update) => ({
-            ...update,
-            destination: "session",
-          })),
+          updatedPermissions: options.suggestions?.length
+            ? options.suggestions.map((update) => ({ ...update, destination: "session" as const }))
+            : [
+                {
+                  type: "addRules",
+                  rules: [{ toolName }],
+                  behavior: "allow",
+                  destination: "session",
+                },
+              ],
         }
       case "decline":
         return { behavior: "deny", message: "User declined tool execution." }

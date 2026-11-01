@@ -28,6 +28,11 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
       kind
       sessionName
       updatedAt
+      latestTask {
+        id
+        status
+        waitReason
+      }
       filedTasks {
         id
       }

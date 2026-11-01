@@ -323,6 +323,8 @@ db_enum!(ChatTurnOutcome, "turn outcome", {
     /// Someone stopped the turn.
     Interrupted => "interrupted",
     Failed => "failed",
+    /// The agent went straight on to another turn, such as one for a steer.
+    Continued => "continued",
 });
 
 db_enum!(ActorKind, "actor kind", {

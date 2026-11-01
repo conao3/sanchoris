@@ -3,6 +3,7 @@ import http from "node:http"
 import https from "node:https"
 import WebSocket from "ws"
 
+import { fitFrame } from "./frame.ts"
 import type { Logger } from "./log.ts"
 import {
   type CredentialsMessage,
@@ -143,7 +144,11 @@ export class RunChannel {
 
   send(payload: SequencedPayload): number {
     this.seq += 1
-    const message = { ...payload, runId: this.options.runId, seq: this.seq } as SequencedMessage
+    const message = fitFrame({
+      ...payload,
+      runId: this.options.runId,
+      seq: this.seq,
+    } as SequencedMessage)
     this.unacked.push(message)
     this.flush()
     return this.seq
@@ -217,7 +222,7 @@ export class RunChannel {
   }
 
   post(message: Extract<OutboundMessage, { type: "partial" }>): void {
-    if (this.helloAcked) this.write(message)
+    if (this.helloAcked) this.write(fitFrame(message))
   }
 
   private write(message: OutboundMessage): void {

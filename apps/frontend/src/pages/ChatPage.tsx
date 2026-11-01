@@ -1,7 +1,7 @@
 import { useApolloClient } from "@apollo/client/react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import clsx from "clsx"
-import { CircleDot, ImagePlus, Plus, Square, X } from "lucide-react"
+import { ArrowDown, CircleDot, ImagePlus, Plus, Square, X } from "lucide-react"
 import { type KeyboardEvent, useEffect, useRef, useState } from "react"
 import { Button } from "../components/Button.tsx"
 import {
@@ -45,6 +45,7 @@ import {
   RemoveQueuedChatMessageDocument,
   RewindChatDocument,
   SteerChatMessageDocument,
+  StopTaskDocument,
   UploadChatAttachmentDocument,
   AnswerChatApprovalDocument,
   AnswerChatQuestionDocument,
@@ -86,6 +87,7 @@ function sessionSkills(session: ChatSession): string {
 }
 
 function Composer({
+  draftKey,
   tenantId,
   initial,
   reason,
@@ -94,6 +96,7 @@ function Composer({
   onSend,
   onStop,
 }: {
+  draftKey: string
   tenantId: string
   initial?: { text: string; attachments: { id: string; name: string; url: string }[] }
   reason?: string
@@ -102,7 +105,18 @@ function Composer({
   onSend: (text: string, delivery: ChatDelivery, attachmentIds: string[]) => Promise<boolean>
   onStop?: () => void
 }) {
-  const [text, setText] = useState(initial?.text ?? "")
+  const [text, setStoredText] = useState(
+    () => initial?.text || sessionStorage.getItem(draftKey) || "",
+  )
+
+  function setText(next: string) {
+    setStoredText(next)
+    if (next) {
+      sessionStorage.setItem(draftKey, next)
+    } else {
+      sessionStorage.removeItem(draftKey)
+    }
+  }
   const [drafts, setDrafts] = useState<Draft[]>(
     (initial?.attachments ?? []).map((attachment) => ({
       key: attachment.id,
@@ -299,12 +313,65 @@ function Composer({
   )
 }
 
+const FOLLOW_SLACK_PX = 80
+
+function scrollParent(element: HTMLElement | null): HTMLElement {
+  for (let node = element?.parentElement; node; node = node.parentElement) {
+    if (/(auto|scroll)/.test(getComputedStyle(node).overflowY)) {
+      return node
+    }
+  }
+  return document.documentElement
+}
+
+type TimelineMessage = ChatConversation["messages"][number]
+
+function joinsTurn(timeline: TimelineMessage[], position: number): boolean {
+  for (const earlier of timeline.slice(0, position).toReversed()) {
+    if (earlier.authorKind === "AGENT" && earlier.outcome) {
+      return false
+    }
+    if (earlier.authorKind !== "AGENT") {
+      return true
+    }
+  }
+  return false
+}
+
+function notify(title: string, body: string) {
+  if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+    new Notification(title, { body })
+  }
+}
+
+function useAttention(title: string, working: ChatConversation["working"]) {
+  const seen = useRef({ working: !!working, question: "", approval: "" })
+  useEffect(() => {
+    const before = seen.current
+    if (working?.approval && working.approval.id !== before.approval) {
+      notify(title, t("notify.approval"))
+    } else if (working?.question && working.question.id !== before.question) {
+      notify(title, t("notify.question"))
+    } else if (before.working && !working) {
+      notify(title, t("notify.finished"))
+    }
+    seen.current = {
+      working: !!working,
+      question: working?.question?.id ?? "",
+      approval: working?.approval?.id ?? "",
+    }
+  }, [title, working])
+}
+
 function Thread({ conversation, tenant }: { conversation: ChatConversation; tenant: Tenant }) {
   const [send, { error }] = useAction(SendChatMessageDocument, { refetchQueries: [ChatDocument] })
   const [answer, { error: answerError }] = useAction(AnswerChatQuestionDocument, {
     refetchQueries: [ChatDocument],
   })
   const [interrupt, { error: interruptError }] = useAction(InterruptChatDocument, {
+    refetchQueries: [ChatDocument],
+  })
+  const [stopTask, { error: stopError }] = useAction(StopTaskDocument, {
     refetchQueries: [ChatDocument],
   })
   const [decide, { error: decideError }] = useAction(AnswerChatApprovalDocument, {
@@ -351,10 +418,24 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
     wasWorking.current = !!working
   }, [working, client])
   const end = useRef<HTMLDivElement>(null)
-  const follow = `${conversation.id}:${conversation.messages.length}:${working?.work.length ?? -1}:${working?.question?.id ?? ""}:${working?.approval?.id ?? ""}`
+  const follow = `${conversation.id}:${conversation.messages.length}:${working?.work.length ?? -1}:${working?.question?.id ?? ""}:${working?.approval?.id ?? ""}:${working?.partial?.text.length ?? 0}`
+  const pinned = useRef(true)
+  const [away, setAway] = useState(false)
   useEffect(() => {
-    end.current?.scrollIntoView({ block: "nearest" })
+    const box = scrollParent(end.current)
+    const onScroll = () => {
+      pinned.current = box.scrollHeight - box.scrollTop - box.clientHeight < FOLLOW_SLACK_PX
+      setAway(!pinned.current)
+    }
+    box.addEventListener("scroll", onScroll)
+    return () => box.removeEventListener("scroll", onScroll)
+  }, [])
+  useEffect(() => {
+    if (pinned.current) {
+      end.current?.scrollIntoView({ block: "nearest" })
+    }
   }, [follow])
+  useAttention(conversation.title, working)
   const task = conversation.latestTask
   const run = task?.runs[task.runs.length - 1]
   const repos = conversation.session?.repositories.join(", ") ?? ""
@@ -367,6 +448,9 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
     delivery: ChatDelivery,
     attachmentIds: string[] = [],
   ) {
+    if ("Notification" in window && Notification.permission === "default") {
+      void Notification.requestPermission()
+    }
     return send({
       input: {
         tenantId: tenant.id,
@@ -455,7 +539,13 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
                 onRewind={
                   conversation.kind === "WEB" ? () => setRewindTarget(message.id) : undefined
                 }
-                rewindReason={working ? t("reason.rewindWhileWorking") : undefined}
+                rewindReason={
+                  working
+                    ? t("reason.rewindWhileWorking")
+                    : joinsTurn(timeline, position)
+                      ? t("reason.rewindJoinedTurn")
+                      : undefined
+                }
               />
             )
           }
@@ -526,7 +616,15 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
           <Working
             startedAt={working.startedAt}
             work={working.work}
-            waiting={working.approval ? "approval" : working.question ? "question" : undefined}
+            waiting={
+              working.approval
+                ? "approval"
+                : working.question
+                  ? "question"
+                  : run
+                    ? undefined
+                    : "session"
+            }
             partial={working.partial}
           />
         ) : null}
@@ -584,7 +682,8 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
         />
       ) : (
         <Composer
-          key={draft.key}
+          key={`${conversation.id}:${draft.key}`}
+          draftKey={`sanchoris.chat-draft.${conversation.id}`}
           initial={draft}
           tenantId={tenant.id}
           reason={conversation.kind === "SLACK" ? t("reason.slackThread") : undefined}
@@ -593,7 +692,9 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
           onStop={
             working && run
               ? () => void interrupt({ tenantId: tenant.id, conversationId: conversation.id })
-              : undefined
+              : working && task
+                ? () => void stopTask({ taskId: task.id })
+                : undefined
           }
           onSend={(text, delivery, attachmentIds) => sendText(text, modes, delivery, attachmentIds)}
         />
@@ -617,10 +718,25 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
           decideError ??
           steerError ??
           unqueueError ??
-          forkError
+          forkError ??
+          stopError
         }
         className="mt-2"
       />
+      {away ? (
+        <button
+          type="button"
+          onClick={() => {
+            pinned.current = true
+            setAway(false)
+            end.current?.scrollIntoView({ block: "nearest", behavior: "smooth" })
+          }}
+          className="sticky bottom-3 left-full mt-2 flex items-center gap-1 rounded-full border border-line2 bg-bg px-3 py-1 text-xs text-muted shadow-sm outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-line2"
+        >
+          <ArrowDown className="size-3.5" aria-hidden />
+          {t("chat.scrollToEnd")}
+        </button>
+      ) : null}
       <div ref={end} />
     </>
   )
@@ -698,6 +814,7 @@ function NewChat({
       ) : null}
       {session ? <Dim className="mt-2.5">{sessionSkills(session)}</Dim> : null}
       <Composer
+        draftKey="sanchoris.chat-draft.new"
         tenantId={tenant.id}
         reason={
           !hasConfig || tenant.sessions.length === 0
@@ -857,6 +974,14 @@ export function ChatPage() {
               const content = (
                 <>
                   <span className="font-medium">{item.title}</span>
+                  {item.latestTask ? (
+                    <span className="mt-0.5 block text-xs">
+                      <TaskState
+                        status={item.latestTask.status}
+                        waitReason={item.latestTask.waitReason}
+                      />
+                    </span>
+                  ) : null}
                   <small className="block text-xs text-muted">
                     {[
                       item.sessionName,

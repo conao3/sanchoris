@@ -410,7 +410,7 @@ export function Working({
 }: {
   startedAt: string
   work: Work[]
-  waiting?: "question" | "approval"
+  waiting?: "question" | "approval" | "session"
   partial?: { kind: string; text: string } | null
 }) {
   const now = useNow(true)
@@ -433,9 +433,11 @@ export function Working({
             ? t("work.waitingAnswer")
             : waiting === "approval"
               ? t("work.waitingApproval")
-              : latest
-                ? `${t("work.workingFor", { d: elapsed(seconds) })} · ${workLabel(latest)}`
-                : t("work.workingFor", { d: elapsed(seconds) })
+              : waiting === "session"
+                ? t("work.startingSession")
+                : latest
+                  ? `${t("work.workingFor", { d: elapsed(seconds) })} · ${workLabel(latest)}`
+                  : t("work.workingFor", { d: elapsed(seconds) })
         }
       />
     </div>

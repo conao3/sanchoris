@@ -4,10 +4,10 @@ use sanchoris_config::{Session, Start};
 use sanchoris_core::channel::{
     OutboxType, RunEventType, SEQ_STRIDE, enqueue_outbox, outbox, resume_from, session_records,
 };
-use sanchoris_core::conversations::post_agent_message;
+use sanchoris_core::conversations::{OUTCOME_CONTINUED, post_agent_message};
 use sanchoris_core::db::{self, TenantTx};
 use sanchoris_core::items::{
-    OutboxItem, Pending, Run, RunEventItem, SkillRunItem, Task, UsageRecord, Workspace,
+    OutboxItem, Pending, Run, RunEventItem, RunPartial, SkillRunItem, Task, UsageRecord, Workspace,
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::lifecycle::{
@@ -279,23 +279,32 @@ async fn turn_end(
         cost_usd: cost,
         recorded_at: now,
     })?;
+    let partial = keys::run_partial_key(tx.tenant_id(), event.run_id);
+    if tx.get::<RunPartial>(&partial).await?.is_some() {
+        tx.delete(&partial)?;
+    }
     let task = load_task(tx, task_id).await?;
+    let busy = payload["busy"]
+        .as_bool()
+        .ok_or_else(|| invalid("turn_end needs busy"))?;
     if let Some(summary) = payload["summary"].as_str() {
         let id = Uuid::new_v5(&event.run_id, format!("turn:{turn}").as_bytes());
+        let outcome = if busy {
+            Some(OUTCOME_CONTINUED)
+        } else {
+            payload["result"].as_str()
+        };
         post_agent_message(
             tx,
             &task,
             Some(event.run_id),
-            payload["result"].as_str().map(|outcome| (turn, outcome)),
+            outcome.map(|outcome| (turn, outcome)),
             id,
             summary,
             now,
         )
         .await?;
     }
-    let busy = payload["busy"]
-        .as_bool()
-        .ok_or_else(|| invalid("turn_end needs busy"))?;
     if task.status != TaskStatus::Running || payload["result"] == "interrupted" || busy {
         return Ok(());
     }

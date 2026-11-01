@@ -65,6 +65,7 @@ use crate::task::{Run, Task, waiting_approval};
 use crate::tenant::Tenant;
 use crate::trigger::{TRIGGER_TEMPLATES, Trigger};
 
+const MAX_MESSAGE_CHARS: usize = 32_000;
 const INVITATION_DAYS: i64 = 7;
 const DELETION_DELAY_SECONDS: i64 = 60;
 
@@ -1526,6 +1527,7 @@ impl MutationRoot {
             size_bytes,
             uploaded_by_member_id: member_id,
             created_at: now(ctx),
+            expires_at: now(ctx) + chrono::Duration::days(1),
         };
         write(|| async {
             let mut tx = tx(ctx, scope.tenant_id);
@@ -1552,6 +1554,11 @@ impl MutationRoot {
         let text = input.text.trim().to_string();
         if text.is_empty() {
             return Err(bad_input("the message is empty"));
+        }
+        if text.chars().count() > MAX_MESSAGE_CHARS {
+            return Err(bad_input(format!(
+                "a message is at most {MAX_MESSAGE_CHARS} characters; attach long logs as a file in the repository instead"
+            )));
         }
         if input.attachment_ids.len() > MAX_ATTACHMENTS {
             return Err(bad_input(format!(

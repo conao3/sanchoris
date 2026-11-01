@@ -15,6 +15,7 @@ const MAX_NAME_CHARS: usize = 100;
 pub(crate) fn attachment_name(name: &str) -> Result<String> {
     let cleaned: String = name
         .trim()
+        .trim_start_matches('.')
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {

@@ -37,6 +37,7 @@ pub const PROTOCOL_VERSION: i64 = 2;
 pub const CLOSE_PROTOCOL_ERROR: u16 = 4000;
 pub const CLOSE_INTERNAL_ERROR: u16 = 1011;
 const ATTEMPTS: u32 = 20;
+const MAX_FRAME_BYTES: usize = 120 * 1024;
 const REASON_LIMIT: usize = 120;
 
 #[derive(Debug, thiserror::Error)]
@@ -371,10 +372,10 @@ impl Channel {
                         at,
                         expires_at: Utc::now() + Duration::days(1),
                     };
-                    if tx.get::<RunPartial>(&key).await?.is_some() {
-                        tx.put(&partial)?;
-                    } else {
-                        tx.insert(&partial)?;
+                    match tx.get::<RunPartial>(&key).await? {
+                        Some(existing) if existing.at >= partial.at => return Ok(()),
+                        Some(_) => tx.put(&partial)?,
+                        None => tx.insert(&partial)?,
                     }
                     tx.commit().await?;
                     Ok(())
@@ -1112,6 +1113,14 @@ impl Channel {
                 message["resume"] = self
                     .resume_record(tx.tenant_id(), &row.payload["resume"])
                     .await?;
+            }
+            if message.to_string().len() > MAX_FRAME_BYTES {
+                eprintln!(
+                    "sanchoris channel: run {run_id}: outbox {} ({}) is over {MAX_FRAME_BYTES} bytes and is dropped",
+                    row.seq, row.kind
+                );
+                plan.delivered.push(row.seq);
+                continue;
             }
             plan.messages.push(message);
             plan.delivered.push(row.seq);

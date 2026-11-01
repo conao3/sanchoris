@@ -32,6 +32,8 @@ use crate::dispatcher::{
 };
 use crate::error::WorkerError;
 
+const MAX_INSTRUCTION_BYTES: usize = 96 * 1024;
+
 #[derive(Debug, Error)]
 pub enum ChatError {
     #[error("{0}")]
@@ -220,6 +222,11 @@ async fn deliver(
             WorkerError::Invalid(format!("the pending task {} has no start payload", task.id))
         })?;
         let instruction = payload["instruction"].as_str().unwrap_or_default();
+        if instruction.len() + text.len() > MAX_INSTRUCTION_BYTES {
+            return Err(rejected(
+                "the session has not started yet and holds as much as it can; wait for its first reply",
+            ));
+        }
         payload["instruction"] = json!(format!("{instruction}\n\n{text}"));
         let mut attachments: Vec<ChatAttachment> =
             serde_json::from_value(payload["attachments"].clone())?;
@@ -502,10 +509,18 @@ pub async fn rewind(
                 "message {message_id} is not a sent message of the task"
             ))
         })?;
-    let previous = messages[..position]
+    let since = messages[..position]
         .iter()
-        .rev()
-        .find(|message| message.author_kind == AUTHOR_AGENT && message.turn.is_some());
+        .rposition(|message| message.author_kind == AUTHOR_AGENT && message.turn.is_some());
+    let earlier = &messages[since.map_or(0, |index| index + 1)..position];
+    if earlier.iter().any(|message| {
+        message.author_kind == AUTHOR_MEMBER && message.delivery.as_deref() != Some(DELIVERY_QUEUED)
+    }) {
+        return Err(rejected(
+            "the message went into a turn another message started; rewind from that message",
+        ));
+    }
+    let previous = since.map(|index| &messages[index]);
     let mut run = runs_of(tx, task.id)
         .await?
         .into_iter()

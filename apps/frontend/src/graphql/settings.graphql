@@ -241,6 +241,10 @@ mutation RevokeInvitation($invitationId: ID!) {
   }
 }
 
+mutation RemoveMember($memberId: ID!) {
+  removeMember(memberId: $memberId)
+}
+
 mutation ChangeMemberRole($memberId: ID!, $role: Role!) {
   changeMemberRole(memberId: $memberId, role: $role) {
     id

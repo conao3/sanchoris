@@ -60,6 +60,17 @@ export async function repositories(
   return dirs.toSorted()
 }
 
+async function hasRef(dir: string, ref: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+  try {
+    await run("git", ["-C", dir, "rev-parse", "--verify", "--quiet", "--end-of-options", ref], {
+      env,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function checkpointRef(turn: number, edge: "start" | "end"): string {
   return `${REF_PREFIX}/${turn}/${edge}`
 }
@@ -132,8 +143,13 @@ export async function restore(
   dirs: readonly string[],
   ref: string,
   env: NodeJS.ProcessEnv,
-): Promise<void> {
+): Promise<string[]> {
+  const skipped: string[] = []
   for (const dir of dirs) {
+    if (!(await hasRef(dir, ref, env))) {
+      skipped.push(dir)
+      continue
+    }
     const current = await captureTree(dir, env)
     const added = await git(
       dir,
@@ -151,4 +167,5 @@ export async function restore(
       await rm(scratch, { recursive: true, force: true })
     }
   }
+  return skipped
 }

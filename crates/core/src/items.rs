@@ -2715,6 +2715,7 @@ pub struct Attachment {
     pub size_bytes: i64,
     pub uploaded_by_member_id: Uuid,
     pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
 }
 
 impl Attachment {
@@ -2742,7 +2743,8 @@ impl Entity for Attachment {
             .s("mime_type", &self.mime_type)
             .n("size_bytes", self.size_bytes)
             .uuid("uploaded_by_member_id", self.uploaded_by_member_id)
-            .time("created_at", self.created_at);
+            .time("created_at", self.created_at)
+            .ttl(self.expires_at);
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -2754,6 +2756,8 @@ impl Entity for Attachment {
             size_bytes: r.n("size_bytes")?,
             uploaded_by_member_id: r.uuid("uploaded_by_member_id")?,
             created_at: r.time("created_at")?,
+            expires_at: DateTime::from_timestamp(r.n(crate::item::TTL)?, 0)
+                .ok_or_else(|| DbError::Decode("attachment expires_at".into()))?,
         })
     }
 }
