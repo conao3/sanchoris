@@ -4,7 +4,7 @@ import { CreditCard, FolderGit2, GitBranch, KeyRound, ListChecks, Users } from "
 import { type ReactNode, useLayoutEffect, useRef } from "react"
 import { type MessageKey, t } from "../i18n/index.ts"
 import { useRole } from "../lib/tenant.tsx"
-import { Reason } from "./Reason.tsx"
+import { Reason } from "./Tooltip.tsx"
 import { Page, Pg } from "./Shell.tsx"
 import { Icon } from "./ui.tsx"
 

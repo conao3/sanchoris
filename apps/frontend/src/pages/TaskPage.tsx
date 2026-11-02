@@ -17,6 +17,7 @@ import {
 } from "lucide-react"
 import { type ReactNode, useState } from "react"
 import { Button } from "../components/Button.tsx"
+import { Label, TextArea } from "../components/Field.tsx"
 import { ConfirmDialog } from "../components/ConfirmDialog.tsx"
 import { Cols, Page } from "../components/Shell.tsx"
 import { SkillRunState, StateEntryState, TaskState } from "../components/status.tsx"
@@ -463,15 +464,12 @@ export function TaskPage() {
             <Dim>
               {task.cause ?? task.error} {t("task.messageGoes")}
             </Dim>
-            <label htmlFor="resume-message" className="mb-1 mt-3 block text-xs text-muted">
-              {t("task.messageToAgent")}
-            </label>
-            <textarea
+            <Label htmlFor="resume-message">{t("task.messageToAgent")}</Label>
+            <TextArea
               id="resume-message"
               value={message}
               onChange={(event) => setMessage(event.target.value)}
               placeholder={t("task.messagePlaceholder")}
-              className="block h-16 w-full resize-y rounded-ui border border-line2 bg-bg px-2.5 py-[7px] outline-none focus:border-ink"
             />
             <ActionError error={resumeState.error} className="mt-2" />
             <div className="mt-2.5 flex gap-2">

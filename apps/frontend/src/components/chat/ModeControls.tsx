@@ -30,15 +30,14 @@ export function ModeControls({
   const runtime = RUNTIME[modes.runtimeMode]
   return (
     <div className="flex items-center gap-1.5">
-      <span title={plan ? t("mode.planHint") : t("mode.buildHint")}>
-        <Button
-          small
-          icon={plan ? ListChecks : Hammer}
-          onPress={() => onChange({ ...modes, interactionMode: plan ? "DEFAULT" : "PLAN" })}
-        >
-          {plan ? t("mode.plan") : t("mode.build")}
-        </Button>
-      </span>
+      <Button
+        small
+        icon={plan ? ListChecks : Hammer}
+        tip={plan ? t("mode.planHint") : t("mode.buildHint")}
+        onPress={() => onChange({ ...modes, interactionMode: plan ? "DEFAULT" : "PLAN" })}
+      >
+        {plan ? t("mode.plan") : t("mode.build")}
+      </Button>
       <Menu
         compact
         icon={runtime.icon}

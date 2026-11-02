@@ -2,7 +2,7 @@ import clsx from "clsx"
 import type { LucideIcon } from "lucide-react"
 import type { ReactNode } from "react"
 import { Button as RACButton } from "react-aria-components"
-import { Reason } from "./Reason.tsx"
+import { Reason, TipTrigger } from "./Tooltip.tsx"
 import { Kbd } from "./ui.tsx"
 
 type ButtonVariant = "default" | "primary" | "danger"
@@ -18,6 +18,7 @@ type ButtonProps = {
   isDisabled?: boolean
   reason?: string
   reasonAlign?: "left" | "right"
+  tip?: string
   autoFocus?: boolean
   type?: "button" | "submit"
   onPress?: () => void
@@ -41,6 +42,7 @@ export function Button({
   isDisabled,
   reason,
   reasonAlign,
+  tip,
   autoFocus,
   type = "button",
   onPress,
@@ -67,17 +69,85 @@ export function Button({
       </a>
     )
   }
-  return (
-    <Reason reason={reason} align={reasonAlign}>
-      <RACButton
-        type={type}
-        isDisabled={isDisabled || !!reason}
-        autoFocus={autoFocus}
-        onPress={onPress}
-        className={classes}
-      >
-        {content}
-      </RACButton>
+  const button = (
+    <RACButton
+      type={type}
+      isDisabled={isDisabled || !!reason}
+      autoFocus={autoFocus}
+      onPress={onPress}
+      className={classes}
+    >
+      {content}
+    </RACButton>
+  )
+  if (reason) {
+    return (
+      <Reason reason={reason} align={reasonAlign}>
+        {button}
+      </Reason>
+    )
+  }
+  return tip ? (
+    <TipTrigger tip={tip} align={reasonAlign}>
+      {button}
+    </TipTrigger>
+  ) : (
+    button
+  )
+}
+
+type IconButtonTone = "plain" | "overlay"
+
+type IconButtonProps = {
+  icon: LucideIcon
+  label: string
+  tone?: IconButtonTone
+  reason?: string
+  align?: "left" | "right"
+  onPress?: () => void
+  className?: string
+}
+
+const iconButtonClass: Record<IconButtonTone, string> = {
+  plain:
+    "-m-0.5 rounded-kbd p-1 text-faint hover:text-ink disabled:cursor-not-allowed disabled:text-line2",
+  overlay: "rounded-full bg-ink/70 p-0.5 text-white hover:bg-ink",
+}
+
+/**
+ * A button that shows only its icon, named by its label for screen readers and in its tooltip.
+ * `plain` sits in a line of text with a hit area larger than the icon, `overlay` sits on an image.
+ */
+export function IconButton({
+  icon: Icon,
+  label,
+  tone = "plain",
+  reason,
+  align,
+  onPress,
+  className,
+}: IconButtonProps) {
+  const button = (
+    <RACButton
+      aria-label={label}
+      isDisabled={!!reason}
+      onPress={onPress}
+      className={clsx(
+        "outline-none focus-visible:ring-2 focus-visible:ring-line2",
+        iconButtonClass[tone],
+        className,
+      )}
+    >
+      <Icon className={tone === "overlay" ? "size-3" : "size-3.5"} aria-hidden />
+    </RACButton>
+  )
+  return reason ? (
+    <Reason reason={reason} align={align}>
+      {button}
     </Reason>
+  ) : (
+    <TipTrigger tip={label} align={align}>
+      {button}
+    </TipTrigger>
   )
 }

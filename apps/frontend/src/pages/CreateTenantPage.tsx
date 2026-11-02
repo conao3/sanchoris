@@ -3,6 +3,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router"
 import { Check, ExternalLink, ShieldCheck, Users } from "lucide-react"
 import { type FormEvent, type ReactNode, useState } from "react"
 import { Button } from "../components/Button.tsx"
+import { Input, Label } from "../components/Field.tsx"
 import { CheckoutNote, useCheckoutOutcome } from "../components/billing.tsx"
 import {
   ActionError,
@@ -132,16 +133,14 @@ export function CreateTenantPage() {
           {data.viewer.invitations.length > 0 ? (
             <Dim className="mb-1">{t("tenantNew.orCreate")}</Dim>
           ) : null}
-          <label htmlFor="tenant-name" className="mb-1 mt-3 block text-xs text-muted">
-            {t("col.name")}
-          </label>
-          <input
+          <Label htmlFor="tenant-name">{t("col.name")}</Label>
+          <Input
             id="tenant-name"
             required
             value={name}
             onChange={(event) => setName(event.target.value)}
             placeholder={t("placeholder.tenantSlug")}
-            className="h-[30px] w-full rounded-ui border border-line2 bg-bg px-2.5 outline-none focus:border-ink"
+            className="w-full"
           />
           <div className="mb-1 mt-3 text-xs text-muted">{t("billing.plan")}</div>
           <div role="radiogroup" aria-label={t("billing.plan")}>

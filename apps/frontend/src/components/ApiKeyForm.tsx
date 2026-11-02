@@ -4,6 +4,7 @@ import { type ApiKeyProvider, AddCredentialDocument } from "../graphql/generated
 import { t } from "../i18n/index.ts"
 import { useAction } from "../lib/mutation.ts"
 import { Button } from "./Button.tsx"
+import { Input, Label, Select } from "./Field.tsx"
 import { ActionError, Code } from "./ui.tsx"
 
 export function SubscriptionCommands({ tenantName }: { tenantName: string }) {
@@ -18,9 +19,6 @@ export function SubscriptionCommands({ tenantName }: { tenantName: string }) {
     </Code>
   )
 }
-
-const fieldClass =
-  "h-[30px] w-full rounded-ui border border-line2 bg-bg px-2.5 outline-none focus:border-ink"
 
 export function ApiKeyForm({ tenantId, reason }: { tenantId: string; reason?: string }) {
   const [provider, setProvider] = useState<ApiKeyProvider>("ANTHROPIC")
@@ -46,37 +44,33 @@ export function ApiKeyForm({ tenantId, reason }: { tenantId: string; reason?: st
   return (
     <form onSubmit={submit}>
       <fieldset disabled={!!reason} className="contents">
-        <label className="mb-1 mt-3 block text-xs text-muted" htmlFor="provider">
-          {t("setup.provider")}
-        </label>
-        <select
+        <Label htmlFor="provider">{t("setup.provider")}</Label>
+        <Select
           id="provider"
-          className={fieldClass}
+          className="w-full"
           value={provider}
           onChange={(event) => setProvider(event.target.value as ApiKeyProvider)}
         >
           <option value="ANTHROPIC">{t("setup.anthropicKey")}</option>
           <option value="OPENAI">{t("setup.openaiKey")}</option>
           <option value="BEDROCK">{t("setup.bedrock")}</option>
-        </select>
-        <label className="mb-1 mt-3 block text-xs text-muted" htmlFor="credential-name">
-          {t("setup.name")}
-        </label>
-        <input
+        </Select>
+        <Label htmlFor="credential-name">{t("setup.name")}</Label>
+        <Input
           id="credential-name"
-          className={`${fieldClass} font-mono text-sm`}
+          mono
+          className="w-full"
           placeholder={t("placeholder.credentialName")}
           value={name}
           onChange={(event) => setName(event.target.value)}
           required
         />
-        <label className="mb-1 mt-3 block text-xs text-muted" htmlFor="credential-key">
-          {t("setup.key")}
-        </label>
-        <input
+        <Label htmlFor="credential-key">{t("setup.key")}</Label>
+        <Input
           id="credential-key"
           type="password"
-          className={`${fieldClass} font-mono text-sm`}
+          mono
+          className="w-full"
           placeholder={t("placeholder.apiKey")}
           value={key}
           onChange={(event) => setKey(event.target.value)}

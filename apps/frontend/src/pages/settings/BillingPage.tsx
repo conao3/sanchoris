@@ -3,6 +3,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router"
 import { ExternalLink, ShieldCheck, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { Button } from "../../components/Button.tsx"
+import { Input, Label } from "../../components/Field.tsx"
 import { ConfirmDialog } from "../../components/ConfirmDialog.tsx"
 import { SettingsPage } from "../../components/SettingsTabs.tsx"
 import { CheckoutNote, TenantStateNote, useCheckoutOutcome } from "../../components/billing.tsx"
@@ -289,17 +290,18 @@ function DeleteTenant({
       >
         <p className="m-0">{t("billing.deleteTenantBody")}</p>
         {free ? <p className="m-0 mt-2">{t("billing.deleteTenantFree")}</p> : null}
-        <label htmlFor="delete-tenant-slug" className="mb-1 mt-3 block text-xs text-muted">
+        <Label htmlFor="delete-tenant-slug">
           {tx("billing.deleteTenantType", { slug: <Chip>{slug}</Chip> })}
-        </label>
-        <input
+        </Label>
+        <Input
+          mono
           id="delete-tenant-slug"
           autoFocus
           value={typed}
           onChange={(event) => setTyped(event.target.value)}
           autoComplete="off"
           spellCheck={false}
-          className="block h-8 w-full rounded-ui border border-line2 bg-bg px-2.5 font-mono text-sm outline-none focus:border-ink"
+          className="block w-full"
         />
       </ConfirmDialog>
     </>

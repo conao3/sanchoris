@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import clsx from "clsx"
 import { ArrowDown, CircleDot, ImagePlus, Plus, Square, X } from "lucide-react"
 import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react"
-import { Button } from "../components/Button.tsx"
+import { Button, IconButton } from "../components/Button.tsx"
 import {
   IMAGE_TYPES,
   MAX_ATTACHMENTS,
@@ -25,7 +25,7 @@ import {
   Working,
 } from "../components/chat/Timeline.tsx"
 import { ContextMeter } from "../components/chat/ContextMeter.tsx"
-import { Reason } from "../components/Reason.tsx"
+import { Reason } from "../components/Tooltip.tsx"
 import { Page } from "../components/Shell.tsx"
 import { TaskState } from "../components/status.tsx"
 import {
@@ -244,15 +244,13 @@ function Composer({
               className="relative size-14 overflow-hidden rounded-ui border border-line"
             >
               <img src={draft.preview} alt={draft.name} className="size-full object-cover" />
-              <button
-                type="button"
-                aria-label={t("chat.removeAttachment", { name: draft.name })}
-                title={t("chat.removeAttachment", { name: draft.name })}
-                onClick={() => detach(draft.key)}
-                className="absolute top-0.5 right-0.5 rounded-full bg-ink/70 p-0.5 text-white outline-none hover:bg-ink focus-visible:ring-2 focus-visible:ring-line2"
-              >
-                <X className="size-3" aria-hidden />
-              </button>
+              <IconButton
+                icon={X}
+                label={t("chat.removeAttachment", { name: draft.name })}
+                tone="overlay"
+                onPress={() => detach(draft.key)}
+                className="absolute top-0.5 right-0.5"
+              />
             </div>
           ))}
         </div>

@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react"
 import { CircleDot, GitPullRequest, Plus, Timer } from "lucide-react"
 import { type FormEvent, useState } from "react"
 import { Button } from "../components/Button.tsx"
+import { Label, Select } from "../components/Field.tsx"
 import { Page, Pg } from "../components/Shell.tsx"
 import {
   ActionError,
@@ -144,8 +145,6 @@ function TemplatePanel({
   const [propose, { data, loading, error }] = useAction(ProposeTriggerDocument, {
     refetchQueries: [TriggersDocument],
   })
-  const selectClass = "h-[30px] w-full rounded-ui border border-line2 bg-bg px-2.5"
-
   function submit(event: FormEvent) {
     event.preventDefault()
     void propose({ input: { tenantId: tenant.id, templateId, configId, repository } })
@@ -159,12 +158,12 @@ function TemplatePanel({
       <div className="mb-1 text-xs font-semibold uppercase tracking-[.06em] text-faint">
         {t("triggers.newFromTemplate")}
       </div>
-      <label className="mb-1 mt-2 block text-xs text-muted" htmlFor="template">
+      <Label htmlFor="template" className="mt-2">
         {t("triggers.template")}
-      </label>
-      <select
+      </Label>
+      <Select
         id="template"
-        className={selectClass}
+        className="w-full"
         value={templateId}
         onChange={(event) => setTemplateId(event.target.value)}
       >
@@ -173,26 +172,26 @@ function TemplatePanel({
             {template.description}
           </option>
         ))}
-      </select>
-      <label className="mb-1 mt-2 block text-xs text-muted" htmlFor="repository">
+      </Select>
+      <Label htmlFor="repository" className="mt-2">
         {t("triggers.repository")}
-      </label>
-      <select
+      </Label>
+      <Select
         id="repository"
-        className={selectClass}
+        className="w-full"
         value={repository}
         onChange={(event) => setRepository(event.target.value)}
       >
         {repositories.map((item) => (
           <option key={item}>{item}</option>
         ))}
-      </select>
-      <label className="mb-1 mt-2 block text-xs text-muted" htmlFor="config">
+      </Select>
+      <Label htmlFor="config" className="mt-2">
         {t("triggers.config")}
-      </label>
-      <select
+      </Label>
+      <Select
         id="config"
-        className={selectClass}
+        className="w-full"
         value={configId}
         onChange={(event) => setConfigId(event.target.value)}
       >
@@ -201,7 +200,7 @@ function TemplatePanel({
             {config.repository}
           </option>
         ))}
-      </select>
+      </Select>
       <ActionError error={error} className="mt-2" />
       {data ? (
         <Dim className="mt-2">

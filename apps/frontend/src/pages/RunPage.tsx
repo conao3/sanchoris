@@ -4,7 +4,7 @@ import { MessageSquare, Square } from "lucide-react"
 import { type FormEvent, useEffect, useRef, useState } from "react"
 import { Button } from "../components/Button.tsx"
 import { ConfirmDialog } from "../components/ConfirmDialog.tsx"
-import { Reason } from "../components/Reason.tsx"
+import { Reason } from "../components/Tooltip.tsx"
 import { Cols, Page } from "../components/Shell.tsx"
 import { RunState, SkillRunState } from "../components/status.tsx"
 import {

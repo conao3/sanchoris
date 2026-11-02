@@ -13,6 +13,8 @@ import { type ReactNode, useEffect, useState } from "react"
 import type { ChatTurnOutcome } from "../../graphql/generated/graphql.ts"
 import { t } from "../../i18n/index.ts"
 import { clock } from "../../lib/format.ts"
+import { IconButton } from "../Button.tsx"
+import { Tip } from "../Tooltip.tsx"
 import { CopyButton } from "./CopyButton.tsx"
 import { Markdown } from "./Markdown.tsx"
 import { PlanSteps } from "./Plan.tsx"
@@ -30,38 +32,6 @@ import {
 } from "./work.ts"
 
 const TICK_MS = 1000
-
-function MetaAction({
-  icon: Icon,
-  label,
-  reason,
-  onPress,
-}: {
-  icon: LucideIcon
-  label: string
-  reason?: string
-  onPress: () => void
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={reason ?? label}
-      aria-disabled={!!reason}
-      onClick={() => {
-        if (!reason) {
-          onPress()
-        }
-      }}
-      className={clsx(
-        "rounded-kbd p-0.5 outline-none focus-visible:ring-2 focus-visible:ring-line2",
-        reason ? "cursor-not-allowed text-line2" : "text-faint hover:text-ink",
-      )}
-    >
-      <Icon className="size-3.5" aria-hidden />
-    </button>
-  )
-}
 
 function Meta({ children, align }: { children: ReactNode; align: "left" | "right" }) {
   return (
@@ -96,31 +66,34 @@ export function MemberMessage({
   return (
     <div className="group flex flex-col items-end">
       {steered ? (
-        <span
-          className="mb-0.5 flex items-center gap-1 text-xs text-muted"
-          title={t("chat.steeredHint")}
-        >
-          <CornerDownLeft className="size-3" aria-hidden />
-          {t("chat.steered")}
-        </span>
+        <Tip tip={t("chat.steeredHint")} align="right">
+          <span
+            role="img"
+            aria-label={t("chat.steered")}
+            className="mb-0.5 flex items-center gap-1 rounded-kbd text-xs text-muted outline-none focus-visible:ring-2 focus-visible:ring-line2"
+          >
+            <CornerDownLeft className="size-3" aria-hidden />
+            {t("chat.steered")}
+          </span>
+        </Tip>
       ) : null}
       {images.length > 0 ? (
         <div className="mb-1 flex max-w-[80%] flex-wrap justify-end gap-1.5">
           {images.map((image) => (
-            <a
-              key={image.id}
-              href={image.url}
-              target="_blank"
-              rel="noreferrer"
-              title={t("chat.openImage", { name: image.name })}
-              className="block overflow-hidden rounded-ui border border-line"
-            >
-              <img
-                src={image.url}
-                alt={image.name}
-                className="max-h-52 w-full max-w-[210px] object-cover"
-              />
-            </a>
+            <Tip key={image.id} tip={t("chat.openImage", { name: image.name })} align="right">
+              <a
+                href={image.url}
+                target="_blank"
+                rel="noreferrer"
+                className="block overflow-hidden rounded-ui border border-line outline-none focus-visible:ring-2 focus-visible:ring-line2"
+              >
+                <img
+                  src={image.url}
+                  alt={image.name}
+                  className="max-h-52 w-full max-w-[210px] object-cover"
+                />
+              </a>
+            </Tip>
           ))}
         </div>
       ) : null}
@@ -133,7 +106,7 @@ export function MemberMessage({
         </span>
         <CopyButton text={text} />
         {onRewind ? (
-          <MetaAction
+          <IconButton
             icon={Undo2}
             label={t("rewind.action")}
             reason={rewindReason}
@@ -147,12 +120,18 @@ export function MemberMessage({
 
 export function CompactNotice({ at }: { at: string }) {
   return (
-    <div className="flex items-center gap-3 text-xs text-muted" title={t("chat.autoCompactedHint")}>
+    <div className="flex items-center gap-3 text-xs text-muted">
       <span className="h-px flex-1 bg-line" aria-hidden />
-      <span className="flex items-center gap-1.5">
-        <FoldVertical className="size-3.5" aria-hidden />
-        {t("chat.autoCompacted")} · {clock(at)}
-      </span>
+      <Tip tip={t("chat.autoCompactedHint")}>
+        <span
+          role="img"
+          aria-label={`${t("chat.autoCompacted")} · ${clock(at)}`}
+          className="flex items-center gap-1.5 rounded-kbd outline-none focus-visible:ring-2 focus-visible:ring-line2"
+        >
+          <FoldVertical className="size-3.5" aria-hidden />
+          {t("chat.autoCompacted")} · {clock(at)}
+        </span>
+      </Tip>
       <span className="h-px flex-1 bg-line" aria-hidden />
     </div>
   )
@@ -205,7 +184,7 @@ export function AgentMessage({
       <Meta align="left">
         <span>sanchoris · {clock(at)}</span>
         {text.trim() ? <CopyButton text={text} /> : null}
-        {onFork ? <MetaAction icon={GitFork} label={t("fork.action")} onPress={onFork} /> : null}
+        {onFork ? <IconButton icon={GitFork} label={t("fork.action")} onPress={onFork} /> : null}
       </Meta>
     </div>
   )
@@ -230,8 +209,11 @@ function Disclosure({
 }) {
   const content = (
     <>
-      <Icon className={clsx("size-3.5 shrink-0", live && "animate-pulse")} aria-hidden />
-      <span className={clsx("min-w-0 truncate", live && "animate-pulse")}>{label}</span>
+      <Icon
+        className={clsx("size-3.5 shrink-0", live && "motion-safe:animate-pulse")}
+        aria-hidden
+      />
+      <span className={clsx("min-w-0 truncate", live && "motion-safe:animate-pulse")}>{label}</span>
       {onToggle ? (
         <ChevronRight
           className={clsx("size-3.5 shrink-0 transition-transform", open && "rotate-90")}

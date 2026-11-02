@@ -1,6 +1,7 @@
 import { Ban, CircleCheck, Trash2 } from "lucide-react"
 import { type FormEvent, Fragment, useState } from "react"
 import { Button } from "../components/Button.tsx"
+import { Input } from "../components/Field.tsx"
 import { Page, Pg } from "../components/Shell.tsx"
 import {
   ActionError,
@@ -169,12 +170,12 @@ export function OperatorTenantsPage() {
                       <label htmlFor="suspend-reason" className="text-muted">
                         {t("operator.suspendReason")}
                       </label>
-                      <input
+                      <Input
                         id="suspend-reason"
                         name="reason"
                         required
                         autoFocus
-                        className="h-[30px] w-80 rounded-ui border border-line2 bg-bg px-2.5 outline-none focus:border-ink"
+                        className="w-80"
                         value={reason}
                         onChange={(event) => setReason(event.target.value)}
                       />

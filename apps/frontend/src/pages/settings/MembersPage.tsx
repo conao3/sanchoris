@@ -2,7 +2,8 @@ import { Ban, Plus, Send, ShieldCheck, TriangleAlert } from "lucide-react"
 import { type FormEvent, type RefObject, useRef, useState } from "react"
 import { Button } from "../../components/Button.tsx"
 import { ConfirmDialog } from "../../components/ConfirmDialog.tsx"
-import { Reason } from "../../components/Reason.tsx"
+import { Input, Select } from "../../components/Field.tsx"
+import { Reason } from "../../components/Tooltip.tsx"
 import { SettingsPage } from "../../components/SettingsTabs.tsx"
 import {
   ActionError,
@@ -42,9 +43,6 @@ const roleLabels: Record<Role, MessageKey> = {
   ADMIN: "role.admin",
   MEMBER: "role.member",
 }
-
-const fieldClass =
-  "h-[30px] rounded-ui border border-line2 bg-bg px-2.5 outline-none focus:border-ink"
 
 function CredentialCell({ member, provider }: { member: Member; provider: "CLAUDE" | "CODEX" }) {
   const credential = member.credentials.find((item) => item.provider === provider)
@@ -95,27 +93,27 @@ function InviteForm({
       className="mb-4 flex flex-wrap items-center gap-2 border-b border-line pb-4"
     >
       <span className="text-muted">{t("members.inviteBy")}</span>
-      <input
+      <Input
         ref={emailRef}
+        mono
         type="email"
         required
         placeholder={t("placeholder.email")}
         aria-label={t("col.email")}
-        className={`${fieldClass} w-64 font-mono text-sm`}
+        className="w-64"
         value={email}
         onChange={(event) => setEmail(event.target.value)}
       />
       <Reason reason={isOwner ? undefined : t("reason.ownerInviteAdmin")}>
-        <select
+        <Select
           aria-label={t("col.role")}
-          className={fieldClass}
           value={role}
           disabled={!isOwner}
           onChange={(event) => setRole(event.target.value as Role)}
         >
           <option value="MEMBER">{t("role.member")}</option>
           <option value="ADMIN">{t("role.admin")}</option>
-        </select>
+        </Select>
       </Reason>
       <Button type="submit" variant="primary" icon={Send} isDisabled={loading}>
         {t("members.sendInvitation")}
@@ -222,9 +220,9 @@ export function MembersPage() {
                 </div>
                 {canManage && member.role !== "OWNER" ? (
                   <Reason reason={viewerRole === "OWNER" ? undefined : t("reason.ownerRoles")}>
-                    <select
+                    <Select
+                      small
                       aria-label={t("col.role")}
-                      className="h-7 rounded-ui border border-line2 bg-bg px-1 text-sm"
                       value={member.role}
                       onClick={(event) => event.stopPropagation()}
                       disabled={roleState.loading || viewerRole !== "OWNER"}
@@ -234,7 +232,7 @@ export function MembersPage() {
                     >
                       <option value="ADMIN">{t("role.admin")}</option>
                       <option value="MEMBER">{t("role.member")}</option>
-                    </select>
+                    </Select>
                   </Reason>
                 ) : (
                   <span>

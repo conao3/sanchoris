@@ -12,6 +12,7 @@ import {
 } from "lucide-react"
 import { type FormEvent, useState } from "react"
 import { Button } from "../../components/Button.tsx"
+import { Input, Select } from "../../components/Field.tsx"
 import { SettingsPage } from "../../components/SettingsTabs.tsx"
 import {
   ActionError,
@@ -48,9 +49,6 @@ type ValidationError = {
   column?: number | null
   message: string
 }
-
-const fieldClass =
-  "h-8 rounded-ui border border-line2 bg-bg px-2.5 font-mono text-sm outline-none focus:border-ink"
 
 function Errors({ errors }: { errors: ValidationError[] }) {
   return (
@@ -95,25 +93,28 @@ function AddConfigForm({
       <form onSubmit={submit} className="mt-3">
         <fieldset disabled={!!reason} className="flex flex-wrap items-center gap-2">
           <span className="text-muted">{t("config.addConfig")}</span>
-          <select
+          <Select
+            mono
             aria-label={t("col.repository")}
-            className={`${fieldClass} w-60`}
+            className="w-60"
             value={repository}
             onChange={(event) => setRepository(event.target.value)}
           >
             {repositories.map((item) => (
               <option key={item}>{item}</option>
             ))}
-          </select>
-          <input
+          </Select>
+          <Input
+            mono
             aria-label={t("col.root")}
-            className={`${fieldClass} w-[150px]`}
+            className="w-[150px]"
             value={root}
             onChange={(event) => setRoot(event.target.value)}
           />
-          <input
+          <Input
+            mono
             aria-label={t("config.branch")}
-            className={`${fieldClass} w-[90px]`}
+            className="w-[90px]"
             value={branch}
             onChange={(event) => setBranch(event.target.value)}
           />

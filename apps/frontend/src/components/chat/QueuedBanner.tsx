@@ -1,6 +1,6 @@
 import { CornerDownRight, ListOrdered, X } from "lucide-react"
 import { t } from "../../i18n/index.ts"
-import { Button } from "../Button.tsx"
+import { Button, IconButton } from "../Button.tsx"
 
 type Queued = { id: string; text: string }
 
@@ -31,20 +31,21 @@ export function QueuedBanner({
             <span className="min-w-0 flex-1 truncate text-sm text-ink" title={message.text}>
               {message.text}
             </span>
-            <span title={working ? t("queue.steerHint") : t("queue.sendNowHint")}>
-              <Button small icon={CornerDownRight} onPress={() => onSteer(message.id)}>
-                {working ? t("queue.steer") : t("queue.sendNow")}
-              </Button>
-            </span>
-            <button
-              type="button"
-              aria-label={t("queue.remove")}
-              title={t("queue.remove")}
-              onClick={() => onRemove(message.id)}
-              className="rounded-kbd p-1 text-faint outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-line2"
+            <Button
+              small
+              icon={CornerDownRight}
+              tip={working ? t("queue.steerHint") : t("queue.sendNowHint")}
+              reasonAlign="right"
+              onPress={() => onSteer(message.id)}
             >
-              <X className="size-3.5" aria-hidden />
-            </button>
+              {working ? t("queue.steer") : t("queue.sendNow")}
+            </Button>
+            <IconButton
+              icon={X}
+              label={t("queue.remove")}
+              align="right"
+              onPress={() => onRemove(message.id)}
+            />
           </li>
         ))}
       </ul>

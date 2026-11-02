@@ -5,7 +5,7 @@ import { CircleAlert, Inbox } from "lucide-react"
 import type { CSSProperties, ReactNode } from "react"
 import { t } from "../i18n/index.ts"
 import { Button } from "./Button.tsx"
-import { Reason } from "./Reason.tsx"
+import { Reason } from "./Tooltip.tsx"
 
 export type Tone = "run" | "ok" | "warn" | "err" | "wait"
 
