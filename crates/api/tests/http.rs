@@ -1252,6 +1252,7 @@ async fn the_run_channel_delivers_the_outbox_and_dedupes_sequenced_messages() {
         server
             .dynamo
             .put(&OutboxItem {
+                expires_at: Utc::now() + chrono::Duration::days(90),
                 id: Uuid::new_v4(),
                 tenant_id: tenant,
                 run_id,

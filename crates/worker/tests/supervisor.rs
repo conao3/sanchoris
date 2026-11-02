@@ -3,7 +3,9 @@ use crate::common;
 use chrono::Duration;
 use common::{REPO, World, turn_end_payload};
 use sanchoris_core::channel::RunEventType;
-use sanchoris_core::items::{RunEventItem, Task, Tenant, UsageAlert, UsageSnapshot, Workspace};
+use sanchoris_core::items::{
+    OutboxItem, RunEventItem, Task, Tenant, UsageAlert, UsageSnapshot, Workspace,
+};
 use sanchoris_core::keys;
 use sanchoris_core::store::{Index, SortKey, retry};
 use sanchoris_core::tasks::{load_task, snoozable, snooze};
@@ -1036,4 +1038,29 @@ async fn a_finished_task_releases_its_slot_with_its_workspace() {
     assert_eq!(world.task(&format!("{REPO}#35")).await.status, "SUCCEEDED");
     assert_eq!(*world.runner.stopped.lock().unwrap(), vec![run_id]);
     assert_eq!(tenant(&world).await.live_workspaces, 0);
+}
+
+#[tokio::test]
+async fn run_events_and_outbox_items_expire_after_the_plan_retention() {
+    let world = World::new("pro").await;
+    let task = world.started_task(35).await;
+    let run_id = task.run_id.unwrap();
+    world.turn_end(run_id, 1).await;
+    world.worker.settle().await.unwrap();
+    let outbox = world.dynamo.all::<OutboxItem>().await;
+    assert!(!outbox.is_empty());
+    assert!(outbox.iter().all(|item| {
+        (item.expires_at - item.created_at)
+            .num_seconds()
+            .abs_diff(90 * 86_400)
+            <= 1
+    }));
+    let events = world.dynamo.all::<RunEventItem>().await;
+    assert!(!events.is_empty());
+    assert!(events.iter().all(|event| {
+        (event.expires_at - event.received_at)
+            .num_seconds()
+            .abs_diff(90 * 86_400)
+            <= 1
+    }));
 }

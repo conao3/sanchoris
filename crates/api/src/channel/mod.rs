@@ -9,7 +9,7 @@ use chrono::{DateTime, Duration, Utc};
 use sanchoris_core::channel::{
     OutboxRow, RunEventType, mark_outbox_delivered, record_run_event, undelivered_outbox,
 };
-use sanchoris_core::db::{DbError, Store, TenantTx, tenant_plan};
+use sanchoris_core::db::{DbError, Store, TenantTx};
 use sanchoris_core::items::{
     BootstrapRedemption, ChannelInstance, ChatAttachment, OutboxItem, RunApproval, RunChannel,
     RunEventItem, RunLogEntry, RunPartial, RunQuestion, Workspace,
@@ -631,7 +631,7 @@ impl Channel {
         if tx.get::<RunLogEntry>(&key).await?.is_some() {
             return Ok(());
         }
-        let (_, plan) = tenant_plan(tx).await?;
+        let retention_days = channel_item(tx, claims.run_id).await?.retention_days;
         tx.insert(&RunLogEntry {
             tenant_id: claims.tenant_id,
             run_id: claims.run_id,
@@ -640,7 +640,7 @@ impl Channel {
             kind: kind.to_string(),
             data: redact_tokens_in(&payload["data"]),
             at,
-            expires_at: Utc::now() + Duration::days(plan.retention_days),
+            expires_at: Utc::now() + Duration::days(retention_days),
         })?;
         Ok(())
     }

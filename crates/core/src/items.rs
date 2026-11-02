@@ -1356,6 +1356,7 @@ pub struct Task {
     pub input_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+    pub retention_days: i64,
 }
 
 pub const GITHUB_TASK_PREFIX: &str = "github:";
@@ -1465,6 +1466,7 @@ impl Entity for Task {
             w.s("gsi2pk", keys::SWEEP_ACTIVE_TASKS)
                 .s("gsi2sk", format!("{}#{}", self.tenant_id, self.id));
         }
+        w.n("retention_days", self.retention_days);
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -1511,6 +1513,7 @@ impl Entity for Task {
             input_at: r.opt_time("input_at")?,
             finished_at: r.opt_time("finished_at")?,
             updated_at: r.time("updated_at")?,
+            retention_days: r.n("retention_days")?,
         })
     }
 }
@@ -1915,6 +1918,7 @@ pub struct StateEntryItem {
     pub cause: Option<String>,
     pub attempts: i64,
     pub next_state: Option<String>,
+    pub expires_at: DateTime<Utc>,
 }
 
 impl Entity for StateEntryItem {
@@ -1946,6 +1950,7 @@ impl Entity for StateEntryItem {
             .opt_s("cause", self.cause.as_ref())
             .n("attempts", self.attempts)
             .opt_s("next_state", self.next_state.as_ref());
+        w.ttl(self.expires_at);
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -1966,6 +1971,7 @@ impl Entity for StateEntryItem {
             cause: r.opt_s("cause")?,
             attempts: r.n("attempts")?,
             next_state: r.opt_s("next_state")?,
+            expires_at: r.ttl()?,
         })
     }
 }
@@ -2060,6 +2066,7 @@ pub struct Invocation {
     pub attempts: i64,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+    pub expires_at: DateTime<Utc>,
 }
 
 impl Entity for Invocation {
@@ -2088,6 +2095,7 @@ impl Entity for Invocation {
             .n("attempts", self.attempts)
             .time("created_at", self.created_at)
             .opt_time("completed_at", self.completed_at);
+        w.ttl(self.expires_at);
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -2105,6 +2113,7 @@ impl Entity for Invocation {
             attempts: r.n("attempts")?,
             created_at: r.time("created_at")?,
             completed_at: r.opt_time("completed_at")?,
+            expires_at: r.ttl()?,
         })
     }
 }
@@ -2467,6 +2476,7 @@ pub struct InboundEvent {
     pub received_at: DateTime<Utc>,
     pub processed_at: Option<DateTime<Utc>>,
     pub error: Option<String>,
+    pub expires_at: DateTime<Utc>,
 }
 
 impl Entity for InboundEvent {
@@ -2485,6 +2495,7 @@ impl Entity for InboundEvent {
             .time("received_at", self.received_at)
             .opt_time("processed_at", self.processed_at)
             .opt_s("error", self.error.as_ref());
+        w.ttl(self.expires_at);
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -2497,6 +2508,7 @@ impl Entity for InboundEvent {
             received_at: r.time("received_at")?,
             processed_at: r.opt_time("processed_at")?,
             error: r.opt_s("error")?,
+            expires_at: r.ttl()?,
         })
     }
 }
@@ -2544,6 +2556,7 @@ pub struct RunChannel {
     pub connection_instance: Option<Uuid>,
     pub connection_started: bool,
     pub connection_bootstrap: Option<Uuid>,
+    pub retention_days: i64,
 }
 
 impl Entity for RunChannel {
@@ -2563,6 +2576,7 @@ impl Entity for RunChannel {
             .opt_uuid("connection_instance", self.connection_instance)
             .b("connection_started", self.connection_started)
             .opt_uuid("connection_bootstrap", self.connection_bootstrap);
+        w.n("retention_days", self.retention_days);
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -2576,6 +2590,7 @@ impl Entity for RunChannel {
             connection_instance: r.opt_uuid("connection_instance")?,
             connection_started: r.b("connection_started")?,
             connection_bootstrap: r.opt_uuid("connection_bootstrap")?,
+            retention_days: r.n("retention_days")?,
         })
     }
 }
@@ -3259,6 +3274,7 @@ pub struct RunEventItem {
     pub received_at: DateTime<Utc>,
     pub processed_at: Option<DateTime<Utc>>,
     pub error: Option<String>,
+    pub expires_at: DateTime<Utc>,
 }
 
 impl Entity for RunEventItem {
@@ -3284,6 +3300,7 @@ impl Entity for RunEventItem {
             .time("received_at", self.received_at)
             .opt_time("processed_at", self.processed_at)
             .opt_s("error", self.error.as_ref());
+        w.ttl(self.expires_at);
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -3297,6 +3314,7 @@ impl Entity for RunEventItem {
             received_at: r.time("received_at")?,
             processed_at: r.opt_time("processed_at")?,
             error: r.opt_s("error")?,
+            expires_at: r.ttl()?,
         })
     }
 }
@@ -3312,6 +3330,7 @@ pub struct OutboxItem {
     pub dedupe_key: String,
     pub created_at: DateTime<Utc>,
     pub delivered_at: Option<DateTime<Utc>>,
+    pub expires_at: DateTime<Utc>,
 }
 
 impl Entity for OutboxItem {
@@ -3331,6 +3350,7 @@ impl Entity for OutboxItem {
             .s("dedupe_key", &self.dedupe_key)
             .time("created_at", self.created_at)
             .opt_time("delivered_at", self.delivered_at);
+        w.ttl(self.expires_at);
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
@@ -3344,6 +3364,7 @@ impl Entity for OutboxItem {
             dedupe_key: r.s("dedupe_key")?,
             created_at: r.time("created_at")?,
             delivered_at: r.opt_time("delivered_at")?,
+            expires_at: r.ttl()?,
         })
     }
 }

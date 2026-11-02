@@ -1,8 +1,8 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::db::{DbError, REF_RUN, Recorded, Store, TenantTx, locate};
+use crate::db::{DbError, REF_RUN, Recorded, Store, TenantTx, locate, tenant_plan};
 use crate::github::{GithubEventError, normalize_github_event};
 use crate::items::{
     ChatAttachment, Guard, InboundEvent, Integration, OutboxItem, Pending, RunChannel,
@@ -110,6 +110,7 @@ pub async fn enqueue_outbox(
     let seq = channel.next_outbox_seq;
     channel.next_outbox_seq += 1;
     tx.put(&channel)?;
+    let created_at = Utc::now();
     let id = Uuid::new_v4();
     tx.insert(&OutboxItem {
         id,
@@ -119,8 +120,9 @@ pub async fn enqueue_outbox(
         kind: kind.as_str().to_string(),
         payload: payload.clone(),
         dedupe_key: dedupe_key.to_string(),
-        created_at: Utc::now(),
+        created_at,
         delivered_at: None,
+        expires_at: created_at + Duration::days(channel.retention_days),
     })?;
     tx.insert(&Guard::new(dedupe, id))?;
     tx.emit(Job::DeliverOutbox { tenant_id, run_id });
@@ -265,6 +267,7 @@ pub async fn record_run_event(
     let task_id = location
         .parent_id
         .ok_or_else(|| DbError::Decode(format!("run {run_id} has no task")))?;
+    let retention_days = channel_of(tx, run_id).await?.retention_days;
     let id = Uuid::new_v4();
     let received_at = Utc::now();
     let key = keys::run_event_key(tenant_id, run_id, seq, received_at, id);
@@ -283,6 +286,7 @@ pub async fn record_run_event(
         received_at,
         processed_at: None,
         error: None,
+        expires_at: received_at + Duration::days(retention_days),
     })?;
     tx.insert(&Pending {
         key: keys::pending_run_event_key(tenant_id, run_id, received_at, id),
@@ -309,6 +313,7 @@ pub async fn record_inbound_event(
     if let Some(existing) = tx.get::<InboundEvent>(&item_key).await? {
         return Ok(Recorded::Duplicate(existing.id));
     }
+    let (_, plan) = tenant_plan(tx).await?;
     let id = Uuid::new_v4();
     let received_at = Utc::now();
     tx.insert(&InboundEvent {
@@ -320,6 +325,7 @@ pub async fn record_inbound_event(
         received_at,
         processed_at: None,
         error: None,
+        expires_at: received_at + Duration::days(plan.retention_days),
     })?;
     tx.insert(&Pending {
         key: keys::pending_inbound_key(tenant_id, received_at, id),

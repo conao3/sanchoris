@@ -745,6 +745,7 @@ fn task_item(tx: &mut TenantTx, task: NewTaskItem<'_>) -> Task {
         .unwrap()
         .split();
     let item = Task {
+        retention_days: 90,
         id: task.id,
         tenant_id,
         origin: task.origin,
@@ -841,6 +842,7 @@ fn run_item(
     change(&mut run);
     tx.insert(&run).unwrap();
     tx.insert(&RunChannel {
+        retention_days: 90,
         tenant_id,
         run_id: id,
         task_id,
@@ -868,6 +870,7 @@ fn outbox(
 ) {
     assert!(seq <= SEEDED_OUTBOX);
     tx.insert(&OutboxItem {
+        expires_at: Utc::now() + chrono::Duration::days(90),
         id: Uuid::new_v4(),
         tenant_id: tx.tenant_id(),
         run_id,
@@ -1320,6 +1323,7 @@ impl World {
             now - Duration::hours(1),
         );
         tx.insert(&RunEventItem {
+            expires_at: Utc::now() + chrono::Duration::days(90),
             id: Uuid::new_v4(),
             tenant_id: acme,
             run_id: issue_run,
@@ -1336,6 +1340,7 @@ impl World {
             (3, "rejected", Some(1793061000), 40),
         ] {
             tx.insert(&RunEventItem {
+                expires_at: Utc::now() + chrono::Duration::days(90),
                 id: Uuid::new_v4(),
                 tenant_id: acme,
                 run_id: issue_run,
@@ -1403,6 +1408,7 @@ impl World {
         ] {
             let at = now - Duration::minutes(60 - sequence);
             tx.insert(&StateEntryItem {
+                expires_at: Utc::now() + chrono::Duration::days(90),
                 tenant_id: acme,
                 task_id: issue_task,
                 skill_run_id: skill_run,

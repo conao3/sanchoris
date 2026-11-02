@@ -289,6 +289,10 @@ impl<'a> ItemReader<'a> {
             .transpose()
     }
 
+    pub fn ttl(&self) -> Result<DateTime<Utc>, DbError> {
+        DateTime::from_timestamp(self.n(TTL)?, 0).ok_or_else(|| self.wrong(TTL, "a Unix time"))
+    }
+
     pub fn time(&self, name: &str) -> Result<DateTime<Utc>, DbError> {
         parse_time(&self.s(name)?)
     }

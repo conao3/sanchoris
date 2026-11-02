@@ -554,6 +554,7 @@ pub async fn task_with_run(dynamo: &TestDynamo, seeded: &Seeded) -> (Uuid, Uuid)
     let store = dynamo.store(Relay::Stream);
     let mut tx = store.tx(tenant_id);
     tx.insert(&Task {
+        retention_days: 90,
         id: task_id,
         tenant_id,
         origin: TaskOrigin::Trigger {
@@ -626,6 +627,7 @@ pub async fn task_with_run(dynamo: &TestDynamo, seeded: &Seeded) -> (Uuid, Uuid)
     tx.insert(&run).unwrap();
     insert_ref(&mut tx, run_id, REF_RUN, run.key(), Some(task_id)).unwrap();
     tx.insert(&RunChannel {
+        retention_days: 90,
         tenant_id,
         run_id,
         task_id,

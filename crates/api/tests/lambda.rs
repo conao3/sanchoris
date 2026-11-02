@@ -160,6 +160,7 @@ async fn the_lambda_handlers_run_the_channel_from_recorded_events() {
     };
     dynamo
         .put(&OutboxItem {
+            expires_at: Utc::now() + chrono::Duration::days(90),
             id: Uuid::new_v4(),
             tenant_id: tenant,
             run_id,
@@ -353,6 +354,7 @@ async fn the_lambda_handlers_run_the_channel_from_recorded_events() {
 
     dynamo
         .put(&OutboxItem {
+            expires_at: Utc::now() + chrono::Duration::days(90),
             id: Uuid::new_v4(),
             tenant_id: tenant,
             run_id,

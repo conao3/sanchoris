@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sanchoris_config::Skill;
 use sanchoris_config::skill::SkillDefinition;
 use sanchoris_engine::{
@@ -321,8 +321,9 @@ pub async fn persist_step(
     item.finished_at = run.finished_at;
     item.updated_at = now;
     tx.put(&item)?;
+    let expires_at = now + Duration::days(load_task(tx, meta.task_id).await?.retention_days);
     for entry in &step.entries {
-        upsert_entry(tx, meta, entry).await?;
+        upsert_entry(tx, meta, entry, expires_at).await?;
     }
     for effect in &step.effects {
         match effect {
@@ -349,6 +350,7 @@ pub async fn persist_step(
                         attempts: 0,
                         created_at: now,
                         completed_at: None,
+                        expires_at,
                     })?;
                     insert_ref(tx, id, REF_INVOCATION, key, Some(meta.task_id))?;
                     tx.emit(Job::Invoke {
@@ -436,6 +438,7 @@ async fn upsert_entry(
     tx: &mut TenantTx,
     meta: &SkillRunMeta,
     entry: &StateEntry,
+    expires_at: DateTime<Utc>,
 ) -> Result<(), SkillRunError> {
     let tenant_id = tx.tenant_id();
     let sequence = i64::try_from(entry.sequence).expect("sequence fits in i64");
@@ -470,6 +473,7 @@ async fn upsert_entry(
             cause: entry.cause.clone(),
             attempts,
             next_state: entry.next_state.clone(),
+            expires_at,
         },
     };
     tx.put(&item)?;

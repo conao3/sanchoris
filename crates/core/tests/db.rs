@@ -701,12 +701,12 @@ async fn a_tenant_on_an_unknown_plan_dispatches_nothing() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
     let seeded = dynamo.seed_tenant("pro").await;
+    create_task(&store, &seeded, "a", &[]).await;
     dynamo
         .modify::<Tenant>(&keys::tenant_key(seeded.tenant_id), |t| {
             t.plan_id = "enterprise".into();
         })
         .await;
-    create_task(&store, &seeded, "a", &[]).await;
 
     let mut tx = store.tx(seeded.tenant_id);
     assert!(matches!(

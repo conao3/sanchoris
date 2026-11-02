@@ -170,6 +170,7 @@ pub struct NewTask<'a> {
 
 pub async fn create_task(tx: &mut TenantTx, task: &NewTask<'_>) -> Result<Recorded, DbError> {
     let tenant_id = tx.tenant_id();
+    let (_, plan) = tenant_plan(tx).await?;
     let id = Uuid::new_v4();
     let now = Utc::now();
     match task.origin {
@@ -243,6 +244,7 @@ pub async fn create_task(tx: &mut TenantTx, task: &NewTask<'_>) -> Result<Record
         input_at: matches!(task.origin, TaskOrigin::Conversation { .. }).then_some(now),
         finished_at: None,
         updated_at: now,
+        retention_days: plan.retention_days,
     })?;
     tx.insert(&TaskSkills {
         tenant_id,
@@ -372,6 +374,7 @@ pub async fn dispatch_pending_tasks(
                     connection_instance: None,
                     connection_started: false,
                     connection_bootstrap: None,
+                    retention_days: task.retention_days,
                 })?;
                 insert_ref(tx, run.id, REF_RUN, run.key(), Some(task.id))?;
                 run.id
