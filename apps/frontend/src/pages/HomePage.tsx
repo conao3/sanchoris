@@ -36,7 +36,7 @@ import { useListNav } from "../lib/keys.ts"
 import { countOf, hoursOf, usedShare } from "../lib/plan.ts"
 import { useAction } from "../lib/mutation.ts"
 import { IDLE_POLL, LIVE_POLL, useData } from "../lib/query.ts"
-import { limitedText, needsYouText, originName, skillStep } from "../lib/taskText.ts"
+import { isMoving, limitedText, needsYouText, originName, skillStep } from "../lib/taskText.ts"
 import { useRole, useTenant } from "../lib/tenant.tsx"
 import { HomeSetup } from "./HomeSetup.tsx"
 
@@ -470,7 +470,7 @@ export function HomePage() {
   const { data, error, refetch } = useData(
     HomeDocument,
     { tenant: slug },
-    { poll: (result) => (result.tenant?.tasks.length ? LIVE_POLL : IDLE_POLL) },
+    { poll: (result) => (result.tenant?.tasks.some(isMoving) ? LIVE_POLL : IDLE_POLL) },
   )
   const tenant = data?.tenant
   const setup = tenant && !tenant.setup.complete

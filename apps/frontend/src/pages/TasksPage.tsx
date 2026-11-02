@@ -27,7 +27,7 @@ import { type MessageKey, t } from "../i18n/index.ts"
 import { age, issueLabel, usd } from "../lib/format.ts"
 import { listKeys, useListNav } from "../lib/keys.ts"
 import { IDLE_POLL, LIVE_POLL, useData } from "../lib/query.ts"
-import { isActive, originName, skillProgress } from "../lib/taskText.ts"
+import { isMoving, originName, skillProgress } from "../lib/taskText.ts"
 import { useTenant } from "../lib/tenant.tsx"
 
 const TASK_LIST_LIMIT = 200
@@ -79,8 +79,7 @@ export function TasksPage() {
     TasksDocument,
     { tenant: slug, filter },
     {
-      poll: (result) =>
-        result.tenant?.tasks.some((task) => isActive(task.status)) ? LIVE_POLL : IDLE_POLL,
+      poll: (result) => (result.tenant?.tasks.some(isMoving) ? LIVE_POLL : IDLE_POLL),
     },
   )
   const tenant = data?.tenant

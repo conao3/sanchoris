@@ -55,8 +55,8 @@ import { type MessageKey, t } from "../i18n/index.ts"
 import { between, clock, duration, usd, usdWhole } from "../lib/format.ts"
 import { useKeys } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
-import { LIVE_POLL, useData } from "../lib/query.ts"
-import { isActive, needsYouText, originName, skillProgress } from "../lib/taskText.ts"
+import { IDLE_POLL, LIVE_POLL, useData } from "../lib/query.ts"
+import { isActive, isMoving, needsYouText, originName, skillProgress } from "../lib/taskText.ts"
 import { useRole, useTenant } from "../lib/tenant.tsx"
 
 type Task = NonNullable<NonNullable<TaskQuery["tenant"]>["task"]>
@@ -219,8 +219,13 @@ export function TaskPage() {
     TaskDocument,
     { tenant: slug, id: taskId },
     {
-      poll: (result) =>
-        result.tenant?.task && isActive(result.tenant.task.status) ? LIVE_POLL : 0,
+      poll: (result) => {
+        const task = result.tenant?.task
+        if (!task || !isActive(task.status)) {
+          return 0
+        }
+        return isMoving(task) ? LIVE_POLL : IDLE_POLL
+      },
     },
   )
   const [message, setMessage] = useState("")

@@ -65,7 +65,7 @@ import { t, tx } from "../i18n/index.ts"
 import { useKeys } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
 import { IDLE_POLL, LIVE_POLL, STREAM_POLL, useData } from "../lib/query.ts"
-import { isActive, skillStep } from "../lib/taskText.ts"
+import { isActive, isMoving, skillStep } from "../lib/taskText.ts"
 import { useTenant } from "../lib/tenant.tsx"
 
 type Tenant = NonNullable<ChatQuery["tenant"]>
@@ -939,7 +939,7 @@ export function ChatPage() {
         if (!conversationId) {
           return IDLE_POLL
         }
-        return task && isActive(task.status) ? LIVE_POLL : IDLE_POLL
+        return task && isMoving(task) ? LIVE_POLL : IDLE_POLL
       },
     },
   )

@@ -1,4 +1,9 @@
-import type { NeedsYouReason, SkillRunStatus, TaskStatus } from "../graphql/generated/graphql.ts"
+import type {
+  NeedsYouReason,
+  SkillRunStatus,
+  TaskStatus,
+  WaitReason,
+} from "../graphql/generated/graphql.ts"
 import { t } from "../i18n/index.ts"
 import { usd, weekdayTime } from "./format.ts"
 
@@ -9,6 +14,15 @@ const finishedStatuses: TaskStatus[] = ["SUCCEEDED", "FAILED", "ABORTED"]
 
 export function isActive(status: TaskStatus): boolean {
   return !finishedStatuses.includes(status)
+}
+
+/** Whether the task changes without anyone acting: it runs, waits to start, or waits on something other than the next message or a person. */
+export function isMoving(task: { status: TaskStatus; waitReason?: WaitReason | null }): boolean {
+  return (
+    task.status === "RUNNING" ||
+    task.status === "PENDING" ||
+    (task.status === "WAITING" && task.waitReason !== "MESSAGE")
+  )
 }
 
 export function skillStep(run: SkillRunSummary): string {
