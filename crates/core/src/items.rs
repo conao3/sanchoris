@@ -1350,6 +1350,8 @@ pub struct Task {
     pub skill_runs: i64,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
+    /// The time of the member's latest message to a conversation's task; its time limit counts from here.
+    pub input_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1367,6 +1369,12 @@ pub fn split_github_task_name(name: &str) -> Option<(i64, &str)> {
 }
 
 impl Task {
+    /// Whether the supervisor checks the task's limits: it runs, or waits on something other than a member's next message.
+    pub fn is_supervised(&self) -> bool {
+        self.status == TaskStatus::Running
+            || (self.status == TaskStatus::Waiting && self.wait_reason != Some(WaitReason::Message))
+    }
+
     pub fn is_snoozed(&self, now: DateTime<Utc>) -> bool {
         self.snoozed_until.is_some_and(|until| until > now)
     }
@@ -1440,14 +1448,12 @@ impl Entity for Task {
             .n("skill_runs", self.skill_runs)
             .time("created_at", self.created_at)
             .opt_time("started_at", self.started_at)
+            .opt_time("input_at", self.input_at)
             .opt_time("finished_at", self.finished_at)
             .time("updated_at", self.updated_at)
             .s("gsi1pk", keys::tasks_index(self.tenant_id))
             .s("gsi1sk", keys::time_id(self.created_at, self.id));
-        if matches!(
-            self.status,
-            TaskStatus::Running | TaskStatus::Waiting | TaskStatus::NeedsYou
-        ) {
+        if self.is_supervised() {
             w.s("gsi2pk", keys::SWEEP_ACTIVE_TASKS)
                 .s("gsi2sk", format!("{}#{}", self.tenant_id, self.id));
         }
@@ -1493,6 +1499,7 @@ impl Entity for Task {
             skill_runs: r.n("skill_runs")?,
             created_at: r.time("created_at")?,
             started_at: r.opt_time("started_at")?,
+            input_at: r.opt_time("input_at")?,
             finished_at: r.opt_time("finished_at")?,
             updated_at: r.time("updated_at")?,
         })
@@ -1740,6 +1747,12 @@ impl Entity for Workspace {
             .opt_time("stopped_at", self.stopped_at)
             .s("gsi1pk", keys::workspaces_index(self.tenant_id))
             .s("gsi1sk", keys::time_id(self.started_at, self.id));
+        if self.stopped_at.is_none() {
+            w.s("gsi2pk", keys::SWEEP_WORKSPACES).s(
+                "gsi2sk",
+                format!("{}#{}#{}", self.tenant_id, self.task_id, self.id),
+            );
+        }
     }
 
     fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {

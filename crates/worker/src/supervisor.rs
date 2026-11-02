@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::conversation::{self, ChatError, deliver_next_queued};
 use chrono::{DateTime, Duration, Utc};
 use sanchoris_config::{Session, Start};
@@ -534,13 +536,17 @@ pub async fn end_snooze(
 }
 
 pub async fn sweep_workspaces(worker: &Worker) -> Result<usize> {
-    let active = worker
+    let open = worker
         .store
-        .query_index::<Task>(Index::Gsi2, keys::SWEEP_ACTIVE_TASKS, SortKey::All)
+        .query_index::<Workspace>(Index::Gsi2, keys::SWEEP_WORKSPACES, SortKey::All)
         .await?;
+    let tasks = open
+        .iter()
+        .map(|workspace| (workspace.tenant_id, workspace.task_id))
+        .collect::<BTreeSet<_>>();
     let mut changed = 0;
-    for task in active {
-        changed += observe_workspaces(worker, task.tenant_id, task.id).await?;
+    for (tenant_id, task_id) in tasks {
+        changed += observe_workspaces(worker, tenant_id, task_id).await?;
     }
     changed += stop_unrecorded_workspaces(worker).await?;
     worker.deps.runner.sweep().await?;
@@ -741,23 +747,17 @@ pub async fn sweep_limits(worker: &Worker) -> Result<usize> {
         .query_index::<Task>(Index::Gsi2, keys::SWEEP_ACTIVE_TASKS, SortKey::All)
         .await?;
     let mut changed = 0;
-    for task in active {
-        changed += check_task_limits(worker, task.tenant_id, task.id).await?;
+    for task in active.iter().filter(|task| task.is_supervised()) {
+        changed += check_task_limits(worker, task).await?;
     }
     Ok(changed)
 }
 
-async fn check_task_limits(worker: &Worker, tenant_id: Uuid, task_id: Uuid) -> Result<usize> {
-    let now = worker.now();
-    let mut tx = worker.tx(tenant_id);
-    let task = load_task(&mut tx, task_id).await?;
-    if !matches!(task.status, TaskStatus::Running | TaskStatus::Waiting) {
-        return Ok(0);
+/// The limit a task exceeded; a conversation's task counts its time from the member's latest message.
+fn limit_decision(task: &Task, run: &Run, now: DateTime<Utc>) -> Result<Option<TaskDecision>> {
+    if !task.is_supervised() {
+        return Ok(None);
     }
-    let Some(run) = runs_of(&mut tx, task.id).await?.pop() else {
-        return Ok(0);
-    };
-    let start = start_of(&task)?;
     let last_activity_at = if task.status == TaskStatus::Running {
         run.last_heartbeat_at
             .unwrap_or(run.started_at)
@@ -765,17 +765,30 @@ async fn check_task_limits(worker: &Worker, tenant_id: Uuid, task_id: Uuid) -> R
     } else {
         now
     };
-    let decision = check_limits(
-        &limits_of(&start),
+    Ok(check_limits(
+        &limits_of(&start_of(task)?),
         &TaskProgress {
             turns: u32::try_from(run.turns).expect("turns fit"),
             cost_usd: run.cost_usd,
-            started_at: task.started_at.unwrap_or(now),
+            started_at: task.input_at.or(task.started_at).unwrap_or(now),
             last_activity_at,
         },
         now,
-    );
-    let Some(decision) = decision else {
+    ))
+}
+
+/// Decides on the swept copy of the task and reads the task again only to apply a decision.
+async fn check_task_limits(worker: &Worker, swept: &Task) -> Result<usize> {
+    let now = worker.now();
+    let mut tx = worker.tx(swept.tenant_id);
+    let Some(run) = runs_of(&mut tx, swept.id).await?.pop() else {
+        return Ok(0);
+    };
+    if limit_decision(swept, &run, now)?.is_none() {
+        return Ok(0);
+    }
+    let task = load_task(&mut tx, swept.id).await?;
+    let Some(decision) = limit_decision(&task, &run, now)? else {
         return Ok(0);
     };
     apply_decision(&mut tx, task.id, run.id, &decision, "limits", now).await?;

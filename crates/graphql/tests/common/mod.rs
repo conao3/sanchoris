@@ -765,6 +765,7 @@ fn task_item(tx: &mut TenantTx, task: NewTaskItem<'_>) -> Task {
         skill_runs: 0,
         created_at: task.created_at,
         started_at: Some(task.created_at),
+        input_at: None,
         finished_at: None,
         updated_at: task.updated_at,
     };

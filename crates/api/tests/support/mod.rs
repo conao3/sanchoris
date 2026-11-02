@@ -588,6 +588,7 @@ pub async fn task_with_run(dynamo: &TestDynamo, seeded: &Seeded) -> (Uuid, Uuid)
         skill_runs: 0,
         created_at: now,
         started_at: Some(now),
+        input_at: None,
         finished_at: None,
         updated_at: now,
     })

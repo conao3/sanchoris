@@ -238,6 +238,7 @@ pub async fn create_task(tx: &mut TenantTx, task: &NewTask<'_>) -> Result<Record
         skill_runs: 0,
         created_at: now,
         started_at: None,
+        input_at: matches!(task.origin, TaskOrigin::Conversation { .. }).then_some(now),
         finished_at: None,
         updated_at: now,
     })?;

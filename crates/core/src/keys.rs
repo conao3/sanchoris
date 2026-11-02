@@ -492,6 +492,7 @@ pub const TENANTS_INDEX: &str = "TENANTS";
 pub const SWEEP_CONFIGS: &str = "SWEEP#CONFIG";
 pub const SWEEP_CHECKS: &str = "SWEEP#CHECKWAIT";
 pub const SWEEP_ACTIVE_TASKS: &str = "SWEEP#ACTIVETASK";
+pub const SWEEP_WORKSPACES: &str = "SWEEP#WORKSPACE";
 
 pub fn tasks_index(tenant_id: Uuid) -> String {
     format!("T#{tenant_id}#TASKS")

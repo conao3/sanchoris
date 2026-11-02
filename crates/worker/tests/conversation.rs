@@ -432,6 +432,30 @@ async fn each_turn_end_posts_the_reply_once_and_the_task_waits_for_the_next_mess
 }
 
 #[tokio::test]
+async fn a_task_waiting_for_the_next_message_has_no_time_limit_and_the_next_message_restarts_it() {
+    let world = World::new("pro").await;
+    let first = start(&world, "all", "What is failing?").await;
+    world.worker.settle().await.unwrap();
+    let run_id = world.task_of(first.task_id).await.run_id.unwrap();
+    world.turn_end(run_id, 1).await;
+    world.worker.settle().await.unwrap();
+    world.clock.advance(chrono::Duration::days(2));
+    world.worker.settle().await.unwrap();
+    let task = world.task_of(first.task_id).await;
+    assert_eq!(
+        (task.status.as_str(), task.wait_reason.as_deref()),
+        ("WAITING", Some("message"))
+    );
+    post(&world, first.message.conversation_id, "Thanks, go on").await;
+    world.worker.settle().await.unwrap();
+    let task = stored_task(&world, first.task_id).await;
+    assert_eq!(
+        (task.status, task.input_at),
+        (TaskStatus::Running, Some(world.clock_now()))
+    );
+}
+
+#[tokio::test]
 async fn file_issue_records_the_issue_and_its_task_becomes_a_child_of_the_conversation_task() {
     let world = World::new("pro").await;
     let first = start(&world, "all", "Split the checkout work").await;

@@ -255,6 +255,7 @@ async fn deliver(
     };
     let compact = compact.is_some();
     let dedupe = format!("chat:{}", message.id);
+    task.input_at = Some(message.at);
     if task.status == TaskStatus::Pending && task.runs == 0 {
         if compact {
             return Err(rejected(NOTHING_TO_COMPACT));
