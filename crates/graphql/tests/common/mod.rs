@@ -17,8 +17,8 @@ use sanchoris_core::items::{
     ChatMessage, Config, ConfigRevision, Conversation, ConversationTask, Credential,
     GitHubRepository, Guard, Integration, Invitation, InvitationEmail, Member, Membership,
     OutboxItem, Output, Project, Repository, Run, RunChannel, RunEventItem, SessionDef, SkillDef,
-    SkillRunItem, StateEntryItem, Task, TaskName, TaskOrigin, Tenant, Trigger, TriggerEvent,
-    UsageRecord, UsageSnapshot, User, Workspace, uniq,
+    SkillRunItem, StateEntryItem, Task, TaskName, TaskOrigin, TaskSkills, Tenant, Trigger,
+    TriggerEvent, UsageRecord, UsageSnapshot, User, Workspace, uniq,
 };
 use sanchoris_core::jobs::Relayed;
 use sanchoris_core::keys;
@@ -741,6 +741,9 @@ pub struct NewTaskItem<'a> {
 
 fn task_item(tx: &mut TenantTx, task: NewTaskItem<'_>) -> Task {
     let tenant_id = tx.tenant_id();
+    let (settings, skills) = serde_json::from_value::<TaskDefinition>(task.definition)
+        .unwrap()
+        .split();
     let item = Task {
         id: task.id,
         tenant_id,
@@ -753,7 +756,8 @@ fn task_item(tx: &mut TenantTx, task: NewTaskItem<'_>) -> Task {
         resume_at: None,
         snoozed_until: None,
         nudges: 0,
-        definition: task.definition,
+        definition: serde_json::to_value(settings).unwrap(),
+        skill_names: skills.iter().map(|skill| skill.name.clone()).collect(),
         parent_task_id: None,
         start_payload: None,
         requested_by_member_id: task.requested_by,
@@ -769,6 +773,12 @@ fn task_item(tx: &mut TenantTx, task: NewTaskItem<'_>) -> Task {
         finished_at: None,
         updated_at: task.updated_at,
     };
+    tx.insert(&TaskSkills {
+        tenant_id,
+        task_id: task.id,
+        skills,
+    })
+    .unwrap();
     match task.origin {
         TaskOrigin::Trigger { trigger_id, .. } => tx
             .insert(&TaskName {

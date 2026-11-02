@@ -7,7 +7,7 @@ use sanchoris_core::items::{
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
-use sanchoris_core::model::{TaskDefinition, TaskStatus};
+use sanchoris_core::model::TaskStatus;
 use sanchoris_core::modes::SessionModes;
 use sanchoris_core::store::retry;
 use sanchoris_worker::conversation::{
@@ -156,12 +156,14 @@ async fn a_new_conversation_starts_its_first_task_in_the_session_with_the_plan_c
     assert_eq!(task.name, "1");
     assert_eq!(task.origin.conversation_id(), Some(conversation_id));
     assert_eq!(task.requested_by_member_id, Some(world.seeded.member_id));
-    let definition: TaskDefinition = serde_json::from_value(task.definition.clone()).unwrap();
+    let definition = task.settings().unwrap();
     let mut tx = world.store.tx(world.tenant());
     let (_, plan) = tenant_plan(&mut tx).await.unwrap();
     assert_eq!(definition.trigger, None);
     assert_eq!(definition.start.limits, plan.chat_limits);
     assert_eq!(definition.start.skills, ["file-issue"]);
+    assert_eq!(task.skill_names, ["file-issue"]);
+    assert!(task.definition.get("Skills").is_none());
     assert!(definition.start.required_skills.is_empty());
     let view = world.task_of(task.id).await;
     assert_eq!(view.status, "RUNNING");
@@ -202,8 +204,10 @@ async fn a_project_session_sends_the_project_system_prompt() {
         starts[0]["systemPrompt"],
         "You are working on the Acme shop. Always write tests for new endpoints.\n"
     );
-    let definition: TaskDefinition =
-        serde_json::from_value(stored_task(&world, delivered.task_id).await.definition).unwrap();
+    let definition = stored_task(&world, delivered.task_id)
+        .await
+        .settings()
+        .unwrap();
     assert_eq!(definition.start.skills, ["file-issue", "open-pr-green-ci"]);
 }
 

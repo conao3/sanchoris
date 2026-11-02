@@ -4,10 +4,11 @@ use common::{REPO, World, skill_input};
 use sanchoris_core::channel::RunEventType;
 use sanchoris_core::item::Entity;
 use sanchoris_core::items::{
-    ApprovalWait, CheckWait, CheckWaitMarker, SkillRunItem, StateEntryItem, Task, TimerItem,
+    ApprovalWait, CheckWait, CheckWaitMarker, SkillRunItem, StateEntryItem, TaskSkills, TimerItem,
 };
 use sanchoris_core::jobs::schedule_name;
 use sanchoris_core::keys;
+use sanchoris_core::model::NamedDefinition;
 use sanchoris_core::skillrun::{SkillRunError, resolve_approval};
 use sanchoris_core::tasks::abort_task;
 use sanchoris_core::tokens::{Signer, TaskTokenSigner};
@@ -28,11 +29,11 @@ async fn add_skill(world: &World, task_id: Uuid, name: &str, yaml: &str) {
     };
     world
         .dynamo
-        .modify::<Task>(&keys::task_key(world.tenant(), task_id), |stored| {
-            stored.definition["Skills"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({ "Name": name, "Definition": skill }));
+        .modify::<TaskSkills>(&keys::task_skills_key(world.tenant(), task_id), |stored| {
+            stored.skills.push(NamedDefinition {
+                name: name.into(),
+                definition: serde_json::to_value(&skill).unwrap(),
+            });
         })
         .await;
 }

@@ -10,7 +10,7 @@ use sanchoris_core::db::{
 };
 use sanchoris_core::item::{Entity, Key};
 use sanchoris_core::items::{
-    AuditEvent, PendingTask, Plan, Run, Task, TaskOrigin, Tenant, TriggerEvent,
+    AuditEvent, PendingTask, Plan, Run, Task, TaskOrigin, TaskSkills, Tenant, TriggerEvent,
 };
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
@@ -556,13 +556,13 @@ async fn large_documents_are_stored_in_the_blob_store() {
     let keys_stored = dynamo.blobs().keys();
     assert_eq!(keys_stored.len(), 1);
     assert!(keys_stored[0].starts_with(&format!("docs/{}/", seeded.tenant_id)));
-    let task = store
-        .get::<Task>(&keys::task_key(seeded.tenant_id, recorded.id()))
+    let skills = store
+        .get::<TaskSkills>(&keys::task_skills_key(seeded.tenant_id, recorded.id()))
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        task.definition["Skills"][0]["Definition"]["SkillMd"]
+        skills.skills[0].definition["SkillMd"]
             .as_str()
             .unwrap()
             .len(),

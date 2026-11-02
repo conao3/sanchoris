@@ -893,11 +893,7 @@ async fn place_github(
         Some((parent_name, parent_id)) => {
             let (depth, root) = tree_of(tx, parent_id).await?;
             let limits = match root.origin {
-                TaskOrigin::Conversation { .. } => {
-                    let root_definition: TaskDefinition =
-                        serde_json::from_value(root.definition.clone())?;
-                    root_definition.start.limits.children
-                }
+                TaskOrigin::Conversation { .. } => root.settings()?.start.limits.children,
                 TaskOrigin::Trigger { .. } => start.limits.children,
             };
             let depth = depth + 1;

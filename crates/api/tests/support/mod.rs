@@ -29,7 +29,7 @@ use sanchoris_core::clock::{Clock, SystemClock};
 use sanchoris_core::db::{REF_RUN, Store, insert_ref};
 use sanchoris_core::item::Entity;
 use sanchoris_core::items::{
-    Credential, Guard, Integration, Run, RunChannel, Task, TaskOrigin, User, uniq,
+    Credential, Guard, Integration, Run, RunChannel, Task, TaskOrigin, TaskSkills, User, uniq,
 };
 use sanchoris_core::keys;
 use sanchoris_core::local::DirBlobStore;
@@ -575,8 +575,8 @@ pub async fn task_with_run(dynamo: &TestDynamo, seeded: &Seeded) -> (Uuid, Uuid)
                 "Limits": { "Turns": 60, "CostUsd": 20, "TimeoutSeconds": 14400, "HeartbeatSeconds": 900, "Children": { "MaxDepth": 1, "MaxCount": 5 } },
             },
             "Session": { "Name": "shop", "Definition": {} },
-            "Skills": [],
         }),
+        skill_names: Vec::new(),
         parent_task_id: None,
         start_payload: None,
         requested_by_member_id: None,
@@ -591,6 +591,12 @@ pub async fn task_with_run(dynamo: &TestDynamo, seeded: &Seeded) -> (Uuid, Uuid)
         input_at: None,
         finished_at: None,
         updated_at: now,
+    })
+    .unwrap();
+    tx.insert(&TaskSkills {
+        tenant_id,
+        task_id,
+        skills: Vec::new(),
     })
     .unwrap();
     let run = Run {

@@ -12,10 +12,10 @@ use sanchoris_core::cli::{CliRequest, cli_request_key, normalize_user_code};
 use sanchoris_core::conversations::post_agent_message;
 use sanchoris_core::items::{
     ApprovalWait, AuditEvent, ConfigRevision, Credential, Guard, Integration, Member, Run,
-    RunApproval, RunQuestion, SkillRunItem, Task, Tenant, User,
+    RunApproval, RunQuestion, SkillRunItem, Task, TaskSkills, Tenant, User,
 };
 use sanchoris_core::keys;
-use sanchoris_core::model::{SkillRunStatus, TaskStatus};
+use sanchoris_core::model::{NamedDefinition, SkillRunStatus, TaskStatus};
 use sanchoris_core::skillrun::accept_skill_request;
 use sanchoris_core::tasks::load_task;
 use sanchoris_core::tenants::free_tenant_key;
@@ -1899,11 +1899,15 @@ async fn a_member_resolves_a_skill_approval_from_the_task_page() {
         origin: sanchoris_config::SkillOrigin::Repository,
     };
     w.dynamo
+        .modify::<TaskSkills>(&keys::task_skills_key(tenant, task_id), |stored| {
+            stored.skills.push(NamedDefinition {
+                name: "ship".into(),
+                definition: serde_json::to_value(&skill).unwrap(),
+            });
+        })
+        .await;
+    w.dynamo
         .modify::<Task>(&keys::task_key(tenant, task_id), |task| {
-            task.definition["Skills"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({ "Name": "ship", "Definition": skill }));
             task.definition["Session"]["Definition"] = json!({
                 "Worker": { "Agent": "claude", "Model": "claude-sonnet-5-5", "Credential": "acme-claude-team" },
                 "Project": "shop",

@@ -8,13 +8,13 @@ use crate::channel::{
 use crate::db::{DbError, REF_RUN, REF_TRIGGER, TenantTx, locate};
 use crate::item::Entity;
 use crate::items::{
-    Conversation, Guard, HeldMessage, Membership, PendingTask, Plan, Run, Task, TaskOrigin, Tenant,
-    uniq,
+    Conversation, Guard, HeldMessage, Membership, PendingTask, Plan, Run, Task, TaskOrigin,
+    TaskSkills, Tenant, uniq,
 };
 use crate::jobs::Job;
 use crate::keys;
 use crate::lifecycle::TaskDecision;
-use crate::model::{TaskStatus, WaitReason};
+use crate::model::{TaskDefinition, TaskStatus, WaitReason};
 use crate::skillrun::abort_skill_runs;
 use crate::store::Update;
 
@@ -30,6 +30,14 @@ pub async fn load_task(tx: &mut TenantTx, task_id: Uuid) -> Result<Task, DbError
     tx.get::<Task>(&key)
         .await?
         .ok_or_else(|| DbError::Missing(format!("task {task_id}")))
+}
+
+/// The task's full definition: the settings on its item and the skills item.
+pub async fn task_definition(tx: &mut TenantTx, task: &Task) -> Result<TaskDefinition, DbError> {
+    let skills = tx
+        .require::<TaskSkills>(&keys::task_skills_key(task.tenant_id, task.id))
+        .await?;
+    Ok(TaskDefinition::join(task.settings()?, skills.skills))
 }
 
 pub async fn task_config_id(tx: &mut TenantTx, task: &Task) -> Result<Uuid, DbError> {

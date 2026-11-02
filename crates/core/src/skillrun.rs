@@ -17,10 +17,10 @@ use crate::items::{
 use crate::jobs::Job;
 use crate::keys;
 use crate::lifecycle::decide_skill_run_finished;
-use crate::model::{SkillRunStatus, TaskDefinition, TaskStatus, WaitReason};
+use crate::model::{SkillRunStatus, TaskStatus, WaitReason};
 use crate::tasks::{
     ERROR_APPROVAL_REQUESTED, apply_decision, hold_message, holds_messages, load_task,
-    send_to_task, store_task,
+    send_to_task, store_task, task_definition,
 };
 use crate::tokens::{TaskTokenSigner, TokenError};
 
@@ -486,8 +486,7 @@ async fn on_finished(
     if task.status.is_terminal() {
         return Ok(());
     }
-    let definition: TaskDefinition = serde_json::from_value(task.definition.clone())?;
-    let required = required_skills(&definition);
+    let required = task.settings()?.start.required_skills;
     let required = required.iter().map(String::as_str).collect::<Vec<_>>();
     let decision = decide_skill_run_finished(
         &required,
@@ -508,10 +507,6 @@ async fn on_finished(
         .await?;
     }
     Ok(())
-}
-
-pub fn required_skills(definition: &TaskDefinition) -> Vec<String> {
-    definition.start.required_skills.clone()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -548,7 +543,7 @@ pub async fn accept_skill_request(
     if task.status.is_terminal() {
         return Err(SkillRunError::TaskFinished(task.status));
     }
-    let definition: TaskDefinition = serde_json::from_value(task.definition.clone())?;
+    let definition = task_definition(tx, &task).await?;
     let offered = definition
         .skills
         .iter()

@@ -13,10 +13,12 @@ use sanchoris_core::audit::audit_events;
 use sanchoris_core::billing::PAYMENT_PENDING;
 use sanchoris_core::items::{
     ApprovalWait, AuditEvent, Config, InboundEvent, Integration, Member, Membership, OutboxItem,
-    ReceiveRate, RunEventItem, RunLogEntry, RunPartial, RunQuestion, Task, Tenant, User, Workspace,
+    ReceiveRate, RunEventItem, RunLogEntry, RunPartial, RunQuestion, Task, TaskSkills, Tenant,
+    User, Workspace,
 };
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
+use sanchoris_core::model::NamedDefinition;
 use sanchoris_core::receive::window_start;
 use sanchoris_core::skillrun::accept_skill_request;
 use sanchoris_core::testing::{SEED_CONFIG_REPOSITORY_ID, TestDynamo};
@@ -902,11 +904,11 @@ async fn approvals_need_an_owner_an_admin_or_the_requester_and_are_audited() {
     };
     server
         .dynamo
-        .modify::<Task>(&keys::task_key(tenant, task_id), |task| {
-            task.definition["Skills"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({ "Name": "ship", "Definition": skill }));
+        .modify::<TaskSkills>(&keys::task_skills_key(tenant, task_id), |stored| {
+            stored.skills.push(NamedDefinition {
+                name: "ship".into(),
+                definition: serde_json::to_value(&skill).unwrap(),
+            });
         })
         .await;
     let mut tx = server.api.store.tx(tenant);

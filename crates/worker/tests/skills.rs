@@ -1,8 +1,9 @@
 use crate::common;
 
 use common::{REPO, SHOP_WEB_ID, World, skill_input};
-use sanchoris_core::items::{ApprovalWait, Output, StateEntryItem, Task, TimerItem};
+use sanchoris_core::items::{ApprovalWait, Output, StateEntryItem, TaskSkills, TimerItem};
 use sanchoris_core::keys;
+use sanchoris_core::model::NamedDefinition;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -304,11 +305,11 @@ async fn approval_requests_wait_for_a_signed_decision() {
     };
     world
         .dynamo
-        .modify::<Task>(&keys::task_key(world.tenant(), task.id), |stored| {
-            stored.definition["Skills"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({ "Name": "ship", "Definition": skill }));
+        .modify::<TaskSkills>(&keys::task_skills_key(world.tenant(), task.id), |stored| {
+            stored.skills.push(NamedDefinition {
+                name: "ship".into(),
+                definition: serde_json::to_value(&skill).unwrap(),
+            });
         })
         .await;
     let accepted = world

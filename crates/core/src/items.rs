@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::item::{Entity, ItemReader, ItemWriter, Key, format_time};
 use crate::keys;
-use crate::model::{SkillRunStatus, TaskStatus, WaitReason};
+use crate::model::{NamedDefinition, SkillRunStatus, TaskSettings, TaskStatus, WaitReason};
 use crate::modes::SessionModes;
 use crate::store::DbError;
 
@@ -1338,7 +1338,9 @@ pub struct Task {
     pub resume_at: Option<DateTime<Utc>>,
     pub snoozed_until: Option<DateTime<Utc>>,
     pub nudges: i64,
+    /// The `TaskSettings` the task started with.
     pub definition: Value,
+    pub skill_names: Vec<String>,
     pub parent_task_id: Option<Uuid>,
     pub start_payload: Option<Value>,
     pub requested_by_member_id: Option<Uuid>,
@@ -1369,6 +1371,11 @@ pub fn split_github_task_name(name: &str) -> Option<(i64, &str)> {
 }
 
 impl Task {
+    pub fn settings(&self) -> Result<TaskSettings, DbError> {
+        serde_json::from_value(self.definition.clone())
+            .map_err(|e| DbError::Decode(format!("task {} settings: {e}", self.id)))
+    }
+
     /// Whether the supervisor checks the task's limits: it runs, or waits on something other than a member's next message.
     pub fn is_supervised(&self) -> bool {
         self.status == TaskStatus::Running
@@ -1431,6 +1438,7 @@ impl Entity for Task {
             .opt_time("snoozed_until", self.snoozed_until)
             .n("nudges", self.nudges)
             .json("definition", &self.definition)
+            .strs("skill_names", &self.skill_names)
             .opt_uuid("parent_task_id", self.parent_task_id)
             .opt_json("start_payload", self.start_payload.as_ref())
             .opt_uuid("requested_by_member_id", self.requested_by_member_id)
@@ -1488,6 +1496,7 @@ impl Entity for Task {
             snoozed_until: r.opt_time("snoozed_until")?,
             nudges: r.n("nudges")?,
             definition: r.json("definition")?,
+            skill_names: r.strs("skill_names")?,
             parent_task_id: r.opt_uuid("parent_task_id")?,
             start_payload: r.opt_json("start_payload")?,
             requested_by_member_id: r.opt_uuid("requested_by_member_id")?,
@@ -1502,6 +1511,40 @@ impl Entity for Task {
             input_at: r.opt_time("input_at")?,
             finished_at: r.opt_time("finished_at")?,
             updated_at: r.time("updated_at")?,
+        })
+    }
+}
+
+/// The skills a task offers, written once when the task is created.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskSkills {
+    pub tenant_id: Uuid,
+    pub task_id: Uuid,
+    pub skills: Vec<NamedDefinition>,
+}
+
+impl Entity for TaskSkills {
+    const KIND: &'static str = "task_skills";
+
+    fn key(&self) -> Key {
+        keys::task_skills_key(self.tenant_id, self.task_id)
+    }
+
+    fn write(&self, w: &mut ItemWriter) {
+        w.uuid("tenant_id", self.tenant_id)
+            .uuid("task_id", self.task_id)
+            .json(
+                "skills",
+                &serde_json::to_value(&self.skills).expect("skills serialize"),
+            );
+    }
+
+    fn read(r: &ItemReader<'_>) -> Result<Self, DbError> {
+        Ok(Self {
+            tenant_id: r.uuid("tenant_id")?,
+            task_id: r.uuid("task_id")?,
+            skills: serde_json::from_value(r.json("skills")?)
+                .map_err(|e| DbError::Decode(format!("task skills: {e}")))?,
         })
     }
 }

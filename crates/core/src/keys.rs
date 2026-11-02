@@ -269,6 +269,10 @@ pub fn task_key(tenant_id: Uuid, task_id: Uuid) -> Key {
     Key::main(task_pk(tenant_id, task_id), "#TASK")
 }
 
+pub fn task_skills_key(tenant_id: Uuid, task_id: Uuid) -> Key {
+    Key::main(task_pk(tenant_id, task_id), "#SKILLS")
+}
+
 pub fn dependency_key(tenant_id: Uuid, task_id: Uuid, blocked_by: Uuid) -> Key {
     Key::main(task_pk(tenant_id, task_id), format!("DEP#{blocked_by}"))
 }

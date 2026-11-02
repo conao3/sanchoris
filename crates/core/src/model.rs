@@ -127,6 +127,38 @@ pub struct TaskDefinition {
     pub skills: Vec<NamedDefinition>,
 }
 
+/// The part of a task's definition that its item keeps; the skills are a separate item (`TaskSkills`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct TaskSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<NamedDefinition>,
+    pub start: Start,
+    pub session: NamedDefinition,
+}
+
+impl TaskDefinition {
+    pub fn split(self) -> (TaskSettings, Vec<NamedDefinition>) {
+        (
+            TaskSettings {
+                trigger: self.trigger,
+                start: self.start,
+                session: self.session,
+            },
+            self.skills,
+        )
+    }
+
+    pub fn join(settings: TaskSettings, skills: Vec<NamedDefinition>) -> Self {
+        Self {
+            trigger: settings.trigger,
+            start: settings.start,
+            session: settings.session,
+            skills,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

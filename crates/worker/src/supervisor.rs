@@ -21,11 +21,11 @@ use sanchoris_core::lifecycle::{
 use sanchoris_core::model::{
     SkillRunStatus, TaskDefinition, TaskStatus, UsageLimitResume, WaitReason,
 };
-use sanchoris_core::skillrun::{heartbeat_agent_skill_runs, required_skills};
+use sanchoris_core::skillrun::heartbeat_agent_skill_runs;
 use sanchoris_core::store::{Index, SortKey, Update};
 use sanchoris_core::tasks::{
     apply_decision, free_slots, idle_seconds, latest_run, load_run, load_task, release_slot,
-    runs_of, send_to_task, take_slot, task_branch, wait_for_slot,
+    runs_of, send_to_task, take_slot, task_branch, task_definition, wait_for_slot,
 };
 use sanchoris_core::{keys, messages};
 use sanchoris_engine::ResourceOutcome;
@@ -46,12 +46,8 @@ pub fn heartbeat_interval(limit_seconds: u64) -> u64 {
     (limit_seconds.min(HANDOFF_HEARTBEAT_SECONDS) / 3).max(MIN_HEARTBEAT_INTERVAL_SECONDS)
 }
 
-fn definition_of(task: &Task) -> Result<TaskDefinition> {
-    Ok(serde_json::from_value(task.definition.clone())?)
-}
-
 fn start_of(task: &Task) -> Result<Start> {
-    Ok(definition_of(task)?.start)
+    Ok(task.settings()?.start)
 }
 
 fn session_of(task: &Task) -> Result<Session> {
@@ -332,7 +328,7 @@ async fn turn_end(
         apply_decision(tx, task.id, event.run_id, &decision, &dedupe, now).await?;
         return Ok(());
     }
-    let names = required_skills(&definition_of(&task)?);
+    let names = start_of(&task)?.required_skills;
     let mut required = Vec::new();
     for name in &names {
         required.push(RequiredSkill {
@@ -918,7 +914,7 @@ async fn start_workspace(
     let tenant_id = tx.tenant_id();
     let session = session_of(&task)?;
     let start = start_of(&task)?;
-    let definition = definition_of(&task)?;
+    let definition = task_definition(&mut tx, &task).await?;
     let start_payload = task.start_payload.clone().unwrap_or(Value::Null);
     let repositories: Vec<String> =
         serde_json::from_value(start_payload.get("repositories").cloned().ok_or_else(|| {

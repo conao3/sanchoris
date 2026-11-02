@@ -7,10 +7,10 @@ use sanchoris_core::db::{self, REF_CONFIG_REVISION, REF_RUN};
 use sanchoris_core::items::{
     ApprovalWait, Child, ConfigRevision as RevisionItem, Dependency, OUTPUT_ISSUE, OutboxItem,
     Output as OutputItem, Run as RunItem, RunEventItem, SkillRunItem, Task as TaskItem, TaskName,
-    TaskOrigin, Workspace as WorkspaceItem, github_task_name,
+    TaskOrigin, TaskSkills, Workspace as WorkspaceItem, github_task_name,
 };
 use sanchoris_core::keys;
-use sanchoris_core::model::{TaskDefinition, TaskStatus as CoreStatus};
+use sanchoris_core::model::{TaskSettings, TaskStatus as CoreStatus};
 use sanchoris_core::store::{Index, Listing};
 use sanchoris_core::tasks::{linked_member, task_branch, task_config_id};
 use serde_json::Value;
@@ -56,9 +56,7 @@ pub(crate) fn latest_tasks(tenant_id: Uuid) -> Listing {
 }
 
 fn offers_skill(task: &TaskItem, name: &str) -> bool {
-    task.definition["Skills"]
-        .as_array()
-        .is_some_and(|skills| skills.iter().any(|skill| skill["Name"] == name))
+    task.skill_names.iter().any(|offered| offered == name)
 }
 
 impl Task {
@@ -158,17 +156,12 @@ impl Task {
         keys::task_pk(self.scope.tenant_id, self.row.id)
     }
 
-    pub fn definition(&self) -> Result<TaskDefinition> {
-        serde_json::from_value(self.row.definition.clone()).map_err(|e| {
-            async_graphql::Error::new(format!(
-                "task {} has an invalid definition: {e}",
-                self.row.id
-            ))
-        })
+    pub fn settings(&self) -> Result<TaskSettings> {
+        Ok(self.row.settings()?)
     }
 
     pub fn start(&self) -> Result<Start> {
-        Ok(self.definition()?.start)
+        Ok(self.settings()?.start)
     }
 
     pub fn status_value(&self) -> Result<TaskStatus> {
@@ -181,7 +174,7 @@ impl Task {
     }
 
     pub async fn session_data(&self, ctx: &Context<'_>) -> Result<Session> {
-        let definition = self.definition()?;
+        let definition = self.settings()?;
         let config_id = self.config_id(ctx).await?;
         let name = definition.session.name;
         let current = Session::by_name(ctx, self.scope, config_id, &name).await?;
@@ -322,7 +315,7 @@ impl Task {
     }
 
     async fn auto_resume(&self) -> Result<bool> {
-        Ok(self.definition()?.session.definition["UsageLimit"]["Resume"] == "auto")
+        Ok(self.settings()?.session.definition["UsageLimit"]["Resume"] == "auto")
     }
 
     /// Until when the task is out of the needs-you lists; null when it is not snoozed.
@@ -506,14 +499,16 @@ impl Task {
     }
 
     async fn required_skills(&self, ctx: &Context<'_>) -> Result<Vec<RequiredSkillStatus>> {
-        let definition = self.definition()?;
+        let skills = tx(ctx, self.scope.tenant_id)
+            .require::<TaskSkills>(&keys::task_skills_key(self.scope.tenant_id, self.row.id))
+            .await?
+            .skills;
         let required = self.start()?.required_skills;
         let runs = SkillRun::of_task(ctx, self.scope, self.row.id).await?;
         let config_id = self.config_id(ctx).await?;
         let mut statuses = Vec::new();
         for name in required {
-            let offered = definition
-                .skills
+            let offered = skills
                 .iter()
                 .find(|skill| skill.name == name)
                 .ok_or_else(|| {
@@ -1006,7 +1001,7 @@ impl Run {
 
     async fn credential_name(&self, ctx: &Context<'_>) -> Result<String> {
         let task = Task::load(ctx, self.scope, self.row.task_id).await?;
-        task.definition()?.session.definition["Worker"]["Credential"]
+        task.settings()?.session.definition["Worker"]["Credential"]
             .as_str()
             .map(str::to_string)
             .ok_or_else(|| async_graphql::Error::new("the task session has no Worker.Credential"))

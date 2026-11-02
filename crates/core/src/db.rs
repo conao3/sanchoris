@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::item::{Entity, Key};
 use crate::items::{
     Child, ConversationTask, Dependency, PendingTask, Plan, Ref, Run, RunChannel, Task, TaskName,
-    TaskOrigin, Tenant, TriggerEvent,
+    TaskOrigin, TaskSkills, Tenant, TriggerEvent,
 };
 use crate::jobs::Job;
 use crate::keys;
@@ -214,6 +214,7 @@ pub async fn create_task(tx: &mut TenantTx, task: &NewTask<'_>) -> Result<Record
             })?;
         }
     }
+    let (settings, skills) = task.definition.clone().split();
     tx.insert(&Task {
         id,
         tenant_id,
@@ -226,7 +227,8 @@ pub async fn create_task(tx: &mut TenantTx, task: &NewTask<'_>) -> Result<Record
         resume_at: None,
         snoozed_until: None,
         nudges: 0,
-        definition: serde_json::to_value(task.definition)?,
+        definition: serde_json::to_value(settings)?,
+        skill_names: skills.iter().map(|skill| skill.name.clone()).collect(),
         parent_task_id: task.parent_task_id,
         start_payload: None,
         requested_by_member_id: task.requested_by_member_id,
@@ -241,6 +243,11 @@ pub async fn create_task(tx: &mut TenantTx, task: &NewTask<'_>) -> Result<Record
         input_at: matches!(task.origin, TaskOrigin::Conversation { .. }).then_some(now),
         finished_at: None,
         updated_at: now,
+    })?;
+    tx.insert(&TaskSkills {
+        tenant_id,
+        task_id: id,
+        skills,
     })?;
     tx.insert(&PendingTask {
         tenant_id,
