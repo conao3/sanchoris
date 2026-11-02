@@ -955,13 +955,13 @@ async fn tenants_billing_and_operator_actions() {
         .ok(
             &w.ren,
             "CreateTenant",
-            json!({ "input": { "name": "Ren Paid", "planId": "starter" } }),
+            json!({ "input": { "name": "Ren Paid", "planId": "pro" } }),
         )
         .await;
     assert_eq!(paid["createTenant"]["tenant"]["slug"], "ren-paid");
     assert_eq!(
         paid["createTenant"]["checkoutUrl"],
-        "https://checkout.stripe.test/starter/Ren Paid"
+        "https://checkout.stripe.test/pro/Ren Paid"
     );
     let created = w
         .ok(
@@ -1014,27 +1014,27 @@ async fn tenants_billing_and_operator_actions() {
         .ok(
             &w.mika,
             "ChangePlan",
-            json!({ "tenantId": w.acme, "planId": "max" }),
+            json!({ "tenantId": w.acme, "planId": "ultra" }),
         )
         .await;
     assert_eq!(
         checkout["changePlan"]["checkoutUrl"],
-        "https://checkout.stripe.test/change/max"
+        "https://checkout.stripe.test/change/ultra"
     );
-    assert_eq!(checkout["changePlan"]["tenant"]["plan"]["name"], "Pro");
+    assert_eq!(checkout["changePlan"]["tenant"]["plan"]["name"], "Max");
     w.audit(w.acme, "tenant.plan_checkout_start").await;
     *w.recorder.plan_change.lock().unwrap() = Some(PlanChange::Applied);
     let applied = w
         .ok(
             &w.mika,
             "ChangePlan",
-            json!({ "tenantId": w.acme, "planId": "max" }),
+            json!({ "tenantId": w.acme, "planId": "ultra" }),
         )
         .await;
     assert_eq!(applied["changePlan"]["checkoutUrl"], Value::Null);
-    assert_eq!(applied["changePlan"]["tenant"]["plan"]["name"], "Max");
+    assert_eq!(applied["changePlan"]["tenant"]["plan"]["name"], "Ultra");
     let tenant: Tenant = w.get(&keys::tenant_key(w.acme)).await.unwrap();
-    assert_eq!(tenant.plan_id, "max");
+    assert_eq!(tenant.plan_id, "ultra");
     w.audit(w.acme, "tenant.plan_change").await;
 
     let portal = w
@@ -1235,7 +1235,7 @@ async fn a_linked_github_account_has_one_free_tenant_until_it_leaves_free() {
     w.ok(
         &w.mika,
         "ChangePlan",
-        json!({ "tenantId": free_id, "planId": "pro" }),
+        json!({ "tenantId": free_id, "planId": "max" }),
     )
     .await;
     assert!(
@@ -1284,7 +1284,7 @@ async fn changing_to_free_holds_the_free_slot_before_the_subscription_is_cancell
     );
     assert!(w.get::<Guard>(&slot).await.is_none());
     let tenant: Tenant = w.get(&keys::tenant_key(w.acme)).await.unwrap();
-    assert_eq!(tenant.plan_id, "pro");
+    assert_eq!(tenant.plan_id, "max");
 
     *w.recorder.plan_change_fails.lock().unwrap() = false;
     *w.recorder.free_tenant_race.lock().unwrap() = Some((w.mika.user_id, other));
@@ -1326,7 +1326,7 @@ async fn changing_to_free_after_the_subscription_webhook_keeps_the_free_plan() {
 async fn changing_to_free_activates_a_pending_tenant_and_resets_the_period() {
     let w = World::new().await;
     *w.recorder.plan_change.lock().unwrap() = Some(PlanChange::Applied);
-    let pending = pending_tenant(&w, "Ren Pro", "pro", "cs_ren").await;
+    let pending = pending_tenant(&w, "Ren Max", "max", "cs_ren").await;
     w.dynamo
         .modify::<Tenant>(&keys::tenant_key(pending), |tenant| {
             tenant.tasks_this_period = 2;
@@ -1371,7 +1371,7 @@ async fn changing_to_free_activates_a_pending_tenant_and_resets_the_period() {
         "CONFLICT"
     );
 
-    let other = pending_tenant(&w, "Ren Max", "max", "cs_ren_2").await;
+    let other = pending_tenant(&w, "Ren Ultra", "ultra", "cs_ren_2").await;
     assert_eq!(
         w.error_code(
             &w.ren,
@@ -1384,7 +1384,7 @@ async fn changing_to_free_activates_a_pending_tenant_and_resets_the_period() {
     let still: Tenant = w.get(&keys::tenant_key(other)).await.unwrap();
     assert_eq!(
         (still.status.as_str(), still.plan_id.as_str()),
-        ("suspended", "max")
+        ("suspended", "ultra")
     );
 
     w.dynamo
@@ -1419,14 +1419,14 @@ async fn a_portal_redirect_keeps_the_plan_and_returns_the_portal_url() {
         .ok(
             &w.mika,
             "ChangePlan",
-            json!({ "tenantId": w.acme, "planId": "max" }),
+            json!({ "tenantId": w.acme, "planId": "ultra" }),
         )
         .await;
     assert_eq!(
         changed["changePlan"]["checkoutUrl"],
         "https://billing.stripe.test/settle"
     );
-    assert_eq!(changed["changePlan"]["tenant"]["plan"]["id"], "pro");
+    assert_eq!(changed["changePlan"]["tenant"]["plan"]["id"], "max");
     w.audit(w.acme, "billing.portal_open").await;
 }
 
@@ -1472,7 +1472,7 @@ async fn a_verified_sancode_email_creates_admin_tenants_that_billing_cannot_chan
         .iter()
         .map(|plan| plan["id"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(ren_plans, ["free", "starter", "pro", "max"]);
+    assert_eq!(ren_plans, ["free", "pro", "max", "ultra"]);
     let aya_page = w.ok(&w.aya, "CreateTenantPage", json!({})).await;
     assert_eq!(
         aya_page["viewer"]["newTenantPlans"],
@@ -1510,7 +1510,7 @@ async fn a_verified_sancode_email_creates_admin_tenants_that_billing_cannot_chan
         w.error_code(
             &w.aya,
             "CreateTenant",
-            json!({ "input": { "name": "Aya Max", "planId": "max" } })
+            json!({ "input": { "name": "Aya Ultra", "planId": "ultra" } })
         )
         .await,
         "BAD_USER_INPUT"
@@ -1576,9 +1576,9 @@ async fn a_verified_sancode_email_creates_admin_tenants_that_billing_cannot_chan
         .iter()
         .map(|plan| plan["id"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(for_sale, ["free", "starter", "pro", "max"]);
+    assert_eq!(for_sale, ["free", "pro", "max", "ultra"]);
 
-    for plan in ["free", "pro"] {
+    for plan in ["free", "max"] {
         assert_eq!(
             w.error_code(
                 &w.aya,
@@ -1645,7 +1645,7 @@ async fn a_sancode_member_joining_a_tenant_leaves_its_plan() {
     assert_eq!(joined["acceptInvitation"]["role"], "ADMIN");
 
     let tenant = w.get::<Tenant>(&keys::tenant_key(w.acme)).await.unwrap();
-    assert_eq!(tenant.plan_id, "pro");
+    assert_eq!(tenant.plan_id, "max");
     let slug = tenant.slug;
     let billing = w.ok(&w.aya, "Billing", json!({ "tenant": slug })).await;
     assert_eq!(billing["tenant"]["plan"]["isAdmin"], false);

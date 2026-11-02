@@ -97,7 +97,7 @@ fn trigger_of(config_id: Uuid) -> Uuid {
 
 #[tokio::test]
 async fn activation_resolves_the_named_repositories_to_ids() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let config = config(&world, world.seeded.config_id).await;
     assert_eq!(config.repository_id, Some(SEED_CONFIG_REPOSITORY_ID));
     assert_eq!(config.sync_error, None);
@@ -133,7 +133,7 @@ async fn activation_resolves_the_named_repositories_to_ids() {
 
 #[tokio::test]
 async fn a_renamed_repository_keeps_starting_its_triggers_by_id() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let renamed = world.github.rename(SHOP_WEB_ID, "acme/storefront");
     world
         .deliver("delivery-renamed", "issues", &payload_from(70, &renamed))
@@ -154,7 +154,7 @@ async fn a_renamed_repository_keeps_starting_its_triggers_by_id() {
 
 #[tokio::test]
 async fn a_sub_issue_finds_its_parent_task_created_before_a_rename() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world
         .label_issue("delivery-35", 35, "Parent", "mika-dev")
         .await;
@@ -187,7 +187,7 @@ async fn a_sub_issue_finds_its_parent_task_created_before_a_rename() {
 
 #[tokio::test]
 async fn configs_on_swapped_names_do_not_start_each_others_triggers() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let old = world.github.rename(SHOP_WEB_ID, "acme/shop-web-dev");
     let taken = world.github.add_repository(7201, "acme/shop-web");
     install(&world, &old).await;
@@ -238,7 +238,7 @@ async fn configs_on_swapped_names_do_not_start_each_others_triggers() {
 
 #[tokio::test]
 async fn a_rename_updates_the_cached_names() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let config_repository = world
         .github
         .rename(SEED_CONFIG_REPOSITORY_ID, "acme/platform-config");
@@ -280,7 +280,7 @@ async fn a_rename_updates_the_cached_names() {
 
 #[tokio::test]
 async fn a_disabled_config_retires_its_definitions_and_stops_its_tasks() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let running = world.started_task(73).await;
     let reason = "acme/sanchoris-config was removed from the GitHub App installation";
     disable_config(
@@ -352,7 +352,7 @@ async fn a_disabled_config_retires_its_definitions_and_stops_its_tasks() {
 
 #[tokio::test]
 async fn sync_errors_are_recorded_and_cleared_by_the_next_sync() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     {
         let mut state = world.github.state.lock().unwrap();
         state.head_sha = "config-ghost".into();
@@ -384,7 +384,7 @@ async fn sync_errors_are_recorded_and_cleared_by_the_next_sync() {
 
 #[tokio::test]
 async fn the_backfill_moves_definitions_under_the_active_revision_and_task_names_to_ids() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let tenant_id = world.tenant();
     let task = world.started_task(35).await;
     let active = config(&world, world.seeded.config_id)

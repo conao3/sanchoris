@@ -51,7 +51,7 @@ async fn active_revision(world: &World) -> Option<uuid::Uuid> {
 
 #[tokio::test]
 async fn config_sync_resolves_project_repository_keys() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let pattern = trigger(&world, "labeled-issue")
         .await
         .event_pattern
@@ -100,7 +100,7 @@ async fn config_sync_resolves_project_repository_keys() {
 
 #[tokio::test]
 async fn invalid_revisions_do_not_replace_the_active_one() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     {
         let mut state = world.github.state.lock().unwrap();
         state.head_sha = "config-2".into();
@@ -142,7 +142,7 @@ async fn invalid_revisions_do_not_replace_the_active_one() {
 
 #[tokio::test]
 async fn labeled_issue_starts_a_running_task_with_the_documented_message() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world
         .label_issue("delivery-35", 35, "Fix flaky checkout test", "mika-dev")
         .await;
@@ -217,7 +217,7 @@ async fn labeled_issue_starts_a_running_task_with_the_documented_message() {
 
 #[tokio::test]
 async fn actors_outside_the_pattern_are_skipped_with_a_reason() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world
         .label_issue("delivery-eve", 40, "Mine bitcoin", "eve")
         .await;
@@ -234,7 +234,7 @@ async fn actors_outside_the_pattern_are_skipped_with_a_reason() {
 
 #[tokio::test]
 async fn unrelated_events_leave_no_trigger_event() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let mut payload = common::labeled_payload(41, "Other repo", "mika-dev");
     payload["repository"] = json!({ "id": 7999, "full_name": "acme/elsewhere" });
     world
@@ -249,7 +249,7 @@ async fn unrelated_events_leave_no_trigger_event() {
 
 #[tokio::test]
 async fn children_beyond_the_limit_are_skipped() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world.github.set_parent(36, Some(35));
     world.github.set_parent(37, Some(36));
     for (number, title) in [(35, "Parent"), (36, "Child"), (37, "Grandchild")] {
@@ -279,7 +279,7 @@ async fn children_beyond_the_limit_are_skipped() {
 
 #[tokio::test]
 async fn children_count_is_limited() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world
         .label_issue("delivery-35", 35, "Parent", "mika-dev")
         .await;
@@ -302,7 +302,7 @@ async fn children_count_is_limited() {
 
 #[tokio::test]
 async fn schedules_emit_events_at_due_times() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     {
         let mut state = world.github.state.lock().unwrap();
         state.head_sha = "config-2".into();
@@ -336,7 +336,7 @@ async fn schedules_emit_events_at_due_times() {
 
 #[tokio::test]
 async fn a_schedule_that_never_fired_is_armed_again_by_the_config_sync() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     {
         let mut state = world.github.state.lock().unwrap();
         state.head_sha = "config-2".into();
@@ -406,7 +406,7 @@ async fn record_message(world: &World, source: &str, key: &str, event: serde_jso
 
 #[tokio::test]
 async fn comments_need_the_commenter_as_actor() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     legacy_pattern(
         &world,
         "labeled-issue",
@@ -487,7 +487,7 @@ async fn comments_need_the_commenter_as_actor() {
 
 #[tokio::test]
 async fn unreadable_issue_relations_skip_the_event_and_later_events_run() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world.github.state.lock().unwrap().relation_errors.insert(
         (REPO.to_string(), 50),
         GitHubError::Status {
@@ -517,7 +517,7 @@ async fn unreadable_issue_relations_skip_the_event_and_later_events_run() {
 
 #[tokio::test]
 async fn a_failing_trigger_is_discarded_without_blocking_the_queue() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world
         .dynamo
         .modify::<Trigger>(
@@ -558,7 +558,7 @@ async fn a_failing_trigger_is_discarded_without_blocking_the_queue() {
 
 #[tokio::test]
 async fn an_unreadable_inbound_event_is_recorded_with_its_error() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     record_message(
         &world,
         "schedule",
@@ -594,7 +594,7 @@ fn bot_labeled(number: i64) -> serde_json::Value {
 
 #[tokio::test]
 async fn bot_issues_without_a_parent_task_are_skipped() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world
         .deliver("delivery-bot-61", "issues", &bot_labeled(61))
         .await;
@@ -625,7 +625,7 @@ async fn bot_issues_without_a_parent_task_are_skipped() {
 
 #[tokio::test]
 async fn starts_beyond_the_hourly_limit_are_discarded() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let trigger = trigger(&world, "labeled-issue").await;
     let limit = sanchoris_worker::Settings::default().trigger_starts_per_hour;
     world
@@ -678,7 +678,7 @@ async fn starts_beyond_the_hourly_limit_are_discarded() {
 
 #[tokio::test]
 async fn missed_schedule_occurrences_fire_once() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     {
         let mut state = world.github.state.lock().unwrap();
         state.head_sha = "config-2".into();
@@ -750,7 +750,7 @@ async fn sync(world: &World) -> Result<usize, sanchoris_worker::error::WorkerErr
 
 #[tokio::test]
 async fn large_configs_activate_in_batches_and_audit_the_commit() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     push_config(&world, "config-big", with_extra_sessions(150));
     world
         .worker
@@ -805,7 +805,7 @@ async fn large_configs_activate_in_batches_and_audit_the_commit() {
 
 #[tokio::test]
 async fn readers_see_the_previous_revision_until_an_activation_switches() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let previous = active_revision(&world).await;
     let extra = (0..150)
         .map(|i| {
@@ -901,7 +901,7 @@ async fn readers_see_the_previous_revision_until_an_activation_switches() {
 
 #[tokio::test]
 async fn requester_credential_of_a_github_task_is_the_personal_credential_of_the_linked_member() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world
         .label_issue("delivery-35", 35, "Fix flaky checkout test", "mika-dev")
         .await;

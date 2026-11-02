@@ -85,8 +85,8 @@ async fn used(dynamo: &TestDynamo, tenant_id: Uuid, count: i64) {
 }
 
 async fn prices(dynamo: &TestDynamo) {
-    dynamo.set_stripe_price("starter", "price_starter").await;
     dynamo.set_stripe_price("pro", "price_pro").await;
+    dynamo.set_stripe_price("max", "price_max").await;
 }
 
 #[tokio::test]
@@ -106,7 +106,7 @@ async fn stripe_events_drive_the_tenant_status_plan_and_period() {
     complete_checkout(
         &store,
         event("evt_1", "checkout.session.completed", activated),
-        paid(tenant_id, "cus_1", "starter"),
+        paid(tenant_id, "cus_1", "pro"),
     )
     .await
     .unwrap();
@@ -120,7 +120,7 @@ async fn stripe_events_drive_the_tenant_status_plan_and_period() {
             t.workspace_seconds_this_period,
             t.period_start
         ),
-        ("active", Some("cus_1"), "starter", 0, 0, activated)
+        ("active", Some("cus_1"), "pro", 0, 0, activated)
     );
     assert!(matches!(
         complete_checkout(
@@ -135,7 +135,7 @@ async fn stripe_events_drive_the_tenant_status_plan_and_period() {
         complete_checkout(
             &store,
             event("evt_1", "checkout.session.completed", activated),
-            paid(tenant_id, "cus_1", "starter"),
+            paid(tenant_id, "cus_1", "pro"),
         )
         .await
         .unwrap(),
@@ -143,10 +143,10 @@ async fn stripe_events_drive_the_tenant_status_plan_and_period() {
     );
 
     let updated = event("evt_3", "customer.subscription.updated", at(2));
-    billing::change_plan(&store, updated, customer("cus_1"), "active", "price_pro")
+    billing::change_plan(&store, updated, customer("cus_1"), "active", "price_max")
         .await
         .unwrap();
-    assert_eq!(tenant(&store, tenant_id).await.plan_id, "pro");
+    assert_eq!(tenant(&store, tenant_id).await.plan_id, "max");
     assert!(matches!(
         billing::change_plan(
             &store,
@@ -164,7 +164,7 @@ async fn stripe_events_drive_the_tenant_status_plan_and_period() {
             event("evt_5", "customer.subscription.updated", at(2)),
             customer("cus_other"),
             "active",
-            "price_pro"
+            "price_max"
         )
         .await,
         Err(BillingError::UnknownCustomer(_))
@@ -236,13 +236,13 @@ async fn an_unpaid_checkout_keeps_the_tenant_pending_until_the_payment_succeeds(
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
     prices(&dynamo).await;
-    let tenant_id = pending_tenant(&dynamo, "pro").await;
+    let tenant_id = pending_tenant(&dynamo, "max").await;
     complete_checkout(
         &store,
         event("evt_1", "checkout.session.completed", at(1)),
         Checkout {
             paid: false,
-            ..paid(tenant_id, "cus_1", "pro")
+            ..paid(tenant_id, "cus_1", "max")
         },
     )
     .await
@@ -259,7 +259,7 @@ async fn an_unpaid_checkout_keeps_the_tenant_pending_until_the_payment_succeeds(
     complete_checkout(
         &store,
         event("evt_2", "checkout.session.async_payment_succeeded", at(2)),
-        paid(tenant_id, "cus_1", "pro"),
+        paid(tenant_id, "cus_1", "max"),
     )
     .await
     .unwrap();
@@ -271,11 +271,11 @@ async fn invoice_paid_resets_the_period_once_and_only_for_a_new_period() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
     prices(&dynamo).await;
-    let tenant_id = pending_tenant(&dynamo, "pro").await;
+    let tenant_id = pending_tenant(&dynamo, "max").await;
     complete_checkout(
         &store,
         event("evt_c", "checkout.session.completed", at(1)),
-        paid(tenant_id, "cus_1", "pro"),
+        paid(tenant_id, "cus_1", "max"),
     )
     .await
     .unwrap();
@@ -326,7 +326,7 @@ async fn subscription_events_before_the_checkout_find_the_tenant_by_metadata() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
     prices(&dynamo).await;
-    let tenant_id = pending_tenant(&dynamo, "pro").await;
+    let tenant_id = pending_tenant(&dynamo, "max").await;
     let hinted = Payer {
         customer_id: "cus_early",
         tenant_id: Some(tenant_id),
@@ -337,7 +337,7 @@ async fn subscription_events_before_the_checkout_find_the_tenant_by_metadata() {
             event("evt_1", "customer.subscription.updated", at(1)),
             hinted,
             "active",
-            "price_pro"
+            "price_max"
         )
         .await
         .unwrap(),
@@ -360,7 +360,7 @@ async fn subscription_events_before_the_checkout_find_the_tenant_by_metadata() {
             event("evt_3", "customer.subscription.updated", at(1)),
             customer("cus_early"),
             "active",
-            "price_pro"
+            "price_max"
         )
         .await,
         Err(BillingError::UnknownCustomer(_))
@@ -378,14 +378,14 @@ async fn subscription_events_before_the_checkout_find_the_tenant_by_metadata() {
     complete_checkout(
         &store,
         event("evt_5", "checkout.session.completed", at(1)),
-        paid(tenant_id, "cus_early", "pro"),
+        paid(tenant_id, "cus_early", "max"),
     )
     .await
     .unwrap();
     let t = tenant(&store, tenant_id).await;
     assert_eq!(
         (t.status.as_str(), t.plan_id.as_str(), t.period_start),
-        ("active", "pro", at(1))
+        ("active", "max", at(1))
     );
     assert!(matches!(
         billing::change_plan(
@@ -396,12 +396,12 @@ async fn subscription_events_before_the_checkout_find_the_tenant_by_metadata() {
                 tenant_id: Some(Uuid::new_v4()),
             },
             "active",
-            "price_starter"
+            "price_pro"
         )
         .await,
         Ok(Outcome::Processed)
     ));
-    assert_eq!(tenant(&store, tenant_id).await.plan_id, "starter");
+    assert_eq!(tenant(&store, tenant_id).await.plan_id, "pro");
     assert!(matches!(
         billing::change_plan(
             &store,
@@ -411,7 +411,7 @@ async fn subscription_events_before_the_checkout_find_the_tenant_by_metadata() {
                 tenant_id: Some(Uuid::new_v4()),
             },
             "active",
-            "price_pro"
+            "price_max"
         )
         .await,
         Err(BillingError::TenantGone(_))
@@ -423,11 +423,11 @@ async fn subscription_updates_outside_active_trialing_and_past_due_are_ignored()
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
     prices(&dynamo).await;
-    let tenant_id = pending_tenant(&dynamo, "starter").await;
+    let tenant_id = pending_tenant(&dynamo, "pro").await;
     complete_checkout(
         &store,
         event("evt_1", "checkout.session.completed", at(1)),
-        paid(tenant_id, "cus_1", "starter"),
+        paid(tenant_id, "cus_1", "pro"),
     )
     .await
     .unwrap();
@@ -444,24 +444,24 @@ async fn subscription_updates_outside_active_trialing_and_past_due_are_ignored()
                 event(status, "customer.subscription.updated", at(2)),
                 customer("cus_1"),
                 status,
-                "price_pro"
+                "price_max"
             )
             .await
             .unwrap(),
             Outcome::Ignored(format!("the subscription is {status}"))
         );
     }
-    assert_eq!(tenant(&store, tenant_id).await.plan_id, "starter");
+    assert_eq!(tenant(&store, tenant_id).await.plan_id, "pro");
     billing::change_plan(
         &store,
         event("evt_past_due", "customer.subscription.updated", at(2)),
         customer("cus_1"),
         "past_due",
-        "price_pro",
+        "price_max",
     )
     .await
     .unwrap();
-    assert_eq!(tenant(&store, tenant_id).await.plan_id, "pro");
+    assert_eq!(tenant(&store, tenant_id).await.plan_id, "max");
 }
 
 #[tokio::test]
@@ -479,7 +479,7 @@ async fn a_free_tenant_upgraded_by_checkout_starts_a_fresh_period() {
     complete_checkout(
         &store,
         event("evt_1", "checkout.session.completed", at(3)),
-        paid(seeded.tenant_id, "cus_1", "pro"),
+        paid(seeded.tenant_id, "cus_1", "max"),
     )
     .await
     .unwrap();
@@ -491,7 +491,7 @@ async fn a_free_tenant_upgraded_by_checkout_starts_a_fresh_period() {
             t.workspace_seconds_this_period,
             t.period_start
         ),
-        ("pro", 0, 0, at(3))
+        ("max", 0, 0, at(3))
     );
 }
 
@@ -511,7 +511,7 @@ async fn checkout_does_not_reactivate_a_tenant_suspended_for_another_reason() {
         complete_checkout(
             &store,
             event("evt_1", "checkout.session.completed", at(1)),
-            paid(seeded.tenant_id, "cus_1", "starter")
+            paid(seeded.tenant_id, "cus_1", "pro")
         )
         .await,
         Err(BillingError::TenantNotPayable(_))
@@ -520,7 +520,7 @@ async fn checkout_does_not_reactivate_a_tenant_suspended_for_another_reason() {
         complete_checkout(
             &store,
             event("evt_2", "checkout.session.completed", at(1)),
-            paid(Uuid::new_v4(), "cus_1", "starter")
+            paid(Uuid::new_v4(), "cus_1", "pro")
         )
         .await,
         Err(BillingError::TenantNotPayable(_))
@@ -571,7 +571,7 @@ async fn a_user_holds_one_free_tenant_and_one_pending_checkout() {
         session_id: "cs_1",
         expires_at: at(2),
     };
-    let pending = create_tenant(&store, &new_tenant(user, "Paid", "pro", Some(session)))
+    let pending = create_tenant(&store, &new_tenant(user, "Paid", "max", Some(session)))
         .await
         .unwrap();
     assert_eq!(
@@ -588,7 +588,7 @@ async fn a_user_holds_one_free_tenant_and_one_pending_checkout() {
             &new_tenant(
                 user,
                 "Paid again",
-                "pro",
+                "max",
                 Some(PendingSession {
                     session_id: "cs_2",
                     ..session
@@ -602,7 +602,7 @@ async fn a_user_holds_one_free_tenant_and_one_pending_checkout() {
     complete_checkout(
         &store,
         event("evt_1", "checkout.session.completed", at(1)),
-        paid(pending.tenant_id, "cus_1", "pro"),
+        paid(pending.tenant_id, "cus_1", "max"),
     )
     .await
     .unwrap();
@@ -611,7 +611,7 @@ async fn a_user_holds_one_free_tenant_and_one_pending_checkout() {
     complete_checkout(
         &store,
         event("evt_2", "checkout.session.completed", at(1)),
-        paid(free.tenant_id, "cus_2", "starter"),
+        paid(free.tenant_id, "cus_2", "pro"),
     )
     .await
     .unwrap();
@@ -637,7 +637,7 @@ async fn an_expired_or_failed_checkout_discards_the_pending_tenant() {
         session_id: "cs_1",
         expires_at: at(2),
     };
-    let pending = create_tenant(&store, &new_tenant(user, "Abandoned", "pro", Some(session)))
+    let pending = create_tenant(&store, &new_tenant(user, "Abandoned", "max", Some(session)))
         .await
         .unwrap();
     let expired = event("evt_1", "checkout.session.expired", at(2));
@@ -674,7 +674,7 @@ async fn an_expired_or_failed_checkout_discards_the_pending_tenant() {
     actions.sort();
     assert_eq!(actions, ["tenant.create", "tenant.discard"]);
 
-    let active = dynamo.seed_tenant("pro").await;
+    let active = dynamo.seed_tenant("max").await;
     assert!(matches!(
         end_checkout(
             &store,
@@ -706,7 +706,7 @@ async fn stripe_events_never_change_an_admin_tenant() {
         complete_checkout(
             &store,
             event("evt_a1", "checkout.session.completed", at(1)),
-            paid(tenant_id, "cus_admin", "starter"),
+            paid(tenant_id, "cus_admin", "pro"),
         )
         .await
         .unwrap(),
@@ -718,7 +718,7 @@ async fn stripe_events_never_change_an_admin_tenant() {
             event("evt_a2", "customer.subscription.updated", at(2)),
             by_metadata,
             "active",
-            "price_pro",
+            "price_max",
         )
         .await
         .unwrap(),

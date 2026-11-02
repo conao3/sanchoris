@@ -238,7 +238,7 @@ function createResolvers() {
         const tenant = buildSetupTenant({
           slug: invitation.tenantName,
           name: invitation.tenantName,
-          planName: "Pro",
+          planName: "Max",
           role: invitation.role,
           installed: true,
         })

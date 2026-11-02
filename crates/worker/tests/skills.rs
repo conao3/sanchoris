@@ -25,7 +25,7 @@ async fn entries(world: &World, skill_run_id: Uuid) -> Vec<StateEntryItem> {
 
 #[tokio::test]
 async fn skill_success_completes_the_task_after_the_turn_end() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world.github.script_checks(&["success"]);
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
@@ -101,7 +101,7 @@ async fn skill_success_completes_the_task_after_the_turn_end() {
 
 #[tokio::test]
 async fn ci_failure_hands_off_to_the_agent_and_continues_to_success() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world.github.script_checks(&["failure", "success"]);
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
@@ -144,7 +144,7 @@ async fn ci_failure_hands_off_to_the_agent_and_continues_to_success() {
 
 #[tokio::test]
 async fn exhausted_fixes_put_the_task_in_needs_you() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world
         .github
         .script_checks(&["failure", "failure", "failure", "failure"]);
@@ -177,7 +177,7 @@ async fn exhausted_fixes_put_the_task_in_needs_you() {
 
 #[tokio::test]
 async fn skill_requests_are_validated_against_the_task() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     let unknown = world
@@ -195,7 +195,7 @@ async fn skill_requests_are_validated_against_the_task() {
 
 #[tokio::test]
 async fn check_run_webhooks_wake_the_wait_before_the_poll_interval() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     world.request_skill(run_id, skill_input(35)).await;
@@ -240,7 +240,7 @@ async fn check_run_webhooks_wake_the_wait_before_the_poll_interval() {
 
 #[tokio::test]
 async fn polling_completes_the_checks_wait_without_a_webhook() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     world.request_skill(run_id, skill_input(35)).await;
@@ -255,7 +255,7 @@ async fn polling_completes_the_checks_wait_without_a_webhook() {
 
 #[tokio::test]
 async fn failed_pushes_are_retried_by_the_engine() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world.github.script_checks(&["success"]);
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
@@ -287,7 +287,7 @@ async fn failed_pushes_are_retried_by_the_engine() {
 #[tokio::test]
 async fn approval_requests_wait_for_a_signed_decision() {
     use sanchoris_core::tokens::{Signer, TaskTokenSigner};
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     let definition = sanchoris_config::skill::parse_skill_yaml(

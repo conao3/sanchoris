@@ -56,7 +56,7 @@ export function CreateTenantPage() {
   const plans = data?.viewer.newTenantPlans ?? []
   const selected =
     plans.find((plan) => plan.id === planId) ??
-    plans.find((plan) => plan.name === "Pro") ??
+    plans.find((plan) => plan.name === "Max") ??
     plans[0]
 
   function enter(slug: string) {

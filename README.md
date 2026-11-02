@@ -124,7 +124,7 @@ Secrets (the rows marked *secret*) come from the environment in `sanchoris all` 
 | `GITHUB_WEBHOOK_SECRET` | api (*secret*) | GitHub App webhook secret |
 | `STRIPE_API_URL` | api | `https://api.stripe.com` |
 | `STRIPE_PORTAL_CONFIGURATION` | api | Id of the Stripe customer portal configuration (`bpc_...`) that every portal session names; the Stripe account is shared with other products |
-| `SANCHORIS_STRIPE_PRICE_STARTER`, `SANCHORIS_STRIPE_PRICE_PRO`, `SANCHORIS_STRIPE_PRICE_MAX` | `sanchoris-dynamo-create` (`pnpm dynamo:create`, `pnpm dev`) | Stripe price ids (`price_...`) written into the paid plans of `PLANS`; seeding stops when one is missing |
+| `SANCHORIS_STRIPE_PRICE_PRO`, `SANCHORIS_STRIPE_PRICE_MAX`, `SANCHORIS_STRIPE_PRICE_ULTRA` | `sanchoris-dynamo-create` (`pnpm dynamo:create`, `pnpm dev`) | Stripe price ids (`price_...`) written into the paid plans of `PLANS`; seeding stops when one is missing |
 | `STRIPE_SECRET_KEY` | api (*secret*) | Stripe secret key (Checkout, the customer portal, subscription changes) |
 | `STRIPE_WEBHOOK_SECRET` | api (*secret*) | Stripe webhook signing secret |
 | `RUN_TOKEN_SIGNING_KEY` | channel, channel-authorizer, worker (*secret*) | Signs the Run channel tokens: the Workspaces' bootstrap tokens and the Run tokens (32+ bytes) |
@@ -192,16 +192,16 @@ pnpm dynamo:local
 pnpm dynamo:create
 ```
 
-`dynamo:local` keeps its data under `.sanchoris/dynamodb`. `dynamo:create` (`sanchoris-dynamo-create`) creates the tables declared in `infra/tables.json` when they are missing and writes the plans from `infra/plans.json` with the Stripe prices from `SANCHORIS_STRIPE_PRICE_STARTER`, `SANCHORIS_STRIPE_PRICE_PRO`, and `SANCHORIS_STRIPE_PRICE_MAX`. Point the SDK at DynamoDB Local with `AWS_ENDPOINT_URL_DYNAMODB` (the worktrunk block sets it); DynamoDB Local accepts any credentials, so set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` to any value when no AWS profile is configured. The `devo.yaml` `db` pane runs `dynamo:local`.
+`dynamo:local` keeps its data under `.sanchoris/dynamodb`. `dynamo:create` (`sanchoris-dynamo-create`) creates the tables declared in `infra/tables.json` when they are missing and writes the plans from `infra/plans.json` with the Stripe prices from `SANCHORIS_STRIPE_PRICE_PRO`, `SANCHORIS_STRIPE_PRICE_MAX`, and `SANCHORIS_STRIPE_PRICE_ULTRA`. Point the SDK at DynamoDB Local with `AWS_ENDPOINT_URL_DYNAMODB` (the worktrunk block sets it); DynamoDB Local accepts any credentials, so set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` to any value when no AWS profile is configured. The `devo.yaml` `db` pane runs `dynamo:local`.
 
 In AWS the stack creates the tables, and `scripts/deploy.mjs` seeds `PLANS` on each deploy before it changes the functions, so a plan attribute that new code reads is in place when the code starts (the code before ignores attributes it does not read). By hand, with the deployed table names and the prices from SSM:
 
 ```sh
 price() { aws ssm get-parameter --name "/dev-k8s/sanchoris/stripe-price-$1" --query Parameter.Value --output text; }
 SANCHORIS_TABLE_MAIN=<main table> SANCHORIS_TABLE_AUDIT=<audit table> \
-  SANCHORIS_STRIPE_PRICE_STARTER=$(price starter) \
   SANCHORIS_STRIPE_PRICE_PRO=$(price pro) \
   SANCHORIS_STRIPE_PRICE_MAX=$(price max) \
+  SANCHORIS_STRIPE_PRICE_ULTRA=$(price ultra) \
   cargo run -q -p sanchoris-core --bin sanchoris-dynamo-create
 ```
 

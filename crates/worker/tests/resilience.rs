@@ -63,7 +63,7 @@ struct Summary {
 }
 
 async fn scenario(crash: bool) -> (Summary, usize) {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world.github.script_checks(&["failure", "success"]);
     let mut crashes = 0;
     async fn settle_with(world: &World, crash: bool) -> usize {
@@ -139,7 +139,7 @@ async fn crashes_between_claim_and_commit_converge_without_duplicate_side_effect
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_workers_never_process_the_same_row_twice() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let first = Arc::new(world.driver_with_own_worker());
     let second = Arc::new(world.driver_with_own_worker());
     for number in 1..=8 {
@@ -229,7 +229,7 @@ async fn two_workers_never_process_the_same_row_twice() {
 
 #[tokio::test]
 async fn a_failing_message_does_not_hold_back_the_other_groups() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world
         .queue
         .send(&OutgoingMessage {

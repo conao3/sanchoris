@@ -58,8 +58,8 @@ export const plans: Obj[] = [
     isAdmin: false,
   },
   {
-    id: "plan-starter",
-    name: "Starter",
+    id: "plan-pro",
+    name: "Pro",
     priceUsd: 20,
     billingUnit: "TENANT",
     taskLimit: 10,
@@ -74,8 +74,8 @@ export const plans: Obj[] = [
     isAdmin: false,
   },
   {
-    id: "plan-pro",
-    name: "Pro",
+    id: "plan-max",
+    name: "Max",
     priceUsd: 100,
     billingUnit: "TENANT",
     taskLimit: 50,
@@ -90,8 +90,8 @@ export const plans: Obj[] = [
     isAdmin: false,
   },
   {
-    id: "plan-max",
-    name: "Max",
+    id: "plan-ultra",
+    name: "Ultra",
     priceUsd: 200,
     billingUnit: "TENANT",
     taskLimit: 200,
@@ -159,7 +159,7 @@ function buildAcme(viewerRole: string): Obj {
     id: "tenant-acme",
     slug: "acme",
     name: "acme",
-    plan: planByName("Pro"),
+    plan: planByName("Max"),
     state: "ACTIVE",
     suspendedReason: null,
     createdAt: ago(60 * 24 * 90),
@@ -1825,7 +1825,7 @@ function buildAcme(viewerRole: string): Obj {
       "MEMBER",
       "Mika",
       "plan.change",
-      "Starter → Pro",
+      "Pro → Max",
       null,
       "WEB",
       "203.0.113.8",
@@ -2073,7 +2073,7 @@ export function buildFixtures() {
   const northwind = buildSetupTenant({
     slug: "northwind",
     name: "northwind",
-    planName: "Starter",
+    planName: "Pro",
     role: mockRole ?? "ADMIN",
     installed: true,
   })
@@ -2103,7 +2103,7 @@ export function buildFixtures() {
     operatorOnly(
       "tenant-tanaka",
       "tanaka-sys",
-      "Max",
+      "Ultra",
       { kind: "ORGANIZATION", login: "tanaka-sys" },
       periodUsage(142, 232, 4, 0, "MONTH"),
       "SUSPENDED",
@@ -2112,7 +2112,7 @@ export function buildFixtures() {
     operatorOnly(
       "tenant-oldco",
       "oldco",
-      "Starter",
+      "Pro",
       { kind: "ORGANIZATION", login: "oldco" },
       periodUsage(2, 1, 2, 0, "MONTH"),
       "DELETING",

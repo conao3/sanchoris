@@ -128,7 +128,7 @@ async fn messages(world: &World, conversation_id: Uuid) -> Vec<ChatMessage> {
 
 #[tokio::test]
 async fn a_new_conversation_starts_its_first_task_in_the_session_with_the_plan_chat_limits() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let delivered = start(&world, "all", "Split the checkout work").await;
     world.worker.settle().await.unwrap();
     let conversation_id = delivered.message.conversation_id;
@@ -195,7 +195,7 @@ async fn a_new_conversation_starts_its_first_task_in_the_session_with_the_plan_c
 
 #[tokio::test]
 async fn a_project_session_sends_the_project_system_prompt() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let delivered = start(&world, "shop", "Look at the checkout").await;
     world.worker.settle().await.unwrap();
     let view = world.task_of(delivered.task_id).await;
@@ -213,7 +213,7 @@ async fn a_project_session_sends_the_project_system_prompt() {
 
 #[tokio::test]
 async fn an_unknown_session_is_rejected() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let mut tx = world.store.tx(world.tenant());
     let error = start_conversation(
         &mut tx,
@@ -244,7 +244,7 @@ async fn an_unknown_session_is_rejected() {
 
 #[tokio::test]
 async fn messages_go_to_the_running_task_and_a_finished_task_starts_the_next() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let first = start(&world, "all", "Plan the next release").await;
     world.worker.settle().await.unwrap();
     let conversation_id = first.message.conversation_id;
@@ -322,7 +322,7 @@ async fn messages_go_to_the_running_task_and_a_finished_task_starts_the_next() {
 
 #[tokio::test]
 async fn a_message_resumes_a_task_that_needs_you_with_its_held_messages() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let first = start(&world, "all", "Plan the next release").await;
     world.worker.settle().await.unwrap();
     let task_id = first.task_id;
@@ -361,7 +361,7 @@ async fn a_message_resumes_a_task_that_needs_you_with_its_held_messages() {
 
 #[tokio::test]
 async fn messages_to_a_pending_task_join_its_start_instruction() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let tenant_key = keys::tenant_key(world.tenant());
     world
         .dynamo
@@ -403,7 +403,7 @@ async fn messages_to_a_pending_task_join_its_start_instruction() {
 
 #[tokio::test]
 async fn each_turn_end_posts_the_reply_once_and_the_task_waits_for_the_next_message() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let first = start(&world, "all", "What is failing?").await;
     world.worker.settle().await.unwrap();
     let run_id = world.task_of(first.task_id).await.run_id.unwrap();
@@ -437,7 +437,7 @@ async fn each_turn_end_posts_the_reply_once_and_the_task_waits_for_the_next_mess
 
 #[tokio::test]
 async fn a_task_waiting_for_the_next_message_has_no_time_limit_and_the_next_message_restarts_it() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let first = start(&world, "all", "What is failing?").await;
     world.worker.settle().await.unwrap();
     let run_id = world.task_of(first.task_id).await.run_id.unwrap();
@@ -461,7 +461,7 @@ async fn a_task_waiting_for_the_next_message_has_no_time_limit_and_the_next_mess
 
 #[tokio::test]
 async fn file_issue_records_the_issue_and_its_task_becomes_a_child_of_the_conversation_task() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let first = start(&world, "all", "Split the checkout work").await;
     world.worker.settle().await.unwrap();
     let run_id = world.task_of(first.task_id).await.run_id.unwrap();
@@ -515,7 +515,7 @@ async fn file_issue_records_the_issue_and_its_task_becomes_a_child_of_the_conver
 
 #[tokio::test]
 async fn a_rewind_drops_a_message_and_what_follows_and_a_fork_copies_up_to_a_reply() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let first = start(&world, "all", "Plan the release").await;
     world.worker.settle().await.unwrap();
     let conversation_id = first.message.conversation_id;
@@ -624,7 +624,7 @@ async fn compactions(world: &World, run_id: Uuid) -> Vec<Value> {
 
 #[tokio::test]
 async fn an_idle_chat_whose_context_is_full_enough_compacts_once_after_the_idle_minutes() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let first = start(&world, "all", "What is failing?").await;
     let conversation_id = first.message.conversation_id;
     world.worker.settle().await.unwrap();
@@ -691,7 +691,7 @@ async fn an_idle_chat_whose_context_is_full_enough_compacts_once_after_the_idle_
 
 #[tokio::test]
 async fn a_message_within_the_idle_minutes_or_a_lighter_context_keeps_the_session_as_it_is() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let first = start(&world, "all", "What is failing?").await;
     let conversation_id = first.message.conversation_id;
     world.worker.settle().await.unwrap();
@@ -735,7 +735,7 @@ async fn a_message_within_the_idle_minutes_or_a_lighter_context_keeps_the_sessio
 
 #[tokio::test]
 async fn a_member_compacts_with_slash_compact_but_not_into_a_running_turn() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let first = start(&world, "all", "What is failing?").await;
     let conversation_id = first.message.conversation_id;
     world.worker.settle().await.unwrap();

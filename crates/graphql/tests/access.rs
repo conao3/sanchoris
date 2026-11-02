@@ -112,7 +112,7 @@ fn foreign_mutations(victim: &Victim, own_tenant: Uuid) -> Vec<(&'static str, Va
         ),
         (
             "ChangePlan",
-            json!({ "tenantId": victim.tenant, "planId": "max" }),
+            json!({ "tenantId": victim.tenant, "planId": "ultra" }),
         ),
         ("OpenBillingPortal", json!({ "tenantId": victim.tenant })),
         (
@@ -450,7 +450,7 @@ async fn roles_gate_admin_and_owner_operations() {
         w.error_code(
             &w.sota,
             "ChangePlan",
-            json!({ "tenantId": w.acme, "planId": "max" })
+            json!({ "tenantId": w.acme, "planId": "ultra" })
         )
         .await,
         "FORBIDDEN"
@@ -663,7 +663,7 @@ async fn storage_and_port_failures_reach_the_client_as_internal_errors() {
         .run(
             &w.mika,
             "ChangePlan",
-            json!({ "tenantId": w.acme, "planId": "max" }),
+            json!({ "tenantId": w.acme, "planId": "ultra" }),
         )
         .await;
     assert_eq!(failed.errors.len(), 1);

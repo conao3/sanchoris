@@ -26,7 +26,7 @@ async fn every_screen_query_validates_and_executes() {
 
     let home = w.ok(&w.mika, "Home", tenant.clone()).await;
     let home = &home["tenant"];
-    assert_eq!(home["plan"]["name"], "Pro");
+    assert_eq!(home["plan"]["name"], "Max");
     assert_eq!(home["plan"]["limitPeriod"], "MONTH");
     assert_eq!(home["usage"]["tasksThisPeriod"], 7);
     assert!(home["usage"]["periodEnd"].is_string());

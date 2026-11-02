@@ -999,7 +999,7 @@ impl World {
             &store,
             "acme",
             "Acme",
-            "pro",
+            "max",
             now - Duration::days(3),
             7,
             7200,

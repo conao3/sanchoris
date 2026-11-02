@@ -31,7 +31,7 @@ use support::{
 use uuid::Uuid;
 
 const SAFE_CODES: [&str; 4] = ["BAD_USER_INPUT", "CONFLICT", "NOT_FOUND", "FORBIDDEN"];
-const PAID_PLANS: [&str; 3] = ["starter", "pro", "max"];
+const PAID_PLANS: [&str; 3] = ["pro", "max", "ultra"];
 
 fn operations() -> String {
     let dir = concat!(
@@ -1218,7 +1218,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .ok(
             owner,
             "ChangePlan",
-            json!({ "tenantId": tenant, "planId": "max" }),
+            json!({ "tenantId": tenant, "planId": "ultra" }),
         )
         .await;
     assert!(
@@ -1230,8 +1230,8 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     let sessions = w.api.stripe.requests("/v1/checkout/sessions");
     let session = &sessions.last().unwrap().form;
     assert_eq!(session["client_reference_id"], tenant.to_string());
-    assert_eq!(session["line_items[0][price]"], "price_max");
-    assert_eq!(session["metadata[plan_id]"], "max");
+    assert_eq!(session["line_items[0][price]"], "price_ultra");
+    assert_eq!(session["metadata[plan_id]"], "ultra");
     assert_eq!(session["mode"], "subscription");
 
     w.dynamo
@@ -1250,14 +1250,14 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .ok(
             owner,
             "ChangePlan",
-            json!({ "tenantId": tenant, "planId": "starter" }),
+            json!({ "tenantId": tenant, "planId": "pro" }),
         )
         .await;
     assert_eq!(applied["changePlan"]["checkoutUrl"], Value::Null);
-    assert_eq!(applied["changePlan"]["tenant"]["plan"]["id"], "starter");
+    assert_eq!(applied["changePlan"]["tenant"]["plan"]["id"], "pro");
     let updates = w.api.stripe.requests("/v1/subscriptions/sub_acme");
     assert_eq!(updates[0].form["items[0][id]"], "si_acme");
-    assert_eq!(updates[0].form["items[0][price]"], "price_starter");
+    assert_eq!(updates[0].form["items[0][price]"], "price_pro");
     let portal = w
         .ok(owner, "OpenBillingPortal", json!({ "tenantId": tenant }))
         .await;
@@ -1288,14 +1288,14 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .ok(
             owner,
             "ChangePlan",
-            json!({ "tenantId": tenant, "planId": "pro" }),
+            json!({ "tenantId": tenant, "planId": "max" }),
         )
         .await;
     assert_eq!(
         settle["changePlan"]["checkoutUrl"],
         "https://billing.stripe.test/cus_acme"
     );
-    assert_eq!(settle["changePlan"]["tenant"]["plan"]["id"], "starter");
+    assert_eq!(settle["changePlan"]["tenant"]["plan"]["id"], "pro");
     assert_eq!(
         w.api.stripe.requests("/v1/checkout/sessions").len(),
         sessions_before
@@ -1332,10 +1332,10 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .ok(
             newbie,
             "CreateTenant",
-            json!({ "input": { "name": "Newbie Pro", "planId": "pro" } }),
+            json!({ "input": { "name": "Newbie Max", "planId": "max" } }),
         )
         .await;
-    assert_eq!(paid["createTenant"]["tenant"]["name"], "Newbie Pro");
+    assert_eq!(paid["createTenant"]["tenant"]["name"], "Newbie Max");
     assert!(paid["createTenant"]["checkoutUrl"].is_string());
     let abandoned: Uuid = w
         .api
@@ -1350,7 +1350,7 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         .ok(
             newbie,
             "CreateTenant",
-            json!({ "input": { "name": "Newbie Pro", "planId": "pro" } }),
+            json!({ "input": { "name": "Newbie Max", "planId": "max" } }),
         )
         .await;
     let retried_url = retried["createTenant"]["checkoutUrl"].as_str().unwrap();
@@ -1864,11 +1864,7 @@ async fn only_a_verified_sancode_email_in_the_token_creates_admin_tenants() {
         "user:google_7",
     ] {
         let page = w.ok(token, "CreateTenantPage", json!({})).await;
-        assert_eq!(
-            plan_ids(&page),
-            ["free", "starter", "pro", "max"],
-            "{token}"
-        );
+        assert_eq!(plan_ids(&page), ["free", "pro", "max", "ultra"], "{token}");
         let (code, _) = w
             .error(
                 token,

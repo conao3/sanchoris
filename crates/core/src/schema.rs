@@ -329,17 +329,17 @@ mod tests {
             prices,
             [
                 ("free", None),
-                ("starter", Some("price_for_SANCHORIS_STRIPE_PRICE_STARTER")),
                 ("pro", Some("price_for_SANCHORIS_STRIPE_PRICE_PRO")),
                 ("max", Some("price_for_SANCHORIS_STRIPE_PRICE_MAX")),
+                ("ultra", Some("price_for_SANCHORIS_STRIPE_PRICE_ULTRA")),
                 ("admin", None),
             ]
         );
         let missing = priced_plans(|name| {
-            (name != "SANCHORIS_STRIPE_PRICE_PRO").then(|| "price_x".to_string())
+            (name != "SANCHORIS_STRIPE_PRICE_MAX").then(|| "price_x".to_string())
         })
         .unwrap_err();
-        assert_eq!(missing.0, ["SANCHORIS_STRIPE_PRICE_PRO"]);
+        assert_eq!(missing.0, ["SANCHORIS_STRIPE_PRICE_MAX"]);
     }
 
     #[test]

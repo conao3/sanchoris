@@ -60,7 +60,7 @@ async fn take_deletion(world: &World) -> Option<Deletion> {
 
 #[tokio::test]
 async fn a_deleting_tenant_takes_no_webhooks_inbound_events_or_trigger_schedules() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let tenant_id = world.tenant();
     mark_deleting(&world, tenant_id).await;
 
@@ -114,7 +114,7 @@ async fn the_cleanup_job_removes_the_tenant_in_bounded_steps_and_keeps_the_free_
     let world = World::new("free").await;
     let tenant_id = world.tenant();
     let user_id = world.seeded.user_id;
-    let other = world.dynamo.seed_tenant("pro").await;
+    let other = world.dynamo.seed_tenant("max").await;
     let now = world.clock_now();
     let slug = format!("tenant-{}", user_id.simple());
     world

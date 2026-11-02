@@ -36,8 +36,8 @@
       "workspaceMemoryMib": 4096
     },
     {
-      "id": "starter",
-      "name": "Starter",
+      "id": "pro",
+      "name": "Pro",
       "priceCents": 2000,
       "currency": "usd",
       "billingUnit": "tenant",
@@ -71,8 +71,8 @@
       "workspaceMemoryMib": 4096
     },
     {
-      "id": "pro",
-      "name": "Pro",
+      "id": "max",
+      "name": "Max",
       "priceCents": 10000,
       "currency": "usd",
       "billingUnit": "tenant",
@@ -106,8 +106,8 @@
       "workspaceMemoryMib": 4096
     },
     {
-      "id": "max",
-      "name": "Max",
+      "id": "ultra",
+      "name": "Ultra",
       "priceCents": 20000,
       "currency": "usd",
       "billingUnit": "tenant",

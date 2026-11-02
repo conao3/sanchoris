@@ -468,7 +468,7 @@ impl Seeded {
 }
 
 pub async fn seed(dynamo: &TestDynamo) -> Seeded {
-    let tenant = dynamo.seed_tenant("pro").await;
+    let tenant = dynamo.seed_tenant("max").await;
     let subject = format!("subject-{}", tenant.user_id);
     let now = Utc::now();
     dynamo

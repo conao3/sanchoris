@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 #[tokio::test]
 async fn cumulative_turn_costs_add_once_per_agent_instance() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     let turn_end = |turn: i64, total: f64| {
@@ -64,7 +64,7 @@ async fn cumulative_turn_costs_add_once_per_agent_instance() {
 
 #[tokio::test]
 async fn skill_notifications_wait_while_the_task_needs_you() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     world.request_skill(run_id, skill_input(35)).await;

@@ -96,7 +96,7 @@ async fn events_under_the_limit_pass_and_later_ones_are_dropped_with_one_audit()
 async fn the_window_resets_on_the_next_minute() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let tenant = dynamo.seed_tenant("pro").await.tenant_id;
+    let tenant = dynamo.seed_tenant("max").await.tenant_id;
     fill(&dynamo, tenant, at(0), 120).await;
     assert!(matches!(
         admit(&store, tenant, "late", at(59)).await,
@@ -125,8 +125,8 @@ async fn the_window_resets_on_the_next_minute() {
 async fn a_tenant_over_its_limit_leaves_other_tenants_alone() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let flooding = dynamo.seed_tenant("starter").await.tenant_id;
-    let quiet = dynamo.seed_tenant("starter").await.tenant_id;
+    let flooding = dynamo.seed_tenant("pro").await.tenant_id;
+    let quiet = dynamo.seed_tenant("pro").await.tenant_id;
     fill(&dynamo, flooding, at(0), 60).await;
 
     assert!(matches!(

@@ -709,14 +709,14 @@ async fn stripe_webhooks_are_verified_and_update_the_tenant() {
             tenant.suspended_reason = Some(PAYMENT_PENDING.into());
         })
         .await;
-    server.dynamo.set_stripe_price("pro", "price_pro").await;
+    server.dynamo.set_stripe_price("max", "price_max").await;
     let now = Utc::now().timestamp();
     let checkout = |id: &str, tenant: Uuid, payment_status: &str| {
         json!({
             "id": id, "type": "checkout.session.completed", "created": now,
             "data": { "object": {
                 "client_reference_id": tenant, "customer": "cus_http",
-                "payment_status": payment_status, "metadata": { "plan_id": "pro" },
+                "payment_status": payment_status, "metadata": { "plan_id": "max" },
             } },
         })
     };
@@ -758,7 +758,7 @@ async fn stripe_webhooks_are_verified_and_update_the_tenant() {
         "id": "evt_incomplete", "type": "customer.subscription.updated", "created": now,
         "data": { "object": {
             "customer": "cus_http", "status": "incomplete", "metadata": { "tenant_id": tenant_id },
-            "items": { "data": [{ "price": { "id": "price_pro" } }] },
+            "items": { "data": [{ "price": { "id": "price_max" } }] },
         } },
     });
     let body = stripe(&server, &incomplete, None)

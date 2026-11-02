@@ -22,7 +22,7 @@ async fn tenant(world: &World) -> Tenant {
 
 #[tokio::test]
 async fn missing_required_skills_are_nudged_until_needs_you_and_a_reply_resumes() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     for turn in 1..=3 {
@@ -61,7 +61,7 @@ async fn missing_required_skills_are_nudged_until_needs_you_and_a_reply_resumes(
 
 #[tokio::test]
 async fn a_trigger_task_without_required_skills_succeeds_at_the_end_of_its_turn() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     world
         .dynamo
@@ -78,7 +78,7 @@ async fn a_trigger_task_without_required_skills_succeeds_at_the_end_of_its_turn(
 
 #[tokio::test]
 async fn usage_limits_wait_and_resume_automatically() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     let reset_at = world.clock_now() + Duration::hours(2);
@@ -118,7 +118,7 @@ async fn usage_limits_wait_and_resume_automatically() {
 
 #[tokio::test]
 async fn a_usage_limit_resume_delivered_early_is_scheduled_again() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     let reset_at = world.clock_now() + Duration::hours(2);
@@ -165,7 +165,7 @@ async fn a_usage_limit_resume_delivered_early_is_scheduled_again() {
 
 #[tokio::test]
 async fn a_usage_limit_without_a_reset_time_needs_you() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     world
@@ -191,7 +191,7 @@ async fn a_usage_limit_without_a_reset_time_needs_you() {
 
 #[tokio::test]
 async fn manual_usage_limits_need_you() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let yaml = common::CONFIG_YAML.replacen(
         "UsageLimit: { Resume: auto }",
         "UsageLimit: { Resume: manual }",
@@ -225,7 +225,7 @@ async fn manual_usage_limits_need_you() {
 
 #[tokio::test]
 async fn idle_workspaces_stop_and_restart_for_the_next_message() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     world
@@ -270,7 +270,7 @@ async fn idle_workspaces_stop_and_restart_for_the_next_message() {
 
 #[tokio::test]
 async fn a_workspace_that_stops_on_its_own_needs_you_with_the_reason() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world.started_task(35).await;
     let platform_ref = world.runner.refs.lock().unwrap()[0].clone();
     world.worker.settle().await.unwrap();
@@ -300,7 +300,7 @@ async fn a_workspace_that_stops_on_its_own_needs_you_with_the_reason() {
 
 #[tokio::test]
 async fn a_stopped_workspace_counts_until_the_platform_stopped_it() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world.started_task(35).await;
     let platform_ref = world.runner.refs.lock().unwrap()[0].clone();
     world.clock.advance(Duration::seconds(60));
@@ -322,7 +322,7 @@ async fn a_stopped_workspace_counts_until_the_platform_stopped_it() {
 
 #[tokio::test]
 async fn a_workspace_that_never_launched_counts_no_seconds() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world.started_task(35).await;
     let workspace = workspaces(&world).await.remove(0);
     world
@@ -341,7 +341,7 @@ async fn a_workspace_that_never_launched_counts_no_seconds() {
 
 #[tokio::test]
 async fn the_sweep_observes_the_workspace_of_a_task_that_needs_you() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     for turn in 1..=3 {
@@ -383,7 +383,7 @@ async fn workspaces(world: &World) -> Vec<Workspace> {
 
 #[tokio::test]
 async fn the_plan_decides_the_workspace_size() {
-    for (plan, cpu) in [("starter", 1024), ("pro", 2048)] {
+    for (plan, cpu) in [("pro", 1024), ("max", 2048)] {
         let world = World::new(plan).await;
         world.started_task(35).await;
         let specs = world.runner.specs.lock().unwrap().clone();
@@ -402,7 +402,7 @@ async fn the_plan_decides_the_workspace_size() {
 
 #[tokio::test]
 async fn a_spot_interruption_restores_the_session_in_a_new_workspace() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     world
@@ -458,7 +458,7 @@ async fn a_spot_interruption_restores_the_session_in_a_new_workspace() {
 
 #[tokio::test]
 async fn a_restored_workspace_clones_the_repositories_of_the_task_and_not_of_a_newer_config() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world.started_task(35).await;
     assert_eq!(
         world.runner.specs.lock().unwrap()[0].repositories,
@@ -502,7 +502,7 @@ async fn a_restored_workspace_clones_the_repositories_of_the_task_and_not_of_a_n
 
 #[tokio::test]
 async fn a_workspace_whose_agent_reported_sigterm_restores_and_counts_until_the_signal() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     world.clock.advance(Duration::seconds(200));
@@ -560,7 +560,7 @@ async fn a_workspace_whose_agent_reported_sigterm_restores_and_counts_until_the_
 
 #[tokio::test]
 async fn a_workspace_that_stops_before_the_session_starts_gets_the_instruction_again() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world
         .label_issue("delivery-35", 35, "Fix flaky checkout test", "mika-dev")
         .await;
@@ -604,7 +604,7 @@ async fn a_workspace_that_stops_before_the_session_starts_gets_the_instruction_a
 
 #[tokio::test]
 async fn the_sweep_stops_workspaces_that_no_open_workspace_records() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     let recorded = world.runner.running.lock().unwrap()[0].clone();
@@ -623,7 +623,7 @@ async fn the_sweep_stops_workspaces_that_no_open_workspace_records() {
 
 #[tokio::test]
 async fn turn_limits_need_you_and_interrupt_the_session() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let yaml = common::CONFIG_YAML.replacen("Limits: { Turns: 60,", "Limits: { Turns: 2,", 1);
     {
         let mut state = world.github.state.lock().unwrap();
@@ -644,7 +644,7 @@ async fn turn_limits_need_you_and_interrupt_the_session() {
 
 #[tokio::test]
 async fn heartbeats_keep_running_tasks_alive() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     world.clock.advance(Duration::seconds(600));
@@ -751,7 +751,7 @@ async fn tasks_wait_pending_at_the_plan_concurrency() {
 
 #[tokio::test]
 async fn a_skill_notification_waits_in_the_outbox_while_the_usage_limit_holds() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     world.request_skill(run_id, common::skill_input(35)).await;
@@ -849,7 +849,7 @@ async fn usage_limited(
 
 #[tokio::test]
 async fn a_snoozed_task_that_needs_you_comes_back_when_the_snooze_ends_and_a_reply_ends_it() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let yaml = common::CONFIG_YAML.replacen(
         "UsageLimit: { Resume: auto }",
         "UsageLimit: { Resume: manual }",
@@ -900,7 +900,7 @@ async fn a_snoozed_task_that_needs_you_comes_back_when_the_snooze_ends_and_a_rep
 
 #[tokio::test]
 async fn a_snooze_holds_the_usage_limit_resume_until_it_ends() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let reset_at = world.clock_now() + Duration::hours(2);
     let task_id = usage_limited(&world, 35, reset_at).await;
     let waiting = world.task(&format!("{REPO}#35")).await;
@@ -929,7 +929,7 @@ async fn a_snooze_holds_the_usage_limit_resume_until_it_ends() {
 
 #[tokio::test]
 async fn a_snooze_shortened_after_the_reset_resumes_at_its_new_end() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let reset_at = world.clock_now() + Duration::hours(1);
     let task_id = usage_limited(&world, 35, reset_at).await;
     snooze_task(&world, task_id, world.clock_now() + Duration::hours(4)).await;
@@ -1026,7 +1026,7 @@ async fn a_task_whose_workspace_stopped_waits_pending_for_a_slot_to_resume() {
 
 #[tokio::test]
 async fn a_finished_task_releases_its_slot_with_its_workspace() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     assert_eq!(tenant(&world).await.live_workspaces, 1);
@@ -1042,7 +1042,7 @@ async fn a_finished_task_releases_its_slot_with_its_workspace() {
 
 #[tokio::test]
 async fn run_events_and_outbox_items_expire_after_the_plan_retention() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     world.turn_end(run_id, 1).await;

@@ -125,7 +125,7 @@ async fn tenant(store: &Store, tenant_id: Uuid) -> Tenant {
 async fn duplicate_trigger_events_are_recorded_once() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let seeded = dynamo.seed_tenant("pro").await;
+    let seeded = dynamo.seed_tenant("max").await;
     let event = json!({ "source": "github", "detail-type": "Issue Labeled", "detail": {} });
     let new_event = NewTriggerEvent {
         trigger_id: seeded.trigger_id,
@@ -170,7 +170,7 @@ async fn duplicate_trigger_events_are_recorded_once() {
 async fn concurrent_duplicate_deliveries_insert_one_event() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let seeded = dynamo.seed_tenant("pro").await;
+    let seeded = dynamo.seed_tenant("max").await;
     let event = json!({ "source": "github" });
 
     let attempts = (0..8).map(|_| {
@@ -215,7 +215,7 @@ async fn concurrent_duplicate_deliveries_insert_one_event() {
 async fn tasks_are_idempotent_by_trigger_and_name() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let seeded = dynamo.seed_tenant("pro").await;
+    let seeded = dynamo.seed_tenant("max").await;
 
     let first = create_task(&store, &seeded, "acme/shop-web#35", &[]).await;
     let second = create_task(&store, &seeded, "acme/shop-web#35", &[]).await;
@@ -239,7 +239,7 @@ async fn tasks_are_idempotent_by_trigger_and_name() {
 async fn dispatch_respects_the_plan_concurrency() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let seeded = dynamo.seed_tenant("starter").await;
+    let seeded = dynamo.seed_tenant("pro").await;
     let mut tasks = Vec::new();
     for n in 0..3 {
         tasks.push(
@@ -286,7 +286,7 @@ async fn dispatch_respects_the_plan_concurrency() {
 async fn concurrent_dispatchers_never_exceed_the_cap() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let seeded = dynamo.seed_tenant("pro").await;
+    let seeded = dynamo.seed_tenant("max").await;
     for n in 0..12 {
         create_task(&store, &seeded, &format!("task-{n}"), &[]).await;
     }
@@ -318,7 +318,7 @@ async fn concurrent_dispatchers_never_exceed_the_cap() {
 async fn dispatch_waits_for_blocking_tasks() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let seeded = dynamo.seed_tenant("max").await;
+    let seeded = dynamo.seed_tenant("ultra").await;
     let blocker = create_task(&store, &seeded, "blocker", &[]).await.id();
     let blocked = create_task(&store, &seeded, "blocked", &[blocker])
         .await
@@ -354,7 +354,7 @@ async fn dispatch_stops_at_the_plan_task_limit_and_for_suspended_tenants() {
     create_task(&store, &free, "over-limit", &[]).await;
     assert!(dispatch(&store, free.tenant_id).await.is_empty());
 
-    let suspended = dynamo.seed_tenant("pro").await;
+    let suspended = dynamo.seed_tenant("max").await;
     dynamo
         .modify::<Tenant>(&keys::tenant_key(suspended.tenant_id), |t| {
             t.status = "suspended".into();
@@ -389,7 +389,7 @@ async fn timers_are_scheduled_after_commit_and_cancelled_by_name() {
     let now = Utc.with_ymd_and_hms(2026, 10, 27, 9, 0, 0).unwrap();
     let clock = Arc::new(FakeClock::new(now));
     let direct = dynamo.direct_store(clock.clone());
-    let seeded = dynamo.seed_tenant("pro").await;
+    let seeded = dynamo.seed_tenant("max").await;
     let job = |offset: i64| Job::TaskResume {
         tenant_id: seeded.tenant_id,
         task_id: Uuid::new_v4(),
@@ -429,8 +429,8 @@ async fn timers_are_scheduled_after_commit_and_cancelled_by_name() {
 async fn tenant_transactions_cannot_touch_other_tenants_or_plans() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let a = dynamo.seed_tenant("pro").await;
-    let b = dynamo.seed_tenant("pro").await;
+    let a = dynamo.seed_tenant("max").await;
+    let b = dynamo.seed_tenant("max").await;
     let task_a = create_task(&store, &a, "shared-name", &[]).await.id();
     let task_b = create_task(&store, &b, "shared-name", &[]).await.id();
     assert_ne!(task_a, task_b);
@@ -456,7 +456,7 @@ async fn tenant_transactions_cannot_touch_other_tenants_or_plans() {
     ));
     assert!(matches!(
         tx.update(
-            &keys::plan_key("pro"),
+            &keys::plan_key("max"),
             Update::new().set_n("max_concurrency", 100)
         ),
         Err(DbError::CrossTenant { .. })
@@ -466,7 +466,7 @@ async fn tenant_transactions_cannot_touch_other_tenants_or_plans() {
         .await
         .unwrap();
     assert_eq!(own.iter().map(|t| t.id).collect::<Vec<_>>(), vec![task_a]);
-    let plan = db::plan(&store, "pro").await.unwrap();
+    let plan = db::plan(&store, "max").await.unwrap();
     assert_eq!(plan.max_concurrency, 5);
     assert_eq!(Plan::KIND, "plan");
 }
@@ -475,7 +475,7 @@ async fn tenant_transactions_cannot_touch_other_tenants_or_plans() {
 async fn audit_events_are_append_only() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let seeded = dynamo.seed_tenant("pro").await;
+    let seeded = dynamo.seed_tenant("max").await;
     let at = Utc::now();
 
     let mut tx = store.tx(seeded.tenant_id);
@@ -516,7 +516,7 @@ async fn audit_events_are_append_only() {
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].summary, "Enabled labeled-issue");
     assert_eq!(stored[0].metadata["origin"], "web");
-    let plan = db::plan(&store, "pro").await.unwrap();
+    let plan = db::plan(&store, "max").await.unwrap();
     assert_eq!(
         stored[0].expires_at.timestamp(),
         (at + Duration::days(plan.audit_retention_days)).timestamp()
@@ -527,7 +527,7 @@ async fn audit_events_are_append_only() {
 async fn large_documents_are_stored_in_the_blob_store() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let seeded = dynamo.seed_tenant("pro").await;
+    let seeded = dynamo.seed_tenant("max").await;
     let mut definition = definition();
     definition.skills[0].definition = json!({ "SkillMd": "x".repeat(200_000) });
     let mut tx = store.tx(seeded.tenant_id);
@@ -574,7 +574,7 @@ async fn large_documents_are_stored_in_the_blob_store() {
 async fn reads_inside_a_transaction_see_its_own_writes() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let seeded = dynamo.seed_tenant("pro").await;
+    let seeded = dynamo.seed_tenant("max").await;
     let id = create_task(&store, &seeded, "visible", &[]).await.id();
     let mut tx = store.tx(seeded.tenant_id);
     let key = keys::task_key(seeded.tenant_id, id);
@@ -610,7 +610,7 @@ async fn reads_inside_a_transaction_see_its_own_writes() {
 async fn unread_deletes_require_the_item_to_exist() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let seeded = dynamo.seed_tenant("pro").await;
+    let seeded = dynamo.seed_tenant("max").await;
     let id = create_task(&store, &seeded, "deleted", &[]).await.id();
     let mut tx = store.tx(seeded.tenant_id);
     tx.delete(&keys::task_key(seeded.tenant_id, Uuid::new_v4()))
@@ -628,7 +628,7 @@ async fn unread_deletes_require_the_item_to_exist() {
 async fn conditional_updates_of_a_staged_put_are_rejected() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let seeded = dynamo.seed_tenant("pro").await;
+    let seeded = dynamo.seed_tenant("max").await;
     let key = keys::tenant_key(seeded.tenant_id);
     let mut tx = store.tx(seeded.tenant_id);
     let mut tenant = tx.require::<Tenant>(&key).await.unwrap();
@@ -700,7 +700,7 @@ async fn an_admin_tenant_dispatches_past_any_task_or_workspace_count() {
 async fn a_tenant_on_an_unknown_plan_dispatches_nothing() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let seeded = dynamo.seed_tenant("pro").await;
+    let seeded = dynamo.seed_tenant("max").await;
     create_task(&store, &seeded, "a", &[]).await;
     dynamo
         .modify::<Tenant>(&keys::tenant_key(seeded.tenant_id), |t| {
@@ -734,7 +734,7 @@ async fn a_plan_item_without_a_limit_attribute_does_not_decode() {
 async fn dispatch_deletes_stale_markers_in_bounded_transactions() {
     let dynamo = TestDynamo::start().await;
     let direct = dynamo.direct_store(Arc::new(FakeClock::new(Utc::now())));
-    let seeded = dynamo.seed_tenant("pro").await;
+    let seeded = dynamo.seed_tenant("max").await;
     let mut stale = Vec::new();
     for n in 0..130 {
         stale.push(
@@ -790,7 +790,7 @@ async fn dispatch_deletes_stale_markers_in_bounded_transactions() {
 async fn shared_reads_fetch_each_item_and_listing_once_and_refuse_to_commit() {
     let dynamo = TestDynamo::start().await;
     let store = dynamo.store(Relay::Stream);
-    let seeded = dynamo.seed_tenant("pro").await;
+    let seeded = dynamo.seed_tenant("max").await;
     let id = create_task(&store, &seeded, "shared", &[]).await.id();
     let key = keys::task_key(seeded.tenant_id, id);
     let shared = store.with_shared_reads();

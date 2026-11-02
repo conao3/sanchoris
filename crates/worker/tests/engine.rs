@@ -49,7 +49,7 @@ async fn skill_run(world: &World, task_id: Uuid, number: i32) -> SkillRunItem {
 
 #[tokio::test]
 async fn a_long_inline_loop_fails_with_a_runtime_error_and_commits() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     add_skill(
@@ -81,7 +81,7 @@ const PAUSE: &str = "Inputs: {}\nStartAt: Pause\nTimeoutSeconds: 600\nStates:\n 
 
 #[tokio::test]
 async fn an_early_timer_is_kept_and_scheduled_again() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     add_skill(&world, task.id, "pause", PAUSE).await;
@@ -145,7 +145,7 @@ async fn an_early_timer_is_kept_and_scheduled_again() {
 
 #[tokio::test]
 async fn busy_heartbeats_of_the_run_keep_a_handoff_waiting() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world.github.script_checks(&["failure"]);
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
@@ -200,7 +200,7 @@ async fn abort(world: &World, task_id: Uuid) {
 
 #[tokio::test]
 async fn stopping_a_task_that_needs_you_dispatches_the_tasks_it_blocks() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let blocker = world.started_task(34).await;
     let run_id = blocker.run_id.unwrap();
     for turn in 1..=3 {
@@ -290,7 +290,7 @@ async fn a_task_that_succeeds_with_active_skill_runs_dispatches_the_tasks_it_blo
 
 #[tokio::test]
 async fn stopping_a_task_aborts_its_skill_runs_and_their_timers() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     world.github.script_checks(&["success"]);
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
@@ -322,7 +322,7 @@ async fn stopping_a_task_aborts_its_skill_runs_and_their_timers() {
 
 #[tokio::test]
 async fn a_closed_checks_wait_is_no_longer_polled() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     world.request_skill(run_id, skill_input(35)).await;
@@ -350,7 +350,7 @@ async fn a_closed_checks_wait_is_no_longer_polled() {
 
 #[tokio::test]
 async fn an_approval_that_times_out_no_longer_needs_you() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     add_skill(
@@ -385,7 +385,7 @@ async fn an_approval_that_times_out_no_longer_needs_you() {
 
 #[tokio::test]
 async fn an_old_approval_token_does_not_change_the_task() {
-    let world = World::new("pro").await;
+    let world = World::new("max").await;
     let task = world.started_task(35).await;
     let run_id = task.run_id.unwrap();
     add_skill(

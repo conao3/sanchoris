@@ -469,7 +469,7 @@ async function seedPlans(exports) {
     "ssm",
     "get-parameters",
     "--names",
-    ...["starter", "pro", "max"].map((plan) => `/${env.prefix}/sanchoris/stripe-price-${plan}`),
+    ...["pro", "max", "ultra"].map((plan) => `/${env.prefix}/sanchoris/stripe-price-${plan}`),
   ])
   if (prices.InvalidParameters.length > 0) {
     throw new Error(`missing SSM parameters: ${prices.InvalidParameters.join(" ")}`)
@@ -481,9 +481,9 @@ async function seedPlans(exports) {
     env: awsProcessEnv(env, {
       SANCHORIS_TABLE_MAIN: exports.get("SanchorisMainTable"),
       SANCHORIS_TABLE_AUDIT: exports.get("SanchorisAuditTable"),
-      SANCHORIS_STRIPE_PRICE_STARTER: price("starter"),
       SANCHORIS_STRIPE_PRICE_PRO: price("pro"),
       SANCHORIS_STRIPE_PRICE_MAX: price("max"),
+      SANCHORIS_STRIPE_PRICE_ULTRA: price("ultra"),
     }),
     logFile: join(logDir, "seed-plans.log"),
   })
