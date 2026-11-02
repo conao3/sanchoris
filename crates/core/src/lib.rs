@@ -2,6 +2,7 @@ pub mod audit;
 pub mod aws;
 pub mod billing;
 pub mod channel;
+pub mod cli;
 pub mod clock;
 pub mod conversations;
 pub mod db;

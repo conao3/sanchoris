@@ -4,6 +4,7 @@ use sanchoris_core::keys;
 use sanchoris_core::store::{Index, SortKey};
 
 use crate::account::{Plan, Viewer};
+use crate::cli::{self, CliRequest};
 use crate::context::{is_operator, membership_in, store};
 use crate::tenant::{Operator, Tenant};
 use crate::trigger::{TriggerTemplate, templates};
@@ -16,6 +17,15 @@ impl QueryRoot {
     async fn viewer(&self, ctx: &Context<'_>) -> Result<Viewer> {
         crate::context::auth(ctx)?;
         Ok(Viewer)
+    }
+
+    /// A sancli request by the code it shows. Null when no request has the code or the text is not a code.
+    async fn cli_request(
+        &self,
+        ctx: &Context<'_>,
+        user_code: String,
+    ) -> Result<Option<CliRequest>> {
+        cli::cli_request(ctx, &user_code).await
     }
 
     /// The plans a tenant can choose, ordered by price. The Admin plan is not among them.

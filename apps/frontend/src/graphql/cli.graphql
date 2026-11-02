@@ -1,0 +1,35 @@
+query CliPage($userCode: String!) {
+  cliRequest(userCode: $userCode) {
+    userCode
+    client
+    purpose
+    requestedScope
+    state
+    expiresAt
+  }
+  viewer {
+    memberships {
+      id
+      role
+      tenant {
+        id
+        slug
+        name
+      }
+    }
+  }
+}
+
+mutation ApproveCliRequest($input: ApproveCliRequestInput!) {
+  approveCliRequest(input: $input) {
+    userCode
+    state
+  }
+}
+
+mutation DenyCliRequest($userCode: String!) {
+  denyCliRequest(userCode: $userCode) {
+    userCode
+    state
+  }
+}

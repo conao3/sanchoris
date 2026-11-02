@@ -552,7 +552,7 @@ impl Credential {
     }
 }
 
-pub(crate) fn mask_key(key: &str) -> String {
+pub fn mask_key(key: &str) -> String {
     let chars = key.chars().collect::<Vec<_>>();
     if chars.len() <= 12 {
         return "…".to_string();

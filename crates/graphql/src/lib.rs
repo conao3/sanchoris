@@ -2,6 +2,7 @@ mod account;
 mod attachment;
 mod audit;
 mod chat_work;
+mod cli;
 mod config;
 mod context;
 mod conversation;
@@ -20,6 +21,7 @@ mod trigger;
 use async_graphql::{EmptySubscription, Schema};
 use sanchoris_core::db::Store;
 
+pub use account::mask_key;
 pub use context::{AuthUser, ClientIp};
 pub use crypto::{AesGcmEncryptor, LOCAL_KEY_ID};
 pub use mutation::MutationRoot;

@@ -11,11 +11,11 @@ export function SubscriptionCommands({ tenantName }: { tenantName: string }) {
   return (
     <Code>
       <span className="text-faint"># {t("setup.claudeSubscription")}</span>
-      {"\n$ sanchoris claude-auth\n"}
+      {"\n$ sancli claude-auth sanchoris\n"}
       <span className="text-faint"># {t("setup.codexSubscription")}</span>
-      {"\n$ sanchoris codex-auth\n"}
+      {"\n$ sancli codex-auth sanchoris\n"}
       <span className="text-faint"># {t("setup.shareWithTenant", { tenant: tenantName })}</span>
-      {"\n$ sanchoris claude-auth --org"}
+      {"\n$ sancli claude-auth sanchoris --org"}
     </Code>
   )
 }

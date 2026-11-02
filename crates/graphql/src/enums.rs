@@ -339,6 +339,7 @@ db_enum!(ActorKind, "actor kind", {
 
 db_enum!(AuditOrigin, "audit origin", {
     Web => "web",
+    Cli => "cli",
     Github => "github",
     Slack => "slack",
     System => "system",

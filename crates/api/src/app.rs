@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::auth::{CurrentUser, IdentityVerifier};
 use crate::config::ApiConfig;
 use crate::frontend::{self, Frontend};
-use crate::{github_oauth, graphql, tasks, webhooks};
+use crate::{cli, github_oauth, graphql, tasks, webhooks};
 
 const MAX_WEBHOOK_BYTES: usize = 25 * 1024 * 1024;
 
@@ -51,6 +51,10 @@ pub fn router(state: AppState, frontend: Frontend) -> Router {
         .route("/api/me", get(me))
         .route("/api/graphql", post(graphql::execute))
         .route("/api/approvals", post(tasks::resolve_approval))
+        .route("/api/cli/device", post(cli::device))
+        .route("/api/cli/token", post(cli::token))
+        .route("/api/cli/claude-credential", post(cli::claude_credential))
+        .route("/api/cli/codex-credential", post(cli::codex_credential))
         .route("/auth/github", post(github_oauth::start))
         .route("/auth/github/callback", get(github_oauth::callback))
         .route("/auth/github/setup", get(github_oauth::setup))

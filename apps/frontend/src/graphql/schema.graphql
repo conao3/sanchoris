@@ -71,6 +71,12 @@ type Approval {
 	requestedAt: DateTime!
 }
 
+input ApproveCliRequestInput {
+	userCode: String!
+	tenantId: ID!
+	scope: CredentialScope!
+}
+
 type AuditEvent {
 	id: ID!
 	at: DateTime!
@@ -99,6 +105,7 @@ input AuditFilter {
 
 enum AuditOrigin {
 	WEB
+	CLI
 	GITHUB
 	SLACK
 	SYSTEM
@@ -503,6 +510,36 @@ type ChatWorking {
 	The text or thinking the agent is writing now, before it is complete.
 	"""
 	partial: ChatPartial
+}
+
+type CliRequest {
+	"""
+	The code the CLI shows, such as WDJB-MJHT.
+	"""
+	userCode: String!
+	"""
+	The program that asked, as it named itself.
+	"""
+	client: String!
+	purpose: CliRequestPurpose!
+	"""
+	The scope the CLI asked for with or without --org; the approver chooses the scope.
+	"""
+	requestedScope: CredentialScope!
+	state: CliRequestState!
+	expiresAt: DateTime!
+}
+
+enum CliRequestPurpose {
+	CLAUDE_CREDENTIAL
+	CODEX_CREDENTIAL
+}
+
+enum CliRequestState {
+	PENDING
+	APPROVED
+	DENIED
+	EXPIRED
 }
 
 type Config {
@@ -952,7 +989,15 @@ type Mutation {
 	"""
 	syncConfig(configId: ID!): Config!
 	"""
-	Saves an API key credential. Subscriptions are connected with the sanchoris CLI.
+	Approves a sancli request for a tenant: the CLI then adds one credential with the scope.
+	"""
+	approveCliRequest(input: ApproveCliRequestInput!): CliRequest!
+	"""
+	Refuses a sancli request; the CLI stops with access_denied.
+	"""
+	denyCliRequest(userCode: String!): CliRequest!
+	"""
+	Saves an API key credential. Subscriptions are connected with sancli.
 	"""
 	addCredential(input: AddCredentialInput!): Credential!
 	"""
@@ -1105,6 +1150,10 @@ type Query {
 	The signed-in user, the tenants they belong to and the invitations addressed to them.
 	"""
 	viewer: Viewer!
+	"""
+	A sancli request by the code it shows. Null when no request has the code or the text is not a code.
+	"""
+	cliRequest(userCode: String!): CliRequest
 	"""
 	The plans a tenant can choose, ordered by price. The Admin plan is not among them.
 	"""

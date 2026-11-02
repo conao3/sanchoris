@@ -103,7 +103,7 @@ pub(crate) fn session_of(task: &Task) -> Result<Session, CredentialError> {
 
 pub fn worker_variable(provider: &str, kind: &str, value: &str) -> Option<&'static str> {
     match (provider, kind) {
-        ("claude", "api_key") if value.starts_with(OAUTH_TOKEN_PREFIX) => {
+        ("claude", "api_key" | "subscription") if value.starts_with(OAUTH_TOKEN_PREFIX) => {
             Some("CLAUDE_CODE_OAUTH_TOKEN")
         }
         ("claude", "api_key") => Some("ANTHROPIC_API_KEY"),
@@ -255,6 +255,10 @@ mod tests {
         );
         assert_eq!(
             worker_variable("claude", "api_key", "sk-ant-oat01-x"),
+            Some("CLAUDE_CODE_OAUTH_TOKEN")
+        );
+        assert_eq!(
+            worker_variable("claude", "subscription", "sk-ant-oat01-x"),
             Some("CLAUDE_CODE_OAUTH_TOKEN")
         );
         assert_eq!(worker_variable("claude", "subscription", "x"), None);

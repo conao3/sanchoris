@@ -91,6 +91,7 @@ awk -v h='Partitions' '!p && $0 ~ "^#+ " h {p=1; l=index($0, " "); print; next} 
 | Components, jobs, schedules, local runtime | `docs/architecture.md` "Runtime components", "Rate schedules", "Jobs and messages", "Local runtime" |
 | Ports between crates | `docs/architecture.md` "Ports" |
 | Lambda functions, client IP, Workspaces, secrets, variables | `docs/architecture.md` "Lambda functions", "Client IP", "Workspaces", "Secrets", "Environment"; README "Environment" |
+| sancli device flow (`/api/cli/*`, `/cli`) | `docs/architecture.md` "sancli device flow" |
 | DynamoDB keys, items, transactions, queries | `docs/architecture.md` "Tables", "Partitions", "Transactions", "Access patterns" |
 | Run channel messages | `apps/workspace-agent/PROTOCOL.md` |
 | Worker inbox and outbox | `crates/worker/README.md` |

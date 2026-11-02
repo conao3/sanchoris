@@ -47,6 +47,7 @@ use crate::attachment::{
     ChatAttachment, IMAGE_TYPES, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, attachment_name,
 };
 use crate::audit::{AuditEvent, AuditFilter};
+use crate::cli::{self, ApproveCliRequestInput, CliRequest};
 use crate::config::{ChangeRequest, Config, Session, ValidationError};
 use crate::context::{
     Access, AuditTarget, ClientIp, Failure, Role, Scope, audit_member, audit_operator, auth,
@@ -1993,7 +1994,21 @@ impl MutationRoot {
         Config::load(ctx, scope, config_id).await
     }
 
-    /// Saves an API key credential. Subscriptions are connected with the sanchoris CLI.
+    /// Approves a sancli request for a tenant: the CLI then adds one credential with the scope.
+    async fn approve_cli_request(
+        &self,
+        ctx: &Context<'_>,
+        input: ApproveCliRequestInput,
+    ) -> Result<CliRequest> {
+        cli::approve(ctx, input).await
+    }
+
+    /// Refuses a sancli request; the CLI stops with access_denied.
+    async fn deny_cli_request(&self, ctx: &Context<'_>, user_code: String) -> Result<CliRequest> {
+        cli::deny(ctx, &user_code).await
+    }
+
+    /// Saves an API key credential. Subscriptions are connected with sancli.
     async fn add_credential(
         &self,
         ctx: &Context<'_>,

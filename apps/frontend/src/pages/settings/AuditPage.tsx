@@ -46,6 +46,7 @@ const actorIcons: Record<ActorKind, LucideIcon> = {
 
 const originLabels: Record<AuditOrigin, MessageKey | null> = {
   WEB: null,
+  CLI: "audit.cli",
   GITHUB: "audit.github",
   SLACK: "audit.slack",
   SYSTEM: null,

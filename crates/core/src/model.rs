@@ -92,6 +92,7 @@ string_enum!(ActorKind, "actor kind", {
 
 string_enum!(AuditOrigin, "audit origin", {
     Web => "web",
+    Cli => "cli",
     Github => "github",
     Slack => "slack",
     System => "system",

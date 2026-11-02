@@ -18,6 +18,7 @@ import { mockApi } from "./lib/env.ts"
 import { TenantProvider } from "./lib/tenant.tsx"
 import { AuthCallbackPage } from "./pages/AuthCallbackPage.tsx"
 import { ChatPage } from "./pages/ChatPage.tsx"
+import { CliPage, cliSearch } from "./pages/CliPage.tsx"
 import { CreateTenantPage } from "./pages/CreateTenantPage.tsx"
 import { HomePage } from "./pages/HomePage.tsx"
 import { LoginPage } from "./pages/LoginPage.tsx"
@@ -85,6 +86,13 @@ const createTenantRoute = createRoute({
   path: "/tenants/new",
   validateSearch: checkoutSearch,
   component: CreateTenantPage,
+})
+
+const cliRoute = createRoute({
+  getParentRoute: () => signedInRoute,
+  path: "/cli",
+  validateSearch: cliSearch,
+  component: CliPage,
 })
 
 const appRoute = createRoute({
@@ -193,7 +201,7 @@ const notFoundRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   loginRoute,
   authCallbackRoute,
-  signedInRoute.addChildren([createTenantRoute]),
+  signedInRoute.addChildren([createTenantRoute, cliRoute]),
   appRoute.addChildren([
     homeRoute,
     triggersRoute,

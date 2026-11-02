@@ -8,6 +8,7 @@ use base64::Engine;
 use chrono::{Duration, Utc};
 use reqwest::StatusCode;
 use sanchoris_api::signing::HmacKey;
+use sanchoris_core::cli::{CliRequest, cli_request_key, normalize_user_code};
 use sanchoris_core::conversations::post_agent_message;
 use sanchoris_core::items::{
     ApprovalWait, AuditEvent, ConfigRevision, Credential, Guard, Integration, Member, Run,
@@ -121,6 +122,55 @@ struct World {
 }
 
 impl World {
+    async fn cli(&self, path: &str, token: Option<&str>, body: Value) -> (StatusCode, Value) {
+        let mut request = self
+            .api
+            .http
+            .post(format!("{}{path}", self.api.url))
+            .json(&body);
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.unwrap();
+        let status = response.status();
+        (status, response.json().await.unwrap_or(Value::Null))
+    }
+
+    async fn poll(&self, device_code: &str) -> (StatusCode, Value) {
+        self.cli("/api/cli/token", None, json!({ "deviceCode": device_code }))
+            .await
+    }
+
+    async fn backdate_poll(&self, user_code: &str) {
+        let code = normalize_user_code(user_code).unwrap();
+        self.dynamo
+            .modify::<CliRequest>(&cli_request_key(&code), |request| {
+                request.last_polled_at = Some(Utc::now() - Duration::minutes(1));
+            })
+            .await;
+    }
+
+    async fn approved_token(&self, token: &str, purpose: &str, scope: &str) -> String {
+        let device = self
+            .cli(
+                "/api/cli/device",
+                None,
+                json!({ "client": "sancli", "purpose": purpose }),
+            )
+            .await
+            .1;
+        let user_code = device["userCode"].as_str().unwrap();
+        self.ok(
+            token,
+            "ApproveCliRequest",
+            json!({ "input": { "userCode": user_code, "tenantId": self.tenant(), "scope": scope } }),
+        )
+        .await;
+        let (status, issued) = self.poll(device["deviceCode"].as_str().unwrap()).await;
+        assert_eq!(status, StatusCode::OK, "{issued}");
+        issued["accessToken"].as_str().unwrap().to_string()
+    }
+
     async fn start() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let git_root = dir.path().join("git");
@@ -930,6 +980,139 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         json!({ "credentialId": credential_id }),
     )
     .await;
+
+    let device = w
+        .cli(
+            "/api/cli/device",
+            None,
+            json!({ "client": "sancli", "purpose": "claude-credential", "scope": "org" }),
+        )
+        .await;
+    assert_eq!(device.0, StatusCode::OK, "{}", device.1);
+    let device_code = device.1["deviceCode"].as_str().unwrap().to_string();
+    let user_code = device.1["userCode"].as_str().unwrap().to_string();
+    assert_eq!(user_code.len(), 9);
+    assert_eq!(
+        device.1["verificationUriComplete"],
+        format!("{}/cli?code={user_code}", w.api.url)
+    );
+    assert_eq!(device.1["expiresIn"], 600);
+    assert_eq!(device.1["interval"], 5);
+    assert_eq!(
+        w.poll(&device_code).await,
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "authorization_pending" })
+        )
+    );
+    let page = w
+        .ok(
+            owner,
+            "CliPage",
+            json!({ "userCode": user_code.to_lowercase() }),
+        )
+        .await;
+    assert_eq!(page["cliRequest"]["state"], "PENDING");
+    assert_eq!(page["cliRequest"]["purpose"], "CLAUDE_CREDENTIAL");
+    assert_eq!(page["cliRequest"]["requestedScope"], "ORGANIZATION");
+    assert_eq!(page["cliRequest"]["client"], "sancli");
+    let approved = w
+        .ok(
+            owner,
+            "ApproveCliRequest",
+            json!({ "input": { "userCode": user_code, "tenantId": tenant, "scope": "ORGANIZATION" } }),
+        )
+        .await;
+    assert_eq!(approved["approveCliRequest"]["state"], "APPROVED");
+    assert_eq!(
+        w.poll(&device_code).await,
+        (StatusCode::BAD_REQUEST, json!({ "error": "slow_down" }))
+    );
+    w.backdate_poll(&user_code).await;
+    let (status, issued) = w.poll(&device_code).await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    assert_eq!(issued["expiresIn"], 600);
+    let access_token = issued["accessToken"].as_str().unwrap().to_string();
+    w.backdate_poll(&user_code).await;
+    assert_eq!(
+        w.poll(&device_code).await,
+        (StatusCode::BAD_REQUEST, json!({ "error": "invalid_grant" }))
+    );
+    let oauth_token = "sk-ant-oat01-sancli-0123456789";
+    let registered = w
+        .cli(
+            "/api/cli/claude-credential",
+            Some(&access_token),
+            json!({ "token": oauth_token }),
+        )
+        .await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    assert_eq!(registered.1["label"], "Claude subscription (sancli)");
+    assert_eq!(
+        w.cli(
+            "/api/cli/claude-credential",
+            Some(&access_token),
+            json!({ "token": oauth_token }),
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let stored = w
+        .dynamo
+        .all::<Credential>()
+        .await
+        .into_iter()
+        .find(|stored| stored.name == "Claude subscription (sancli)")
+        .unwrap();
+    assert_eq!(
+        (
+            stored.provider.as_str(),
+            stored.kind.as_str(),
+            stored.scope.as_str()
+        ),
+        ("claude", "subscription", "org")
+    );
+    assert_eq!(stored.member_id, None);
+    assert_eq!(
+        AesGcmEncryptor::new(&CREDENTIAL_KEY)
+            .decrypt(
+                tenant,
+                &base64::engine::general_purpose::STANDARD
+                    .decode(&stored.encrypted_value)
+                    .unwrap()
+            )
+            .unwrap(),
+        oauth_token.as_bytes()
+    );
+    let listed = w.ok(owner, "Credentials", json!({ "tenant": slug })).await;
+    assert!(
+        listed["tenant"]["credentials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|credential| credential["name"] == "Claude subscription (sancli)")
+    );
+    let denied_device = w
+        .cli(
+            "/api/cli/device",
+            None,
+            json!({ "client": "sancli", "purpose": "codex-credential" }),
+        )
+        .await
+        .1;
+    let denied_code = denied_device["userCode"].as_str().unwrap();
+    let denied = w
+        .ok(owner, "DenyCliRequest", json!({ "userCode": denied_code }))
+        .await;
+    assert_eq!(denied["denyCliRequest"]["state"], "DENIED");
+    assert_eq!(
+        w.poll(denied_device["deviceCode"].as_str().unwrap()).await,
+        (StatusCode::BAD_REQUEST, json!({ "error": "access_denied" }))
+    );
+    let actions = w.audit_actions(tenant).await;
+    assert!(actions.contains(&"cli.approve".to_string()));
+    assert!(actions.contains(&"credential.connect".to_string()));
 
     let invited = w
         .ok(
@@ -1826,5 +2009,204 @@ async fn a_member_resolves_a_skill_approval_from_the_task_page() {
             .await
             .iter()
             .any(|action| action == "approval.resolve")
+    );
+}
+
+#[tokio::test]
+async fn sancli_requests_expire_once_and_register_credentials_in_the_approved_scope() {
+    let w = World::start().await;
+    let owner = &w.owner;
+    let tenant = w.tenant();
+    assert_eq!(
+        w.cli(
+            "/api/cli/device",
+            None,
+            json!({ "client": "sancli", "purpose": "github-token" }),
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        w.poll("WDJBMJHT.0000000000000000000000000000000000000000000000000000000000000000")
+            .await,
+        (StatusCode::BAD_REQUEST, json!({ "error": "invalid_grant" }))
+    );
+
+    let expiring = w
+        .cli(
+            "/api/cli/device",
+            None,
+            json!({ "client": "sancli", "purpose": "claude-credential" }),
+        )
+        .await
+        .1;
+    let expiring_code = expiring["userCode"].as_str().unwrap();
+    w.dynamo
+        .modify::<CliRequest>(
+            &cli_request_key(&normalize_user_code(expiring_code).unwrap()),
+            |request| request.code_expires_at = Utc::now() - Duration::seconds(1),
+        )
+        .await;
+    assert_eq!(
+        w.poll(expiring["deviceCode"].as_str().unwrap()).await,
+        (StatusCode::BAD_REQUEST, json!({ "error": "expired_token" }))
+    );
+    let page = w
+        .ok(owner, "CliPage", json!({ "userCode": expiring_code }))
+        .await;
+    assert_eq!(page["cliRequest"]["state"], "EXPIRED");
+    let (code, _) = w
+        .error(
+            owner,
+            "ApproveCliRequest",
+            json!({ "input": { "userCode": expiring_code, "tenantId": tenant, "scope": "PERSONAL" } }),
+        )
+        .await;
+    assert_eq!(code, "CONFLICT");
+    let unknown = w
+        .ok(owner, "CliPage", json!({ "userCode": "BBBB-BBBB" }))
+        .await;
+    assert_eq!(unknown["cliRequest"], Value::Null);
+
+    let member = "user:cli-member";
+    w.ok(member, "Shell", json!({})).await;
+    let user_id = w
+        .dynamo
+        .all::<User>()
+        .await
+        .into_iter()
+        .find(|user| user.cognito_subject == "cli-member")
+        .unwrap()
+        .id;
+    let member_id = Uuid::new_v4();
+    w.dynamo
+        .put(&Member {
+            id: member_id,
+            tenant_id: tenant,
+            user_id,
+            role: "member".into(),
+            joined_at: Utc::now(),
+            last_active_at: None,
+        })
+        .await;
+    w.dynamo
+        .put(&sanchoris_core::items::Membership {
+            user_id,
+            tenant_id: tenant,
+            member_id,
+        })
+        .await;
+    let device = w
+        .cli(
+            "/api/cli/device",
+            None,
+            json!({ "client": "sancli", "purpose": "codex-credential" }),
+        )
+        .await
+        .1;
+    let (code, _) = w
+        .error(
+            member,
+            "ApproveCliRequest",
+            json!({ "input": { "userCode": device["userCode"], "tenantId": tenant, "scope": "ORGANIZATION" } }),
+        )
+        .await;
+    assert_eq!(code, "FORBIDDEN");
+
+    let codex = w
+        .approved_token(member, "codex-credential", "PERSONAL")
+        .await;
+    assert_eq!(
+        w.cli(
+            "/api/cli/claude-credential",
+            Some(&codex),
+            json!({ "token": "sk-ant-oat01-0123456789abcdef" }),
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(json!({ "email": "cli@acme.test" }).to_string());
+    let auth_json = json!({
+        "OPENAI_API_KEY": null,
+        "tokens": { "id_token": format!("e30.{claims}.sig"), "access_token": "a", "refresh_token": "r", "account_id": "acct-0123456789" },
+    });
+    assert_eq!(
+        w.cli(
+            "/api/cli/codex-credential",
+            Some(&codex),
+            json!({ "authJson": "{}" }),
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let registered = w
+        .cli(
+            "/api/cli/codex-credential",
+            Some(&codex),
+            json!({ "authJson": auth_json.to_string() }),
+        )
+        .await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    assert_eq!(
+        registered.1["label"],
+        "Codex subscription (sancli, cli-member@example.com)"
+    );
+    let codex_credential = w
+        .dynamo
+        .all::<Credential>()
+        .await
+        .into_iter()
+        .find(|stored| stored.provider == "codex")
+        .unwrap();
+    assert_eq!(codex_credential.member_id, Some(member_id));
+    assert_eq!(codex_credential.scope, "personal");
+    assert_eq!(codex_credential.account, "cli@acme.test");
+
+    for token in [
+        "sk-ant-oat01-first-0123456789",
+        "sk-ant-oat01-second-0123456789",
+    ] {
+        let access = w
+            .approved_token(owner, "claude-credential", "ORGANIZATION")
+            .await;
+        let registered = w
+            .cli(
+                "/api/cli/claude-credential",
+                Some(&access),
+                json!({ "token": token }),
+            )
+            .await;
+        assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    }
+    let claude = w
+        .dynamo
+        .all::<Credential>()
+        .await
+        .into_iter()
+        .filter(|stored| stored.name == "Claude subscription (sancli)")
+        .collect::<Vec<_>>();
+    assert_eq!(claude.len(), 1);
+    assert_eq!(claude[0].account, "sk-a…6789");
+    assert_eq!(
+        AesGcmEncryptor::new(&CREDENTIAL_KEY)
+            .decrypt(
+                tenant,
+                &base64::engine::general_purpose::STANDARD
+                    .decode(&claude[0].encrypted_value)
+                    .unwrap()
+            )
+            .unwrap(),
+        b"sk-ant-oat01-second-0123456789"
+    );
+    assert!(
+        w.dynamo
+            .all::<CliRequest>()
+            .await
+            .iter()
+            .all(|request| request.status != "issued")
     );
 }
