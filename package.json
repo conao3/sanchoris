@@ -15,7 +15,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "@vitejs/plugin-react": "^6.1.2",
     "msw": "^3.0.3",
     "portless": "^0.15.12",
