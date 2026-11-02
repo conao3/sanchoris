@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use aws_sdk_dynamodb::error::DisplayErrorContext;
 use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
@@ -48,6 +48,8 @@ pub enum DbError {
     Unread(String),
     #[error("{0} does not exist")]
     Missing(String),
+    #[error("a store with shared reads serves a query and cannot commit")]
+    SharedReads,
     #[error("audit event {0} is append-only")]
     AppendOnly(String),
     #[error("trigger event {0} was already evaluated or does not exist")]
@@ -154,6 +156,21 @@ struct Inner {
 #[derive(Clone)]
 pub struct Store {
     inner: Arc<Inner>,
+    shared: Option<Arc<SharedReads>>,
+}
+
+/// The reads of one GraphQL query: eventually consistent, each item and listing fetched once.
+#[derive(Default)]
+struct SharedReads {
+    items: Mutex<BTreeMap<Key, Option<Item>>>,
+    listings: Mutex<HashMap<String, SharedListing>>,
+}
+
+#[derive(Clone, Default)]
+struct SharedListing {
+    items: Vec<Item>,
+    next: Option<Item>,
+    done: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,6 +286,15 @@ impl Store {
                 blobs,
                 relay,
             }),
+            shared: None,
+        }
+    }
+
+    /// A store for one GraphQL query: it shares its reads, reads with eventual consistency, and refuses to commit.
+    pub fn with_shared_reads(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            shared: Some(Arc::new(SharedReads::default())),
         }
     }
 
@@ -362,21 +388,34 @@ impl Store {
     }
 
     pub async fn get_item(&self, key: &Key) -> Result<Option<Item>, DbError> {
+        if let Some(shared) = &self.shared
+            && let Some(item) = shared.items.lock().expect("shared reads lock").get(key)
+        {
+            return Ok(item.clone());
+        }
         let output = Box::pin(
             self.inner
                 .client
                 .get_item()
                 .table_name(self.inner.tables.name(key.table))
                 .set_key(Some(key.attributes()))
-                .consistent_read(true)
+                .consistent_read(self.shared.is_none())
                 .send(),
         )
         .await
         .map_err(dynamo_error)?;
-        match output.item {
-            Some(item) => Ok(Some(self.hydrate(item).await?)),
-            None => Ok(None),
+        let item = match output.item {
+            Some(item) => Some(self.hydrate(item).await?),
+            None => None,
+        };
+        if let Some(shared) = &self.shared {
+            shared
+                .items
+                .lock()
+                .expect("shared reads lock")
+                .insert(key.clone(), item.clone());
         }
+        Ok(item)
     }
 
     pub async fn get<E: Entity>(&self, key: &Key) -> Result<Option<E>, DbError> {
@@ -461,6 +500,33 @@ impl Store {
         let full = |items: &Vec<Item>| listing.limit.is_some_and(|limit| items.len() >= limit);
         let mut items = Vec::new();
         let mut start = None;
+        let shared_key = format!(
+            "{:?} {:?} {} {:?} {}",
+            listing.table, listing.index, listing.pk, listing.sort, listing.forward
+        );
+        let mut fetched = match &self.shared {
+            Some(shared) => shared
+                .listings
+                .lock()
+                .expect("shared reads lock")
+                .get(&shared_key)
+                .cloned(),
+            None => None,
+        };
+        if let Some(fetched) = &fetched {
+            for item in &fetched.items {
+                if full(&items) {
+                    break;
+                }
+                if keep(item) {
+                    items.push(item.clone());
+                }
+            }
+            if full(&items) || fetched.done {
+                return Ok(items);
+            }
+            start = fetched.next.clone();
+        }
         loop {
             let mut request = self
                 .inner
@@ -474,7 +540,7 @@ impl Store {
                 .set_exclusive_start_key(start.take());
             match listing.index {
                 Some(index) => request = request.index_name(index.name()),
-                None => request = request.consistent_read(true),
+                None => request = request.consistent_read(self.shared.is_none()),
             }
             if let Some(limit) = listing.limit {
                 let remaining = limit.saturating_sub(items.len());
@@ -486,21 +552,42 @@ impl Store {
                 request = request.limit(i32::try_from(page).unwrap_or(i32::MAX));
             }
             let output = Box::pin(request.send()).await.map_err(dynamo_error)?;
-            for item in output.items.unwrap_or_default() {
-                if full(&items) {
-                    break;
+            let next = output.last_evaluated_key.filter(|key| !key.is_empty());
+            let page = output.items.unwrap_or_default();
+            if self.shared.is_some() {
+                let fetched = fetched.get_or_insert_with(SharedListing::default);
+                for item in page {
+                    let item = self.hydrate(item).await?;
+                    if !full(&items) && keep(&item) {
+                        items.push(item.clone());
+                    }
+                    fetched.items.push(item);
                 }
-                let item = self.hydrate(item).await?;
-                if keep(&item) {
-                    items.push(item);
+                fetched.next = next.clone();
+                fetched.done = next.is_none();
+            } else {
+                for item in page {
+                    if full(&items) {
+                        break;
+                    }
+                    let item = self.hydrate(item).await?;
+                    if keep(&item) {
+                        items.push(item);
+                    }
                 }
             }
-            if full(&items) {
-                break;
-            }
-            match output.last_evaluated_key {
-                Some(key) if !key.is_empty() => start = Some(key),
+            match next {
+                Some(key) if !full(&items) => start = Some(key),
                 _ => break,
+            }
+        }
+        if let (Some(shared), Some(fetched)) = (&self.shared, fetched) {
+            let mut listings = shared.listings.lock().expect("shared reads lock");
+            if listings
+                .get(&shared_key)
+                .is_none_or(|known| known.items.len() < fetched.items.len())
+            {
+                listings.insert(shared_key, fetched);
             }
         }
         Ok(items)
@@ -1253,6 +1340,9 @@ impl TenantTx {
 
     pub async fn commit(self) -> Result<(), DbError> {
         let store = self.store.clone();
+        if store.shared.is_some() {
+            return Err(DbError::SharedReads);
+        }
         let mut writes = Vec::new();
         for (key, slot) in self.slots {
             let table = store.tables().name(key.table).to_string();

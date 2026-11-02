@@ -40,6 +40,9 @@ pub type SanchorisSchema = Schema<QueryRoot, MutationRoot, EmptySubscription>;
 
 pub fn build_schema(store: Store, deps: GraphqlDeps) -> SanchorisSchema {
     Schema::build(QueryRoot, MutationRoot, EmptySubscription)
+        .extension(context::SharedQueryReads {
+            store: store.clone(),
+        })
         .data(context::State { store, deps })
         .limit_depth(MAX_DEPTH)
         .limit_complexity(MAX_COMPLEXITY)

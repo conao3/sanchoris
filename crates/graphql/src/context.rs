@@ -1,7 +1,12 @@
 use std::future::Future;
 use std::net::IpAddr;
+use std::sync::Arc;
 
-use async_graphql::{Context, Enum, Error, Result};
+use async_graphql::extensions::{
+    Extension, ExtensionContext, ExtensionFactory, NextPrepareRequest,
+};
+use async_graphql::parser::types::OperationType;
+use async_graphql::{Context, Enum, Error, Request, Result, ServerResult};
 use aws_sdk_dynamodb::types::AttributeValue;
 use chrono::{DateTime, Utc};
 use sanchoris_core::audit::{AuditEntry, record_audit};
@@ -120,8 +125,43 @@ pub(crate) fn state<'a>(ctx: &Context<'a>) -> &'a State {
     ctx.data_unchecked::<State>()
 }
 
+/// The store a resolver reads from: a query reads through the request's shared reads, a mutation reads and writes the table directly.
 pub(crate) fn store<'a>(ctx: &Context<'a>) -> &'a Store {
-    &state(ctx).store
+    match ctx.query_env.operation.node.ty {
+        OperationType::Query => &ctx.data_unchecked::<QueryStore>().0,
+        OperationType::Mutation | OperationType::Subscription => &state(ctx).store,
+    }
+}
+
+struct QueryStore(Store);
+
+/// Gives each request a store whose reads its query shares (`Store::with_shared_reads`).
+pub(crate) struct SharedQueryReads {
+    pub store: Store,
+}
+
+impl ExtensionFactory for SharedQueryReads {
+    fn create(&self) -> Arc<dyn Extension> {
+        Arc::new(SharedQueryReads {
+            store: self.store.clone(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl Extension for SharedQueryReads {
+    async fn prepare_request(
+        &self,
+        ctx: &ExtensionContext<'_>,
+        request: Request,
+        next: NextPrepareRequest<'_>,
+    ) -> ServerResult<Request> {
+        next.run(
+            ctx,
+            request.data(QueryStore(self.store.with_shared_reads())),
+        )
+        .await
+    }
 }
 
 pub(crate) fn tx(ctx: &Context<'_>, tenant_id: Uuid) -> TenantTx {

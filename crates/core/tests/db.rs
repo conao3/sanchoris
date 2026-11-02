@@ -15,7 +15,7 @@ use sanchoris_core::items::{
 use sanchoris_core::jobs::{Envelope, Job};
 use sanchoris_core::keys;
 use sanchoris_core::model::{ActorKind, AuditOrigin, NamedDefinition, TaskDefinition, TaskStatus};
-use sanchoris_core::store::{Relay, Update, retry};
+use sanchoris_core::store::{Index, Listing, Relay, Update, retry};
 use sanchoris_core::testing::{SeededTenant, TestDynamo};
 use serde_json::{Map, json};
 use uuid::Uuid;
@@ -784,4 +784,47 @@ async fn dispatch_deletes_stale_markers_in_bounded_transactions() {
         assert!(rounds < 3);
     }
     assert_eq!(dispatch_jobs(), before + 1 + rounds - 1);
+}
+
+#[tokio::test]
+async fn shared_reads_fetch_each_item_and_listing_once_and_refuse_to_commit() {
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    let seeded = dynamo.seed_tenant("pro").await;
+    let id = create_task(&store, &seeded, "shared", &[]).await.id();
+    let key = keys::task_key(seeded.tenant_id, id);
+    let shared = store.with_shared_reads();
+    let tasks = |store: &Store| {
+        let store = store.clone();
+        async move {
+            store
+                .list::<Task>(
+                    &Listing::index(Index::Gsi1, keys::tasks_index(seeded.tenant_id)),
+                    |_| true,
+                )
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(
+        shared.get::<Task>(&key).await.unwrap().unwrap().title,
+        "shared"
+    );
+    assert_eq!(tasks(&shared).await.len(), 1);
+    create_task(&store, &seeded, "later", &[]).await;
+    dynamo
+        .modify::<Task>(&key, |task| task.title = "renamed".into())
+        .await;
+
+    assert_eq!(
+        shared.get::<Task>(&key).await.unwrap().unwrap().title,
+        "shared"
+    );
+    assert_eq!(tasks(&shared).await.len(), 1);
+    assert_eq!(tasks(&store).await.len(), 2);
+    let mut tx = shared.tx(seeded.tenant_id);
+    let mut task = tx.get::<Task>(&key).await.unwrap().unwrap();
+    task.title = "again".into();
+    tx.put(&task).unwrap();
+    assert!(matches!(tx.commit().await, Err(DbError::SharedReads)));
 }
