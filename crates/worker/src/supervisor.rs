@@ -87,9 +87,13 @@ pub async fn process_run_events(worker: &Worker, tenant_id: Uuid, run_id: Uuid) 
             Err(WorkerError::Invalid(message)) => Some(message),
             Err(other) => return Err(other),
         };
-        event.processed_at = Some(worker.now());
-        event.error = error;
-        tx.put(&event)?;
+        if event.kind == RunEventType::Heartbeat.as_str() && error.is_none() {
+            tx.delete(&marker.target)?;
+        } else {
+            event.processed_at = Some(worker.now());
+            event.error = error;
+            tx.put(&event)?;
+        }
         worker.faults.check("run_event.before_commit")?;
         tx.commit().await?;
         processed += 1;

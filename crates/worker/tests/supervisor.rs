@@ -3,7 +3,7 @@ use crate::common;
 use chrono::Duration;
 use common::{REPO, World, turn_end_payload};
 use sanchoris_core::channel::RunEventType;
-use sanchoris_core::items::{Task, Tenant, UsageAlert, UsageSnapshot, Workspace};
+use sanchoris_core::items::{RunEventItem, Task, Tenant, UsageAlert, UsageSnapshot, Workspace};
 use sanchoris_core::keys;
 use sanchoris_core::store::{Index, SortKey, retry};
 use sanchoris_core::tasks::{load_task, snoozable, snooze};
@@ -650,6 +650,14 @@ async fn heartbeats_keep_running_tasks_alive() {
         .run_event(run_id, RunEventType::Heartbeat, json!({ "busy": true }))
         .await;
     world.worker.settle().await.unwrap();
+    assert!(
+        world
+            .dynamo
+            .all::<RunEventItem>()
+            .await
+            .iter()
+            .all(|event| event.kind != "heartbeat")
+    );
     world.clock.advance(Duration::seconds(600));
     world.worker.settle().await.unwrap();
     assert_eq!(world.task(&format!("{REPO}#35")).await.status, "RUNNING");

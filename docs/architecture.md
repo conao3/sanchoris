@@ -293,7 +293,7 @@ Every item in `main` has `kind` (the entity), `v` (a version incremented by ever
 | `T#<t>#TASK#<task>` | `USAGE#<recorded_at>#<id>` | `usage` | Tokens and the cost added by each turn; `gsi1` = (`T#<t>#USAGE`, `<recorded_at>#<id>`) |
 | `T#<t>#TASK#<task>` | `HELD#<created_at>#<dedupe key>` | `held_message` | A skill notification (`text`, `dedupe_key`) that arrived while the task was `NEEDS_YOU` for a reason other than `Approval.Requested`. It neither reaches the outbox nor wakes the Workspace; the human reply that resumes the task enqueues the held messages in order before the reply and deletes them |
 | `T#<t>#RUN#<run>` | `#CHANNEL` | `run_channel` | `task_id`, `next_outbox_seq` (outbox order), `instances` (agent instances), the WebSocket connection id, and the Workspace whose bootstrap token opened it |
-| `T#<t>#RUN#<run>` | `EVT#<seq, 20 digits>` or `EVT#~<received_at>#<id>` | `run_event` | Unique per (run, seq); events without a seq (`human_reply`) get a time key |
+| `T#<t>#RUN#<run>` | `EVT#<seq, 20 digits>` or `EVT#~<received_at>#<id>` | `run_event` | Unique per (run, seq); events without a seq (`human_reply`) get a time key; a heartbeat is deleted once the worker has processed it |
 | `T#<t>#RUN#<run>` | `PEND#<received_at>#<event>` | `pending` | Unprocessed run events, in arrival order |
 | `T#<t>#RUN#<run>` | `OUT#<seq>` / `OUTKEY#<dedupe key>` | `outbox` / `guard` | Outbox in `seq` order; the guard makes `(run, dedupe_key)` unique; the channel marks a message whose frame would be over 120 KiB delivered without sending it and logs it, so it does not hold back the ones after it |
 | `T#<t>#RUN#<run>` | `INST#<instance>` | `channel_instance` | `seq_offset` = index × `SEQ_STRIDE`, `processed_seq` |
