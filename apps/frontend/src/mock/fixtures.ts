@@ -56,6 +56,7 @@ export const plans: Obj[] = [
     auditRetentionDays: 30,
     requiresPayment: false,
     isAdmin: false,
+    usagePack: null,
   },
   {
     id: "plan-pro",
@@ -72,6 +73,7 @@ export const plans: Obj[] = [
     auditRetentionDays: 365,
     requiresPayment: true,
     isAdmin: false,
+    usagePack: { tasks: 15, workspaceHours: 75, priceUsd: 20 },
   },
   {
     id: "plan-max",
@@ -88,6 +90,7 @@ export const plans: Obj[] = [
     auditRetentionDays: 365,
     requiresPayment: true,
     isAdmin: false,
+    usagePack: { tasks: 75, workspaceHours: 375, priceUsd: 100 },
   },
   {
     id: "plan-ultra",
@@ -104,6 +107,7 @@ export const plans: Obj[] = [
     auditRetentionDays: 365,
     requiresPayment: true,
     isAdmin: false,
+    usagePack: { tasks: 300, workspaceHours: 750, priceUsd: 200 },
   },
 ]
 
@@ -149,6 +153,8 @@ function periodUsage(
     periodEnd: period === "MONTH" ? monthAfter(start) : null,
     tasksThisPeriod: tasks,
     workspaceSecondsThisPeriod: workspaceHours * 3600,
+    extraTasksLeft: 0,
+    extraWorkspaceSecondsLeft: 0,
     seatsUsed: seats,
     liveWorkspaces: running,
   }

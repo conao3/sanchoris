@@ -3,6 +3,7 @@ use std::collections::{BTreeSet, VecDeque};
 use async_graphql::{Context, ID, InputObject, Object, Result};
 use chrono::{DateTime, Utc};
 use sanchoris_config::Start;
+use sanchoris_core::allowance::{task_allowance, workspace_seconds_allowance};
 use sanchoris_core::db::{self, REF_CONFIG_REVISION, REF_RUN};
 use sanchoris_core::items::{
     ApprovalWait, Child, ConfigRevision as RevisionItem, Dependency, OUTPUT_ISSUE, OutboxItem,
@@ -261,11 +262,9 @@ impl Task {
         let (tenant, plan) = db::tenant_plan(&mut tx).await?;
         let limited = tenant.status != "active"
             || (self.row.started_at.is_none()
-                && plan
-                    .task_limit
+                && task_allowance(&tenant, &plan)
                     .is_some_and(|limit| tenant.tasks_this_period >= limit))
-            || plan
-                .workspace_seconds_limit
+            || workspace_seconds_allowance(&tenant, &plan)
                 .is_some_and(|limit| tenant.workspace_seconds_this_period >= limit);
         Ok(Some(if limited {
             PendingReason::PlanLimit

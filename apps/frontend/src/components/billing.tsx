@@ -7,10 +7,21 @@ import { State } from "./ui.tsx"
 
 export type CheckoutOutcome = "success" | "canceled"
 
+function outcome(value: unknown): CheckoutOutcome | undefined {
+  return value === "success" || value === "canceled" ? value : undefined
+}
+
 export function checkoutSearch(search: Record<string, unknown>): { checkout?: CheckoutOutcome } {
-  return search.checkout === "success" || search.checkout === "canceled"
-    ? { checkout: search.checkout }
-    : {}
+  const checkout = outcome(search.checkout)
+  return checkout ? { checkout } : {}
+}
+
+export function billingSearch(search: Record<string, unknown>): {
+  checkout?: CheckoutOutcome
+  usagePack?: CheckoutOutcome
+} {
+  const usagePack = outcome(search.usagePack)
+  return { ...checkoutSearch(search), ...(usagePack ? { usagePack } : {}) }
 }
 
 export function useCheckoutOutcome(

@@ -544,6 +544,21 @@ fn checkout<'a>(session: &'a Value) -> Result<billing::Checkout<'a>, ApiError> {
     })
 }
 
+fn usage_pack<'a>(session: &'a Value) -> Result<billing::UsagePackCheckout<'a>, ApiError> {
+    let count = |pointer: &str| {
+        text(session, pointer)?
+            .parse::<i64>()
+            .map_err(|error| ApiError::BadRequest(format!("{pointer} is not a count: {error}")))
+    };
+    Ok(billing::UsagePackCheckout {
+        tenant_id: tenant_ref(session, "/client_reference_id")?,
+        customer_id: text(session, "/customer")?,
+        tasks: count("/metadata/tasks")?,
+        workspace_seconds: count("/metadata/workspace_seconds")?,
+        paid: text(session, "/payment_status")? == "paid",
+    })
+}
+
 enum StripeFailure {
     Request(ApiError),
     Billing(BillingError),
@@ -568,6 +583,12 @@ async fn apply_stripe_event(
 ) -> Result<Option<Outcome>, StripeFailure> {
     let store = &state.store;
     let outcome = match event.kind {
+        "checkout.session.completed" | "checkout.session.async_payment_succeeded"
+            if object.pointer("/metadata/kind").and_then(Value::as_str)
+                == Some(billing::USAGE_PACK) =>
+        {
+            billing::add_usage_pack(store, event, usage_pack(object)?).await?
+        }
         "checkout.session.completed" | "checkout.session.async_payment_succeeded" => {
             billing::complete_checkout(store, event, checkout(object)?).await?
         }

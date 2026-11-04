@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::allowance::task_allowance;
 use crate::item::{Entity, Key};
 use crate::items::{
     Child, ConversationTask, Dependency, PendingTask, Plan, Ref, Run, RunChannel, Task, TaskName,
@@ -307,9 +308,8 @@ pub async fn dispatch_pending_tasks(
     if slots <= 0 {
         return Ok(Vec::new());
     }
-    let new_slots = plan
-        .task_limit
-        .map_or(i64::MAX, |limit| limit - tenant.tasks_this_period);
+    let task_limit = task_allowance(&tenant, &plan);
+    let new_slots = task_limit.map_or(i64::MAX, |limit| limit - tenant.tasks_this_period);
     let markers = tx
         .query::<PendingTask>(&keys::tenant_pk(tenant_id), "PENDINGTASK#")
         .await?;
@@ -393,7 +393,7 @@ pub async fn dispatch_pending_tasks(
     if !dispatched.is_empty() {
         let count = i64::try_from(dispatched.len()).expect("small");
         let mut update = slot_update(&plan, count).add("tasks_this_period", new_tasks);
-        if let Some(limit) = plan.task_limit {
+        if let Some(limit) = task_limit {
             update = update.cap_after("tasks_this_period", limit);
         }
         tx.update(&keys::tenant_key(tenant_id), update)?;

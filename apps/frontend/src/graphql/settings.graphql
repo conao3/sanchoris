@@ -303,12 +303,19 @@ query Billing($tenant: String!) {
       workspaceHourLimit
       limitPeriod
       isAdmin
+      usagePack {
+        tasks
+        workspaceHours
+        priceUsd
+      }
     }
     usage {
       periodStart
       periodEnd
       tasksThisPeriod
       workspaceSecondsThisPeriod
+      extraTasksLeft
+      extraWorkspaceSecondsLeft
       seatsUsed
     }
   }
@@ -339,6 +346,12 @@ mutation ChangePlan($tenantId: ID!, $planId: ID!) {
 
 mutation OpenBillingPortal($tenantId: ID!) {
   openBillingPortal(tenantId: $tenantId) {
+    url
+  }
+}
+
+mutation BuyUsagePack($tenantId: ID!) {
+  buyUsagePack(tenantId: $tenantId) {
     url
   }
 }

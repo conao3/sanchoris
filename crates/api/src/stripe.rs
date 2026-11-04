@@ -3,6 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use reqwest::Method;
+use sanchoris_core::allowance::usage_pack;
+use sanchoris_core::billing::USAGE_PACK;
 use sanchoris_core::db::{self, DbError, Store};
 use sanchoris_core::items::Tenant;
 use sanchoris_core::keys;
@@ -440,6 +442,65 @@ impl CheckoutPort for StripeCheckout {
                 )
             })?;
         self.portal(customer).await
+    }
+
+    async fn usage_pack_checkout(&self, tenant_id: Uuid) -> Result<String, PortError> {
+        let tenant = self.tenant(tenant_id).await?;
+        let plan = db::plan(&self.store, &tenant.plan_id)
+            .await
+            .map_err(db_error("read the plan"))?;
+        let pack = usage_pack(&plan).ok_or_else(|| {
+            PortError::Rejected(format!("the {} plan has no usage pack", plan.name))
+        })?;
+        let customer = tenant.stripe_customer_id.ok_or_else(|| {
+            PortError::Rejected(
+                "the tenant has no Stripe customer; choose a paid plan first".into(),
+            )
+        })?;
+        let public = &self.config.public_url;
+        let form = vec![
+            ("mode".to_string(), "payment".to_string()),
+            ("client_reference_id".into(), tenant_id.to_string()),
+            ("customer".into(), customer),
+            ("line_items[0][quantity]".into(), "1".into()),
+            (
+                "line_items[0][price_data][currency]".into(),
+                plan.currency.clone(),
+            ),
+            (
+                "line_items[0][price_data][unit_amount]".into(),
+                pack.price_cents.to_string(),
+            ),
+            (
+                "line_items[0][price_data][product_data][name]".into(),
+                format!(
+                    "Sanchoris {} usage pack: {} tasks and {} workspace hours",
+                    plan.name,
+                    pack.tasks,
+                    pack.workspace_seconds / 3600
+                ),
+            ),
+            ("metadata[kind]".into(), USAGE_PACK.into()),
+            ("metadata[plan_id]".into(), plan.id.clone()),
+            ("metadata[tenant_id]".into(), tenant_id.to_string()),
+            ("metadata[tasks]".into(), pack.tasks.to_string()),
+            (
+                "metadata[workspace_seconds]".into(),
+                pack.workspace_seconds.to_string(),
+            ),
+            (
+                "success_url".into(),
+                format!("{public}/settings/billing?usagePack=success"),
+            ),
+            (
+                "cancel_url".into(),
+                format!("{public}/settings/billing?usagePack=canceled"),
+            ),
+        ];
+        let session = self
+            .send(Method::POST, "/v1/checkout/sessions", &form)
+            .await?;
+        Ok(field(&session, "url", "checkout session")?.to_string())
     }
 
     async fn end_billing(&self, tenant_id: Uuid) -> Result<(), PortError> {

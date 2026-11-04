@@ -2,6 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::allowance::workspace_seconds_allowance;
 use crate::channel::{
     ChatInput, OutboxType, enqueue_chat_message, enqueue_outbox, enqueue_user_message,
 };
@@ -149,8 +150,7 @@ pub async fn store_task(tx: &mut TenantTx, task: &Task, now: DateTime<Utc>) -> R
 
 pub fn free_slots(tenant: &Tenant, plan: &Plan) -> i64 {
     let open = tenant.status == "active"
-        && plan
-            .workspace_seconds_limit
+        && workspace_seconds_allowance(tenant, plan)
             .is_none_or(|limit| tenant.workspace_seconds_this_period < limit);
     if open {
         plan.max_concurrency - tenant.live_workspaces

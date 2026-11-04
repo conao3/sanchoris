@@ -384,6 +384,31 @@ async fn dispatch_stops_at_the_plan_task_limit_and_for_suspended_tenants() {
 }
 
 #[tokio::test]
+async fn extra_tasks_start_after_the_plan_task_limit_and_stop_when_they_run_out() {
+    let dynamo = TestDynamo::start().await;
+    let clock = Arc::new(FakeClock::new(Utc::now()));
+    let direct = dynamo.direct_store(clock);
+    let store = direct.store.clone();
+    let max = dynamo.seed_tenant("max").await;
+    dynamo
+        .modify::<Tenant>(&keys::tenant_key(max.tenant_id), |t| {
+            t.tasks_this_period = 50;
+            t.extra_tasks = 1;
+        })
+        .await;
+    create_task(&store, &max, "first-extra", &[]).await;
+    create_task(&store, &max, "past-the-extra", &[]).await;
+    assert_eq!(dispatch(&store, max.tenant_id).await.len(), 1);
+    assert!(dispatch(&store, max.tenant_id).await.is_empty());
+    let counted = store
+        .get::<Tenant>(&keys::tenant_key(max.tenant_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((counted.tasks_this_period, counted.extra_tasks), (51, 1));
+}
+
+#[tokio::test]
 async fn timers_are_scheduled_after_commit_and_cancelled_by_name() {
     let dynamo = TestDynamo::start().await;
     let now = Utc.with_ymd_and_hms(2026, 10, 27, 9, 0, 0).unwrap();

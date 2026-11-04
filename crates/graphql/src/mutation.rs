@@ -5,6 +5,7 @@ use aws_sdk_dynamodb::types::AttributeValue;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Duration;
+use sanchoris_core::allowance::usage_pack;
 use sanchoris_core::billing::{ADMIN_PLAN, FREE_PLAN, PRIVILEGED_EMAIL_DOMAIN, stage_plan_change};
 use sanchoris_core::channel::{OutboxType, RunEventType, enqueue_outbox, record_run_event};
 use sanchoris_core::conversations::{
@@ -2285,6 +2286,49 @@ impl MutationRoot {
                 "billing.portal_open",
                 target("tenant", scope.tenant_id, "billing"),
                 "Opened the billing portal",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await?;
+        Ok(RedirectPayload { url })
+    }
+
+    /// Returns a Stripe Checkout URL that buys the plan's usage pack (Plan.usagePack) for the plan's price of one period. Refused for a tenant that is not active and for a plan without a usage pack.
+    async fn buy_usage_pack(&self, ctx: &Context<'_>, tenant_id: ID) -> Result<RedirectPayload> {
+        let scope = tenant_scope(ctx, &tenant_id).await?;
+        let member_id = scope.require(Role::Owner, "buying a usage pack")?;
+        let tenant = Tenant::load(ctx, scope).await?;
+        if tenant.row.status != "active" {
+            return Err(conflict("the tenant is not active"));
+        }
+        let plan = Plan::load(ctx, &tenant.row.plan_id).await?;
+        let Some(pack) = usage_pack(&plan.0) else {
+            return Err(conflict(format!(
+                "the {} plan has no usage pack",
+                plan.0.name
+            )));
+        };
+        let url = state(ctx)
+            .deps
+            .checkout
+            .usage_pack_checkout(scope.tenant_id)
+            .await
+            .map_err(port)?;
+        write(|| async {
+            let mut tx = tx(ctx, scope.tenant_id);
+            audit_member(
+                ctx,
+                &mut tx,
+                member_id,
+                "tenant.usage_pack_checkout_start",
+                target("tenant", scope.tenant_id, tenant.row.name.clone()),
+                &format!(
+                    "Started the checkout for a usage pack of {} tasks and {} workspace hours",
+                    pack.tasks,
+                    pack.workspace_seconds / 3600
+                ),
             )
             .await?;
             tx.commit().await?;

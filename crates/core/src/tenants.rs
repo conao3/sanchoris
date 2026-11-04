@@ -325,6 +325,8 @@ async fn try_create_tenant(
         period_start: tenant.now,
         tasks_this_period: 0,
         workspace_seconds_this_period: 0,
+        extra_tasks: 0,
+        extra_workspace_seconds: 0,
         live_workspaces: 0,
         status: status.to_string(),
         suspended_reason: reason.map(str::to_string),

@@ -267,6 +267,12 @@ impl CheckoutPort for Fakes {
         Ok(format!("https://billing.stripe.test/{tenant_id}"))
     }
 
+    async fn usage_pack_checkout(&self, tenant_id: Uuid) -> Result<String, PortError> {
+        Ok(format!(
+            "https://checkout.stripe.test/usage-pack/{tenant_id}"
+        ))
+    }
+
     async fn end_billing(&self, tenant_id: Uuid) -> Result<(), PortError> {
         self.recorder.billing_ended.lock().unwrap().push(tenant_id);
         Ok(())
@@ -565,6 +571,8 @@ async fn tenant(
         period_start,
         tasks_this_period,
         workspace_seconds_this_period: workspace_seconds,
+        extra_tasks: 0,
+        extra_workspace_seconds: 0,
         live_workspaces: 0,
         status: "active".into(),
         suspended_reason: None,

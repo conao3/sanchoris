@@ -1,3 +1,4 @@
+pub mod allowance;
 pub mod audit;
 pub mod aws;
 pub mod billing;

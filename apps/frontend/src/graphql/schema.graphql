@@ -1031,6 +1031,10 @@ type Mutation {
 	"""
 	openBillingPortal(tenantId: ID!): RedirectPayload!
 	"""
+	Returns a Stripe Checkout URL that buys the plan's usage pack (Plan.usagePack) for the plan's price of one period. Refused for a tenant that is not active and for a plan without a usage pack.
+	"""
+	buyUsagePack(tenantId: ID!): RedirectPayload!
+	"""
 	Returns a short-lived URL of the audit log as JSON Lines.
 	"""
 	exportAuditLog(tenantId: ID!, filter: AuditFilter): RedirectPayload!
@@ -1113,6 +1117,10 @@ type Plan {
 	"""
 	workspaceHourLimit: Int
 	limitPeriod: LimitPeriod!
+	"""
+	The extra usage a tenant on this plan can buy for the plan's price of one period. Null for the free plan and plans without limits.
+	"""
+	usagePack: UsagePack
 	"""
 	Null when the plan has no limit.
 	"""
@@ -1738,6 +1746,14 @@ type TenantUsage {
 	tasksThisPeriod: Int!
 	workspaceSecondsThisPeriod: Int!
 	"""
+	Extra tasks bought with usage packs and not used yet. The tenant starts them after Plan.taskLimit, and they last until they are used.
+	"""
+	extraTasksLeft: Int!
+	"""
+	Extra workspace seconds bought with usage packs and not used yet. The tenant uses them after Plan.workspaceHourLimit, and they last until they are used.
+	"""
+	extraWorkspaceSecondsLeft: Int!
+	"""
 	Members plus pending invitations, compared with Plan.memberLimit.
 	"""
 	seatsUsed: Int!
@@ -1879,6 +1895,12 @@ input UploadChatAttachmentInput {
 enum UsageLimitResume {
 	AUTO
 	MANUAL
+}
+
+type UsagePack {
+	tasks: Int!
+	workspaceHours: Int!
+	priceUsd: Int!
 }
 
 type UsageSnapshot {

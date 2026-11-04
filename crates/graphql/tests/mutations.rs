@@ -1567,6 +1567,7 @@ async fn a_verified_sancode_email_creates_admin_tenants_that_billing_cannot_chan
             "workspaceHourLimit": null,
             "limitPeriod": "TOTAL",
             "isAdmin": true,
+            "usagePack": null,
         })
     );
     assert_eq!(billing["tenant"]["usage"]["periodEnd"], Value::Null);
@@ -1596,6 +1597,11 @@ async fn a_verified_sancode_email_creates_admin_tenants_that_billing_cannot_chan
             json!({ "tenantId": tenant_id })
         )
         .await,
+        "CONFLICT"
+    );
+    assert_eq!(
+        w.error_code(&w.aya, "BuyUsagePack", json!({ "tenantId": tenant_id }))
+            .await,
         "CONFLICT"
     );
     assert_eq!(

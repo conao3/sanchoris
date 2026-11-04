@@ -1,5 +1,6 @@
 use async_graphql::{Context, ID, Object, Result};
 use chrono::{DateTime, Datelike, Duration, Months, TimeZone, Utc};
+use sanchoris_core::allowance::{extra_tasks_left, extra_workspace_seconds_left};
 use sanchoris_core::item::format_time;
 use sanchoris_core::items::{
     self, Integration as IntegrationItem, Output as OutputItem, Project as ProjectItem,
@@ -190,6 +191,10 @@ impl Tenant {
             period_end,
             tasks_this_period: i32::try_from(self.row.tasks_this_period)?,
             workspace_seconds_this_period: i32::try_from(self.row.workspace_seconds_this_period)?,
+            extra_tasks_left: i32::try_from(extra_tasks_left(&self.row, &plan.0))?,
+            extra_workspace_seconds_left: i32::try_from(extra_workspace_seconds_left(
+                &self.row, &plan.0,
+            ))?,
             seats_used: i32::try_from(seats)?,
             live_workspaces: i32::try_from(self.row.live_workspaces)?,
         })
@@ -442,6 +447,8 @@ pub(crate) struct TenantUsage {
     period_end: Option<DateTime<Utc>>,
     tasks_this_period: i32,
     workspace_seconds_this_period: i32,
+    extra_tasks_left: i32,
+    extra_workspace_seconds_left: i32,
     seats_used: i32,
     live_workspaces: i32,
 }
@@ -463,6 +470,16 @@ impl TenantUsage {
 
     async fn workspace_seconds_this_period(&self) -> i32 {
         self.workspace_seconds_this_period
+    }
+
+    /// Extra tasks bought with usage packs and not used yet. The tenant starts them after Plan.taskLimit, and they last until they are used.
+    async fn extra_tasks_left(&self) -> i32 {
+        self.extra_tasks_left
+    }
+
+    /// Extra workspace seconds bought with usage packs and not used yet. The tenant uses them after Plan.workspaceHourLimit, and they last until they are used.
+    async fn extra_workspace_seconds_left(&self) -> i32 {
+        self.extra_workspace_seconds_left
     }
 
     /// Members plus pending invitations, compared with Plan.memberLimit.

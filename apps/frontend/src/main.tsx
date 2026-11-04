@@ -12,7 +12,7 @@ import {
 import React from "react"
 import { createRoot } from "react-dom/client"
 import { AppFrame } from "./components/Shell.tsx"
-import { checkoutSearch } from "./components/billing.tsx"
+import { billingSearch, checkoutSearch } from "./components/billing.tsx"
 import { authorizedFetch, isLoggedIn, samePath } from "./lib/cognito.ts"
 import { mockApi } from "./lib/env.ts"
 import { TenantProvider } from "./lib/tenant.tsx"
@@ -189,7 +189,7 @@ const auditRoute = createRoute({
 const billingRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/settings/billing",
-  validateSearch: checkoutSearch,
+  validateSearch: billingSearch,
   component: BillingPage,
 })
 const notFoundRoute = createRoute({

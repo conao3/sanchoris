@@ -273,6 +273,8 @@ pub struct Tenant {
     pub period_start: DateTime<Utc>,
     pub tasks_this_period: i64,
     pub workspace_seconds_this_period: i64,
+    pub extra_tasks: i64,
+    pub extra_workspace_seconds: i64,
     pub live_workspaces: i64,
     pub status: String,
     pub suspended_reason: Option<String>,
@@ -300,6 +302,8 @@ impl Entity for Tenant {
                 "workspace_seconds_this_period",
                 self.workspace_seconds_this_period,
             )
+            .n("extra_tasks", self.extra_tasks)
+            .n("extra_workspace_seconds", self.extra_workspace_seconds)
             .n("live_workspaces", self.live_workspaces)
             .s("status", &self.status)
             .opt_s("suspended_reason", self.suspended_reason.as_ref())
@@ -320,6 +324,8 @@ impl Entity for Tenant {
             period_start: r.time("period_start")?,
             tasks_this_period: r.n("tasks_this_period")?,
             workspace_seconds_this_period: r.n("workspace_seconds_this_period")?,
+            extra_tasks: r.n("extra_tasks")?,
+            extra_workspace_seconds: r.n("extra_workspace_seconds")?,
             live_workspaces: r.n("live_workspaces")?,
             status: r.s("status")?,
             suspended_reason: r.opt_s("suspended_reason")?,

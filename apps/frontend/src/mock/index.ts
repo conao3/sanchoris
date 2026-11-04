@@ -816,6 +816,7 @@ function createResolvers() {
         return { tenant, checkoutUrl: null }
       },
       openBillingPortal: () => ({ url: "https://billing.stripe.com/p/session/test_mock" }),
+      buyUsagePack: () => ({ url: "https://checkout.stripe.com/c/pay/test_mock_usage_pack" }),
       exportAuditLog: (_: unknown, { tenantId }: Obj) => {
         const tenant = tenantById(tenantId)
         const lines = (tenant.auditList as Obj[])

@@ -1258,6 +1258,60 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
     let updates = w.api.stripe.requests("/v1/subscriptions/sub_acme");
     assert_eq!(updates[0].form["items[0][id]"], "si_acme");
     assert_eq!(updates[0].form["items[0][price]"], "price_pro");
+    let bought = w
+        .ok(owner, "BuyUsagePack", json!({ "tenantId": tenant }))
+        .await;
+    assert!(
+        bought["buyUsagePack"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://checkout.stripe.test/")
+    );
+    let sessions = w.api.stripe.requests("/v1/checkout/sessions");
+    let session = &sessions.last().unwrap().form;
+    assert_eq!(
+        (
+            session["mode"].as_str(),
+            session["customer"].as_str(),
+            session["line_items[0][price_data][unit_amount]"].as_str(),
+            session["metadata[kind]"].as_str(),
+            session["metadata[tasks]"].as_str(),
+            session["metadata[workspace_seconds]"].as_str(),
+        ),
+        ("payment", "cus_acme", "2000", "usage_pack", "15", "270000")
+    );
+    let paid_pack = json!({
+        "id": "evt_pack", "type": "checkout.session.completed", "created": Utc::now().timestamp(),
+        "data": { "object": {
+            "client_reference_id": tenant, "customer": "cus_acme", "payment_status": "paid",
+            "metadata": {
+                "kind": "usage_pack", "plan_id": "pro", "tenant_id": tenant,
+                "tasks": "15", "workspace_seconds": "270000",
+            },
+        } },
+    });
+    let response = w.stripe_webhook(&paid_pack).await;
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["status"],
+        "processed"
+    );
+    w.dynamo
+        .modify::<Tenant>(&keys::tenant_key(tenant), |row| {
+            row.tasks_this_period = 12;
+        })
+        .await;
+    let billing = w.ok(owner, "Billing", json!({ "tenant": slug })).await;
+    assert_eq!(
+        billing["tenant"]["plan"]["usagePack"],
+        json!({ "tasks": 15, "workspaceHours": 75, "priceUsd": 20 })
+    );
+    assert_eq!(
+        (
+            &billing["tenant"]["usage"]["extraTasksLeft"],
+            &billing["tenant"]["usage"]["extraWorkspaceSecondsLeft"],
+        ),
+        (&json!(13), &json!(270000))
+    );
     let portal = w
         .ok(owner, "OpenBillingPortal", json!({ "tenantId": tenant }))
         .await;

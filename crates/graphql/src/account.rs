@@ -1,5 +1,6 @@
 use async_graphql::{Context, ID, Object, Result};
 use chrono::{DateTime, Utc};
+use sanchoris_core::allowance::{self, usage_pack};
 use sanchoris_core::billing::ADMIN_PLAN;
 use sanchoris_core::db;
 use sanchoris_core::items::{
@@ -155,6 +156,24 @@ impl Plan {
     }
 }
 
+/// One and a half periods of the plan's task and workspace-hour limits. The tenant uses them after the plan's limits run out, and they last until they are used.
+pub(crate) struct UsagePack(allowance::UsagePack);
+
+#[Object]
+impl UsagePack {
+    async fn tasks(&self) -> Result<i32> {
+        Ok(i32::try_from(self.0.tasks)?)
+    }
+
+    async fn workspace_hours(&self) -> Result<i32> {
+        Ok(i32::try_from(self.0.workspace_seconds / 3600)?)
+    }
+
+    async fn price_usd(&self) -> Result<i32> {
+        Ok(i32::try_from(self.0.price_cents / 100)?)
+    }
+}
+
 #[Object]
 impl Plan {
     async fn id(&self) -> ID {
@@ -189,6 +208,11 @@ impl Plan {
 
     async fn limit_period(&self) -> Result<LimitPeriod> {
         self.period()
+    }
+
+    /// The extra usage a tenant on this plan can buy for the plan's price of one period. Null for the free plan and plans without limits.
+    async fn usage_pack(&self) -> Option<UsagePack> {
+        usage_pack(&self.0).map(UsagePack)
     }
 
     /// Null when the plan has no limit.

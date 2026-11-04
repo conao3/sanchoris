@@ -1,8 +1,8 @@
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use sanchoris_core::billing::{
     self, ADMIN_PLAN, BillingError, Checkout, FREE_PLAN, Invoice, Outcome, PAYMENT_FAILED,
-    PAYMENT_PENDING, Payer, StripeEvent, complete_checkout, end_checkout, end_subscription,
-    fail_payment, start_period,
+    PAYMENT_PENDING, Payer, StripeEvent, UsagePackCheckout, add_usage_pack, complete_checkout,
+    end_checkout, end_subscription, fail_payment, start_period,
 };
 use sanchoris_core::items::{AuditEvent, Guard, Member, Membership, Tenant, uniq};
 use sanchoris_core::keys;
@@ -779,4 +779,116 @@ fn privileged_emails_end_with_the_sancode_domain() {
     ));
     assert!(!billing::is_privileged_email("@sancode.dev"));
     assert!(!billing::is_privileged_email("sancode.dev"));
+}
+
+#[tokio::test]
+async fn a_usage_pack_adds_extra_usage_that_the_period_past_the_plan_limits_uses_up() {
+    let dynamo = TestDynamo::start().await;
+    let store = dynamo.store(Relay::Stream);
+    prices(&dynamo).await;
+    let tenant_id = pending_tenant(&dynamo, "max").await;
+    complete_checkout(
+        &store,
+        event("evt_c", "checkout.session.completed", at(1)),
+        paid(tenant_id, "cus_1", "max"),
+    )
+    .await
+    .unwrap();
+    let pack = |paid| UsagePackCheckout {
+        tenant_id,
+        customer_id: "cus_1",
+        tasks: 75,
+        workspace_seconds: 1_350_000,
+        paid,
+    };
+    assert_eq!(
+        add_usage_pack(
+            &store,
+            event("evt_unpaid", "checkout.session.completed", at(2)),
+            pack(false),
+        )
+        .await
+        .unwrap(),
+        Outcome::Ignored("the usage pack is not paid yet".into())
+    );
+    let paid_event = event(
+        "evt_paid",
+        "checkout.session.async_payment_succeeded",
+        at(2),
+    );
+    assert_eq!(
+        add_usage_pack(&store, paid_event, pack(true))
+            .await
+            .unwrap(),
+        Outcome::Processed
+    );
+    assert_eq!(
+        add_usage_pack(&store, paid_event, pack(true))
+            .await
+            .unwrap(),
+        Outcome::Duplicate
+    );
+    let t = tenant(&store, tenant_id).await;
+    assert_eq!((t.extra_tasks, t.extra_workspace_seconds), (75, 1_350_000));
+    assert!(
+        audit_actions(&dynamo, tenant_id)
+            .await
+            .contains(&"tenant.usage_pack".to_string())
+    );
+    assert_eq!(
+        add_usage_pack(
+            &store,
+            event("evt_other", "checkout.session.completed", at(2)),
+            UsagePackCheckout {
+                customer_id: "cus_other",
+                ..pack(true)
+            },
+        )
+        .await
+        .unwrap_err()
+        .to_string(),
+        BillingError::TenantNotPayable(tenant_id).to_string()
+    );
+
+    dynamo
+        .modify::<Tenant>(&keys::tenant_key(tenant_id), |t| {
+            t.tasks_this_period = 60;
+            t.workspace_seconds_this_period = 100;
+        })
+        .await;
+    start_period(
+        &store,
+        event("evt_renew", "invoice.paid", at(28)),
+        customer("cus_1"),
+        cycle(at(28)),
+    )
+    .await
+    .unwrap();
+    let t = tenant(&store, tenant_id).await;
+    assert_eq!(
+        (
+            t.tasks_this_period,
+            t.workspace_seconds_this_period,
+            t.extra_tasks,
+            t.extra_workspace_seconds
+        ),
+        (0, 0, 65, 1_350_000)
+    );
+
+    dynamo
+        .modify::<Tenant>(&keys::tenant_key(tenant_id), |t| {
+            t.tasks_this_period = 200;
+            t.workspace_seconds_this_period = 900_000 + 2_000_000;
+        })
+        .await;
+    start_period(
+        &store,
+        event("evt_renew_2", "invoice.paid", at(29)),
+        customer("cus_1"),
+        cycle(at(29)),
+    )
+    .await
+    .unwrap();
+    let t = tenant(&store, tenant_id).await;
+    assert_eq!((t.extra_tasks, t.extra_workspace_seconds), (0, 0));
 }

@@ -4,10 +4,11 @@ use serde_json::{Map, Value, json};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::allowance::{extra_tasks_left, extra_workspace_seconds_left};
 use crate::audit::{AuditEntry, record_audit};
-use crate::db::{DbError, Store, TenantTx, plans, tenant};
+use crate::db::{DbError, Store, TenantTx, plan, plans, tenant};
 use crate::item::{Entity, ItemReader, ItemWriter, Key, format_time};
-use crate::items::{Guard, Tenant, uniq};
+use crate::items::{Guard, Plan, Tenant, uniq};
 use crate::jobs::Job;
 use crate::keys;
 use crate::model::{ActorKind, AuditOrigin};
@@ -21,6 +22,7 @@ pub const PAYMENT_PENDING: &str = "payment_pending";
 pub const PAYMENT_FAILED: &str = "payment_failed";
 pub const FREE_PLAN: &str = "free";
 pub const ADMIN_PLAN: &str = "admin";
+pub const USAGE_PACK: &str = "usage_pack";
 pub const PRIVILEGED_EMAIL_DOMAIN: &str = "sancode.dev";
 pub const EVENT_RETENTION_DAYS: i64 = 30;
 pub const PLAN_STATUSES: [&str; 3] = ["active", "trialing", "past_due"];
@@ -79,6 +81,15 @@ pub struct Checkout<'a> {
     pub tenant_id: Uuid,
     pub customer_id: &'a str,
     pub plan_id: &'a str,
+    pub paid: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsagePackCheckout<'a> {
+    pub tenant_id: Uuid,
+    pub customer_id: &'a str,
+    pub tasks: i64,
+    pub workspace_seconds: i64,
     pub paid: bool,
 }
 
@@ -284,11 +295,30 @@ fn guard_status(tenant: &Tenant) -> Update {
     Update::new().require("status", s(&tenant.status))
 }
 
-fn reset_period(update: Update, start: DateTime<Utc>) -> Update {
+fn n(value: i64) -> AttributeValue {
+    AttributeValue::N(value.to_string())
+}
+
+fn reset_period(update: Update, current: &Tenant, plan: &Plan, start: DateTime<Utc>) -> Update {
     update
+        .require("tasks_this_period", n(current.tasks_this_period))
+        .require(
+            "workspace_seconds_this_period",
+            n(current.workspace_seconds_this_period),
+        )
+        .require("extra_tasks", n(current.extra_tasks))
+        .require(
+            "extra_workspace_seconds",
+            n(current.extra_workspace_seconds),
+        )
         .set_s("period_start", format_time(start))
         .set_n("tasks_this_period", 0)
         .set_n("workspace_seconds_this_period", 0)
+        .set_n("extra_tasks", extra_tasks_left(current, plan))
+        .set_n(
+            "extra_workspace_seconds",
+            extra_workspace_seconds_left(current, plan),
+        )
 }
 
 pub async fn stage_plan_change(
@@ -306,7 +336,8 @@ pub async fn stage_plan_change(
         if !hold_free_tenant(tx, current).await? && require_free_slot {
             return Ok(false);
         }
-        update = reset_period(update, at);
+        let plan = plan(tx.store(), &current.plan_id).await?;
+        update = reset_period(update, current, &plan, at);
         if current.status == "suspended"
             && matches!(
                 current.suspended_reason.as_deref(),
@@ -381,7 +412,8 @@ pub async fn complete_checkout(
             .await?;
             return close(tx, event, Outcome::Processed).await;
         }
-        update = reset_period(update, event.created)
+        let plan = plan(store, &current.plan_id).await?;
+        update = reset_period(update, &current, &plan, event.created)
             .set_s("plan_id", plan_id)
             .set_s("status", "active")
             .remove("suspended_reason");
@@ -393,6 +425,50 @@ pub async fn complete_checkout(
             "tenant.activate",
             &format!("Checkout completed; the tenant is active on plan {plan_id}"),
             json!({ "stripeCustomerId": customer_id, "from": current.plan_id, "to": plan_id }),
+        )
+        .await?;
+        tx.emit(Job::Dispatch { tenant_id });
+        close(tx, event, Outcome::Processed).await
+    })
+    .await
+}
+
+/// Adds a paid usage pack's tasks and workspace seconds to the tenant's extra usage, which lasts until it is used.
+pub async fn add_usage_pack(
+    store: &Store,
+    event: StripeEvent<'_>,
+    pack: UsagePackCheckout<'_>,
+) -> Result<Outcome, BillingError> {
+    let tenant_id = pack.tenant_id;
+    retrying(|| async {
+        let Some((mut tx, current)) = open(store, tenant_id, event).await? else {
+            return Ok(Outcome::Duplicate);
+        };
+        check_customer(&current, pack.customer_id)?;
+        if !pack.paid {
+            let reason = "the usage pack is not paid yet".to_string();
+            return close(tx, event, Outcome::Ignored(reason)).await;
+        }
+        tx.update(
+            &keys::tenant_key(tenant_id),
+            Update::new()
+                .add("extra_tasks", pack.tasks)
+                .add("extra_workspace_seconds", pack.workspace_seconds)
+                .set_s("updated_at", format_time(Utc::now())),
+        )?;
+        audit(
+            &mut tx,
+            "tenant.usage_pack",
+            &format!(
+                "Usage pack paid; {} tasks and {} workspace hours added to the extra usage",
+                pack.tasks,
+                pack.workspace_seconds / 3600
+            ),
+            json!({
+                "stripeCustomerId": pack.customer_id,
+                "tasks": pack.tasks,
+                "workspaceSeconds": pack.workspace_seconds,
+            }),
         )
         .await?;
         tx.emit(Job::Dispatch { tenant_id });
@@ -513,7 +589,8 @@ pub async fn start_period(
         }
         let mut update = guard_status(&current).set_s("updated_at", format_time(Utc::now()));
         if let Some(start) = starts {
-            update = reset_period(update, start);
+            let plan = plan(store, &current.plan_id).await?;
+            update = reset_period(update, &current, &plan, start);
         }
         if resumes {
             update = update.set_s("status", "active").remove("suspended_reason");

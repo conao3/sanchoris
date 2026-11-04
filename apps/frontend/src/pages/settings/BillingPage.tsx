@@ -25,6 +25,7 @@ import {
 } from "../../components/ui.tsx"
 import {
   BillingDocument,
+  BuyUsagePackDocument,
   ChangePlanDocument,
   DeleteTenantDocument,
   OpenBillingPortalDocument,
@@ -42,15 +43,29 @@ export function BillingPage() {
   const { data, error, refetch } = useData(BillingDocument, { tenant: slug })
   const [changePlan, changeState] = useAction(ChangePlanDocument)
   const [openPortal, portalState] = useAction(OpenBillingPortalDocument)
+  const [buyUsagePack, usagePackState] = useAction(BuyUsagePackDocument)
   const tenant = data?.tenant
   const admin = tenant?.plan.isAdmin ?? false
-  const checkout = useCheckoutOutcome(useSearch({ from: "/app/settings/billing" }).checkout)
+  const search = useSearch({ from: "/app/settings/billing" })
+  const checkout = useCheckoutOutcome(search.checkout)
+  const usagePackCheckout = useCheckoutOutcome(search.usagePack)
   const cols = "100px 140px 160px 160px 110px 100px 1fr"
 
   function portal() {
     if (tenant) {
       void openPortal({ tenantId: tenant.id }).then((result) => {
         const url = result?.openBillingPortal.url
+        if (url) {
+          window.location.assign(url)
+        }
+      })
+    }
+  }
+
+  function buyPack() {
+    if (tenant) {
+      void buyUsagePack({ tenantId: tenant.id }).then((result) => {
+        const url = result?.buyUsagePack.url
         if (url) {
           window.location.assign(url)
         }
@@ -77,6 +92,8 @@ export function BillingPage() {
       : t("billing.inTotal")
     const pace = usage.periodEnd ? elapsedRatio(usage.periodStart, usage.periodEnd) : undefined
     const workspaceHours = hours(usage.workspaceSecondsThisPeriod)
+    const extra =
+      plan.usagePack != null || usage.extraTasksLeft > 0 || usage.extraWorkspaceSecondsLeft > 0
     content = (
       <>
         <div className="grid grid-cols-1 gap-x-10 gap-y-[22px] lg:grid-cols-2">
@@ -130,7 +147,38 @@ export function BillingPage() {
                 : `${hoursOf(workspaceHours, plan.workspaceHourLimit)} · ${t("billing.thresholds")}`}
             </Dim>
           </div>
-          <div />
+          {extra ? (
+            <div>
+              <Section>{t("billing.extraUsage")}</Section>
+              <Kv
+                items={[
+                  [t("nav.tasks"), t("billing.extraTasksLeft", { n: usage.extraTasksLeft })],
+                  [
+                    t("col.workspaceHours"),
+                    t("billing.extraHoursLeft", { n: hours(usage.extraWorkspaceSecondsLeft) }),
+                  ],
+                ]}
+              />
+              <Dim className="mt-2">{t("billing.extraUsageNote")}</Dim>
+              {plan.usagePack ? (
+                <div className="mt-3">
+                  <Button
+                    isDisabled={usagePackState.loading}
+                    reason={owner ? undefined : t("reason.ownerUsagePack")}
+                    onPress={buyPack}
+                  >
+                    {t("billing.buyUsagePack", {
+                      tasks: plan.usagePack.tasks,
+                      hours: plan.usagePack.workspaceHours,
+                      price: plan.usagePack.priceUsd,
+                    })}
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div />
+          )}
         </div>
         {admin ? null : (
           <>
@@ -210,10 +258,16 @@ export function BillingPage() {
         success="checkout.planPaid"
         canceled="checkout.planCanceled"
       />
+      <CheckoutNote
+        outcome={usagePackCheckout}
+        success="checkout.usagePackPaid"
+        canceled="checkout.usagePackCanceled"
+      />
       {tenant ? <TenantStateNote tenant={tenant} /> : null}
       {error ? <ErrorNote message={error.message} onRetry={refetch} /> : null}
       <ActionError error={portalState.error} className="my-3" />
       <ActionError error={changeState.error} className="my-3" />
+      <ActionError error={usagePackState.error} className="my-3" />
       {!data && !error ? <Skeleton rows={6} /> : null}
       {content}
     </SettingsPage>

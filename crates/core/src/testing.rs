@@ -322,6 +322,8 @@ impl TestDynamo {
             period_start: now,
             tasks_this_period: 0,
             workspace_seconds_this_period: 0,
+            extra_tasks: 0,
+            extra_workspace_seconds: 0,
             live_workspaces: 0,
             status: "active".into(),
             suspended_reason: None,
