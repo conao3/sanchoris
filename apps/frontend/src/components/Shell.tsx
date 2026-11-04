@@ -129,7 +129,8 @@ function TenantSwitcher() {
                 className="flex w-full items-center gap-2 px-3.5 py-[7px]"
               >
                 {item.tenant.name}
-                <Icon icon={Check} className="ml-auto" />
+                <span className="ml-auto text-xs text-muted">{t(roleLabels[item.role])}</span>
+                <Icon icon={Check} />
               </div>
             ) : (
               <button
@@ -142,6 +143,8 @@ function TenantSwitcher() {
                 className="flex w-full items-center gap-2 px-3.5 py-[7px] text-left hover:bg-hover"
               >
                 {item.tenant.name}
+                <span className="ml-auto text-xs text-muted">{t(roleLabels[item.role])}</span>
+                <span className="size-[15px] shrink-0" />
               </button>
             ),
           )}
@@ -159,7 +162,7 @@ function TenantSwitcher() {
 }
 
 function UserMenu() {
-  const { viewer, membership } = useTenant()
+  const { viewer } = useTenant()
   const [open, setOpen] = useState(false)
   const [recordSignOut] = useAction(SignOutDocument)
   return (
@@ -183,7 +186,7 @@ function UserMenu() {
         className="flex w-full items-center rounded-ui px-2 py-1.5 text-left text-sm text-muted hover:bg-hover max-lg:min-h-10"
         aria-expanded={open}
       >
-        {viewer.user.name} · {t(roleLabels[membership.role])}
+        {viewer.user.name}
         <Icon icon={ChevronsUpDown} className="ml-auto text-faint" />
       </button>
     </div>
