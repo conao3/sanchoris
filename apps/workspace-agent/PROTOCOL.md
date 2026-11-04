@@ -64,7 +64,7 @@ The worker and `exec` commands run with the agent's environment, which holds non
 
 - `agent`: `"claude"` or `"codex"`.
 - `model`: the Worker model, fixed for the session.
-- `systemPrompt`: string appended to the worker's system prompt (Project `SystemPrompt`), or `null`.
+- `systemPrompt`: the second system prompt, or `null`: the task's workflow settings (the config, the Session, the Trigger, `Start`, the accounts the GitHub App is installed on, and how to propose a change to them), then the Project's `SystemPrompt`. The worker's own system prompt comes first and is the same for every task: Claude Code runs with its `claude_code` preset and `excludeDynamicSections` (the working directory and git status go to the first user message instead), and `systemPrompt` is its `append`; Codex keeps its base instructions and takes `systemPrompt` as `developerInstructions`. So the provider caches the first part across tasks and tenants.
 - `compactInstructions`: the Session's `CompactInstructions`, or `null`. Codex takes them as the thread config `compact_prompt`: a fixed request to summarize the conversation so that the work can continue from the summary alone, followed by the instructions (`compact_prompt` replaces Codex's own summarization prompt). Claude gets its instructions in each compact `user_message` instead.
 - `skills`: the Trigger's `Start.Skills` that have `skill.yaml`. Each has `name`, `required` (in `Start.RequiredSkills`), and `inputs` (the skill's `Inputs`: field name to `"string" | "number" | "boolean" | "array" | "object"`).
 - `instruction`: the first user turn, or `null` to wait for `user_message`.

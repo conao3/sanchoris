@@ -16,7 +16,7 @@ use sanchoris_core::items::{
 };
 use sanchoris_core::keys;
 use sanchoris_core::lifecycle::TaskDecision;
-use sanchoris_core::messages::{self, ChatStartMessage};
+use sanchoris_core::messages::{self, ChatStartMessage, Workflow};
 use sanchoris_core::model::{NamedDefinition, TaskDefinition, TaskStatus, WaitReason};
 use sanchoris_core::modes::SessionModes;
 use sanchoris_core::tasks::runs_of;
@@ -28,7 +28,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::dispatcher::{
-    checkout_repositories, known_inputs, load_session, load_skill, offered_skills, shorten,
+    account_logins, checkout_repositories, known_inputs, load_session, load_skill, offered_skills,
+    shorten,
 };
 use crate::error::WorkerError;
 
@@ -444,10 +445,25 @@ async fn start_task(
         skills: &offered,
         text: message.text,
     });
+    let accounts = account_logins(tx).await?;
+    let start_value = serde_json::to_value(&definition.start)?;
+    let workflow = messages::workflow_prompt(
+        &Workflow {
+            config_repository: &config.repository,
+            config_root: &config.root_path,
+            config_branch: &config.branch,
+            trigger: None,
+            session_name,
+            session: &definition.session.definition,
+            start: &start_value,
+            accounts: &accounts,
+        },
+        system_prompt.as_deref(),
+    );
     let mut task = load_task(tx, task_id).await?;
     task.start_payload = Some(json!({
         "instruction": instruction,
-        "systemPrompt": system_prompt,
+        "systemPrompt": workflow,
         "repositories": repositories,
         "modes": message.modes,
         "attachments": message.attachments,

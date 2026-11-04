@@ -278,6 +278,94 @@ pub fn restored_message() -> String {
     )
 }
 
+/// The settings a task runs with, from the config revision active when it started.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Workflow<'a> {
+    pub config_repository: &'a str,
+    pub config_root: &'a str,
+    pub config_branch: &'a str,
+    /// The trigger that started the task and its definition, or None for a chat.
+    pub trigger: Option<(&'a str, &'a Value)>,
+    pub session_name: &'a str,
+    pub session: &'a Value,
+    pub start: &'a Value,
+    /// The GitHub accounts the tenant's GitHub App is installed on.
+    pub accounts: &'a [String],
+}
+
+fn pretty(value: &Value) -> String {
+    serde_json::to_string_pretty(value).expect("a JSON value serializes")
+}
+
+/// The worker's second system prompt: the task's workflow settings and how to propose a change to them, then the Project's `SystemPrompt`. The first system prompt is the worker's own and stays the same for every task, so it is cached across tasks.
+pub fn workflow_prompt(workflow: &Workflow<'_>, project_prompt: Option<&str>) -> String {
+    let origin = match workflow.trigger {
+        Some((name, _)) => format!("Trigger `{name}` started this task."),
+        None => format!(
+            "A member started this task from a chat in session `{}`.",
+            workflow.session_name
+        ),
+    };
+    let accounts = if workflow.accounts.is_empty() {
+        "none".to_string()
+    } else {
+        workflow.accounts.join(", ")
+    };
+    let mut text = format!(
+        "# sanchoris workflow settings
+
+You work in a sanchoris task. These settings decide what this task can reach and do. They come from `sanchoris.yaml` under `{root}` on branch `{branch}` of the config repository `{config}`, as they were when the task started; a change to them applies to tasks that start after it, not to this one.
+
+{origin}
+
+Session `{session_name}`:
+```json
+{session}
+```
+
+Start (instruction, skills, required skills, limits):
+```json
+{start}
+```
+",
+        root = workflow.config_root,
+        branch = workflow.config_branch,
+        config = workflow.config_repository,
+        session_name = workflow.session_name,
+        session = pretty(workflow.session),
+        start = pretty(workflow.start),
+    );
+    if let Some((name, definition)) = workflow.trigger {
+        text.push_str(&format!(
+            "
+Trigger `{name}`:
+```json
+{}
+```
+",
+            pretty(definition)
+        ));
+    }
+    text.push_str(&format!(
+        "
+What they mean:
+- GitHub: `git` and the GitHub API reach only the repositories in the session's `GitHub.Repos` (`owner/*` is every repository the GitHub App is installed on for that account), with `GitHub.Permissions`. The GitHub App is installed on these accounts of the tenant: {accounts}. `git` gets a token for each repository's account by itself; for an API call, take the token of an account with `printf 'protocol=https\\nhost=github.com\\npath=<owner>/<repo>\\n' | git credential fill`. The token is a GitHub App installation token, so endpoints about a user, such as `/user`, refuse it.
+- Network: only the hosts in `Network.Allow` are reachable.
+- Limits: the task stops for a person when it reaches the turns, the cost, or the time in `Limits`.
+
+Changing them:
+When a request needs something these settings do not allow, such as another repository or account, a permission, a network host, a skill, or a longer limit, do not work around it. Tell the member which setting stops it and propose the change to `sanchoris.yaml` as a diff. When the config repository is in `GitHub.Repos` with `contents: write` and you can run a skill that opens pull requests, offer to commit the change on a branch of the config repository and open a pull request; the member reviews and merges it on GitHub, and sanchoris shows it as a change request until then. Otherwise ask the member to make the change in `{config}`. A GitHub account the App is not installed on needs the App first: an owner or admin of the tenant adds it in Settings, Integrations.
+",
+        config = workflow.config_repository,
+    ));
+    if let Some(prompt) = project_prompt.filter(|prompt| !prompt.trim().is_empty()) {
+        text.push_str("\n# Project\n\n");
+        text.push_str(prompt);
+        text.push('\n');
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

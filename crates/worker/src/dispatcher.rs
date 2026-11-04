@@ -16,7 +16,7 @@ use sanchoris_core::items::{
 };
 use sanchoris_core::jobs::Job;
 use sanchoris_core::keys;
-use sanchoris_core::messages::{self, OfferedInput, OfferedSkill, StartMessage};
+use sanchoris_core::messages::{self, OfferedInput, OfferedSkill, StartMessage, Workflow};
 use sanchoris_core::model::{ActorKind, AuditOrigin, NamedDefinition, TaskDefinition};
 use sanchoris_core::modes::SessionModes;
 use sanchoris_core::pattern::EventPattern;
@@ -579,10 +579,33 @@ async fn start(
         instruction: &instruction,
         skills: &offered,
     });
+    let config = tx
+        .require::<Config>(&keys::config_key(tx.tenant_id(), trigger.config_id))
+        .await?;
+    let accounts = account_logins(tx).await?;
+    let start_value = serde_json::to_value(&start)?;
+    let trigger_value = definition
+        .trigger
+        .as_ref()
+        .map(|trigger| trigger.definition.clone())
+        .unwrap_or(Value::Null);
+    let workflow = messages::workflow_prompt(
+        &Workflow {
+            config_repository: &config.repository,
+            config_root: &config.root_path,
+            config_branch: &config.branch,
+            trigger: Some((&trigger.name, &trigger_value)),
+            session_name: &start.session,
+            session: &definition.session.definition,
+            start: &start_value,
+            accounts: &accounts,
+        },
+        system_prompt.as_deref(),
+    );
     let mut task = load_task(tx, task_id).await?;
     task.start_payload = Some(json!({
         "instruction": text,
-        "systemPrompt": system_prompt,
+        "systemPrompt": workflow,
         "repositories": repositories,
         "modes": SessionModes::DEFAULT,
         "attachments": [],
@@ -947,6 +970,15 @@ async fn place_github(
         requested_by_github_user_id: Some(sender_id),
         requested_by_github_login: Some(sender_login.to_string()),
     })))
+}
+
+/// The GitHub accounts the tenant's GitHub App is installed on.
+pub(crate) async fn account_logins(tx: &mut TenantTx) -> Result<Vec<String>> {
+    Ok(crate::installations(tx)
+        .await?
+        .into_iter()
+        .filter_map(|installation| installation.account_login)
+        .collect())
 }
 
 pub(crate) async fn load_session(

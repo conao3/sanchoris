@@ -182,7 +182,9 @@ async fn a_new_conversation_starts_its_first_task_in_the_session_with_the_plan_c
         instruction.ends_with("\n\n[sanchoris] Message from Mika:\nSplit the checkout work"),
         "{instruction}"
     );
-    assert_eq!(starts[0]["systemPrompt"], json!(null));
+    let system_prompt = starts[0]["systemPrompt"].as_str().unwrap();
+    assert!(system_prompt.contains("A member started this task from a chat in session `all`."));
+    assert!(!system_prompt.contains("# Project"));
     assert_eq!(
         messages(&world, conversation_id)
             .await
@@ -200,10 +202,9 @@ async fn a_project_session_sends_the_project_system_prompt() {
     world.worker.settle().await.unwrap();
     let view = world.task_of(delivered.task_id).await;
     let starts = world.outbox(view.run_id.unwrap(), "start").await;
-    assert_eq!(
-        starts[0]["systemPrompt"],
-        "You are working on the Acme shop. Always write tests for new endpoints.\n"
-    );
+    assert!(starts[0]["systemPrompt"].as_str().unwrap().ends_with(
+        "# Project\n\nYou are working on the Acme shop. Always write tests for new endpoints.\n\n"
+    ));
     let definition = stored_task(&world, delivered.task_id)
         .await
         .settings()

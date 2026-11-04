@@ -245,10 +245,12 @@ export class ClaudeWorker implements Worker {
         includePartialMessages: true,
         settings: { showThinkingSummaries: true },
         settingSources: ["user", "project", "local"],
-        systemPrompt:
-          this.context.systemPrompt === null
-            ? { type: "preset", preset: "claude_code" }
-            : { type: "preset", preset: "claude_code", append: this.context.systemPrompt },
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          excludeDynamicSections: true,
+          ...(this.context.systemPrompt === null ? {} : { append: this.context.systemPrompt }),
+        },
         stderr: (data) => {
           for (const line of data.split("\n"))
             if (line !== "") this.context.handlers.onEvent("log", { line })

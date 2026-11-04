@@ -176,10 +176,16 @@ async fn labeled_issue_starts_a_running_task_with_the_documented_message() {
     assert_eq!(starts[0]["instruction"], START_TEXT);
     assert_eq!(starts[0]["agent"], "claude");
     assert_eq!(starts[0]["model"], "claude-sonnet-5-5");
-    assert_eq!(
-        starts[0]["systemPrompt"],
-        "You are working on the Acme shop. Always write tests for new endpoints.\n"
+    let system_prompt = starts[0]["systemPrompt"].as_str().unwrap();
+    assert!(
+        system_prompt.starts_with("# sanchoris workflow settings"),
+        "{system_prompt}"
     );
+    assert!(system_prompt.contains("Trigger `labeled-issue` started this task."));
+    assert!(system_prompt.contains("propose the change to `sanchoris.yaml` as a diff"));
+    assert!(system_prompt.ends_with(
+        "# Project\n\nYou are working on the Acme shop. Always write tests for new endpoints.\n\n"
+    ));
     assert_eq!(
         starts[0]["skills"],
         json!([{ "name": "open-pr-green-ci", "required": true, "inputs": { "Issue": "number", "Repo": "string", "Repos": "array" } }])
