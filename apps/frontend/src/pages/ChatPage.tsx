@@ -872,6 +872,7 @@ function NewChat({
 }
 
 function FiledTasks({ conversation }: { conversation: ChatConversation }) {
+  const navigate = useNavigate()
   const filedTasks = conversation.filedTasks
   return (
     <>
@@ -903,7 +904,12 @@ function FiledTasks({ conversation }: { conversation: ChatConversation }) {
                   : null,
             ].filter(Boolean)
             return (
-              <Row key={filed.id} cols="96px 1fr" tall>
+              <Row
+                key={filed.id}
+                cols="96px 1fr"
+                tall
+                onClick={() => void navigate({ to: "/tasks/$task", params: { task: filed.id } })}
+              >
                 <TaskState status={filed.status} waitReason={filed.waitReason} />
                 <div>
                   <Lk

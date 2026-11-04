@@ -339,7 +339,7 @@ export function TriggersPage() {
                     tall
                     selected={nav.selected === index}
                     rowRef={nav.rowRef(index)}
-                    onClick={nav.pick(index)}
+                    onClick={nav.open(index)}
                   >
                     <div className="flex flex-col items-start gap-0.5">
                       <ExternalLk href={trigger.editUrl} className="font-medium no-underline">

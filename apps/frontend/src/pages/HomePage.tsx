@@ -214,10 +214,7 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
           className: stackedRow,
           selected: nav.selected === index,
           rowRef: nav.rowRef(index),
-          onClick: () => {
-            nav.select(index)
-            openAttention(item)
-          },
+          onClick: nav.open(index),
         }
         if (item.kind === "task") {
           const { task } = item

@@ -183,7 +183,7 @@ export function ConfigPage() {
                     cols={configCols}
                     selected={nav.selected === index}
                     rowRef={nav.rowRef(index)}
-                    onClick={nav.pick(index)}
+                    onClick={nav.open(index)}
                   >
                     <span className="font-medium">
                       <Icon icon={FolderGit2} />{" "}
@@ -312,7 +312,11 @@ export function ConfigPage() {
                 <span />
               </Th>
               {tenant.changeRequests.map((change) => (
-                <Row key={change.id} cols={changeCols}>
+                <Row
+                  key={change.id}
+                  cols={changeCols}
+                  onClick={() => void window.open(change.url, "_blank", "noreferrer")}
+                >
                   <Id>#{change.number}</Id>
                   <span className="font-medium">{change.title}</span>
                   <span>
@@ -341,7 +345,7 @@ export function ConfigPage() {
                       {t("config.invalidShort")}
                     </State>
                   )}
-                  <span className="justify-self-end">
+                  <span className="justify-self-end" onClick={(event) => event.stopPropagation()}>
                     <Button small icon={ExternalLink} href={change.url}>
                       {t("common.reviewOnGitHub")}
                     </Button>

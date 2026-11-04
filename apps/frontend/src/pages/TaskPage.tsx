@@ -575,7 +575,16 @@ export function TaskPage() {
         <Kv items={relations} />
         <Section count={task.runs.length}>{t("task.runs")}</Section>
         {task.runs.map((run) => (
-          <Row key={run.id} cols="44px 1fr">
+          <Row
+            key={run.id}
+            cols="44px 1fr"
+            onClick={() =>
+              void navigate({
+                to: "/tasks/$task/runs/$n",
+                params: { task: task.id, n: String(run.number) },
+              })
+            }
+          >
             <Lk
               to="/tasks/$task/runs/$n"
               params={{ task: task.id, n: String(run.number) }}

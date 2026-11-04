@@ -92,6 +92,10 @@ export function useListNav(
     selected,
     select: setIndex,
     pick: (position: number) => (position === selected ? undefined : () => setIndex(position)),
+    open: (position: number) => () => {
+      setIndex(position)
+      onOpen(position)
+    },
     rowRef: (position: number) => (element: HTMLDivElement | null) => {
       rows.current[position] = element
     },
