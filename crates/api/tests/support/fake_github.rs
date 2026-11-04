@@ -156,7 +156,7 @@ impl FakeGitHub {
             "number": pull.number,
             "html_url": format!("https://github.com/{}/pull/{}", pull.repo, pull.number),
             "head": { "ref": pull.head, "sha": sha },
-            "base": { "ref": pull.base },
+            "base": { "ref": pull.base, "sha": self.branch_head(&pull.repo, &pull.base).unwrap_or_default() },
             "state": "open",
             "merged": false,
             "title": pull.title,

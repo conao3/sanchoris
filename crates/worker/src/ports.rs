@@ -32,6 +32,9 @@ impl GitHubError {
 pub struct PullRequest {
     pub number: i64,
     pub url: String,
+    pub title: String,
+    pub base_ref: String,
+    pub base_sha: String,
     pub head_ref: String,
     pub head_sha: String,
     pub state: String,

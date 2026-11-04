@@ -61,6 +61,11 @@ pub enum Job {
         tenant_id: Uuid,
         config_id: Uuid,
     },
+    ChangeRequestSync {
+        tenant_id: Uuid,
+        config_id: Uuid,
+        number: i64,
+    },
     TriggerSchedule {
         tenant_id: Uuid,
         config_id: Uuid,
@@ -93,7 +98,9 @@ impl Job {
             | Self::CheckPoll { task_id, .. }
             | Self::Reconcile { task_id, .. } => format!("task:{task_id}"),
             Self::DeliverOutbox { run_id, .. } => format!("run:{run_id}"),
-            Self::ConfigSync { config_id, .. } => format!("config:{config_id}"),
+            Self::ConfigSync { config_id, .. } | Self::ChangeRequestSync { config_id, .. } => {
+                format!("config:{config_id}")
+            }
             Self::DeleteTenant { tenant_id, .. } => format!("delete:{tenant_id}"),
             Self::SweepConfigs => "sweep:configs".into(),
             Self::SweepChecks => "sweep:checks".into(),

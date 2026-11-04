@@ -133,6 +133,9 @@ fn pull_request(value: &Value) -> Result<PullRequest, GitHubError> {
     Ok(PullRequest {
         number: integer(value, "/number")?,
         url: string(value, "/html_url")?,
+        title: string(value, "/title")?,
+        base_ref: string(value, "/base/ref")?,
+        base_sha: string(value, "/base/sha")?,
         head_ref: string(value, "/head/ref")?,
         head_sha: string(value, "/head/sha")?,
         state: string(value, "/state")?,

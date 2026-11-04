@@ -556,6 +556,67 @@ async fn a_push_to_the_config_branch_syncs_the_config_right_away() {
     assert!(config.synced_at.is_some());
 }
 
+fn pull_request_payload(action: &str, base: &str) -> Value {
+    json!({
+        "action": action,
+        "number": 7,
+        "pull_request": { "number": 7, "base": { "ref": base } },
+        "repository": { "id": SEED_CONFIG_REPOSITORY_ID, "full_name": "acme/sanchoris-config" },
+        "installation": { "id": support::INSTALLATION },
+    })
+}
+
+fn queued_change_request_syncs(server: &Server) -> Vec<(Uuid, i64)> {
+    server
+        .api
+        .driver
+        .queue
+        .bodies()
+        .iter()
+        .filter_map(|body| match Envelope::parse(body).unwrap().job {
+            Job::ChangeRequestSync {
+                config_id, number, ..
+            } => Some((config_id, number)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_pull_request_into_the_config_branch_syncs_its_change_request() {
+    let server = Server::start().await;
+    let config_id = server.seeded.tenant.config_id;
+
+    for (delivery, action, base) in [
+        ("pr-feature", "opened", "feature"),
+        ("pr-labeled", "labeled", "main"),
+    ] {
+        let ignored = server
+            .webhook(
+                "pull_request",
+                delivery,
+                &pull_request_payload(action, base),
+            )
+            .await;
+        assert_eq!(ignored.json::<Value>().await.unwrap()["status"], "ignored");
+    }
+    assert!(queued_change_request_syncs(&server).is_empty());
+
+    let opened = server
+        .webhook(
+            "pull_request",
+            "pr-opened",
+            &pull_request_payload("opened", "main"),
+        )
+        .await;
+    assert_eq!(opened.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        opened.json::<Value>().await.unwrap()["status"],
+        "config_sync"
+    );
+    assert_eq!(queued_change_request_syncs(&server), vec![(config_id, 7)]);
+}
+
 async fn fill_receive_windows(server: &Server, received: i64) {
     let start = window_start(Utc::now());
     for window in [start, start + chrono::Duration::seconds(60)] {

@@ -131,6 +131,8 @@ fn pull(number: i64, sha: &str) -> Value {
     json!({
         "number": number,
         "html_url": format!("https://github.com/acme/shop-web/pull/{number}"),
+        "title": "Fix the flaky test",
+        "base": { "ref": "main", "sha": "base" },
         "head": { "ref": "sanchoris/task", "sha": sha },
         "state": "open",
         "merged_at": null,

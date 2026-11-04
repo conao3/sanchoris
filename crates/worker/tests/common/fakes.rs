@@ -45,6 +45,7 @@ pub fn epoch() -> DateTime<Utc> {
 pub struct GitHubState {
     pub head_sha: String,
     pub files: ConfigFiles,
+    pub files_at: HashMap<String, ConfigFiles>,
     pub default_branch_calls: usize,
     pub pulls: BTreeMap<(String, String), PullRequest>,
     pub next_number: i64,
@@ -211,6 +212,9 @@ impl GitHubClient for FakeGitHub {
         let pr = PullRequest {
             number,
             url: format!("https://github.com/{repo}/pull/{number}"),
+            title: new.title.into(),
+            base_ref: new.base.into(),
+            base_sha: format!("{}-sha", new.base),
             head_ref: new.head.into(),
             head_sha: format!("{}-sha-{pushes}", new.head),
             state: "open".into(),
@@ -449,8 +453,9 @@ impl ConfigSource for FakeGitHub {
         Ok(self.state.lock().unwrap().head_sha.clone())
     }
 
-    async fn fetch(&self, _: i64, _: i64, _: &str, _: &str) -> Result<ConfigFiles, GitHubError> {
-        Ok(self.state.lock().unwrap().files.clone())
+    async fn fetch(&self, _: i64, _: i64, _: &str, sha: &str) -> Result<ConfigFiles, GitHubError> {
+        let state = self.state.lock().unwrap();
+        Ok(state.files_at.get(sha).unwrap_or(&state.files).clone())
     }
 
     async fn commit_author(&self, _: i64, _: i64, _: &str) -> Result<String, GitHubError> {

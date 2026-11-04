@@ -1,6 +1,6 @@
 use async_graphql::{Context, ID, Object, Result, SimpleObject};
 use chrono::{DateTime, Utc};
-use sanchoris_config::{Checkout, REQUESTER};
+use sanchoris_config::{Checkout, REQUESTER, root_prefix};
 use sanchoris_core::db::{self, REF_CONFIG_REVISION};
 use sanchoris_core::items::{
     self, ConfigRevision as RevisionItem, Project as ProjectItem, Repository as RepositoryItem,
@@ -21,15 +21,6 @@ use crate::error::not_found;
 use crate::scalars::{Timestamp, ts, ts_opt};
 use crate::skill::Skill;
 use crate::task::Task;
-
-pub(crate) fn root_prefix(root: &str) -> String {
-    let trimmed = root.trim_matches('/');
-    if trimmed.is_empty() {
-        String::new()
-    } else {
-        format!("{trimmed}/")
-    }
-}
 
 pub(crate) fn edit_url(repository: &str, branch: &str, root: &str, path: &str) -> String {
     format!(

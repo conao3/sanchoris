@@ -1,4 +1,5 @@
 pub mod backfill;
+pub mod change_requests;
 pub mod config_sync;
 pub mod conversation;
 pub mod deadline;
@@ -205,6 +206,11 @@ impl Worker {
                 config_sync::sync_config(self, *tenant_id, *config_id).await?;
                 Ok(1)
             }
+            Job::ChangeRequestSync {
+                tenant_id,
+                config_id,
+                number,
+            } => change_requests::sync(self, *tenant_id, *config_id, *number).await,
             Job::TriggerSchedule {
                 tenant_id,
                 config_id,
@@ -244,6 +250,7 @@ fn held_by_tenant(job: &Job) -> Option<uuid::Uuid> {
         | Job::AutoCompact { tenant_id, .. }
         | Job::CheckPoll { tenant_id, .. }
         | Job::ConfigSync { tenant_id, .. }
+        | Job::ChangeRequestSync { tenant_id, .. }
         | Job::TriggerSchedule { tenant_id, .. } => Some(*tenant_id),
         Job::RunEvents { .. }
         | Job::Reconcile { .. }

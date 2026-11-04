@@ -89,6 +89,16 @@ impl ConfigRepository {
     }
 }
 
+/// The path of a config's root directory in its repository, empty or ending with `/`.
+pub fn root_prefix(root: &str) -> String {
+    let trimmed = root.trim_matches('/');
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("{trimmed}/")
+    }
+}
+
 pub fn read_config_dir(root: &Path) -> io::Result<ConfigFiles> {
     let mut files = ConfigFiles::new();
     files.insert(

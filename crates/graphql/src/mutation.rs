@@ -1793,8 +1793,16 @@ impl MutationRoot {
         let config_row = &config.row;
         let row = write(|| async {
             let at = now(ctx);
+            let mut tx = tx(ctx, scope.tenant_id);
+            let recorded = tx
+                .get::<items::ChangeRequest>(&keys::change_request_key(
+                    scope.tenant_id,
+                    config_row.id,
+                    i64::from(number),
+                ))
+                .await?;
             let row = items::ChangeRequest {
-                id: Uuid::new_v4(),
+                id: recorded.as_ref().map_or_else(Uuid::new_v4, |row| row.id),
                 tenant_id: scope.tenant_id,
                 config_id: config_row.id,
                 pr_number: i64::from(number),
@@ -1802,19 +1810,22 @@ impl MutationRoot {
                 state: "open".into(),
                 changed_files: json!([format!(
                     "{}{}",
-                    crate::config::root_prefix(&config_row.root_path),
+                    sanchoris_config::root_prefix(&config_row.root_path),
                     sanchoris_config::CONFIG_FILE
                 )]),
                 changed_definitions: json!([{ "kind": "trigger", "name": trigger_name }]),
-                validation_status: None,
-                validation_messages: json!([]),
+                validation_status: recorded
+                    .as_ref()
+                    .and_then(|row| row.validation_status.clone()),
+                validation_messages: recorded
+                    .as_ref()
+                    .map_or_else(|| json!([]), |row| row.validation_messages.clone()),
                 requested_by_member_id: Some(member_id),
                 requested_by_task_id: None,
-                created_at: at,
+                created_at: recorded.as_ref().map_or(at, |row| row.created_at),
                 updated_at: at,
             };
-            let mut tx = tx(ctx, scope.tenant_id);
-            tx.insert(&row)?;
+            tx.put(&row)?;
             audit_member(
                 ctx,
                 &mut tx,

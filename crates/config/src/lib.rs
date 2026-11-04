@@ -20,6 +20,7 @@ pub use config::{
 pub use error::{ValidationError, ValidationErrors};
 pub use repository::{
     ConfigFiles, ConfigRepository, Skill, SkillOrigin, parse_repository, read_config_dir,
+    root_prefix,
 };
 pub use resource::{IntegrationPattern, Resource, parse_resource};
 pub use skill_md::{SkillDocument, parse_skill_md};

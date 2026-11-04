@@ -85,10 +85,10 @@ pub async fn github(
     ) {
         return installation_event(&state, delivery, event, &payload).await;
     }
-    let syncs = if event == "push" {
-        sync_pushed_configs(&state, &payload).await?
-    } else {
-        0
+    let syncs = match event {
+        "push" => sync_pushed_configs(&state, &payload).await?,
+        "pull_request" => sync_change_requests(&state, &payload).await?,
+        _ => 0,
     };
     match ingest_github_delivery(&state.store, delivery, event, &payload).await {
         Ok(Some(Recorded::New(_))) => Ok(status(StatusCode::ACCEPTED, "accepted")),
@@ -105,20 +105,23 @@ pub async fn github(
     }
 }
 
-async fn sync_pushed_configs(state: &AppState, payload: &Value) -> Result<usize, ApiError> {
-    let number = |pointer: &str| {
-        payload
-            .pointer(pointer)
-            .and_then(Value::as_i64)
-            .ok_or_else(|| ApiError::BadRequest(format!("the event has no {pointer}")))
-    };
-    let installation_id = number("/installation/id")?;
-    let repository_id = number("/repository/id")?;
-    let Some(branch) = text(payload, "/ref")?.strip_prefix("refs/heads/") else {
-        return Ok(0);
-    };
+fn number(payload: &Value, pointer: &str) -> Result<i64, ApiError> {
+    payload
+        .pointer(pointer)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| ApiError::BadRequest(format!("the event has no {pointer}")))
+}
+
+/// The tenant and its active configs on `branch` of the event's repository.
+async fn configs_on(
+    state: &AppState,
+    payload: &Value,
+    branch: &str,
+) -> Result<Option<(Uuid, Vec<Config>)>, ApiError> {
+    let installation_id = number(payload, "/installation/id")?;
+    let repository_id = number(payload, "/repository/id")?;
     let Some(tenant_id) = tenant_for_installation(&state.store, installation_id).await? else {
-        return Ok(0);
+        return Ok(None);
     };
     let configs: Vec<Config> = state
         .store
@@ -127,14 +130,46 @@ async fn sync_pushed_configs(state: &AppState, payload: &Value) -> Result<usize,
         .into_iter()
         .filter(|c| c.is_active() && c.repository_id == Some(repository_id) && c.branch == branch)
         .collect();
-    if configs.is_empty() {
+    Ok((!configs.is_empty()).then_some((tenant_id, configs)))
+}
+
+async fn sync_pushed_configs(state: &AppState, payload: &Value) -> Result<usize, ApiError> {
+    let Some(branch) = text(payload, "/ref")?.strip_prefix("refs/heads/") else {
         return Ok(0);
-    }
+    };
+    let Some((tenant_id, configs)) = configs_on(state, payload, branch).await? else {
+        return Ok(0);
+    };
     let mut tx = state.store.tx(tenant_id);
     for config in &configs {
         tx.emit(Job::ConfigSync {
             tenant_id,
             config_id: config.id,
+        });
+    }
+    tx.commit().await?;
+    Ok(configs.len())
+}
+
+/// Queues a sync of the change request for a pull request into the branch of an active config.
+async fn sync_change_requests(state: &AppState, payload: &Value) -> Result<usize, ApiError> {
+    if !matches!(
+        text(payload, "/action")?,
+        "opened" | "reopened" | "edited" | "synchronize" | "closed"
+    ) {
+        return Ok(0);
+    }
+    let pull_number = number(payload, "/pull_request/number")?;
+    let branch = text(payload, "/pull_request/base/ref")?;
+    let Some((tenant_id, configs)) = configs_on(state, payload, branch).await? else {
+        return Ok(0);
+    };
+    let mut tx = state.store.tx(tenant_id);
+    for config in &configs {
+        tx.emit(Job::ChangeRequestSync {
+            tenant_id,
+            config_id: config.id,
+            number: pull_number,
         });
     }
     tx.commit().await?;

@@ -21,8 +21,15 @@ use crate::store::Update;
 pub const ERROR_APPROVAL_REQUESTED: &str = "Approval.Requested";
 pub const LIVE_WORKSPACES: &str = "live_workspaces";
 
+const TASK_BRANCH_PREFIX: &str = "sanchoris/";
+
 pub fn task_branch(task_id: Uuid) -> String {
-    format!("sanchoris/{task_id}")
+    format!("{TASK_BRANCH_PREFIX}{task_id}")
+}
+
+/// The task whose branch `task_branch` names `branch`.
+pub fn branch_task(branch: &str) -> Option<Uuid> {
+    branch.strip_prefix(TASK_BRANCH_PREFIX)?.parse().ok()
 }
 
 pub async fn load_task(tx: &mut TenantTx, task_id: Uuid) -> Result<Task, DbError> {
