@@ -636,6 +636,7 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
                     : "session"
             }
             partial={working.partial}
+            startup={working.startup}
           />
         ) : null}
       </div>

@@ -4,8 +4,9 @@ use std::collections::btree_map::Entry;
 use async_graphql::{Context, ID, Object, Result, SimpleObject};
 use sanchoris_core::conversations::{DELIVERY_QUEUED, OUTCOME_CONTINUED, latest_task};
 use sanchoris_core::items::{
-    AUTHOR_AGENT, AUTHOR_MEMBER, AUTHOR_SANCHORIS, ChatMessage as ChatMessageItem,
+    AUTHOR_AGENT, AUTHOR_MEMBER, AUTHOR_SANCHORIS, ChannelInstance, ChatMessage as ChatMessageItem,
     Conversation as ConversationItem, ConversationTask, Output as OutputItem, RunPartial,
+    Workspace,
 };
 use sanchoris_core::keys;
 use sanchoris_core::model::TaskStatus;
@@ -16,7 +17,9 @@ use uuid::Uuid;
 
 use crate::account::Member;
 use crate::attachment::ChatAttachment;
-use crate::chat_work::{ChatDiff, ChatPartial, ChatWork, ChatWorkKind, ChatWorking, RunWork};
+use crate::chat_work::{
+    ChatDiff, ChatPartial, ChatStartup, ChatWork, ChatWorkKind, ChatWorking, RunWork,
+};
 use crate::config::Session;
 use crate::context::{Scope, tx};
 use crate::enums::{
@@ -237,7 +240,33 @@ impl Conversation {
                 approval: None,
                 plan: None,
                 partial: None,
+                startup: None,
             }));
+        };
+        let startup = if run.status == "creating" {
+            let workspace_started_at = tx
+                .query::<Workspace>(&keys::task_pk(self.scope.tenant_id, task.id), "WS#")
+                .await?
+                .into_iter()
+                .filter(|workspace| workspace.run_id == run.id && workspace.stopped_at.is_none())
+                .map(|workspace| workspace.started_at)
+                .max();
+            let connected_at = match workspace_started_at {
+                Some(started_at) => tx
+                    .query::<ChannelInstance>(&keys::run_pk(self.scope.tenant_id, run.id), "INST#")
+                    .await?
+                    .into_iter()
+                    .map(|instance| instance.connected_at)
+                    .filter(|connected_at| *connected_at >= started_at)
+                    .max(),
+                None => None,
+            };
+            Some(ChatStartup {
+                workspace_started_at: workspace_started_at.map(ts),
+                connected_at: connected_at.map(ts),
+            })
+        } else {
+            None
         };
         let turn = run.turns + 1;
         let work = RunWork::load(&mut tx, run.id).await?;
@@ -281,6 +310,7 @@ impl Conversation {
             approval,
             plan,
             partial,
+            startup,
         }))
     }
 

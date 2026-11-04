@@ -83,6 +83,10 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
           text
           at
         }
+        startup {
+          workspaceStartedAt
+          connectedAt
+        }
       }
       latestTask {
         id
@@ -342,6 +346,10 @@ query ChatLive($tenant: String!, $conversation: ID!) {
           kind
           text
           at
+        }
+        startup {
+          workspaceStartedAt
+          connectedAt
         }
       }
     }

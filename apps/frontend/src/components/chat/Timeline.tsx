@@ -1,6 +1,7 @@
 import clsx from "clsx"
 import {
   ChevronRight,
+  CircleCheck,
   CircleStop,
   Clock,
   CornerDownLeft,
@@ -404,20 +405,67 @@ function useNow(active: boolean): number {
   return now
 }
 
+function since(now: number, at: string): number {
+  return (now - new Date(at).getTime()) / 1000
+}
+
+function Startup({
+  startedAt,
+  startup,
+  now,
+}: {
+  startedAt: string
+  startup: { workspaceStartedAt?: string | null; connectedAt?: string | null }
+  now: number
+}) {
+  const workspaceAt = startup.workspaceStartedAt ?? startedAt
+  if (!startup.connectedAt) {
+    return (
+      <div>
+        <Disclosure
+          icon={LoaderCircle}
+          live
+          spin
+          label={t("work.startingWorkspace", { d: elapsed(since(now, workspaceAt)) })}
+        />
+        <div className="pl-7 text-xs text-faint">{t("work.startingWorkspaceHint")}</div>
+      </div>
+    )
+  }
+  const took = (new Date(startup.connectedAt).getTime() - new Date(workspaceAt).getTime()) / 1000
+  return (
+    <div>
+      <Disclosure icon={CircleCheck} label={t("work.startedWorkspace", { d: elapsed(took) })} />
+      <Disclosure
+        icon={LoaderCircle}
+        live
+        spin
+        label={t("work.preparingSession", { d: elapsed(since(now, startup.connectedAt)) })}
+      />
+      <div className="pl-7 text-xs text-faint">{t("work.preparingSessionHint")}</div>
+    </div>
+  )
+}
+
 export function Working({
   startedAt,
   work,
   waiting,
   partial,
+  startup,
 }: {
   startedAt: string
   work: Work[]
   waiting?: "question" | "approval" | "session"
   partial?: { kind: string; text: string } | null
+  startup?: { workspaceStartedAt?: string | null; connectedAt?: string | null } | null
 }) {
   const now = useNow(true)
   const latest = work.findLast((entry) => entry.kind !== "TEXT")
-  const seconds = (now - new Date(startedAt).getTime()) / 1000
+  const seconds = since(now, startedAt)
+  if (startup && work.length === 0 && !waiting) {
+    return <Startup startedAt={startedAt} startup={startup} now={now} />
+  }
   return (
     <div>
       {work.length > 0 ? <WorkSegments work={work} /> : null}

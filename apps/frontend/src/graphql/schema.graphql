@@ -410,6 +410,20 @@ enum ChatRuntimeMode {
 	FULL_ACCESS
 }
 
+"""
+The start of a Workspace for the conversation's session.
+"""
+type ChatStartup {
+	"""
+	When sanchoris asked for the Workspace. Null until it does.
+	"""
+	workspaceStartedAt: DateTime
+	"""
+	When the agent in the Workspace connected. Null until it does; the session is then being prepared: the repositories are checked out and the worker starts.
+	"""
+	connectedAt: DateTime
+}
+
 type ChatTool {
 	"""
 	The tool name as the agent reports it, such as Bash, Read, commandExecution or mcp__server__tool.
@@ -510,6 +524,10 @@ type ChatWorking {
 	The text or thinking the agent is writing now, before it is complete.
 	"""
 	partial: ChatPartial
+	"""
+	How far the Workspace has started, while the session starts in a new Workspace.
+	"""
+	startup: ChatStartup
 }
 
 type CliRequest {

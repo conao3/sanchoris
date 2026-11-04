@@ -146,6 +146,17 @@ pub(crate) struct ChatWorking {
     pub plan: Option<ChatPlan>,
     /// The text or thinking the agent is writing now, before it is complete.
     pub partial: Option<ChatPartial>,
+    /// How far the Workspace has started, while the session starts in a new Workspace.
+    pub startup: Option<ChatStartup>,
+}
+
+/// The start of a Workspace for the conversation's session.
+#[derive(SimpleObject, Clone)]
+pub(crate) struct ChatStartup {
+    /// When sanchoris asked for the Workspace. Null until it does.
+    pub workspace_started_at: Option<Timestamp>,
+    /// When the agent in the Workspace connected. Null until it does; the session is then being prepared: the repositories are checked out and the worker starts.
+    pub connected_at: Option<Timestamp>,
 }
 
 #[derive(SimpleObject, Clone)]
