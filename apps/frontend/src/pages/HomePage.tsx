@@ -214,12 +214,15 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
           className: stackedRow,
           selected: nav.selected === index,
           rowRef: nav.rowRef(index),
-          onClick: nav.pick(index),
+          onClick: () => {
+            nav.select(index)
+            openAttention(item)
+          },
         }
         if (item.kind === "task") {
           const { task } = item
           return (
-            <Row key={task.id} {...common}>
+            <Row key={task.id} {...common} cols="110px 1fr">
               <TaskState status={task.status} />
               <div>
                 <span className="font-medium">{task.title}</span>{" "}
@@ -228,12 +231,6 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
                 ) : null}
                 <Dim>{needsYouText(task)}</Dim>
               </div>
-              <Button
-                kbd={nav.selected === index ? "↵" : undefined}
-                onPress={() => openAttention(item)}
-              >
-                {t("home.openTask")}
-              </Button>
             </Row>
           )
         }
@@ -257,9 +254,11 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
                     .join(" · ")}
                 </Dim>
               </div>
-              <Button onPress={() => openAttention(item)}>
-                {t("home.reconnectProvider", { provider })}
-              </Button>
+              <span onClick={(event) => event.stopPropagation()}>
+                <Button onPress={() => openAttention(item)}>
+                  {t("home.reconnectProvider", { provider })}
+                </Button>
+              </span>
             </Row>
           )
         }
@@ -282,9 +281,11 @@ function Dashboard({ tenant }: { tenant: Tenant }) {
                   .join(" · ")}
               </Dim>
             </div>
-            <Button icon={ExternalLink} href={change.url}>
-              {t("common.reviewOnGitHub")}
-            </Button>
+            <span onClick={(event) => event.stopPropagation()}>
+              <Button icon={ExternalLink} href={change.url}>
+                {t("common.reviewOnGitHub")}
+              </Button>
+            </span>
           </Row>
         )
       })}

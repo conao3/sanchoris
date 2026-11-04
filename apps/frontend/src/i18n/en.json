@@ -161,7 +161,6 @@
   "home.nothingNeedsYou": "Nothing needs you. Tasks that need a reply, logins to reconnect and change requests to review appear here.",
   "home.nothingRunning": "No task is running. Label an issue or ask in Chat.",
   "home.nothingWaiting": "No task is waiting.",
-  "home.openTask": "Open task",
   "home.loginRejected": "{provider} login was rejected",
   "home.reconnectProvider": "Reconnect {provider}",
   "home.changeRequest": "Change request",

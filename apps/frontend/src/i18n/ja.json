@@ -161,7 +161,6 @@
   "home.nothingNeedsYou": "対応が必要なものはありません。返答が要るタスク、再接続が要るログイン、レビューする変更リクエストがここに出ます。",
   "home.nothingRunning": "実行中のタスクはありません。issue にラベルを付けるか、チャットで頼みます。",
   "home.nothingWaiting": "待機中のタスクはありません。",
-  "home.openTask": "タスクを開く",
   "home.loginRejected": "{provider} のログインが拒否されました",
   "home.reconnectProvider": "{provider} を再接続",
   "home.changeRequest": "変更リクエスト",
