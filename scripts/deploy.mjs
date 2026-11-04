@@ -44,7 +44,6 @@ const stackName = `${env.prefix}-sanchoris`
 const stackSettings = {
   SANCHORIS_ENABLE_WORKSPACES: "true",
   SANCHORIS_WORKSPACE_NETWORK: "public",
-  SANCHORIS_WORKER_MAX_CONCURRENCY: "2",
 }
 
 const startedAt = Date.now()
