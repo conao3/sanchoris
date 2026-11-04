@@ -285,6 +285,8 @@ pub struct Workflow<'a> {
     pub config_repository: &'a str,
     pub config_root: &'a str,
     pub config_branch: &'a str,
+    /// The branch the task pushes in every repository it changes.
+    pub task_branch: &'a str,
     /// The trigger that started the task and its definition, or None for a chat.
     pub trigger: Option<(&'a str, &'a Value)>,
     pub session_name: &'a str,
@@ -374,8 +376,14 @@ When a request needs something these settings do not allow, such as another repo
 ",
         how = if opens_config_pull_requests(workflow) {
             format!(
-                "You can open the change as a pull request: offer it with the diff, and when the member agrees, commit the change on the task branch in a clone of `{config}` (clone it into the workspace when it is not there) and run `{OPEN_PR_SKILL}` with that repository. The member reviews and merges it on GitHub; until then sanchoris shows it as a change request.",
+                "You can open the change as a pull request: offer it with the diff, and when the member agrees, commit the change in the directory `{dir}` under the workspace (the clone of `{config}`; clone it there when it is not there), then run `{OPEN_PR_SKILL}` with `Repos` and `Repo` set to `{config}` and `Issue` set to the number of the issue the change is for (file one with `{FILE_ISSUE_SKILL}`, without a label that starts a task, when the task has none). The skill pushes that clone's `HEAD` to the task branch `{branch}` and opens the pull request, so the pull request also carries any other commits of this task in that clone. The member reviews and merges it on GitHub; until then sanchoris shows it as a change request.",
                 config = workflow.config_repository,
+                dir = workflow
+                    .config_repository
+                    .rsplit('/')
+                    .next()
+                    .expect("owner/name"),
+                branch = workflow.task_branch,
             )
         } else {
             format!(
@@ -661,6 +669,7 @@ mod tests {
                     config_repository: "acme/sanchoris-config",
                     config_root: "/",
                     config_branch: "main",
+                    task_branch: "sanchoris/1",
                     trigger: None,
                     session_name: "all",
                     session: &session,
@@ -676,6 +685,8 @@ mod tests {
             "{opens}"
         );
         assert!(opens.contains("  Repos:\n  - acme/*\n"), "{opens}");
+        assert!(opens.contains("directory `sanchoris-config` under the workspace"));
+        assert!(opens.contains("the task branch `sanchoris/1`"));
         assert!(opens.ends_with("# Project\n\nWrite tests.\n"), "{opens}");
         let asks = workflow(&json!({ "Skills": ["file-issue"] }));
         assert!(asks.contains("This task cannot open a pull request on `acme/sanchoris-config`"));

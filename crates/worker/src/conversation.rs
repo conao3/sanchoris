@@ -452,6 +452,7 @@ async fn start_task(
             config_repository: &config.repository,
             config_root: &config.root_path,
             config_branch: &config.branch,
+            task_branch: &sanchoris_core::tasks::task_branch(task_id),
             trigger: None,
             session_name,
             session: &definition.session.definition,

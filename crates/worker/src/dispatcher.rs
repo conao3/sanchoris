@@ -21,7 +21,7 @@ use sanchoris_core::model::{ActorKind, AuditOrigin, NamedDefinition, TaskDefinit
 use sanchoris_core::modes::SessionModes;
 use sanchoris_core::pattern::EventPattern;
 use sanchoris_core::store::{Index, SortKey, Update};
-use sanchoris_core::tasks::load_task;
+use sanchoris_core::tasks::{load_task, task_branch};
 use sanchoris_core::transform::{InputTransformer, render_instruction};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -594,6 +594,7 @@ async fn start(
             config_repository: &config.repository,
             config_root: &config.root_path,
             config_branch: &config.branch,
+            task_branch: &task_branch(task_id),
             trigger: Some((&trigger.name, &trigger_value)),
             session_name: &start.session,
             session: &definition.session.definition,
