@@ -293,8 +293,8 @@ pub struct Workflow<'a> {
     pub accounts: &'a [String],
 }
 
-fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).expect("a JSON value serializes")
+fn yaml(value: &Value) -> String {
+    serde_yaml_ng::to_string(value).expect("a JSON value serializes as YAML")
 }
 
 /// The worker's second system prompt: the task's workflow settings and how to propose a change to them, then the Project's `SystemPrompt`. The first system prompt is the worker's own and stays the same for every task, so it is cached across tasks.
@@ -319,31 +319,28 @@ You work in a sanchoris task. These settings decide what this task can reach and
 {origin}
 
 Session `{session_name}`:
-```json
-{session}
-```
+```yaml
+{session}```
 
 Start (instruction, skills, required skills, limits):
-```json
-{start}
-```
+```yaml
+{start}```
 ",
         root = workflow.config_root,
         branch = workflow.config_branch,
         config = workflow.config_repository,
         session_name = workflow.session_name,
-        session = pretty(workflow.session),
-        start = pretty(workflow.start),
+        session = yaml(workflow.session),
+        start = yaml(workflow.start),
     );
     if let Some((name, definition)) = workflow.trigger {
         text.push_str(&format!(
             "
 Trigger `{name}`:
-```json
-{}
-```
+```yaml
+{}```
 ",
-            pretty(definition)
+            yaml(definition)
         ));
     }
     text.push_str(&format!(
