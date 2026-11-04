@@ -96,9 +96,11 @@ export function IntegrationsPage() {
   const [installGitHubApp, installState] = useAction(InstallGitHubAppDocument)
   const tenant = data?.tenant
   const login = data?.viewer.user.githubLogin
-  const github = tenant?.integrations.find(
-    (integration) => integration.kind === "GITHUB_INSTALLATION",
-  )
+  const installations =
+    tenant?.integrations.filter(
+      (integration) =>
+        integration.kind === "GITHUB_INSTALLATION" && integration.status !== "NOT_CONNECTED",
+    ) ?? []
   const slack = tenant?.integrations.find((integration) => integration.kind === "SLACK")
   const cols = "44px 1fr 130px 170px"
   const known = returned ? outcomes[returned] : undefined
@@ -168,73 +170,97 @@ export function IntegrationsPage() {
               )}
             </span>
           </Row>
-          <Row cols={cols} tall>
-            <Icon icon={GitBranch} />
-            <div>
-              <span className="font-medium">{t("integrations.githubInstallation")}</span>
-              <Dim>
-                {github && github.status !== "NOT_CONNECTED"
-                  ? tx("integrations.installedOn", {
+          {installations.map((github) => (
+            <Row key={github.id} cols={cols} tall>
+              <Icon icon={GitBranch} />
+              <div>
+                <span className="font-medium">{t("integrations.githubInstallation")}</span>
+                <Dim>
+                  {tx(
+                    github.repositories.length === 1
+                      ? "integrations.installedOnOne"
+                      : "integrations.installedOn",
+                    {
                       account: <Chip>{github.account}</Chip>,
                       n: github.repositories.length,
                       repos: github.repositories
                         .map((repository) => repository.split("/").pop())
                         .join(", "),
-                    })
-                  : t("integrations.notInstalled")}
-                {github?.error ? (
-                  <span className="text-err">
-                    {" "}
-                    · {github.error}
-                    {github.lastSyncedAt
-                      ? ` · ${t("integrations.lastSync", { at: ago(github.lastSyncedAt) })}`
-                      : null}
-                  </span>
+                    },
+                  )}
+                  {github.error ? (
+                    <span className="text-err">
+                      {" "}
+                      · {github.error}
+                      {github.lastSyncedAt
+                        ? ` · ${t("integrations.lastSync", { at: ago(github.lastSyncedAt) })}`
+                        : null}
+                    </span>
+                  ) : null}
+                </Dim>
+              </div>
+              {github.status === "ERROR" ? (
+                <State tone="err" icon={TriangleAlert}>
+                  {t("integrations.error")}
+                </State>
+              ) : (
+                <State tone="ok" icon={ShieldCheck}>
+                  {t("integrations.connected")}
+                </State>
+              )}
+              <span className="justify-self-end">
+                {github.status === "ERROR" ? (
+                  <Button small onPress={refetch}>
+                    {t("common.retry")}
+                  </Button>
+                ) : github.manageUrl ? (
+                  <Button icon={ExternalLink} href={github.manageUrl}>
+                    {t("integrations.manageOnGitHub")}
+                  </Button>
                 ) : null}
+              </span>
+            </Row>
+          ))}
+          <Row cols={cols} tall>
+            <Icon icon={GitBranch} />
+            <div>
+              <span className="font-medium">
+                {installations.length > 0
+                  ? t("integrations.anotherInstallation")
+                  : t("integrations.githubInstallation")}
+              </span>
+              <Dim>
+                {installations.length > 0
+                  ? t("integrations.installAnotherDetail")
+                  : t("integrations.notInstalled")}
               </Dim>
               {outcome?.row === "installation" ? <OutcomeNote outcome={outcome} /> : null}
               <ActionError error={installState.error} className="mt-0.5" />
             </div>
-            {github?.status === "CONNECTED" ? (
-              <State tone="ok" icon={ShieldCheck}>
-                {t("integrations.connected")}
-              </State>
-            ) : github?.status === "ERROR" ? (
-              <State tone="err" icon={TriangleAlert}>
-                {t("integrations.error")}
-              </State>
+            {installations.length > 0 ? (
+              <span />
             ) : (
               <State tone="wait" icon={CircleDashed}>
                 {t("integrations.notConnected")}
               </State>
             )}
             <span className="justify-self-end">
-              {github?.status === "ERROR" ? (
-                <Button small onPress={refetch}>
-                  {t("common.retry")}
-                </Button>
-              ) : github?.manageUrl ? (
-                <Button icon={ExternalLink} href={github.manageUrl}>
-                  {t("integrations.manageOnGitHub")}
-                </Button>
-              ) : (
-                <Button
-                  variant="primary"
-                  icon={Plus}
-                  isDisabled={installState.loading}
-                  reason={isAdmin ? undefined : t("reason.adminInstall")}
-                  reasonAlign="right"
-                  onPress={() =>
-                    void installGitHubApp({ tenantId: tenant.id }).then((result) => {
-                      if (result) {
-                        window.location.assign(result.installGitHubApp.url)
-                      }
-                    })
-                  }
-                >
-                  {t("integrations.installApp")}
-                </Button>
-              )}
+              <Button
+                variant={installations.length > 0 ? undefined : "primary"}
+                icon={Plus}
+                isDisabled={installState.loading}
+                reason={isAdmin ? undefined : t("reason.adminInstall")}
+                reasonAlign="right"
+                onPress={() =>
+                  void installGitHubApp({ tenantId: tenant.id }).then((result) => {
+                    if (result) {
+                      window.location.assign(result.installGitHubApp.url)
+                    }
+                  })
+                }
+              >
+                {t("integrations.installApp")}
+              </Button>
             </span>
           </Row>
           <Row cols={cols} tall>

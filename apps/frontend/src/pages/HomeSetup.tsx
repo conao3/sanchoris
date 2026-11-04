@@ -26,8 +26,9 @@ export function HomeSetup({ tenant }: { tenant: Tenant }) {
   const { viewer } = useTenant()
   const { isAdmin } = useRole()
   const { setup } = tenant
-  const github = tenant.integrations.find(
-    (integration) => integration.kind === "GITHUB_INSTALLATION",
+  const installations = tenant.integrations.filter(
+    (integration) =>
+      integration.kind === "GITHUB_INSTALLATION" && integration.status !== "NOT_CONNECTED",
   )
   const config = tenant.configs[0]
 
@@ -39,8 +40,17 @@ export function HomeSetup({ tenant }: { tenant: Tenant }) {
         setup.githubLinked && setup.appInstalled
           ? tx("setup.step1Done", {
               login: <Chip>{viewer.user.githubLogin}</Chip>,
-              account: <Chip>{github?.account}</Chip>,
-              n: github?.repositories.length ?? 0,
+              account: (
+                <>
+                  {installations.map((installation) => (
+                    <Chip key={installation.id}>{installation.account}</Chip>
+                  ))}
+                </>
+              ),
+              n: installations.reduce(
+                (total, installation) => total + installation.repositories.length,
+                0,
+              ),
             })
           : t("setup.step1Todo"),
       done: setup.githubLinked && setup.appInstalled,

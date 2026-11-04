@@ -315,6 +315,16 @@ function buildAcme(viewerRole: string): Obj {
       error: null,
     },
     {
+      id: "int-github-mika",
+      kind: "GITHUB_INSTALLATION",
+      status: "CONNECTED",
+      account: "mika-dev",
+      repositories: ["mika-dev/dotfiles"],
+      manageUrl: "https://github.com/settings/installations",
+      lastSyncedAt: ago(5),
+      error: null,
+    },
+    {
       id: "int-slack",
       kind: "SLACK",
       status: "NOT_CONNECTED",
