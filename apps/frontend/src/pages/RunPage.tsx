@@ -32,7 +32,7 @@ import {
   type WorkspaceArchitecture,
 } from "../graphql/generated/graphql.ts"
 import { type MessageKey, t } from "../i18n/index.ts"
-import { clock, dayTime } from "../lib/format.ts"
+import { stamp, dayTime } from "../lib/format.ts"
 import { useKeys } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
 import { LIVE_POLL, useData } from "../lib/query.ts"
@@ -236,7 +236,7 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
               session: run.sessionName,
               agent,
               model: run.model,
-              at: clock(run.startedAt),
+              at: stamp(run.startedAt),
             })}{" "}
             <Lk to="/tasks/$task" params={{ task: task.id }}>
               {task.issue ? `#${task.issue.number} ` : ""}
@@ -257,7 +257,7 @@ function RunView({ taskId, n }: { taskId: string; n: string }) {
                   className={clsx(lineClass[line.kind], current && "bg-term-line")}
                 >
                   <div className="whitespace-pre-wrap px-4">
-                    <span className="text-muted">{clock(line.at)}</span>{" "}
+                    <span className="text-muted">{stamp(line.at)}</span>{" "}
                     {prefix ? `${t(prefix)} ` : ""}
                     {first}
                   </div>

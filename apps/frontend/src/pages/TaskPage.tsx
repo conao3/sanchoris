@@ -52,7 +52,7 @@ import {
   TaskDocument,
 } from "../graphql/generated/graphql.ts"
 import { type MessageKey, t } from "../i18n/index.ts"
-import { between, clock, duration, usd, usdWhole } from "../lib/format.ts"
+import { between, stamp, duration, usd, usdWhole } from "../lib/format.ts"
 import { useKeys } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
 import { IDLE_POLL, LIVE_POLL, useData } from "../lib/query.ts"
@@ -143,7 +143,7 @@ function StepStrip({ task }: { task: Task }) {
         tone="ok"
         stateIcon={CircleCheck}
       >
-        {task.startedAt ? t("task.startedAt", { at: clock(task.startedAt) }) : t("task.notStarted")}
+        {task.startedAt ? t("task.startedAt", { at: stamp(task.startedAt) }) : t("task.notStarted")}
       </Step>
       <Arrow />
       <Step
@@ -159,11 +159,11 @@ function StepStrip({ task }: { task: Task }) {
         {!task.startedAt
           ? t("task.notStarted")
           : skillRun
-            ? t("task.worked", { from: clock(task.startedAt), to: clock(skillRun.startedAt) })
+            ? t("task.worked", { from: stamp(task.startedAt), to: stamp(skillRun.startedAt) })
             : agentWorking
-              ? t("task.workingSince", { from: clock(task.startedAt) })
+              ? t("task.workingSince", { from: stamp(task.startedAt) })
               : task.endedAt
-                ? t("task.worked", { from: clock(task.startedAt), to: clock(task.endedAt) })
+                ? t("task.worked", { from: stamp(task.startedAt), to: stamp(task.endedAt) })
                 : t(look.label)}
       </Step>
       {required ? (
@@ -334,9 +334,9 @@ export function TaskPage() {
         task.issue && task.triggerEvent.senderLogin
           ? t("task.issueLabeledBy", {
               login: task.triggerEvent.senderLogin,
-              at: clock(task.triggerEvent.receivedAt),
+              at: stamp(task.triggerEvent.receivedAt),
             })
-          : t("task.messageAt", { at: clock(task.triggerEvent.receivedAt) }),
+          : t("task.messageAt", { at: stamp(task.triggerEvent.receivedAt) }),
       ])
     }
     if (task.requester) {
@@ -481,7 +481,9 @@ export function TaskPage() {
             <Dim className="mt-1">
               {task.needsYouReason === "SKILL_FAILED" || task.needsYouReason === "NUDGES_EXHAUSTED"
                 ? t("task.messageGoes")
-                : t("task.messageGoesAgent")}
+                : task.needsYouReason === "LIMIT_EXCEEDED"
+                  ? t("task.messageGoesLimits")
+                  : t("task.messageGoesAgent")}
             </Dim>
             <Label htmlFor="resume-message">{t("task.messageToAgent")}</Label>
             <TextArea
@@ -534,7 +536,7 @@ export function TaskPage() {
                 <span className="font-mono font-medium">{run.skill.name}</span>
                 <SkillRunState status={run.status} />
                 <span className="text-right font-mono text-sm">{run.handoffs}</span>
-                <span className="font-mono text-sm">{clock(run.startedAt)}</span>
+                <span className="font-mono text-sm">{stamp(run.startedAt)}</span>
                 <span className="text-right font-mono text-sm">
                   {run.endedAt ? duration(between(run.startedAt, run.endedAt)) : "—"}
                 </span>
@@ -572,7 +574,7 @@ export function TaskPage() {
                   <span className="font-medium">{entry.stateName}</span>
                   <span>{t(stateTypeLabels[entry.stateType])}</span>
                   <StateEntryState status={entry.status} />
-                  <span className="font-mono text-sm">{clock(entry.enteredAt)}</span>
+                  <span className="font-mono text-sm">{stamp(entry.enteredAt)}</span>
                   <span className="text-right font-mono text-sm">{entry.attempts}</span>
                   <span className="text-muted wrap-anywhere">{entry.result ?? "—"}</span>
                 </Row>

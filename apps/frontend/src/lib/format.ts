@@ -43,8 +43,11 @@ export function percent(ratio: number): string {
   return percentFormat.format(ratio)
 }
 
-export function clock(iso: string): string {
-  return clockFormat.format(new Date(iso))
+export function stamp(iso: string): string {
+  const date = new Date(iso)
+  return startOfDay(date) === startOfDay(new Date())
+    ? clockFormat.format(date)
+    : dayTimeFormat.format(date)
 }
 
 export function day(iso: string): string {

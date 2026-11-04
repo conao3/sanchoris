@@ -633,7 +633,11 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
                   ? "question"
                   : run
                     ? undefined
-                    : "session"
+                    : task?.pendingReason === "PLAN_LIMIT"
+                      ? "planLimit"
+                      : task?.pendingReason === "CONCURRENCY"
+                        ? "workspace"
+                        : "session"
             }
             partial={working.partial}
             startup={working.startup}

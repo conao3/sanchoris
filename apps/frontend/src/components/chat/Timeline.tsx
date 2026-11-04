@@ -11,10 +11,11 @@ import {
   Undo2,
   type LucideIcon,
 } from "lucide-react"
+import { Link } from "@tanstack/react-router"
 import { type ReactNode, useEffect, useState } from "react"
 import type { ChatTurnOutcome } from "../../graphql/generated/graphql.ts"
 import { t } from "../../i18n/index.ts"
-import { clock } from "../../lib/format.ts"
+import { stamp } from "../../lib/format.ts"
 import { IconButton } from "../Button.tsx"
 import { Tip } from "../Tooltip.tsx"
 import { CopyButton } from "./CopyButton.tsx"
@@ -104,7 +105,7 @@ export function MemberMessage({
       </div>
       <Meta align="right">
         <span>
-          {name} · {clock(at)}
+          {name} · {stamp(at)}
         </span>
         <CopyButton text={text} />
         {onRewind ? (
@@ -127,11 +128,11 @@ export function CompactNotice({ at }: { at: string }) {
       <Tip tip={t("chat.autoCompactedHint")}>
         <span
           role="img"
-          aria-label={`${t("chat.autoCompacted")} · ${clock(at)}`}
+          aria-label={`${t("chat.autoCompacted")} · ${stamp(at)}`}
           className="flex items-center gap-1.5 rounded-kbd outline-none focus-visible:ring-2 focus-visible:ring-line2"
         >
           <FoldVertical className="size-3.5" aria-hidden />
-          {t("chat.autoCompacted")} · {clock(at)}
+          {t("chat.autoCompacted")} · {stamp(at)}
         </span>
       </Tip>
       <span className="h-px flex-1 bg-line" aria-hidden />
@@ -184,7 +185,7 @@ export function AgentMessage({
       ) : null}
       {children}
       <Meta align="left">
-        <span>sanchoris · {clock(at)}</span>
+        <span>sanchoris · {stamp(at)}</span>
         {text.trim() ? <CopyButton text={text} /> : null}
         {onFork ? <IconButton icon={GitFork} label={t("fork.action")} onPress={onFork} /> : null}
       </Meta>
@@ -228,7 +229,7 @@ function Disclosure({
         />
       ) : null}
       {time ? (
-        <span className="ml-auto shrink-0 pl-2 text-xs text-faint">{clock(time)}</span>
+        <span className="ml-auto shrink-0 pl-2 text-xs text-faint">{stamp(time)}</span>
       ) : null}
     </>
   )
@@ -456,7 +457,7 @@ export function Working({
 }: {
   startedAt: string
   work: Work[]
-  waiting?: "question" | "approval" | "session"
+  waiting?: "question" | "approval" | "session" | "workspace" | "planLimit"
   partial?: { kind: string; text: string } | null
   startup?: { workspaceStartedAt?: string | null; connectedAt?: string | null } | null
 }) {
@@ -465,6 +466,27 @@ export function Working({
   const seconds = since(now, startedAt)
   if (startup && work.length === 0 && !waiting) {
     return <Startup startedAt={startedAt} startup={startup} now={now} />
+  }
+  if (waiting === "planLimit") {
+    return (
+      <div>
+        <Disclosure icon={Clock} label={t("work.planLimit")} />
+        <div className="pl-7 text-xs text-faint">
+          {t("work.planLimitHint")}{" "}
+          <Link to="/settings/billing" className="underline hover:text-ink">
+            {t("work.planLimitBilling")}
+          </Link>
+        </div>
+      </div>
+    )
+  }
+  if (waiting === "workspace") {
+    return (
+      <div>
+        <Disclosure icon={Clock} live label={t("work.waitingWorkspace")} />
+        <div className="pl-7 text-xs text-faint">{t("work.waitingWorkspaceHint")}</div>
+      </div>
+    )
   }
   return (
     <div>
