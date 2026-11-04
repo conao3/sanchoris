@@ -897,7 +897,12 @@ impl Channel {
         let request_id = payload["requestId"]
             .as_str()
             .ok_or_else(|| protocol("git_token_request needs requestId"))?;
-        let outcome = match self.credentials.git_token(claims).await {
+        let owner = match &payload["owner"] {
+            Value::Null => None,
+            Value::String(owner) if !owner.is_empty() => Some(owner.as_str()),
+            _ => return Err(protocol("git_token_request owner must be a string or null")),
+        };
+        let outcome = match self.credentials.git_token(claims, owner).await {
             Ok(token) => Ok(json!({
                 "token": token.token,
                 "expiresAt": token.expires_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),

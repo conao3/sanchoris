@@ -107,14 +107,16 @@ function callAgent(socketPath: string, request: SocketRequest): Promise<SocketRe
   })
 }
 
-function credentialHost(input: string): string | null {
+function credentialTarget(input: string): { host: string; owner: string | null } | null {
   const fields = new Map<string, string>()
   for (const line of input.split("\n")) {
     const index = line.indexOf("=")
     if (index > 0) fields.set(line.slice(0, index), line.slice(index + 1))
   }
-  if (fields.get("protocol") !== "https") return null
-  return fields.get("host") ?? null
+  const host = fields.get("host")
+  if (fields.get("protocol") !== "https" || host === undefined) return null
+  const owner = fields.get("path")?.split("/")[0]
+  return { host, owner: owner ? owner : null }
 }
 
 async function readStdin(): Promise<string> {
@@ -130,8 +132,8 @@ async function gitCredential(action: string | undefined, env: NodeJS.ProcessEnv)
     process.stderr.write(`sanchoris: ${USAGE}\n`)
     return 2
   }
-  const host = credentialHost(await readStdin())
-  if (host === null) return 0
+  const target = credentialTarget(await readStdin())
+  if (target === null) return 0
   const socketPath = env.SANCHORIS_SOCKET_PATH
   if (socketPath === undefined || socketPath === "") {
     process.stderr.write("sanchoris: SANCHORIS_SOCKET_PATH is not set\n")
@@ -139,7 +141,7 @@ async function gitCredential(action: string | undefined, env: NodeJS.ProcessEnv)
   }
   let response: SocketResponse
   try {
-    response = await callAgent(socketPath, { action: "git_credential", host })
+    response = await callAgent(socketPath, { action: "git_credential", ...target })
   } catch (error) {
     process.stderr.write(`sanchoris: ${(error as Error).message}\n`)
     return 1

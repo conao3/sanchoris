@@ -340,7 +340,7 @@ A second `credentials` is a protocol error. Local workspaces (`SANCHORIS_CREDENT
 
 A Fargate workspace holds no provider credential when it starts. After `start` and before it starts the worker, the agent sends `worker_credential_request`; the control plane decrypts the Session's `Worker.Credential` and answers with one variable (an Anthropic API key as `ANTHROPIC_API_KEY`, a Claude Code OAuth token from `claude setup-token` as `CLAUDE_CODE_OAUTH_TOKEN`). The agent keeps the value in memory and starts a credential proxy on `127.0.0.1` with an ephemeral port: the worker gets `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` and the same variable with a placeholder value, and the proxy forwards each request to `https://api.anthropic.com` (through the relay) after it replaces the client's `Authorization` or `x-api-key` with the real credential (`Authorization: Bearer <token>` and the `oauth-2025-04-20` beta for an OAuth token, `x-api-key` for an API key). Claude Code sends every model request to `ANTHROPIC_BASE_URL` with an OAuth token as well as with an API key. Any other variable, or more than one, stops the agent. A refusal stops the agent with exit code 1. The agent then clones `SANCHORIS_REPOSITORIES` from `SANCHORIS_GIT_URL` into `SANCHORIS_WORKSPACE_DIR` and checks out `SANCHORIS_BRANCH` (from `origin` when it exists, otherwise a new branch).
 
-Git asks for credentials through the helper `sanchoris git-credential` (the workspace image configures it). The helper sends `git_credential` with the host over the command socket; the agent answers only for the host of `SANCHORIS_GIT_URL`, with `x-access-token` and a token from `git_token_request`, which it reuses until five minutes before `expiresAt`. The control plane issues a GitHub App installation token narrowed to the Session's `GitHub.Repos` (all repositories of the installation when a pattern is `owner/*`) and `GitHub.Permissions`; it expires after one hour.
+Git asks for credentials through the helper `sanchoris git-credential`, and the workspace image sets `credential.useHttpPath` so that git passes the repository's path. The helper sends `git_credential` with the host and the `owner` (the first segment of the path, or `null` when git gives no path) over the command socket; the agent answers only for the host of `SANCHORIS_GIT_URL`, with `x-access-token` and a token from `git_token_request` with the same `owner`, which it reuses for that owner until five minutes before `expiresAt`. The control plane issues a token from the tenant's GitHub App installation on that account, narrowed to the repositories of the account in the Session's `GitHub.Repos` (all repositories of the installation when one of them is a pattern such as `owner/*`) and to `GitHub.Permissions`; it expires after one hour. A Session's `GitHub.Repos` may name the repositories of several accounts, each with its own installation; a request with `owner: null` gets a token only when `GitHub.Repos` names one account.
 
 ```json
 { "type": "worker_credential_request", "runId": "42", "seq": 1, "requestId": "6a1f0c2e-1d4b-4e8a-9c3f-7b2d5e8a1c90" }
@@ -351,7 +351,7 @@ Git asks for credentials through the helper `sanchoris git-credential` (the work
 ```
 
 ```json
-{ "type": "git_token_request", "runId": "42", "seq": 2, "requestId": "9e4d2b7a-3c1f-4a6e-8b5d-0f2a7c9e1b34" }
+{ "type": "git_token_request", "runId": "42", "seq": 2, "requestId": "9e4d2b7a-3c1f-4a6e-8b5d-0f2a7c9e1b34", "owner": "acme" }
 ```
 
 ```json
@@ -359,11 +359,11 @@ Git asks for credentials through the helper `sanchoris git-credential` (the work
 ```
 
 ```json
-{ "type": "git_token_response", "runId": "42", "requestId": "9e4d2b7a-3c1f-4a6e-8b5d-0f2a7c9e1b35", "ok": false, "error": { "code": "credential_unavailable", "message": "the session's GitHub.Repos spans more than one GitHub installation" } }
+{ "type": "git_token_response", "runId": "42", "requestId": "9e4d2b7a-3c1f-4a6e-8b5d-0f2a7c9e1b35", "ok": false, "error": { "code": "credential_unavailable", "message": "the session's GitHub.Repos names no repository of mika" } }
 ```
 
 ```json
-{ "action": "git_credential", "host": "github.com" }
+{ "action": "git_credential", "host": "github.com", "owner": "acme" }
 ```
 
 ## Request and response correlation

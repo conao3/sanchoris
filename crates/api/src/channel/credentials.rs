@@ -45,7 +45,11 @@ pub struct GitToken {
 
 #[async_trait]
 pub trait RunCredentials: Send + Sync {
-    async fn git_token(&self, claims: RunClaims) -> Result<GitToken, CredentialError>;
+    async fn git_token(
+        &self,
+        claims: RunClaims,
+        owner: Option<&str>,
+    ) -> Result<GitToken, CredentialError>;
     async fn worker_env(
         &self,
         claims: RunClaims,
@@ -113,15 +117,53 @@ pub fn worker_variable(provider: &str, kind: &str, value: &str) -> Option<&'stat
 
 pub type TokenScope = (Option<Vec<i64>>, BTreeMap<String, String>);
 
-pub fn scope_of(session: &Session, config: &Config) -> Result<TokenScope, CredentialError> {
-    let repositories = if session.github.repos.iter().any(|repo| repo.contains('*')) {
+fn owner_of(repo: &str) -> Option<String> {
+    repo.split_once('/')
+        .map(|(owner, _)| owner.to_ascii_lowercase())
+}
+
+/// The GitHub account a token is for, lowercase, and the token's scope: the repositories of the session's `GitHub.Repos` that the account owns, by id, or the account's whole installation when one of them is a pattern. Without an account, `GitHub.Repos` has to name the repositories of one account.
+pub fn scope_of(
+    session: &Session,
+    config: &Config,
+    owner: Option<&str>,
+) -> Result<(String, TokenScope), CredentialError> {
+    let owners = session
+        .github
+        .repos
+        .iter()
+        .filter_map(|repo| owner_of(repo))
+        .collect::<BTreeSet<_>>();
+    let owner = match owner {
+        Some(owner) => owner.to_ascii_lowercase(),
+        None => match owners.iter().collect::<Vec<_>>()[..] {
+            [only] => only.clone(),
+            [] => return Err(unavailable("the session's GitHub.Repos is empty")),
+            _ => {
+                return Err(unavailable(format!(
+                    "the session's GitHub.Repos names the repositories of {}; ask for a token with the repository's path",
+                    owners.into_iter().collect::<Vec<_>>().join(", ")
+                )));
+            }
+        },
+    };
+    let repos = session
+        .github
+        .repos
+        .iter()
+        .filter(|repo| owner_of(repo).as_deref() == Some(owner.as_str()))
+        .collect::<Vec<_>>();
+    if repos.is_empty() {
+        return Err(unavailable(format!(
+            "the session's GitHub.Repos names no repository of {owner}"
+        )));
+    }
+    let repositories = if repos.iter().any(|repo| repo.contains('*')) {
         None
     } else {
         Some(
-            session
-                .github
-                .repos
-                .iter()
+            repos
+                .into_iter()
                 .map(|name| {
                     config
                         .repository_named(name)
@@ -149,46 +191,34 @@ pub fn scope_of(session: &Session, config: &Config) -> Result<TokenScope, Creden
             (name.clone(), level.to_string())
         })
         .collect();
-    Ok((repositories, permissions))
+    Ok((owner, (repositories, permissions)))
 }
 
 #[async_trait]
 impl RunCredentials for IssuedCredentials {
-    async fn git_token(&self, claims: RunClaims) -> Result<GitToken, CredentialError> {
+    async fn git_token(
+        &self,
+        claims: RunClaims,
+        owner: Option<&str>,
+    ) -> Result<GitToken, CredentialError> {
         let mut tx = self.store.tx(claims.tenant_id);
         let task = running_task(&mut tx, claims).await?;
         let session = session_of(&task)?;
         let config = config_of(&mut tx, &task).await?;
-        let (repositories, permissions) = scope_of(&session, &config)?;
+        let (owner, (repositories, permissions)) = scope_of(&session, &config, owner)?;
         let installations = installations(&mut tx).await?;
-        let mut used = BTreeSet::new();
-        match &repositories {
-            Some(ids) => {
-                for id in ids {
-                    let (installation, _) =
-                        installation_with(&installations, *id).ok_or_else(|| {
-                            unavailable(format!(
-                                "repository {id} is not in the tenant's GitHub App installation"
-                            ))
-                        })?;
-                    used.insert(installation.id);
-                }
-            }
-            None => {
-                for repo in &session.github.repos {
-                    used.insert(installation_for(&installations, repo).map_err(unavailable)?);
+        let installation =
+            installation_for(&installations, &format!("{owner}/*")).map_err(unavailable)?;
+        for id in repositories.iter().flatten() {
+            match installation_with(&installations, *id) {
+                Some((holder, _)) if holder.id == installation => {}
+                _ => {
+                    return Err(unavailable(format!(
+                        "repository {id} is not in the GitHub App installation on {owner}"
+                    )));
                 }
             }
         }
-        let installation = match used.into_iter().collect::<Vec<_>>()[..] {
-            [only] => only,
-            [] => return Err(unavailable("the session's GitHub.Repos is empty")),
-            _ => {
-                return Err(unavailable(
-                    "the session's GitHub.Repos spans more than one GitHub installation",
-                ));
-            }
-        };
         let (token, expires_at) = self
             .github
             .scoped_installation_token(installation, repositories.as_deref(), &permissions)
@@ -230,7 +260,11 @@ pub const NO_RUN_CREDENTIALS: &str = "this process does not serve Run channel me
 
 #[async_trait]
 impl RunCredentials for NoRunCredentials {
-    async fn git_token(&self, _claims: RunClaims) -> Result<GitToken, CredentialError> {
+    async fn git_token(
+        &self,
+        _claims: RunClaims,
+        _owner: Option<&str>,
+    ) -> Result<GitToken, CredentialError> {
         Err(unavailable(NO_RUN_CREDENTIALS))
     }
 
@@ -314,8 +348,13 @@ mod tests {
 
     #[test]
     fn the_scope_names_the_session_repositories_by_id_unless_a_wildcard_widens_it() {
-        let (repositories, permissions) =
-            scope_of(&session(&["acme/shop-web", "acme/shop-api"]), &config()).unwrap();
+        let (owner, (repositories, permissions)) = scope_of(
+            &session(&["acme/shop-web", "acme/shop-api"]),
+            &config(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(owner, "acme");
         assert_eq!(repositories, Some(vec![7101, 7102]));
         assert_eq!(
             permissions,
@@ -324,8 +363,22 @@ mod tests {
                 ("issues".to_string(), "read".to_string()),
             ])
         );
-        let (repositories, _) = scope_of(&session(&["acme/*"]), &config()).unwrap();
+        let (_, (repositories, _)) =
+            scope_of(&session(&["acme/*"]), &config(), Some("Acme")).unwrap();
         assert_eq!(repositories, None);
-        assert!(scope_of(&session(&["acme/other"]), &config()).is_err());
+        assert!(scope_of(&session(&["acme/other"]), &config(), None).is_err());
+    }
+
+    #[test]
+    fn a_session_across_accounts_scopes_each_token_to_the_account_asked_for() {
+        let repos = ["acme/shop-web", "mika/*"];
+        let (owner, (repositories, _)) =
+            scope_of(&session(&repos), &config(), Some("acme")).unwrap();
+        assert_eq!((owner.as_str(), repositories), ("acme", Some(vec![7101])));
+        let (owner, (repositories, _)) =
+            scope_of(&session(&repos), &config(), Some("mika")).unwrap();
+        assert_eq!((owner.as_str(), repositories), ("mika", None));
+        assert!(scope_of(&session(&repos), &config(), None).is_err());
+        assert!(scope_of(&session(&repos), &config(), Some("other")).is_err());
     }
 }

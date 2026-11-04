@@ -94,7 +94,7 @@ export class WorkspaceAgent {
   private finished = false
   private stopping = false
   private turnEnded: (() => void) | null = null
-  private gitToken: { token: string; expiresAt: number } | null = null
+  private gitTokens = new Map<string, { token: string; expiresAt: number }>()
   private resolveExit: (code: number) => void = () => {}
   readonly exitCode: Promise<number>
 
@@ -399,7 +399,7 @@ export class WorkspaceAgent {
     return reply.env
   }
 
-  private async gitCredential(host: string): Promise<SocketResponse> {
+  private async gitCredential(host: string, owner: string | null): Promise<SocketResponse> {
     const source = this.config.credentialSource
     if (source.kind !== "channel") {
       return {
@@ -413,16 +413,19 @@ export class WorkspaceAgent {
     if (host !== new URL(source.gitUrl).host) {
       return { ok: false, error: { code: "invalid_request", message: `No credential for ${host}` } }
     }
-    if (!this.gitToken || this.gitToken.expiresAt - GIT_TOKEN_MARGIN_MS <= Date.now()) {
+    const key = owner?.toLowerCase() ?? ""
+    let cached = this.gitTokens.get(key)
+    if (!cached || cached.expiresAt - GIT_TOKEN_MARGIN_MS <= Date.now()) {
       const reply = await this.channel.request(
-        (requestId) => ({ type: "git_token_request", requestId }),
+        (requestId) => ({ type: "git_token_request", requestId, owner }),
         this.config.requestTimeoutMs,
       )
       if (reply.type !== "git_token_response") throw new Error(`Unexpected reply ${reply.type}`)
       if (!reply.ok) return { ok: false, error: reply.error }
-      this.gitToken = { token: reply.token, expiresAt: Date.parse(reply.expiresAt) }
+      cached = { token: reply.token, expiresAt: Date.parse(reply.expiresAt) }
+      this.gitTokens.set(key, cached)
     }
-    return { ok: true, result: { username: "x-access-token", password: this.gitToken.token } }
+    return { ok: true, result: { username: "x-access-token", password: cached.token } }
   }
 
   private exec(message: ExecMessage): void {
@@ -643,7 +646,7 @@ export class WorkspaceAgent {
   }
 
   private async handleSocket(request: SocketRequest): Promise<SocketResponse> {
-    if (request.action === "git_credential") return this.gitCredential(request.host)
+    if (request.action === "git_credential") return this.gitCredential(request.host, request.owner)
     const start = this.start
     if (!start || !this.ready) {
       return {

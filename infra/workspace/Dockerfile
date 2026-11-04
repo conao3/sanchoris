@@ -28,6 +28,7 @@ RUN printf '#!/bin/sh\nexec node --disable-warning=UNDICI-EHPA /opt/workspace-ag
  && chmod 755 /rootfs/usr/local/bin/sanchoris /rootfs/usr/local/bin/workspace-entrypoint \
  && mkdir -p /rootfs/etc /home-dirs \
  && git config --file /rootfs/etc/gitconfig credential.helper '!sanchoris git-credential' \
+ && git config --file /rootfs/etc/gitconfig credential.useHttpPath true \
  && git config --file /rootfs/etc/gitconfig user.name sanchoris \
  && git config --file /rootfs/etc/gitconfig user.email sanchoris@users.noreply.github.com
 

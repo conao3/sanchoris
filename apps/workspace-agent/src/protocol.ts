@@ -432,6 +432,7 @@ export const GitTokenRequestMessage = z.strictObject({
   type: z.literal("git_token_request"),
   ...sequenced,
   requestId: RequestId,
+  owner: z.string().min(1).nullable(),
 })
 
 export const WorkerCredentialRequestMessage = z.strictObject({
@@ -533,6 +534,7 @@ export const SocketRequest = z.discriminatedUnion("action", [
   z.strictObject({
     action: z.literal("git_credential"),
     host: z.string().min(1),
+    owner: z.string().min(1).nullable(),
   }),
 ])
 export type SocketRequest = z.infer<typeof SocketRequest>
