@@ -21,6 +21,7 @@ import {
   Chip,
   Dim,
   ErrorNote,
+  ExternalLk,
   Icon,
   Row,
   Skeleton,
@@ -170,75 +171,64 @@ export function IntegrationsPage() {
               )}
             </span>
           </Row>
-          {installations.map((github) => (
-            <Row key={github.id} cols={cols} tall>
-              <Icon icon={GitBranch} />
-              <div>
-                <span className="font-medium">{t("integrations.githubInstallation")}</span>
-                <Dim>
-                  {tx(
-                    github.repositories.length === 1
-                      ? "integrations.installedOnOne"
-                      : "integrations.installedOn",
-                    {
-                      account: <Chip>{github.account}</Chip>,
-                      n: github.repositories.length,
-                      repos: github.repositories
-                        .map((repository) => repository.split("/").pop())
-                        .join(", "),
-                    },
-                  )}
-                  {github.error ? (
-                    <span className="text-err">
-                      {" "}
-                      · {github.error}
+          <Row cols={cols} tall>
+            <Icon icon={GitBranch} />
+            <div className="min-w-0">
+              <span className="font-medium">{t("integrations.githubApp")}</span>
+              <Dim>
+                {installations.length > 0
+                  ? t("integrations.installedAccounts")
+                  : t("integrations.notInstalled")}
+              </Dim>
+              {installations.map((github) => (
+                <div key={github.id} className="mt-1 flex min-w-0 items-center gap-2 text-sm">
+                  <Chip>{github.account}</Chip>
+                  <span
+                    className="min-w-0 truncate text-muted"
+                    title={github.repositories.join(", ")}
+                  >
+                    {tx(
+                      github.repositories.length === 1
+                        ? "integrations.repositoriesOne"
+                        : "integrations.repositories",
+                      {
+                        n: github.repositories.length,
+                        repos: github.repositories
+                          .map((repository) => repository.split("/").pop())
+                          .join(", "),
+                      },
+                    )}
+                  </span>
+                  {github.status === "ERROR" ? (
+                    <span className="shrink-0 text-err">
+                      {github.error}
                       {github.lastSyncedAt
                         ? ` · ${t("integrations.lastSync", { at: ago(github.lastSyncedAt) })}`
                         : null}
                     </span>
                   ) : null}
-                </Dim>
-              </div>
-              {github.status === "ERROR" ? (
-                <State tone="err" icon={TriangleAlert}>
-                  {t("integrations.error")}
-                </State>
-              ) : (
-                <State tone="ok" icon={ShieldCheck}>
-                  {t("integrations.connected")}
-                </State>
-              )}
-              <span className="justify-self-end">
-                {github.status === "ERROR" ? (
-                  <Button small onPress={refetch}>
-                    {t("common.retry")}
-                  </Button>
-                ) : github.manageUrl ? (
-                  <Button icon={ExternalLink} href={github.manageUrl}>
-                    {t("integrations.manageOnGitHub")}
-                  </Button>
-                ) : null}
-              </span>
-            </Row>
-          ))}
-          <Row cols={cols} tall>
-            <Icon icon={GitBranch} />
-            <div>
-              <span className="font-medium">
-                {installations.length > 0
-                  ? t("integrations.anotherInstallation")
-                  : t("integrations.githubInstallation")}
-              </span>
-              <Dim>
-                {installations.length > 0
-                  ? t("integrations.installAnotherDetail")
-                  : t("integrations.notInstalled")}
-              </Dim>
+                  {github.status === "ERROR" ? (
+                    <Button small onPress={refetch}>
+                      {t("common.retry")}
+                    </Button>
+                  ) : github.manageUrl ? (
+                    <ExternalLk href={github.manageUrl} className="shrink-0 text-sm">
+                      {t("integrations.manageOnGitHub")}
+                    </ExternalLk>
+                  ) : null}
+                </div>
+              ))}
               {outcome?.row === "installation" ? <OutcomeNote outcome={outcome} /> : null}
               <ActionError error={installState.error} className="mt-0.5" />
             </div>
-            {installations.length > 0 ? (
-              <span />
+            {installations.some((github) => github.status === "ERROR") ? (
+              <State tone="err" icon={TriangleAlert}>
+                {t("integrations.error")}
+              </State>
+            ) : installations.length > 0 ? (
+              <State tone="ok" icon={ShieldCheck}>
+                {t("integrations.connected")}
+              </State>
             ) : (
               <State tone="wait" icon={CircleDashed}>
                 {t("integrations.notConnected")}
@@ -259,7 +249,9 @@ export function IntegrationsPage() {
                   })
                 }
               >
-                {t("integrations.installApp")}
+                {installations.length > 0
+                  ? t("integrations.addAccount")
+                  : t("integrations.installApp")}
               </Button>
             </span>
           </Row>
