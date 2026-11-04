@@ -2,6 +2,7 @@ import clsx from "clsx"
 import {
   ChevronRight,
   CircleStop,
+  Clock,
   CornerDownLeft,
   FoldVertical,
   GitFork,
@@ -198,6 +199,7 @@ function Disclosure({
   onToggle,
   tone,
   live,
+  spin,
 }: {
   icon: LucideIcon
   label: string
@@ -206,11 +208,15 @@ function Disclosure({
   onToggle?: () => void
   tone?: "err"
   live?: boolean
+  spin?: boolean
 }) {
   const content = (
     <>
       <Icon
-        className={clsx("size-3.5 shrink-0", live && "motion-safe:animate-pulse")}
+        className={clsx(
+          "size-3.5 shrink-0",
+          spin ? "motion-safe:animate-spin" : live && "motion-safe:animate-pulse",
+        )}
         aria-hidden
       />
       <span className={clsx("min-w-0 truncate", live && "motion-safe:animate-pulse")}>{label}</span>
@@ -422,8 +428,9 @@ export function Working({
         <Markdown text={partial.text} className="streaming my-1.5 text-ink" />
       ) : null}
       <Disclosure
-        icon={LoaderCircle}
+        icon={waiting === "question" || waiting === "approval" ? Clock : LoaderCircle}
         live
+        spin={waiting !== "question" && waiting !== "approval"}
         label={
           waiting === "question"
             ? t("work.waitingAnswer")
