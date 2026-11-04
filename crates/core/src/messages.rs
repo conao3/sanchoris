@@ -376,7 +376,7 @@ When a request needs something these settings do not allow, such as another repo
 ",
         how = if opens_config_pull_requests(workflow) {
             format!(
-                "You can open the change as a pull request: offer it with the diff, and when the member agrees, commit the change in the directory `{dir}` under the workspace (the clone of `{config}`; clone it there when it is not there), then run `{OPEN_PR_SKILL}` with `Repos` and `Repo` set to `{config}` and `Issue` set to the number of the issue the change is for (file one with `{FILE_ISSUE_SKILL}`, without a label that starts a task, when the task has none). The skill pushes that clone's `HEAD` to the task branch `{branch}` and opens the pull request, so the pull request also carries any other commits of this task in that clone. The member reviews and merges it on GitHub; until then sanchoris shows it as a change request.",
+                "You can open the change as a pull request: offer it with the diff, and when the member agrees, commit the change in the directory `{dir}` under the workspace (the clone of `{config}`; clone it there when it is not there), then run `{OPEN_PR_SKILL}` with `Repos` and `Repo` set to `{config}` and `Issue` set to the number of the issue the change is for (file one with `{FILE_ISSUE_SKILL}`, without a label that starts a task, when the task has none). The skill pushes that clone's `HEAD` to the task branch `{branch}` and opens the pull request, so the pull request also carries any other commits of this task in that clone. The member reviews and merges it on GitHub.",
                 config = workflow.config_repository,
                 dir = workflow
                     .config_repository
