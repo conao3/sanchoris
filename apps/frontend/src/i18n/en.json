@@ -503,6 +503,7 @@
   "task.notRun": "Not run yet",
   "task.notCompleted": "Not completed",
   "task.messageGoes": "Your message goes to the agent session, and the skill runs again.",
+  "task.messageGoesAgent": "Your message goes to the agent session.",
   "task.messageToAgent": "Message to the agent",
   "task.messagePlaceholder": "Skip the flaky test and fix the cause in the cart fixture.",
   "task.resume": "Resume",

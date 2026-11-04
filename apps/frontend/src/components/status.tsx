@@ -24,7 +24,7 @@ import { State, type Tone } from "./ui.tsx"
 
 type Look = { tone: Tone; icon: LucideIcon; label: MessageKey }
 
-function taskLook(status: TaskStatus, waitReason?: WaitReason | null): Look {
+export function taskLook(status: TaskStatus, waitReason?: WaitReason | null): Look {
   switch (status) {
     case "PENDING":
       return { tone: "wait", icon: Clock, label: "status.waiting" }

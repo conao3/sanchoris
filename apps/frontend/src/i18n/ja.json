@@ -503,6 +503,7 @@
   "task.notRun": "未実行",
   "task.notCompleted": "未完了",
   "task.messageGoes": "メッセージはエージェントのセッションに届き、スキルがもう一度動きます。",
+  "task.messageGoesAgent": "メッセージはエージェントのセッションに届きます。",
   "task.messageToAgent": "エージェントへのメッセージ",
   "task.messagePlaceholder": "不安定なテストを飛ばし、カートの fixture の原因を直してください。",
   "task.resume": "再開",

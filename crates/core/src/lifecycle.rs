@@ -217,22 +217,32 @@ pub fn check_limits(
     if now - progress.started_at >= Duration::seconds(limits.timeout_seconds) {
         return exceeded(
             ERROR_TIMEOUT,
-            format!(
-                "The task ran longer than {} seconds",
-                limits.timeout_seconds
-            ),
+            format!("The task ran longer than {}", span(limits.timeout_seconds)),
         );
     }
     if now - progress.last_activity_at >= Duration::seconds(limits.heartbeat_seconds) {
         return exceeded(
             ERROR_HEARTBEAT_TIMEOUT,
             format!(
-                "The session had no activity for {} seconds",
-                limits.heartbeat_seconds
+                "The session had no activity for {}",
+                span(limits.heartbeat_seconds)
             ),
         );
     }
     None
+}
+
+/// A limit in seconds in the largest unit that divides it, such as "1 day" or "15 minutes".
+fn span(seconds: i64) -> String {
+    let (n, unit) = [(86_400, "day"), (3_600, "hour"), (60, "minute")]
+        .into_iter()
+        .find(|(size, _)| seconds % size == 0)
+        .map_or((seconds, "second"), |(size, unit)| (seconds / size, unit));
+    if n == 1 {
+        format!("1 {unit}")
+    } else {
+        format!("{n} {unit}s")
+    }
 }
 
 #[cfg(test)]
@@ -515,5 +525,20 @@ mod tests {
             error_of(&progress, start + Duration::seconds(1500)),
             "Task.HeartbeatTimeout"
         );
+
+        let cause_of = |progress: &TaskProgress, now| match check_limits(&limits, progress, now) {
+            Some(TaskDecision::NeedsYou { cause, .. }) => cause,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_eq!(
+            cause_of(&progress, start + Duration::seconds(14400)),
+            "The task ran longer than 4 hours"
+        );
+        assert_eq!(
+            cause_of(&progress, start + Duration::seconds(1500)),
+            "The session had no activity for 15 minutes"
+        );
+        assert_eq!(span(86_400), "1 day");
+        assert_eq!(span(90), "90 seconds");
     }
 }

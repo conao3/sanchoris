@@ -20,7 +20,7 @@ import { Button } from "../components/Button.tsx"
 import { Label, TextArea } from "../components/Field.tsx"
 import { ConfirmDialog } from "../components/ConfirmDialog.tsx"
 import { Cols, Page } from "../components/Shell.tsx"
-import { SkillRunState, StateEntryState, TaskState } from "../components/status.tsx"
+import { SkillRunState, StateEntryState, TaskState, taskLook } from "../components/status.tsx"
 import {
   ActionError,
   Dim,
@@ -129,6 +129,8 @@ function StepStrip({ task }: { task: Task }) {
     : undefined
   const done = task.status === "SUCCEEDED"
   const agentWorking = task.status === "RUNNING" && !skillRun
+  const paused = !!task.startedAt && !skillRun && !agentWorking && !task.endedAt
+  const look = taskLook(task.status, task.waitReason)
   return (
     <div className="mb-1 mt-0.5 flex items-stretch max-md:flex-col">
       <Step
@@ -147,8 +149,10 @@ function StepStrip({ task }: { task: Task }) {
       <Step
         kind={t("task.stepAgent", { session: task.session.name })}
         icon={Bot}
-        tone={agentWorking ? "run" : task.startedAt ? "ok" : "wait"}
-        stateIcon={agentWorking ? CircleDashed : task.startedAt ? CircleCheck : Circle}
+        tone={agentWorking ? "run" : paused ? look.tone : task.startedAt ? "ok" : "wait"}
+        stateIcon={
+          agentWorking ? CircleDashed : paused ? look.icon : task.startedAt ? CircleCheck : Circle
+        }
         current={agentWorking}
         todo={!task.startedAt}
       >
@@ -156,7 +160,11 @@ function StepStrip({ task }: { task: Task }) {
           ? t("task.notStarted")
           : skillRun
             ? t("task.worked", { from: clock(task.startedAt), to: clock(skillRun.startedAt) })
-            : t("task.workingSince", { from: clock(task.startedAt) })}
+            : agentWorking
+              ? t("task.workingSince", { from: clock(task.startedAt) })
+              : task.endedAt
+                ? t("task.worked", { from: clock(task.startedAt), to: clock(task.endedAt) })
+                : t(look.label)}
       </Step>
       {required ? (
         <>
@@ -381,20 +389,23 @@ export function TaskPage() {
         task.blockedBy.map((blocker) => `#${blocker.issue?.number ?? ""}`).join(", "),
       ])
     }
-    relations.push(
-      [
-        t("col.session"),
-        <>
-          <span className="font-mono text-sm">{task.session.name}</span> ·{" "}
-          {t(task.session.agent === "CODEX" ? "provider.codex" : "provider.claude")}
-        </>,
-      ],
-      [t("task.nudges"), t("task.nudgesOf", { n: task.nudges, total: task.maxNudges })],
-      [
-        t("task.version"),
-        <span className="font-mono text-sm">{t("task.pinned", { rev: task.configRevision })}</span>,
-      ],
-    )
+    relations.push([
+      t("col.session"),
+      <>
+        <span className="font-mono text-sm">{task.session.name}</span> ·{" "}
+        {t(task.session.agent === "CODEX" ? "provider.codex" : "provider.claude")}
+      </>,
+    ])
+    if (task.requiredSkills.length > 0) {
+      relations.push([
+        t("task.nudges"),
+        t("task.nudgesOf", { n: task.nudges, total: task.maxNudges }),
+      ])
+    }
+    relations.push([
+      t("task.version"),
+      <span className="font-mono text-sm">{t("task.pinned", { rev: task.configRevision })}</span>,
+    ])
 
     const main = (
       <>
@@ -466,8 +477,11 @@ export function TaskPage() {
         {resumable ? (
           <>
             <Section>{t("status.needsYou")}</Section>
-            <Dim>
-              {task.cause ?? task.error} {t("task.messageGoes")}
+            <div className="font-medium">{task.cause ?? task.error}</div>
+            <Dim className="mt-1">
+              {task.needsYouReason === "SKILL_FAILED" || task.needsYouReason === "NUDGES_EXHAUSTED"
+                ? t("task.messageGoes")
+                : t("task.messageGoesAgent")}
             </Dim>
             <Label htmlFor="resume-message">{t("task.messageToAgent")}</Label>
             <TextArea
