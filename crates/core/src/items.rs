@@ -1352,7 +1352,7 @@ pub struct Task {
     pub skill_runs: i64,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
-    /// The time of the member's latest message to a conversation's task; its time limit counts from here.
+    /// The time of the member's latest input: a message to a conversation's task, or a reply that resumes the task. Its time limit counts from here.
     pub input_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
@@ -1661,6 +1661,10 @@ pub struct Run {
     pub holds_slot: bool,
     pub turns: i64,
     pub cost_usd: f64,
+    /// The run's turns when the member's latest input arrived; its turn limit counts from here. Null until a member's input.
+    pub input_turns: Option<i64>,
+    /// The run's cost when the member's latest input arrived; its cost limit counts from here. Null until a member's input.
+    pub input_cost_usd: Option<f64>,
     pub instance_costs: BTreeMap<String, f64>,
     pub summary: Option<String>,
     pub error: Option<String>,
@@ -1699,6 +1703,8 @@ impl Entity for Run {
             .b("holds_slot", self.holds_slot)
             .n("turns", self.turns)
             .f("cost_usd", self.cost_usd)
+            .opt_n("input_turns", self.input_turns)
+            .opt_f("input_cost_usd", self.input_cost_usd)
             .json(
                 "instance_costs",
                 &serde_json::to_value(&self.instance_costs).expect("costs serialize"),
@@ -1730,6 +1736,8 @@ impl Entity for Run {
             holds_slot: r.b("holds_slot")?,
             turns: r.n("turns")?,
             cost_usd: r.f("cost_usd")?,
+            input_turns: r.opt_n("input_turns")?,
+            input_cost_usd: r.opt_f("input_cost_usd")?,
             instance_costs: serde_json::from_value(r.json("instance_costs")?)
                 .map_err(|e| DbError::Decode(format!("attribute instance_costs: {e}")))?,
             summary: r.opt_s("summary")?,

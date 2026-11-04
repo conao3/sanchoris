@@ -319,6 +319,22 @@ pub async fn send_chat_to_task(
     Ok(inserted)
 }
 
+/// Counts the task's limits from `at`: its time from then, and its turns and cost from the run's at then.
+pub async fn count_limits_from(
+    tx: &mut TenantTx,
+    task: &mut Task,
+    run_id: Uuid,
+    at: DateTime<Utc>,
+) -> Result<(), DbError> {
+    task.input_at = Some(at);
+    let mut run = tx
+        .require::<Run>(&keys::run_key(tx.tenant_id(), task.id, run_id))
+        .await?;
+    run.input_turns = Some(run.turns);
+    run.input_cost_usd = Some(run.cost_usd);
+    tx.put(&run)
+}
+
 pub async fn apply_decision(
     tx: &mut TenantTx,
     task_id: Uuid,
@@ -387,6 +403,7 @@ pub async fn apply_decision(
             if *reset_nudges {
                 task.nudges = 0;
             }
+            count_limits_from(tx, &mut task, run_id, now).await?;
             store_task(tx, &task, now).await?;
             deliver_held_messages(tx, task_id, run_id).await?;
             enqueue_user_message(tx, run_id, message, dedupe_key).await?;

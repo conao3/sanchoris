@@ -347,16 +347,8 @@ async fn turn_end(
         max_nudges: u32::try_from(start.max_nudges).expect("MaxNudges fits in u32"),
     });
     if decision != TaskDecision::Succeed
-        && let Some(limited) = check_limits(
-            &limits_of(&start),
-            &TaskProgress {
-                turns: u32::try_from(run.turns).expect("turns fit"),
-                cost_usd: run.cost_usd,
-                started_at: task.started_at.unwrap_or(now),
-                last_activity_at: now,
-            },
-            now,
-        )
+        && let Some(limited) =
+            check_limits(&limits_of(&start), &progress_of(&task, &run, now, now), now)
     {
         decision = limited;
     }
@@ -753,7 +745,7 @@ pub async fn sweep_limits(worker: &Worker) -> Result<usize> {
     Ok(changed)
 }
 
-/// The limit a task exceeded; a conversation's task counts its time from the member's latest message.
+/// The limit a task exceeded; it counts from the member's latest input (see `count_limits_from`).
 fn limit_decision(task: &Task, run: &Run, now: DateTime<Utc>) -> Result<Option<TaskDecision>> {
     if !task.is_supervised() {
         return Ok(None);
@@ -767,14 +759,24 @@ fn limit_decision(task: &Task, run: &Run, now: DateTime<Utc>) -> Result<Option<T
     };
     Ok(check_limits(
         &limits_of(&start_of(task)?),
-        &TaskProgress {
-            turns: u32::try_from(run.turns).expect("turns fit"),
-            cost_usd: run.cost_usd,
-            started_at: task.input_at.or(task.started_at).unwrap_or(now),
-            last_activity_at,
-        },
+        &progress_of(task, run, last_activity_at, now),
         now,
     ))
+}
+
+/// The task's progress since the member's latest input, or since it started.
+fn progress_of(
+    task: &Task,
+    run: &Run,
+    last_activity_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> TaskProgress {
+    TaskProgress {
+        turns: u32::try_from(run.turns - run.input_turns.unwrap_or(0)).expect("turns fit"),
+        cost_usd: run.cost_usd - run.input_cost_usd.unwrap_or(0.0),
+        started_at: task.input_at.or(task.started_at).unwrap_or(now),
+        last_activity_at,
+    }
 }
 
 /// Decides on the swept copy of the task and reads the task again only to apply a decision.

@@ -622,7 +622,7 @@ async fn the_sweep_stops_workspaces_that_no_open_workspace_records() {
 }
 
 #[tokio::test]
-async fn turn_limits_need_you_and_interrupt_the_session() {
+async fn turn_limits_need_you_and_count_again_from_the_reply_that_resumes_the_task() {
     let world = World::new("max").await;
     let yaml = common::CONFIG_YAML.replacen("Limits: { Turns: 60,", "Limits: { Turns: 2,", 1);
     {
@@ -636,6 +636,26 @@ async fn turn_limits_need_you_and_interrupt_the_session() {
     let run_id = task.run_id.unwrap();
     world.turn_end(run_id, 1).await;
     world.turn_end(run_id, 2).await;
+    world.worker.settle().await.unwrap();
+    let task = world.task(&format!("{REPO}#35")).await;
+    assert_eq!(task.status, "NEEDS_YOU");
+    assert_eq!(task.error.as_deref(), Some("Task.TurnLimitExceeded"));
+
+    world
+        .run_event(
+            run_id,
+            RunEventType::HumanReply,
+            json!({ "member": "Mika", "text": "Two more turns." }),
+        )
+        .await;
+    world.worker.settle().await.unwrap();
+    world.turn_end(run_id, 3).await;
+    world.worker.settle().await.unwrap();
+    assert_ne!(
+        world.task(&format!("{REPO}#35")).await.error.as_deref(),
+        Some("Task.TurnLimitExceeded")
+    );
+    world.turn_end(run_id, 4).await;
     world.worker.settle().await.unwrap();
     let task = world.task(&format!("{REPO}#35")).await;
     assert_eq!(task.status, "NEEDS_YOU");

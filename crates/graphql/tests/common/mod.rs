@@ -828,6 +828,8 @@ fn run_item(
         holds_slot: false,
         turns: 0,
         cost_usd: 0.0,
+        input_turns: None,
+        input_cost_usd: None,
         instance_costs: Default::default(),
         summary: None,
         error: None,

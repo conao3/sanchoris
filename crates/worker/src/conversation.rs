@@ -21,7 +21,8 @@ use sanchoris_core::model::{NamedDefinition, TaskDefinition, TaskStatus, WaitRea
 use sanchoris_core::modes::SessionModes;
 use sanchoris_core::tasks::runs_of;
 use sanchoris_core::tasks::{
-    apply_decision, deliver_held_messages, latest_run, load_task, send_chat_to_task,
+    apply_decision, count_limits_from, deliver_held_messages, latest_run, load_task,
+    send_chat_to_task,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -287,6 +288,7 @@ async fn deliver(
         WorkerError::Invalid(format!("the task {} has no start payload", task.id))
     })?;
     payload["modes"] = serde_json::to_value(message.modes)?;
+    count_limits_from(tx, &mut task, run_id, message.at).await?;
     tx.put(&task)?;
     enqueue_session_mode(tx, run_id, message.modes, &format!("mode:{}", message.id)).await?;
     if task.status == TaskStatus::NeedsYou {

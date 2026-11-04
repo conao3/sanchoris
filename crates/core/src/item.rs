@@ -149,6 +149,13 @@ impl ItemWriter {
         self.raw(name, AttributeValue::N(value.to_string()))
     }
 
+    pub fn opt_f(&mut self, name: &str, value: Option<f64>) -> &mut Self {
+        if let Some(value) = value {
+            self.f(name, value);
+        }
+        self
+    }
+
     pub fn b(&mut self, name: &str, value: bool) -> &mut Self {
         self.raw(name, AttributeValue::Bool(value))
     }
@@ -261,12 +268,18 @@ impl<'a> ItemReader<'a> {
         i32::try_from(self.n(name)?).map_err(|_| self.wrong(name, "an i32"))
     }
 
-    pub fn f(&self, name: &str) -> Result<f64, DbError> {
+    pub fn opt_f(&self, name: &str) -> Result<Option<f64>, DbError> {
         match self.item.get(name) {
-            Some(AttributeValue::N(n)) => n.parse().map_err(|_| self.wrong(name, "a float")),
+            None | Some(AttributeValue::Null(_)) => Ok(None),
+            Some(AttributeValue::N(n)) => {
+                n.parse().map(Some).map_err(|_| self.wrong(name, "a float"))
+            }
             Some(_) => Err(self.wrong(name, "a number")),
-            None => Err(self.missing(name)),
         }
+    }
+
+    pub fn f(&self, name: &str) -> Result<f64, DbError> {
+        self.opt_f(name)?.ok_or_else(|| self.missing(name))
     }
 
     pub fn b(&self, name: &str) -> Result<bool, DbError> {

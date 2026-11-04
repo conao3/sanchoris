@@ -423,6 +423,8 @@ fn new_run(task: &Task, now: DateTime<Utc>) -> Run {
         holds_slot: true,
         turns: 0,
         cost_usd: 0.0,
+        input_turns: None,
+        input_cost_usd: None,
         instance_costs: Default::default(),
         summary: None,
         error: None,
