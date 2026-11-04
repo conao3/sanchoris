@@ -596,6 +596,7 @@
   "integrations.installedAccounts": "次のアカウントにインストール済みです。別の Organization やユーザーを足すと、そのリポジトリも扱えます。",
   "integrations.repositories": "{n} リポジトリ: {repos}",
   "integrations.repositoriesOne": "1 リポジトリ: {repos}",
+  "integrations.moreRepositories": "…ほか {n} 件",
   "integrations.addAccount": "アカウントを追加",
   "integrations.notInstalled": "リポジトリを持つアカウントに GitHub App をインストールします。",
   "integrations.connected": "接続済み",

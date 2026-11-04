@@ -78,6 +78,8 @@ function OutcomeNote({ outcome }: { outcome: Outcome }) {
   return <div className={clsx("mt-0.5 text-xs", toneClass[outcome.tone])}>{t(outcome.text)}</div>
 }
 
+const TOOLTIP_REPOSITORIES = 20
+
 export function IntegrationsPage() {
   const { slug } = useTenant()
   const { isAdmin } = useRole()
@@ -185,7 +187,11 @@ export function IntegrationsPage() {
                   <Chip>{github.account}</Chip>
                   <span
                     className="min-w-0 truncate text-muted"
-                    title={github.repositories.join(", ")}
+                    title={
+                      github.repositories.length > TOOLTIP_REPOSITORIES
+                        ? `${github.repositories.slice(0, TOOLTIP_REPOSITORIES).join(", ")} ${t("integrations.moreRepositories", { n: github.repositories.length - TOOLTIP_REPOSITORIES })}`
+                        : github.repositories.join(", ")
+                    }
                   >
                     {tx(
                       github.repositories.length === 1

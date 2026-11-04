@@ -596,6 +596,7 @@
   "integrations.installedAccounts": "Installed on these accounts. Add another organization or user to work with its repositories too.",
   "integrations.repositories": "{n} repositories: {repos}",
   "integrations.repositoriesOne": "1 repository: {repos}",
+  "integrations.moreRepositories": "… and {n} more",
   "integrations.addAccount": "Add account",
   "integrations.notInstalled": "Install the GitHub App on the account that owns your repositories.",
   "integrations.connected": "Connected",
