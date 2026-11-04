@@ -10,7 +10,7 @@ pub mod skill;
 pub mod skill_md;
 pub mod validate;
 
-pub use builtin::{FILE_ISSUE_SKILL, builtin_skill, builtin_skills};
+pub use builtin::{FILE_ISSUE_SKILL, OPEN_PR_SKILL, builtin_skill, builtin_skills};
 pub use config::{
     Agent, Architecture, AutoCompact, CONFIG_FILE, Checkout, ChildLimits, Compute, Config,
     GitHubAccess, Hook, InputTransformer, Limits, Network, PermissionLevel, Project, ProjectRepo,

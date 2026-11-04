@@ -9,9 +9,11 @@ pub struct BuiltinSkillSource {
 
 pub const FILE_ISSUE_SKILL: &str = "file-issue";
 
+pub const OPEN_PR_SKILL: &str = "open-pr-green-ci";
+
 pub const BUILTIN_SKILL_SOURCES: &[BuiltinSkillSource] = &[
     BuiltinSkillSource {
-        name: "open-pr-green-ci",
+        name: OPEN_PR_SKILL,
         skill_md: include_str!("../skills/open-pr-green-ci/SKILL.md"),
         skill_yaml: Some(include_str!("../skills/open-pr-green-ci/skill.yaml")),
     },

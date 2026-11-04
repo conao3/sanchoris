@@ -1,4 +1,5 @@
-use sanchoris_config::FILE_ISSUE_SKILL;
+use sanchoris_config::validate::covers;
+use sanchoris_config::{FILE_ISSUE_SKILL, OPEN_PR_SKILL};
 use serde_json::{Map, Value};
 
 pub const PREFIX: &str = "[sanchoris]";
@@ -293,6 +294,24 @@ pub struct Workflow<'a> {
     pub accounts: &'a [String],
 }
 
+/// Whether the task can open a pull request on the config repository: `GitHub.Repos` covers it, `GitHub.Permissions` writes contents and pull requests, and `Start.Skills` has the skill that opens pull requests.
+fn opens_config_pull_requests(workflow: &Workflow<'_>) -> bool {
+    let github = &workflow.session["GitHub"];
+    let repos = github["Repos"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    covers(&repos, workflow.config_repository)
+        && github["Permissions"]["contents"] == "write"
+        && github["Permissions"]["pull_requests"] == "write"
+        && workflow.start["Skills"]
+            .as_array()
+            .is_some_and(|skills| skills.iter().any(|skill| skill == OPEN_PR_SKILL))
+}
+
 fn yaml(value: &Value) -> String {
     serde_yaml_ng::to_string(value).expect("a JSON value serializes as YAML")
 }
@@ -351,9 +370,19 @@ What they mean:
 - Limits: the task stops for a person when it reaches the turns, the cost, or the time in `Limits`.
 
 Changing them:
-When a request needs something these settings do not allow, such as another repository or account, a permission, a network host, a skill, or a longer limit, do not work around it. Tell the member which setting stops it and propose the change to `sanchoris.yaml` as a diff. When the config repository is in `GitHub.Repos` with `contents: write` and you can run a skill that opens pull requests, offer to commit the change on a branch of the config repository and open a pull request; the member reviews and merges it on GitHub, and sanchoris shows it as a change request until then. Otherwise ask the member to make the change in `{config}`. A GitHub account the App is not installed on needs the App first: an owner or admin of the tenant adds it in Settings, Integrations.
+When a request needs something these settings do not allow, such as another repository or account, a permission, a network host, a skill, or a longer limit, do not work around it. Tell the member which setting stops it and propose the change to `sanchoris.yaml` as a diff. {how} A GitHub account the App is not installed on needs the App first: an owner or admin of the tenant adds it in Settings, Integrations.
 ",
-        config = workflow.config_repository,
+        how = if opens_config_pull_requests(workflow) {
+            format!(
+                "You can open the change as a pull request: offer it with the diff, and when the member agrees, commit the change on the task branch in a clone of `{config}` (clone it into the workspace when it is not there) and run `{OPEN_PR_SKILL}` with that repository. The member reviews and merges it on GitHub; until then sanchoris shows it as a change request.",
+                config = workflow.config_repository,
+            )
+        } else {
+            format!(
+                "This task cannot open a pull request on `{}`, so ask the member to make the change there.",
+                workflow.config_repository,
+            )
+        },
     ));
     if let Some(prompt) = project_prompt.filter(|prompt| !prompt.trim().is_empty()) {
         text.push_str("\n# Project\n\n");
@@ -616,5 +645,39 @@ mod tests {
             ),
             "[sanchoris] Skill open-pr-green-ci (run 2) failed: Skill.FixesExhausted.\nCause: The checks still fail after 3 fixes"
         );
+    }
+
+    #[test]
+    fn the_workflow_prompt_says_whether_the_task_can_open_a_config_pull_request() {
+        let session = json!({
+            "GitHub": {
+                "Repos": ["acme/*"],
+                "Permissions": { "contents": "write", "pull_requests": "write" },
+            },
+        });
+        let workflow = |start: &Value| {
+            workflow_prompt(
+                &Workflow {
+                    config_repository: "acme/sanchoris-config",
+                    config_root: "/",
+                    config_branch: "main",
+                    trigger: None,
+                    session_name: "all",
+                    session: &session,
+                    start,
+                    accounts: &["acme".to_string()],
+                },
+                Some("Write tests."),
+            )
+        };
+        let opens = workflow(&json!({ "Skills": ["open-pr-green-ci"] }));
+        assert!(
+            opens.contains("You can open the change as a pull request"),
+            "{opens}"
+        );
+        assert!(opens.contains("  Repos:\n  - acme/*\n"), "{opens}");
+        assert!(opens.ends_with("# Project\n\nWrite tests.\n"), "{opens}");
+        let asks = workflow(&json!({ "Skills": ["file-issue"] }));
+        assert!(asks.contains("This task cannot open a pull request on `acme/sanchoris-config`"));
     }
 }
