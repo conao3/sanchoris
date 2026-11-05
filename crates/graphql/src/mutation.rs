@@ -1670,6 +1670,7 @@ impl MutationRoot {
                 work: Vec::new(),
                 diff: None,
                 proposed_plan: None,
+                skill_runs: Vec::new(),
             },
         })
     }

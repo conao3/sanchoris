@@ -620,6 +620,30 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         answered_at: None,
     })
     .unwrap();
+    let skill_started_at = Utc::now();
+    tx.insert(&SkillRunItem {
+        id: Uuid::new_v4(),
+        tenant_id: tenant,
+        task_id: task_uuid,
+        run_id: Some(run_id),
+        number: 1,
+        skill_name: "file-issue".into(),
+        definition: json!({
+            "StartAt": "CreateIssue",
+            "States": { "CreateIssue": { "Type": "Task", "Resource": "sanchoris:::github:createIssue", "End": true } },
+        }),
+        input: json!({ "Repo": "acme/shop-web", "Title": "Label the open issues" }),
+        output: Some(json!({ "Repo": "acme/shop-web", "Number": 61 })),
+        status: SkillRunStatus::Succeeded,
+        current_state: Some("CreateIssue".into()),
+        state: json!({}),
+        error: None,
+        cause: None,
+        started_at: skill_started_at,
+        finished_at: Some(skill_started_at),
+        updated_at: skill_started_at,
+    })
+    .unwrap();
     tx.commit().await.unwrap();
     let asked = w
         .ok(
@@ -632,6 +656,10 @@ async fn the_frontend_operations_run_over_http_against_the_real_ports() {
         asked["tenant"]["conversation"]["working"]["question"]["id"],
         "question-1"
     );
+    let working_skill_run = &asked["tenant"]["conversation"]["working"]["skillRuns"][0];
+    assert_eq!(working_skill_run["skill"]["name"], "file-issue");
+    assert_eq!(working_skill_run["status"], "SUCCEEDED");
+    assert_eq!(working_skill_run["currentState"], "CreateIssue");
     w.ok(
         owner,
         "AnswerChatQuestion",

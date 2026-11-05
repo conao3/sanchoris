@@ -87,6 +87,9 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
           workspaceStartedAt
           connectedAt
         }
+        skillRuns {
+          ...ChatSkillRunFields
+        }
       }
       latestTask {
         id
@@ -147,6 +150,9 @@ query Chat($tenant: String!, $conversation: ID!, $withConversation: Boolean!) {
               }
             }
           }
+        }
+        skillRuns {
+          ...ChatSkillRunFields
         }
       }
       filedTasks {
@@ -352,7 +358,59 @@ query ChatLive($tenant: String!, $conversation: ID!) {
           workspaceStartedAt
           connectedAt
         }
+        skillRuns {
+          ...ChatSkillRunFields
+        }
       }
     }
+  }
+}
+
+fragment ChatSkillRunFields on SkillRun {
+  id
+  status
+  currentState
+  handoffs
+  input
+  output
+  error
+  cause
+  startedAt
+  endedAt
+  skill {
+    id
+    name
+    timeoutSeconds
+    startAt
+    states {
+      name
+      type
+      transitions {
+        to
+        kind
+      }
+    }
+  }
+  task {
+    id
+  }
+  run {
+    id
+    number
+  }
+  stateEntries(last: 20) {
+    id
+    stateName
+    status
+    enteredAt
+    exitedAt
+    attempts
+  }
+  outputs {
+    id
+    kind
+    repository
+    number
+    url
   }
 }

@@ -762,6 +762,7 @@ impl SkillStats {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct SkillRun {
     pub scope: Scope,
     pub row: SkillRunItem,

@@ -334,6 +334,10 @@ type ChatMessage {
 	Issues the agent filed with file-issue during the turn this reply ends.
 	"""
 	issues: [IssueRef!]!
+	"""
+	The skills the engine ran for the agent during the turn this reply ends, oldest first.
+	"""
+	skillRuns: [SkillRun!]!
 }
 
 enum ChatMessageDelivery {
@@ -528,6 +532,10 @@ type ChatWorking {
 	How far the Workspace has started, while the session starts in a new Workspace.
 	"""
 	startup: ChatStartup
+	"""
+	The skills the engine runs or ran for the agent in this turn, oldest first.
+	"""
+	skillRuns: [SkillRun!]!
 }
 
 type CliRequest {

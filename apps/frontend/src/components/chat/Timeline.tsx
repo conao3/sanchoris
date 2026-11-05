@@ -147,6 +147,7 @@ export function AgentMessage({
   startedAt,
   outcome,
   onFork,
+  lead,
   children,
 }: {
   text: string
@@ -155,6 +156,7 @@ export function AgentMessage({
   startedAt?: string
   outcome?: ChatTurnOutcome | null
   onFork?: () => void
+  lead?: ReactNode
   children?: ReactNode
 }) {
   return (
@@ -171,6 +173,7 @@ export function AgentMessage({
           work={work}
         />
       ) : null}
+      {lead}
       {text.trim() ? <Markdown text={text} className="text-ink" /> : null}
       {outcome === "INTERRUPTED" || outcome === "FAILED" ? (
         <div
@@ -397,7 +400,7 @@ function TurnFold({ label, work }: { label: string; work: Work[] }) {
   )
 }
 
-function useNow(active: boolean): number {
+export function useNow(active: boolean): number {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const timer = active ? window.setInterval(() => setNow(Date.now()), TICK_MS) : undefined

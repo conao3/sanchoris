@@ -18,6 +18,7 @@ import { ProposedPlanCard, TasksBanner } from "../components/chat/Plan.tsx"
 import { QuestionComposer } from "../components/chat/QuestionComposer.tsx"
 import { QueuedBanner } from "../components/chat/QueuedBanner.tsx"
 import { RewindDialog } from "../components/chat/RewindDialog.tsx"
+import { SkillRunCard } from "../components/chat/SkillRunCard.tsx"
 import {
   AgentMessage,
   CompactNotice,
@@ -570,6 +571,15 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
               work={message.work}
               startedAt={asked?.at}
               outcome={message.outcome}
+              lead={
+                message.skillRuns.length > 0 ? (
+                  <div className="mt-1 mb-2 space-y-1.5">
+                    {message.skillRuns.map((skillRun) => (
+                      <SkillRunCard key={skillRun.id} run={skillRun} />
+                    ))}
+                  </div>
+                ) : null
+              }
               onFork={
                 message.outcome && conversation.kind === "WEB"
                   ? () => forkFrom(message.id)
@@ -623,25 +633,34 @@ function Thread({ conversation, tenant }: { conversation: ChatConversation; tena
           )
         })}
         {working ? (
-          <Working
-            startedAt={working.startedAt}
-            work={working.work}
-            waiting={
-              working.approval
-                ? "approval"
-                : working.question
-                  ? "question"
-                  : run
-                    ? undefined
-                    : task?.pendingReason === "PLAN_LIMIT"
-                      ? "planLimit"
-                      : task?.pendingReason === "CONCURRENCY"
-                        ? "workspace"
-                        : "session"
-            }
-            partial={working.partial}
-            startup={working.startup}
-          />
+          <>
+            <Working
+              startedAt={working.startedAt}
+              work={working.work}
+              waiting={
+                working.approval
+                  ? "approval"
+                  : working.question
+                    ? "question"
+                    : run
+                      ? undefined
+                      : task?.pendingReason === "PLAN_LIMIT"
+                        ? "planLimit"
+                        : task?.pendingReason === "CONCURRENCY"
+                          ? "workspace"
+                          : "session"
+              }
+              partial={working.partial}
+              startup={working.startup}
+            />
+            {working.skillRuns.length > 0 ? (
+              <div className="mt-2 space-y-1.5">
+                {working.skillRuns.map((skillRun) => (
+                  <SkillRunCard key={skillRun.id} run={skillRun} />
+                ))}
+              </div>
+            ) : null}
+          </>
         ) : null}
       </div>
       {finished && task && conversation.kind === "WEB" ? (

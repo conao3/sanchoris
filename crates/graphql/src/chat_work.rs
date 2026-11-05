@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::enums::{ChatApprovalDecision, ChatApprovalKind, ChatPlanStepStatus};
 use crate::scalars::{Timestamp, ts};
+use crate::skill::SkillRun;
 
 const HIDDEN_TOOLS: [&str; 3] = ["AskUserQuestion", "TodoWrite", "ExitPlanMode"];
 
@@ -148,6 +149,8 @@ pub(crate) struct ChatWorking {
     pub partial: Option<ChatPartial>,
     /// How far the Workspace has started, while the session starts in a new Workspace.
     pub startup: Option<ChatStartup>,
+    /// The skills the engine runs or ran for the agent in this turn, oldest first.
+    pub skill_runs: Vec<SkillRun>,
 }
 
 /// The start of a Workspace for the conversation's session.

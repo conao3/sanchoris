@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
 use async_graphql::{Context, ID, Object, Result, SimpleObject};
+use chrono::{DateTime, Utc};
 use sanchoris_core::conversations::{DELIVERY_QUEUED, OUTCOME_CONTINUED, latest_task};
 use sanchoris_core::items::{
     AUTHOR_AGENT, AUTHOR_MEMBER, AUTHOR_SANCHORIS, ChannelInstance, ChatMessage as ChatMessageItem,
@@ -28,6 +29,7 @@ use crate::enums::{
 };
 use crate::error::not_found;
 use crate::scalars::{Timestamp, ts};
+use crate::skill::SkillRun;
 use crate::task::{IssueRef, Task, filed_tasks_of, issue_outputs};
 use crate::tenant::tenant_repositories;
 
@@ -186,16 +188,19 @@ impl Conversation {
                 work,
                 diff,
                 proposed_plan,
+                skill_runs: Vec::new(),
             });
         }
         for task_id in self.task_ids(ctx).await? {
             for output in issue_outputs(ctx, self.scope, task_id).await? {
-                if let Some(message) = messages.iter_mut().find(|message| {
-                    message.row.task_id == Some(task_id)
-                        && message.row.author_kind == AUTHOR_AGENT
-                        && message.row.created_at >= output.created_at
-                }) {
+                if let Some(message) = reply_after(&mut messages, task_id, output.created_at) {
                     message.issues.push(output);
+                }
+            }
+            for skill_run in SkillRun::of_task(ctx, self.scope, task_id).await? {
+                if let Some(message) = reply_after(&mut messages, task_id, skill_run.row.started_at)
+                {
+                    message.skill_runs.push(skill_run);
                 }
             }
         }
@@ -227,6 +232,14 @@ impl Conversation {
                 last_member_at = last_member_at.filter(|at| *at > message.created_at);
             }
         }
+        let skill_runs = SkillRun::of_task(ctx, self.scope, task.id).await?;
+        let skill_runs_since = |at: DateTime<Utc>| {
+            skill_runs
+                .iter()
+                .filter(|skill_run| skill_run.row.started_at >= at)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
         let run = runs_of(&mut tx, task.id)
             .await?
             .into_iter()
@@ -241,6 +254,7 @@ impl Conversation {
                 plan: None,
                 partial: None,
                 startup: None,
+                skill_runs: skill_runs_since(at),
             }));
         };
         let startup = if run.status == "creating" {
@@ -311,6 +325,7 @@ impl Conversation {
             plan,
             partial,
             startup,
+            skill_runs: skill_runs_since(started_at),
         }))
     }
 
@@ -337,6 +352,18 @@ impl Conversation {
     }
 }
 
+fn reply_after(
+    messages: &mut [ChatMessage],
+    task_id: Uuid,
+    at: DateTime<Utc>,
+) -> Option<&mut ChatMessage> {
+    messages.iter_mut().find(|message| {
+        message.row.task_id == Some(task_id)
+            && message.row.author_kind == AUTHOR_AGENT
+            && message.row.created_at >= at
+    })
+}
+
 pub(crate) struct ChatMessage {
     pub scope: Scope,
     pub row: ChatMessageItem,
@@ -344,6 +371,7 @@ pub(crate) struct ChatMessage {
     pub work: Vec<ChatWork>,
     pub diff: Option<ChatDiff>,
     pub proposed_plan: Option<String>,
+    pub skill_runs: Vec<SkillRun>,
 }
 
 #[Object]
@@ -439,5 +467,10 @@ impl ChatMessage {
             .iter()
             .map(|output| IssueRef::from_output(self.scope, output, &repositories))
             .collect()
+    }
+
+    /// The skills the engine ran for the agent during the turn this reply ends, oldest first.
+    async fn skill_runs(&self) -> &[SkillRun] {
+        &self.skill_runs
     }
 }

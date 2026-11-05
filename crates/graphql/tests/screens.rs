@@ -254,6 +254,13 @@ async fn every_screen_query_validates_and_executes() {
     assert_eq!(messages[0]["member"]["user"]["name"], "Mika");
     assert_eq!(messages[1]["authorKind"], "AGENT");
     assert_eq!(messages[1]["text"], "The checkout spec is flaky.");
+    assert_eq!(messages[0]["skillRuns"], json!([]));
+    let skill_run = &messages[1]["skillRuns"][0];
+    assert_eq!(skill_run["skill"]["name"], "file-issue");
+    assert_eq!(skill_run["skill"]["startAt"], "CreateIssue");
+    assert_eq!(skill_run["status"], "SUCCEEDED");
+    assert_eq!(skill_run["stateEntries"][0]["stateName"], "CreateIssue");
+    assert_eq!(skill_run["run"]["number"], 1);
     assert_eq!(
         chat["conversation"]["session"]["repositories"],
         json!(["acme/idea"])

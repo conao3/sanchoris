@@ -1506,6 +1506,7 @@ function buildAcme(viewerRole: string): Obj {
     issues,
     work,
     diff,
+    skillRuns: [],
     outcome: authorKind === "AGENT" ? "COMPLETED" : null,
     proposedPlan: null,
     delivery: null,
@@ -1579,6 +1580,63 @@ function buildAcme(viewerRole: string): Obj {
       tool("Bash", { command: "pnpm test --filter shop-api" }, "1 failed: orders.spec.ts", true),
     ),
   ]
+  const fileIssue: Obj = {
+    id: "skill-file-issue",
+    name: "file-issue",
+    timeoutSeconds: 300,
+    startAt: "CreateIssue",
+    states: [{ name: "CreateIssue", type: "TASK", transitions: [] }],
+  }
+  const filedRuns = [
+    ["acme/shop-api", 41, "Orders export endpoint"],
+    ["acme/shop-web", 42, "Export button and CSV download"],
+    ["acme/shop-api", 43, "Docs for the export API"],
+  ].map(([repository, number, title], index) => {
+    const startedAt = ago(29.4 - index * 0.1)
+    const endedAt = new Date(new Date(startedAt).getTime() + 2000).toISOString()
+    const filed = makeSkillRun({
+      id: `skillrun-chat-export-${index + 1}`,
+      number: index + 1,
+      task: chatExport,
+      skill: fileIssue,
+      run: null,
+      status: "SUCCEEDED",
+      currentState: "CreateIssue",
+      handoffs: 0,
+      input: JSON.stringify({ Repo: repository, Title: title, Labels: ["sanchoris"] }),
+      output: JSON.stringify({ Repo: repository, Number: number }),
+      startedAt,
+      endedAt,
+      outputs: [
+        {
+          id: `output-chat-export-${index + 1}`,
+          kind: "ISSUE",
+          repository,
+          number,
+          url: `https://github.com/${repository}/issues/${number}`,
+        },
+      ],
+    })
+    filed.entries = [
+      {
+        id: `${filed.id}-entry-1`,
+        sequence: 1,
+        stateName: "CreateIssue",
+        stateType: "TASK",
+        status: "SUCCEEDED",
+        enteredAt: startedAt,
+        exitedAt: endedAt,
+        attempts: 1,
+        input: null,
+        output: null,
+        error: null,
+        cause: null,
+        nextState: null,
+        result: `${String(repository)}#${String(number)} opened`,
+      },
+    ]
+    return filed
+  })
   const exportMessages = [
     message(
       "msg-1",
@@ -1629,6 +1687,9 @@ function buildAcme(viewerRole: string): Obj {
     message("msg-5", "SANCHORIS", null, 1, "/compact"),
     message("msg-6", "AGENT", null, 1, ""),
   ]
+  for (const reply of exportMessages.filter((candidate) => candidate.id === "msg-2")) {
+    reply.skillRuns = filedRuns
+  }
   const flakyMessages = [
     message(
       "msg-f1",

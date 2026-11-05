@@ -1542,6 +1542,57 @@ impl World {
             })
             .unwrap();
         }
+        let chat_skill_run = SkillRunItem {
+            id: Uuid::new_v4(),
+            tenant_id: acme,
+            task_id: chat_task,
+            run_id: Some(chat_run),
+            number: 1,
+            skill_name: "file-issue".into(),
+            definition: serde_json::to_value(
+                builtin_skill("file-issue").unwrap().definition.unwrap(),
+            )
+            .unwrap(),
+            input: json!({ "Repo": "acme/shop-web", "Title": "Fix the flaky checkout spec", "Body": "", "Labels": [] }),
+            output: Some(json!({ "Repo": "acme/shop-web", "Number": 60 })),
+            status: SkillRunStatus::Succeeded,
+            current_state: Some("CreateIssue".into()),
+            state: json!({}),
+            error: None,
+            cause: None,
+            started_at: now - Duration::minutes(17),
+            finished_at: Some(now - Duration::minutes(17) + Duration::seconds(2)),
+            updated_at: now - Duration::minutes(17) + Duration::seconds(2),
+        };
+        tx.insert(&chat_skill_run).unwrap();
+        insert_ref(
+            &mut tx,
+            chat_skill_run.id,
+            REF_SKILL_RUN,
+            chat_skill_run.key(),
+            Some(chat_task),
+        )
+        .unwrap();
+        tx.insert(&StateEntryItem {
+            expires_at: Utc::now() + chrono::Duration::days(90),
+            tenant_id: acme,
+            task_id: chat_task,
+            skill_run_id: chat_skill_run.id,
+            skill_run_number: 1,
+            sequence: 0,
+            state_name: "CreateIssue".into(),
+            state_type: "Task".into(),
+            status: "SUCCEEDED".into(),
+            entered_at: chat_skill_run.started_at,
+            exited_at: chat_skill_run.finished_at,
+            input: json!({}),
+            output: None,
+            error: None,
+            cause: None,
+            attempts: 1,
+            next_state: None,
+        })
+        .unwrap();
         let change_request = Uuid::new_v4();
         tx.insert(&ChangeRequest {
             id: change_request,

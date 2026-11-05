@@ -111,6 +111,65 @@ function mockWorking(stamp: string, input: Obj): Obj {
           at: at(8),
         }
       : null,
+    skillRuns: String(input.text ?? "").includes("pull request") ? [mockOpenPr(stamp)] : [],
+  }
+}
+
+function mockState(name: string, type: string, transitions: [string, string][]): Obj {
+  return { name, type, transitions: transitions.map(([to, kind]) => ({ to, kind })) }
+}
+
+function mockOpenPr(stamp: string): Obj {
+  const at = (seconds: number) => new Date(new Date(stamp).getTime() + seconds * 1000).toISOString()
+  const entry = (index: number, stateName: string, status: string, from: number, to?: number) => ({
+    id: `skillrun-live-entry-${index}`,
+    stateName,
+    status,
+    enteredAt: at(from),
+    exitedAt: to === undefined ? null : at(to),
+    attempts: 1,
+  })
+  return {
+    id: "skillrun-live",
+    status: "RUNNING",
+    currentState: "WaitChecks",
+    handoffs: 0,
+    input: JSON.stringify({ Repos: ["acme/shop-web"], Issue: 44 }),
+    output: JSON.stringify({ Number: 54, Url: "https://github.com/acme/shop-web/pull/54" }),
+    error: null,
+    cause: null,
+    startedAt: at(5),
+    endedAt: null,
+    skill: {
+      id: "skill-open-pr-green-ci",
+      name: "open-pr-green-ci",
+      timeoutSeconds: 14400,
+      startAt: "Init",
+      states: [
+        mockState("Init", "PASS", [["Push", "NEXT"]]),
+        mockState("Push", "TASK", [["OpenPRs", "NEXT"]]),
+        mockState("OpenPRs", "TASK", [["WaitChecks", "NEXT"]]),
+        mockState("WaitChecks", "TASK", [["Green", "NEXT"]]),
+        mockState("Green", "CHOICE", [
+          ["Report", "CHOICE"],
+          ["GiveUp", "CHOICE"],
+          ["HandOff", "DEFAULT"],
+        ]),
+        mockState("HandOff", "TASK", [["CountFix", "NEXT"]]),
+        mockState("CountFix", "PASS", [["Push", "NEXT"]]),
+        mockState("GiveUp", "FAIL", []),
+        mockState("Report", "TASK", []),
+      ],
+    },
+    task: { id: "task-live" },
+    run: null,
+    stateEntries: [
+      entry(1, "Init", "SUCCEEDED", 5, 5),
+      entry(2, "Push", "SUCCEEDED", 5, 8),
+      entry(3, "OpenPRs", "SUCCEEDED", 8, 10),
+      entry(4, "WaitChecks", "RUNNING", 10),
+    ],
+    outputs: [],
   }
 }
 
@@ -129,6 +188,7 @@ function respond(conversation: Obj, stamp: string, input: Obj) {
     text: "Here is the plan. Say Implement when it looks right.",
     at: new Date(new Date(stamp).getTime() + 1000).toISOString(),
     issues: [],
+    skillRuns: [],
     work: [
       {
         kind: "PLAN",
@@ -401,6 +461,7 @@ function createResolvers() {
           text: `Going with **${input.answers[0]?.answers.join(", ") ?? ""}**. I will start on it now.`,
           at: stamp,
           issues: [],
+          skillRuns: [],
           outcome: "COMPLETED",
           diff: null,
           proposedPlan: null,
@@ -517,6 +578,7 @@ function createResolvers() {
               : "Reinstalled the dependencies; the tests pass.",
           at: stamp,
           issues: [],
+          skillRuns: [],
           work: [
             ...working.work,
             {
@@ -553,6 +615,7 @@ function createResolvers() {
           text: "",
           at: stamp,
           issues: [],
+          skillRuns: [],
           outcome: "INTERRUPTED",
           diff: null,
           proposedPlan: null,
@@ -573,6 +636,7 @@ function createResolvers() {
           text: input.text,
           at: stamp,
           issues: [],
+          skillRuns: [],
           work: [],
           attachments: (input.attachmentIds ?? []).map((id: string) => uploads.get(id)),
           outcome: null,
