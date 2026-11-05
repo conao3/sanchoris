@@ -9,6 +9,8 @@ import {
   LogOut,
   Menu,
   MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   Puzzle,
   Settings,
@@ -16,7 +18,7 @@ import {
   Zap,
 } from "lucide-react"
 import { createContext, type ReactNode, useContext, useState } from "react"
-import { Dialog, Modal, ModalOverlay, Button as RACButton } from "react-aria-components"
+import { Dialog, Focusable, Modal, ModalOverlay, Button as RACButton } from "react-aria-components"
 import { type Role, SignOutDocument } from "../graphql/generated/graphql.ts"
 import { type MessageKey, t } from "../i18n/index.ts"
 import { signOut } from "../lib/cognito.ts"
@@ -24,6 +26,7 @@ import { useKeys } from "../lib/keys.ts"
 import { useAction } from "../lib/mutation.ts"
 import { useTenant } from "../lib/tenant.tsx"
 import { ToastProvider } from "./Toast.tsx"
+import { TipTrigger } from "./Tooltip.tsx"
 import { Icon, Kbd } from "./ui.tsx"
 
 type MenuItem = {
@@ -76,33 +79,60 @@ const roleLabels: Record<Role, MessageKey> = {
   MEMBER: "role.member",
 }
 
-function MenuLink({ item, path }: { item: MenuItem; path: string }) {
+function MenuLink({ item, path, collapsed }: { item: MenuItem; path: string; collapsed: boolean }) {
   const active = item.match(path)
+  const label = t(item.label)
   const className = clsx(
-    "flex items-center gap-[9px] rounded-ui px-2 py-[5px] max-lg:min-h-10",
+    "flex items-center gap-[9px] rounded-ui py-[5px] max-lg:min-h-10",
+    collapsed ? "justify-center px-0" : "px-2",
     active ? "bg-hover font-medium text-ink" : "text-body hover:bg-hover",
   )
   const content = (
     <>
       <Icon icon={item.icon} />
-      {t(item.label)}
+      {collapsed ? null : label}
     </>
   )
-  if (path === item.to) {
-    return (
+  const link =
+    path === item.to && !collapsed ? (
       <span aria-current="page" className={className}>
         {content}
       </span>
+    ) : (
+      <Link
+        to={item.to}
+        aria-label={collapsed ? label : undefined}
+        aria-current={path === item.to ? "page" : undefined}
+        className={className}
+      >
+        {content}
+      </Link>
     )
+  if (!collapsed) {
+    return link
   }
   return (
-    <Link to={item.to} className={className}>
-      {content}
-    </Link>
+    <TipTrigger tip={label} align="side">
+      <Focusable>{link}</Focusable>
+    </TipTrigger>
   )
 }
 
-function TenantSwitcher() {
+function Initial({ name, round }: { name: string; round?: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={clsx(
+        "flex size-6 shrink-0 items-center justify-center bg-ink text-xs font-semibold text-white",
+        round ? "rounded-full" : "rounded-ui",
+      )}
+    >
+      {name.slice(0, 1).toUpperCase()}
+    </span>
+  )
+}
+
+function TenantSwitcher({ collapsed }: { collapsed: boolean }) {
   const { viewer, membership, switchTenant } = useTenant()
   const [open, setOpen] = useState(false)
   return (
@@ -110,14 +140,29 @@ function TenantSwitcher() {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center justify-between rounded-ui px-2 py-1.5 font-semibold hover:bg-hover max-lg:min-h-10"
+        className={clsx(
+          "flex w-full items-center rounded-ui py-1.5 font-semibold hover:bg-hover max-lg:min-h-10",
+          collapsed ? "justify-center px-0" : "justify-between px-2",
+        )}
         aria-expanded={open}
+        aria-label={collapsed ? membership.tenant.name : undefined}
       >
-        {membership.tenant.name}
-        <Icon icon={ChevronsUpDown} className="ml-auto text-faint" />
+        {collapsed ? (
+          <Initial name={membership.tenant.name} />
+        ) : (
+          <>
+            {membership.tenant.name}
+            <Icon icon={ChevronsUpDown} className="ml-auto text-faint" />
+          </>
+        )}
       </button>
       {open ? (
-        <div className="absolute left-0 right-0 top-9 z-10 rounded-[8px] border border-line2 bg-bg py-1.5">
+        <div
+          className={clsx(
+            "absolute top-9 left-0 z-10 rounded-[8px] border border-line2 bg-bg py-1.5",
+            collapsed ? "w-[232px]" : "right-0",
+          )}
+        >
           <div className="px-3.5 pb-1 pt-1.5 text-xs font-semibold uppercase tracking-[.06em] text-faint">
             {t("shell.switchTenant")}
           </div>
@@ -161,14 +206,19 @@ function TenantSwitcher() {
   )
 }
 
-function UserMenu() {
+function UserMenu({ collapsed }: { collapsed: boolean }) {
   const { viewer } = useTenant()
   const [open, setOpen] = useState(false)
   const [recordSignOut] = useAction(SignOutDocument)
   return (
     <div className="relative">
       {open ? (
-        <div className="absolute bottom-9 left-0 right-0 z-10 rounded-[8px] border border-line2 bg-bg py-1.5">
+        <div
+          className={clsx(
+            "absolute bottom-9 left-0 z-10 rounded-[8px] border border-line2 bg-bg py-1.5",
+            collapsed ? "w-[232px]" : "right-0",
+          )}
+        >
           <div className="truncate px-3.5 pb-1 pt-1.5 text-xs text-muted">{viewer.user.email}</div>
           <button
             type="button"
@@ -183,35 +233,88 @@ function UserMenu() {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center rounded-ui px-2 py-1.5 text-left text-sm text-muted hover:bg-hover max-lg:min-h-10"
+        className={clsx(
+          "flex w-full items-center rounded-ui py-1.5 text-left text-sm text-muted hover:bg-hover max-lg:min-h-10",
+          collapsed ? "justify-center px-0" : "px-2",
+        )}
         aria-expanded={open}
+        aria-label={collapsed ? viewer.user.name : undefined}
       >
-        {viewer.user.name}
-        <Icon icon={ChevronsUpDown} className="ml-auto text-faint" />
+        {collapsed ? (
+          <Initial name={viewer.user.name} round />
+        ) : (
+          <>
+            {viewer.user.name}
+            <Icon icon={ChevronsUpDown} className="ml-auto text-faint" />
+          </>
+        )}
       </button>
     </div>
   )
 }
 
-function Sidebar({ className }: { className?: string }) {
+function CollapseButton({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+  const label = t(collapsed ? "shell.expandSidebar" : "shell.collapseSidebar")
+  return (
+    <TipTrigger
+      tip={
+        <>
+          {label} <Kbd tone="inverse">[</Kbd>
+        </>
+      }
+      align="side"
+    >
+      <RACButton
+        onPress={onToggle}
+        aria-label={label}
+        className={clsx(
+          "flex items-center gap-[9px] rounded-ui py-[5px] text-muted outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-line2",
+          collapsed ? "justify-center px-0" : "px-2",
+        )}
+      >
+        <Icon icon={collapsed ? PanelLeftOpen : PanelLeftClose} />
+        {collapsed ? null : label}
+      </RACButton>
+    </TipTrigger>
+  )
+}
+
+function Sidebar({
+  className,
+  collapsed = false,
+  onToggle,
+}: {
+  className?: string
+  collapsed?: boolean
+  onToggle?: () => void
+}) {
   const { viewer } = useTenant()
   const path = useRouterState({ select: (state) => state.location.pathname })
   return (
     <nav
-      className={clsx("flex flex-col gap-0.5 border-r border-line bg-sub px-2.5 py-3", className)}
+      className={clsx(
+        "flex flex-col gap-0.5 border-r border-line bg-sub py-3",
+        collapsed ? "px-2" : "px-2.5",
+        className,
+      )}
     >
-      <TenantSwitcher />
+      <TenantSwitcher collapsed={collapsed} />
       <div className="h-2" />
       {topMenu.map((item) => (
-        <MenuLink key={item.to} item={item} path={path} />
+        <MenuLink key={item.to} item={item} path={path} collapsed={collapsed} />
       ))}
       <div className="flex-1" />
-      {viewer.isOperator ? <MenuLink item={operatorItem} path={path} /> : null}
-      <MenuLink item={settingsItem} path={path} />
-      <UserMenu />
+      {viewer.isOperator ? (
+        <MenuLink item={operatorItem} path={path} collapsed={collapsed} />
+      ) : null}
+      <MenuLink item={settingsItem} path={path} collapsed={collapsed} />
+      {onToggle ? <CollapseButton collapsed={collapsed} onToggle={onToggle} /> : null}
+      <UserMenu collapsed={collapsed} />
     </nav>
   )
 }
+
+const COLLAPSED_KEY = "sanchoris_sidebar_collapsed"
 
 const NavDrawerContext = createContext<() => void>(() => {})
 
@@ -243,17 +346,33 @@ export function AppFrame({ children }: { children: ReactNode }) {
   const locationKey = useRouterState({ select: (state) => state.location.state.__TSR_key })
   const [drawerKey, setDrawerKey] = useState<string>()
   const drawerOpen = drawerKey !== undefined && drawerKey === locationKey
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === "1")
+  function toggleCollapsed() {
+    const next = !collapsed
+    if (next) {
+      localStorage.setItem(COLLAPSED_KEY, "1")
+    } else {
+      localStorage.removeItem(COLLAPSED_KEY)
+    }
+    setCollapsed(next)
+  }
   useKeys({
     "g h": () => void navigate({ to: "/" }),
     "g t": () => void navigate({ to: "/tasks" }),
     "g r": () => void navigate({ to: "/triggers" }),
     "g s": () => void navigate({ to: "/settings" }),
+    "[": toggleCollapsed,
   })
   return (
     <NavDrawerContext.Provider value={() => setDrawerKey(locationKey)}>
       <ToastProvider>
-        <div className="grid h-screen grid-cols-1 overflow-hidden lg:grid-cols-[232px_1fr]">
-          <Sidebar className="max-lg:hidden" />
+        <div
+          className={clsx(
+            "grid h-screen grid-cols-1 overflow-hidden",
+            collapsed ? "lg:grid-cols-[52px_1fr]" : "lg:grid-cols-[232px_1fr]",
+          )}
+        >
+          <Sidebar className="max-lg:hidden" collapsed={collapsed} onToggle={toggleCollapsed} />
           {children}
         </div>
         <NavDrawer

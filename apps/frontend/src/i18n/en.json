@@ -11,6 +11,8 @@
   "shell.signOut": "Sign out",
   "shell.navigation": "Navigation",
   "shell.openNavigation": "Open navigation",
+  "shell.collapseSidebar": "Collapse sidebar",
+  "shell.expandSidebar": "Expand sidebar",
 
   "role.owner": "owner",
   "role.admin": "admin",

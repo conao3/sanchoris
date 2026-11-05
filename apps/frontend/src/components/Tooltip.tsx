@@ -8,7 +8,7 @@ import {
   TooltipTriggerStateContext,
 } from "react-aria-components"
 
-type Align = "left" | "right"
+type Align = "left" | "right" | "side"
 
 /**
  * The one tooltip of the app, for hints and for the reasons a control is disabled: it opens on
@@ -29,7 +29,7 @@ export function TipTrigger({
     <TooltipTrigger delay={0} closeDelay={0}>
       {children}
       <RACTooltip
-        placement={align === "right" ? "bottom end" : "bottom start"}
+        placement={align === "side" ? "right" : align === "right" ? "bottom end" : "bottom start"}
         offset={4}
         containerPadding={8}
         className="z-40 w-max max-w-[min(260px,calc(100vw-16px))] whitespace-pre-line rounded-ui border border-ink bg-ink px-2.5 py-1.5 text-left text-xs font-normal text-white"

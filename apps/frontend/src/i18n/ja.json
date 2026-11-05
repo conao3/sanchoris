@@ -11,6 +11,8 @@
   "shell.signOut": "ログアウト",
   "shell.navigation": "ナビゲーション",
   "shell.openNavigation": "ナビゲーションを開く",
+  "shell.collapseSidebar": "サイドバーを縮める",
+  "shell.expandSidebar": "サイドバーを広げる",
 
   "role.owner": "オーナー",
   "role.admin": "管理者",
