@@ -94,7 +94,7 @@
               inherit (finalAttrs) pname version src;
               inherit pnpm;
               fetcherVersion = 5;
-              hash = "sha256-nHeOmgYvkKnpbqWif7LgHU3c2YeOCEjC3m5lDHUrG8o=";
+              hash = "sha256-9Yzb484jrXLCzfZ96QGoXAXxxbtSvRGR62nibcglmHs=";
             };
             nativeBuildInputs = [
               nodejs

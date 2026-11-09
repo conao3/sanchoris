@@ -14,12 +14,12 @@
     "postinstall": "node scripts/install-hooks.mjs && vp config --no-agent"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.3.3",
-    "@types/node": "^26.6.5",
-    "@vitejs/plugin-react": "^6.1.2",
-    "msw": "^3.0.3",
-    "portless": "^0.15.12",
-    "tailwindcss": "^4.3.3",
-    "vite-plus": "1.4.0"
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/node": "^26.6.6",
+    "@vitejs/plugin-react": "^6.2.1",
+    "msw": "^3.0.4",
+    "portless": "^0.16.0",
+    "tailwindcss": "^4.3.5",
+    "vite-plus": "1.5.0"
   }
 }
