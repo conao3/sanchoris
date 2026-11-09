@@ -3,6 +3,7 @@ packages:
   - apps/*
 
 overrides:
+  "minimatch@>=7.0.0 <11.0.1": ^11.0.1
   "vite@*": "npm:@voidzero-dev/vite-plus-core@1.5.0"
   "brace-expansion@>=5.0.0 <5.0.6": "^5.0.6"
   "ws@>=8.0.0 <8.20.1": "^8.20.1"
