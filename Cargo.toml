@@ -12,7 +12,7 @@ resolver = "2"
 [workspace.package]
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/conao3/sanchoris"
+repository = "https://github.com/sancode-org/sanchoris"
 
 [workspace.dependencies]
 sanchoris-config = { path = "crates/config" }

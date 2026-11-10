@@ -19,7 +19,7 @@ workspace:
   root: ~/code/symphony-workspaces
 hooks:
   after_create: |
-    gh repo clone conao3/sanchoris . -- --depth 1
+    gh repo clone sancode-org/sanchoris . -- --depth 1
 agent:
   max_concurrent_agents: 6
   max_turns: 24
@@ -180,7 +180,7 @@ When a ticket has an attached PR, run this protocol before moving to `Merging`:
 1. Identify the PR number from issue links/attachments.
 2. Gather feedback from all channels:
    - Top-level PR comments (`gh pr view <pr> --comments`).
-   - Inline review comments (`gh api repos/conao3/sanchoris/pulls/<pr>/comments`).
+   - Inline review comments (`gh api repos/sancode-org/sanchoris/pulls/<pr>/comments`).
    - Review summaries/states (`gh pr view <pr> --json reviews`).
 3. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
    - code/test/docs updated to address it, or
